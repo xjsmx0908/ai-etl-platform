@@ -1,0 +1,13 @@
+# Docker 构建时排除的文件
+.git
+.gitignore
+.env
+.env.local
+.env.production
+bin/
+coverage.out
+*.md
+docker-compose.yml
+Makefile
+.idea/
+.vscode/

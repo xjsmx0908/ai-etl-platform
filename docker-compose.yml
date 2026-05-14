@@ -1,0 +1,229 @@
+# ============================================================
+# AI-ETL Platform - 统一服务编排
+# 架构: ETL Worker + Query API + Parser Service + 基础设施
+# 启动: docker compose up -d
+# ============================================================
+
+services:
+  # ==========================================
+  # 基础设施层
+  # ==========================================
+
+  kafka:
+    image: bitnamilegacy/kafka:3.7.1
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  qdrant:
+    image: qdrant/qdrant:v1.14.1
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc 'cat < /dev/null > /dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # 可观测性
+  # ==========================================
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8090:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ==========================================
+  # 应用服务层
+  # ==========================================
+
+  # Python Parser Service
+  parser-service:
+    build:
+      context: ./services/doc-parser-service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - upload_data:/data:ro
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - MIN_CHUNK_SIZE=128
+      - MAX_CHUNK_SIZE=4000
+      - CHUNK_OVERLAP=200
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # Go ETL Worker
+  etl-worker:
+    build:
+      context: ./services/etl-worker
+      dockerfile: Dockerfile
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-staging}
+      - PIPELINE_MAX_WORKERS=${PIPELINE_MAX_WORKERS:-10}
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=${KAFKA_TOPIC:-doc-processing}
+      - KAFKA_GROUP_ID=${KAFKA_GROUP_ID:-etl-pipeline}
+      - KAFKA_DLQ_TOPIC=${KAFKA_DLQ_TOPIC:-doc-processing-dlq}
+      - STORE_ENDPOINT=http://qdrant:6333
+      - STORE_COLLECTION=${STORE_COLLECTION:-documents}
+      - REDIS_ADDR=redis:6379
+      - PARSER_ENDPOINT=http://parser-service:8000
+      - EMBED_ENDPOINT=${EMBED_ENDPOINT:-http://host.docker.internal:11434/api/embeddings}
+      - EMBED_API_KEY=${EMBED_API_KEY:-}
+      - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
+      - EMBED_DIMENSION=${EMBED_DIMENSION:-768}
+      - EMBED_RATE_LIMIT=${EMBED_RATE_LIMIT:-50}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      parser-service:
+        condition: service_healthy
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          memory: 2G
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Go Query API
+  query-api:
+    build:
+      context: ./services/etl-worker
+      dockerfile: Dockerfile.api
+    ports:
+      - "8080:8080"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-staging}
+      - HEALTH_PORT=8080
+      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-change-in-production}
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=${KAFKA_TOPIC:-doc-processing}
+      - STORE_ENDPOINT=http://qdrant:6333
+      - STORE_COLLECTION=${STORE_COLLECTION:-documents}
+      - EMBED_ENDPOINT=${EMBED_ENDPOINT:-http://host.docker.internal:11434/api/embeddings}
+      - EMBED_API_KEY=${EMBED_API_KEY:-}
+      - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
+      - EMBED_DIMENSION=${EMBED_DIMENSION:-768}
+      - EMBED_RATE_LIMIT=${EMBED_RATE_LIMIT:-50}
+      - LLM_ENDPOINT=${LLM_ENDPOINT:-http://host.docker.internal:11434/v1}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
+      - S3_ENDPOINT=minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET=documents
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      replicas: ${API_REPLICAS:-1}
+      resources:
+        limits:
+          memory: 1G
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - upload_data:/data/uploads
+
+volumes:
+  kafka_data:
+  redis_data:
+  qdrant_data:
+  minio_data:
+  upload_data:

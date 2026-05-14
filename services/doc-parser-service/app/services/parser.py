@@ -1,0 +1,60 @@
+"""Parser orchestrator - routes to appropriate parser based on file type"""
+import os
+from pathlib import Path
+from loguru import logger
+from typing import Tuple
+
+from app.services.parsers import pdf, docx, text
+
+
+# File extension to parser mapping
+PARSER_MAP = {
+    '.pdf': pdf.parse_pdf,
+    '.docx': docx.parse_docx,
+    '.doc': docx.parse_docx,  # Note: .doc may need LibreOffice
+    '.txt': text.parse_text,
+    '.md': text.parse_text,
+    '.markdown': text.parse_text,
+    '.csv': text.parse_text,
+    '.log': text.parse_text,
+    '.rtf': text.parse_text,
+    '.odt': text.parse_text,
+}
+
+
+def parse_document(file_path: str) -> Tuple[str, int, str]:
+    """
+    Parse document file using appropriate parser
+    
+    Args:
+        file_path: Path to document file
+        
+    Returns:
+        Tuple of (extracted_text, file_size_bytes, parser_name)
+        
+    Raises:
+        ValueError: If file type is not supported
+        FileNotFoundError: If file doesn't exist
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    ext = Path(file_path).suffix.lower()
+    
+    if ext not in PARSER_MAP:
+        # Default to text parser for unknown types
+        logger.warning(f"Unknown file type {ext}, using text parser")
+        parser_func = text.parse_text
+        parser_name = "text"
+    else:
+        parser_func = PARSER_MAP[ext]
+        parser_name = ext[1:]  # Remove leading dot
+    
+    logger.info(f"Parsing document: {file_path} (type: {parser_name})")
+    
+    try:
+        extracted_text, file_size = parser_func(file_path)
+        return extracted_text, file_size, parser_name
+    except Exception as e:
+        logger.error(f"Parser {parser_name} failed for {file_path}: {e}")
+        raise
