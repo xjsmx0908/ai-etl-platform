@@ -80,7 +80,9 @@ func NewSource(brokers, topic, groupID string, dlq model.DLQStore) (*Source, err
 		MaxBytes:               10e6,
 		MaxWait:                3 * time.Second,
 		CommitInterval:         0, // Manual commit (At-Least-Once)
-		StartOffset:            kafkago.LastOffset,
+		// For a new consumer group with no committed offset, start from earliest.
+		// This avoids missing the first message when topic/partition is created just-in-time.
+		StartOffset:            kafkago.FirstOffset,
 		WatchPartitionChanges:  true,
 		PartitionWatchInterval: 5 * time.Second,
 	})
