@@ -73,13 +73,13 @@ type Source struct {
 // NewSource creates a Kafka consumer connected to the given topic and group.
 func NewSource(brokers, topic, groupID string, dlq model.DLQStore) (*Source, error) {
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:                strings.Split(brokers, ","),
-		Topic:                  topic,
-		GroupID:                groupID,
-		MinBytes:               1, // Allow low-throughput/small messages to be consumed promptly.
-		MaxBytes:               10e6,
-		MaxWait:                3 * time.Second,
-		CommitInterval:         0, // Manual commit (At-Least-Once)
+		Brokers:        strings.Split(brokers, ","),
+		Topic:          topic,
+		GroupID:        groupID,
+		MinBytes:       1, // Allow low-throughput/small messages to be consumed promptly.
+		MaxBytes:       10e6,
+		MaxWait:        3 * time.Second,
+		CommitInterval: 0, // Manual commit (At-Least-Once)
 		// For a new consumer group with no committed offset, start from earliest.
 		// This avoids missing the first message when topic/partition is created just-in-time.
 		StartOffset:            kafkago.FirstOffset,
