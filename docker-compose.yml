@@ -62,8 +62,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
@@ -116,16 +116,22 @@ services:
       context: ./services/doc-parser-service
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - upload_data:/data:ro
     environment:
+      - ENVIRONMENT=${ENVIRONMENT:-staging}
       - HOST=0.0.0.0
       - PORT=8000
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      - INTERNAL_API_TOKEN=${PARSER_INTERNAL_TOKEN:-}
+      - INTERNAL_API_TOKEN_FILE=/run/secrets/parser_internal_token
       - MIN_CHUNK_SIZE=128
       - MAX_CHUNK_SIZE=4000
       - CHUNK_OVERLAP=200
       - LOG_LEVEL=INFO
+    secrets:
+      - parser_internal_token
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 10s
@@ -148,13 +154,34 @@ services:
       - STORE_ENDPOINT=http://qdrant:6333
       - STORE_COLLECTION=${STORE_COLLECTION:-documents}
       - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
       - PARSER_ENDPOINT=http://parser-service:8000
+      - PARSER_INTERNAL_TOKEN=${PARSER_INTERNAL_TOKEN:-}
+      - PARSER_INTERNAL_TOKEN_FILE=/run/secrets/parser_internal_token
       - EMBED_ENDPOINT=${EMBED_ENDPOINT:-http://host.docker.internal:11434/api/embeddings}
       - EMBED_API_KEY=${EMBED_API_KEY:-}
+      - EMBED_API_KEY_FILE=/run/secrets/embed_api_key
       - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
       - EMBED_DIMENSION=${EMBED_DIMENSION:-768}
       - EMBED_RATE_LIMIT=${EMBED_RATE_LIMIT:-50}
+      - STORE_API_KEY=${STORE_API_KEY:-}
+      - STORE_API_KEY_FILE=/run/secrets/store_api_key
+      - S3_ENDPOINT=minio:9000
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-}
+      - S3_ACCESS_KEY_FILE=/run/secrets/s3_access_key
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-}
+      - S3_SECRET_KEY_FILE=/run/secrets/s3_secret_key
+      - S3_BUCKET=documents
+      - S3_USE_SSL=${S3_USE_SSL:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+    secrets:
+      - parser_internal_token
+      - embed_api_key
+      - store_api_key
+      - redis_password
+      - s3_access_key
+      - s3_secret_key
     depends_on:
       kafka:
         condition: service_healthy
@@ -183,24 +210,50 @@ services:
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-staging}
       - HEALTH_PORT=8080
-      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-change-in-production}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      - HTTP_READ_TIMEOUT=${HTTP_READ_TIMEOUT:-15s}
+      - HTTP_READ_HEADER_TIMEOUT=${HTTP_READ_HEADER_TIMEOUT:-10s}
+      - HTTP_WRITE_TIMEOUT=${HTTP_WRITE_TIMEOUT:-60s}
+      - HTTP_IDLE_TIMEOUT=${HTTP_IDLE_TIMEOUT:-120s}
+      - HTTP_MAX_HEADER_BYTES=${HTTP_MAX_HEADER_BYTES:-1048576}
+      - IDEMPOTENCY_TTL=${IDEMPOTENCY_TTL:-24h}
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      - REDIS_DB=${REDIS_DB:-0}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TOPIC=${KAFKA_TOPIC:-doc-processing}
       - STORE_ENDPOINT=http://qdrant:6333
       - STORE_COLLECTION=${STORE_COLLECTION:-documents}
+      - STORE_API_KEY=${STORE_API_KEY:-}
+      - STORE_API_KEY_FILE=/run/secrets/store_api_key
       - EMBED_ENDPOINT=${EMBED_ENDPOINT:-http://host.docker.internal:11434/api/embeddings}
       - EMBED_API_KEY=${EMBED_API_KEY:-}
+      - EMBED_API_KEY_FILE=/run/secrets/embed_api_key
       - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
       - EMBED_DIMENSION=${EMBED_DIMENSION:-768}
       - EMBED_RATE_LIMIT=${EMBED_RATE_LIMIT:-50}
       - LLM_ENDPOINT=${LLM_ENDPOINT:-http://host.docker.internal:11434/v1}
       - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_KEY_FILE=/run/secrets/llm_api_key
       - LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
       - S3_ENDPOINT=minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-}
+      - S3_ACCESS_KEY_FILE=/run/secrets/s3_access_key
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-}
+      - S3_SECRET_KEY_FILE=/run/secrets/s3_secret_key
       - S3_BUCKET=documents
       - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+    secrets:
+      - jwt_secret
+      - embed_api_key
+      - llm_api_key
+      - store_api_key
+      - redis_password
+      - s3_access_key
+      - s3_secret_key
     depends_on:
       kafka:
         condition: service_healthy
@@ -227,3 +280,21 @@ volumes:
   qdrant_data:
   minio_data:
   upload_data:
+
+secrets:
+  parser_internal_token:
+    file: ${PARSER_INTERNAL_TOKEN_FILE_PATH:-./secrets/examples/parser_internal_token}
+  jwt_secret:
+    file: ${JWT_SECRET_FILE_PATH:-./secrets/examples/jwt_secret}
+  embed_api_key:
+    file: ${EMBED_API_KEY_FILE_PATH:-./secrets/examples/embed_api_key}
+  llm_api_key:
+    file: ${LLM_API_KEY_FILE_PATH:-./secrets/examples/llm_api_key}
+  store_api_key:
+    file: ${STORE_API_KEY_FILE_PATH:-./secrets/examples/store_api_key}
+  redis_password:
+    file: ${REDIS_PASSWORD_FILE_PATH:-./secrets/examples/redis_password}
+  s3_access_key:
+    file: ${S3_ACCESS_KEY_FILE_PATH:-./secrets/examples/s3_access_key}
+  s3_secret_key:
+    file: ${S3_SECRET_KEY_FILE_PATH:-./secrets/examples/s3_secret_key}

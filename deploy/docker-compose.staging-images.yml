@@ -1,0 +1,12 @@
+services:
+  etl-worker:
+    image: ${ETL_WORKER_IMAGE}
+    pull_policy: always
+
+  query-api:
+    image: ${QUERY_API_IMAGE}
+    pull_policy: always
+
+  parser-service:
+    image: ${PARSER_SERVICE_IMAGE}
+    pull_policy: always

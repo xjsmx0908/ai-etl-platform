@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -35,7 +36,8 @@ type Config struct {
 	EmbedRateLimit  float64 // requests per second
 
 	// Parser Service
-	ParserEndpoint string
+	ParserEndpoint      string
+	ParserInternalToken string
 
 	// Store (Qdrant)
 	StoreEndpoint   string
@@ -59,11 +61,24 @@ type Config struct {
 	RedisDB       int
 
 	// Server
-	HealthPort int
+	HealthPort            int
+	HTTPReadTimeout       time.Duration
+	HTTPReadHeaderTimeout time.Duration
+	HTTPWriteTimeout      time.Duration
+	HTTPIdleTimeout       time.Duration
+	HTTPMaxHeaderBytes    int
+	CORSAllowedOrigins    []string
+	IdempotencyTTL        time.Duration
 
 	// Gateway (file upload)
 	UploadDir     string
 	MaxUploadSize int64 // bytes
+	JWTSecret     string
+	S3Endpoint    string
+	S3AccessKey   string
+	S3SecretKey   string
+	S3Bucket      string
+	S3UseSSL      bool
 
 	// Runtime
 	Environment string // "dev" | "staging" | "production"
@@ -71,6 +86,12 @@ type Config struct {
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() Config {
+	environment := EnvStr("ENVIRONMENT", "dev")
+	corsDefault := "*"
+	if !strings.EqualFold(environment, "dev") {
+		corsDefault = ""
+	}
+
 	return Config{
 		// Pipeline defaults
 		MaxWorkers:      EnvInt("PIPELINE_MAX_WORKERS", 10),
@@ -88,7 +109,7 @@ func Load() Config {
 
 		// Embedder
 		EmbedEndpoint:   EnvStr("EMBED_ENDPOINT", "https://api.openai.com/v1/embeddings"),
-		EmbedAPIKey:     EnvStr("EMBED_API_KEY", ""),
+		EmbedAPIKey:     EnvSecret("EMBED_API_KEY", ""),
 		EmbedModel:      EnvStr("EMBED_MODEL", "text-embedding-ada-002"),
 		EmbedDimension:  EnvInt("EMBED_DIMENSION", 1536),
 		EmbedMaxRetries: EnvInt("EMBED_MAX_RETRIES", 5),
@@ -97,11 +118,12 @@ func Load() Config {
 		EmbedRateLimit:  EnvFloat("EMBED_RATE_LIMIT", 50.0),
 
 		// Parser Service
-		ParserEndpoint: EnvStr("PARSER_ENDPOINT", "http://parser-service:8000"),
+		ParserEndpoint:      EnvStr("PARSER_ENDPOINT", "http://parser-service:8000"),
+		ParserInternalToken: EnvSecret("PARSER_INTERNAL_TOKEN", ""),
 
 		// Store (Qdrant)
 		StoreEndpoint:   EnvStr("STORE_ENDPOINT", "http://localhost:6333"),
-		StoreAPIKey:     EnvStr("STORE_API_KEY", ""),
+		StoreAPIKey:     EnvSecret("STORE_API_KEY", ""),
 		StoreCollection: EnvStr("STORE_COLLECTION", "documents"),
 
 		// Sparse Vector (BM25)
@@ -117,18 +139,31 @@ func Load() Config {
 
 		// Redis
 		RedisAddr:     EnvStr("REDIS_ADDR", "localhost:6379"),
-		RedisPassword: EnvStr("REDIS_PASSWORD", ""),
+		RedisPassword: EnvSecret("REDIS_PASSWORD", ""),
 		RedisDB:       EnvInt("REDIS_DB", 0),
 
 		// Server
-		HealthPort: EnvInt("HEALTH_PORT", 8080),
+		HealthPort:            EnvInt("HEALTH_PORT", 8080),
+		HTTPReadTimeout:       EnvDuration("HTTP_READ_TIMEOUT", 15*time.Second),
+		HTTPReadHeaderTimeout: EnvDuration("HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
+		HTTPWriteTimeout:      EnvDuration("HTTP_WRITE_TIMEOUT", 60*time.Second),
+		HTTPIdleTimeout:       EnvDuration("HTTP_IDLE_TIMEOUT", 120*time.Second),
+		HTTPMaxHeaderBytes:    EnvInt("HTTP_MAX_HEADER_BYTES", 1<<20),
+		CORSAllowedOrigins:    EnvCSV("CORS_ALLOWED_ORIGINS", corsDefault),
+		IdempotencyTTL:        EnvDuration("IDEMPOTENCY_TTL", 24*time.Hour),
 
 		// Gateway
 		UploadDir:     EnvStr("UPLOAD_DIR", "/data/uploads"),
 		MaxUploadSize: int64(EnvInt("MAX_UPLOAD_SIZE_MB", 512)) * 1024 * 1024,
+		JWTSecret:     EnvSecret("JWT_SECRET", "change-me-in-production"),
+		S3Endpoint:    EnvStr("S3_ENDPOINT", "localhost:9000"),
+		S3AccessKey:   EnvSecret("S3_ACCESS_KEY", "minioadmin"),
+		S3SecretKey:   EnvSecret("S3_SECRET_KEY", "minioadmin"),
+		S3Bucket:      EnvStr("S3_BUCKET", "documents"),
+		S3UseSSL:      strings.EqualFold(EnvStr("S3_USE_SSL", "false"), "true"),
 
 		// Runtime
-		Environment: EnvStr("ENVIRONMENT", "dev"),
+		Environment: environment,
 	}
 }
 
@@ -162,6 +197,38 @@ func (c Config) IsDev() bool {
 	return c.Environment == "dev"
 }
 
+// ValidateAPI extends base validation for Query API specific security requirements.
+func (c Config) ValidateAPI() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if c.Environment != "production" {
+		return nil
+	}
+	if weakSecret(c.JWTSecret) || len(c.JWTSecret) < 32 {
+		return fmt.Errorf("JWT_SECRET must be strong in production (>=32 chars and not default value)")
+	}
+	if c.S3AccessKey == "minioadmin" || c.S3SecretKey == "minioadmin" {
+		return fmt.Errorf("S3 credentials must not use default values in production")
+	}
+	for _, origin := range c.CORSAllowedOrigins {
+		if origin == "*" {
+			return fmt.Errorf("CORS_ALLOWED_ORIGINS must not contain wildcard '*' in production")
+		}
+	}
+	return nil
+}
+
+func weakSecret(secret string) bool {
+	v := strings.TrimSpace(secret)
+	switch v {
+	case "", "change-me-in-production", "your-jwt-secret-change-in-production", "dev-secret", "secret":
+		return true
+	default:
+		return false
+	}
+}
+
 // --- Environment variable helpers (exported for reuse) ---
 
 // EnvStr reads a string environment variable with a default value.
@@ -170,6 +237,30 @@ func EnvStr(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// EnvSecret reads sensitive values from KEY or KEY_FILE.
+// Priority: KEY > KEY_FILE > default.
+func EnvSecret(key, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+
+	path := os.Getenv(key + "_FILE")
+	if path == "" {
+		return defaultVal
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return defaultVal
+	}
+
+	secret := strings.TrimSpace(string(content))
+	if secret == "" {
+		return defaultVal
+	}
+	return secret
 }
 
 // EnvInt reads an integer environment variable with a default value.
@@ -200,4 +291,22 @@ func EnvDuration(key string, defaultVal time.Duration) time.Duration {
 		}
 	}
 	return defaultVal
+}
+
+// EnvCSV reads a comma-separated environment variable and returns trimmed values.
+func EnvCSV(key, defaultVal string) []string {
+	raw := EnvStr(key, defaultVal)
+	if strings.TrimSpace(raw) == "" {
+		return []string{}
+	}
+
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		v := strings.TrimSpace(part)
+		if v != "" {
+			values = append(values, v)
+		}
+	}
+	return values
 }

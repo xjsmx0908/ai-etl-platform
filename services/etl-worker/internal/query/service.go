@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/model"
@@ -41,7 +42,6 @@ type Service struct {
 type Request struct {
 	Question string `json:"question"`
 	TopK     int    `json:"top_k,omitempty"`
-	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // Response represents the query result returned to the client.
@@ -60,6 +60,12 @@ type SourceContext struct {
 	TenantID string  `json:"tenant_id,omitempty"`
 }
 
+var roleAllowedDocPermissions = map[string][]string{
+	"admin":    {"public", "internal", "confidential"},
+	"user":     {"public", "internal"},
+	"readonly": {"public"},
+}
+
 // NewService creates a Query Service with its own LLM configuration.
 func NewService(cfg config.Config) *Service {
 	sparseEnc := sparse.NewEncoder(sparse.Params{
@@ -73,7 +79,7 @@ func NewService(cfg config.Config) *Service {
 	return &Service{
 		cfg:           cfg,
 		llmEndpoint:   normalizeLLMEndpoint(config.EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
-		llmAPIKey:     config.EnvStr("LLM_API_KEY", ""),
+		llmAPIKey:     config.EnvSecret("LLM_API_KEY", ""),
 		llmModel:      config.EnvStr("LLM_MODEL", "gpt-4o-mini"),
 		llmMaxTokens:  config.EnvInt("LLM_MAX_TOKENS", 1024),
 		sparseEncoder: sparseEnc,
@@ -105,9 +111,18 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	if req.TopK <= 0 {
 		req.TopK = 5
 	}
+	tenantID := auth.GetTenantID(r.Context())
+	if tenantID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	role := auth.GetPermission(r.Context())
+	allowedPermissions := allowedDocumentPermissionsForRole(role)
 
 	span.SetAttributes(
-		attribute.String("tenant_id", req.TenantID),
+		attribute.String("tenant_id", tenantID),
+		attribute.String("permission_role", role),
+		attribute.Int("allowed_permission_levels", len(allowedPermissions)),
 		attribute.Int("top_k", req.TopK),
 		attribute.Int("question_len", len(req.Question)),
 	)
@@ -128,7 +143,7 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	sparseVector := s.sparseEncoder.Encode(req.Question)
 
 	// 3. Qdrant Hybrid Search (Dense + Sparse + RRF fusion)
-	sources, err := s.hybridSearch(ctx, denseVector, sparseVector, req.TopK, req.TenantID)
+	sources, err := s.hybridSearch(ctx, denseVector, sparseVector, req.TopK, tenantID, allowedPermissions)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "search failed")
@@ -273,7 +288,23 @@ func isOllamaNativeEndpoint(endpoint string) bool {
 	return strings.Contains(endpoint, "/api/embeddings") || strings.Contains(endpoint, "/api/embed")
 }
 
-func (s *Service) hybridSearch(ctx context.Context, dense []float64, sv model.SparseVector, topK int, tenantID string) ([]SourceContext, error) {
+func allowedDocumentPermissionsForRole(role string) []string {
+	normalizedRole := strings.ToLower(strings.TrimSpace(role))
+	if allowed, ok := roleAllowedDocPermissions[normalizedRole]; ok {
+		return allowed
+	}
+	// Fail-safe fallback: unknown or missing role can only access public docs.
+	return roleAllowedDocPermissions["readonly"]
+}
+
+func (s *Service) hybridSearch(ctx context.Context, dense []float64, sv model.SparseVector, topK int, tenantID string, allowedPermissions []string) ([]SourceContext, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required for query")
+	}
+	if len(allowedPermissions) == 0 {
+		allowedPermissions = roleAllowedDocPermissions["readonly"]
+	}
+
 	query := map[string]interface{}{
 		"prefetch": []map[string]interface{}{
 			{
@@ -293,17 +324,20 @@ func (s *Service) hybridSearch(ctx context.Context, dense []float64, sv model.Sp
 		"query":        map[string]string{"fusion": "rrf"},
 		"limit":        topK,
 		"with_payload": true,
-	}
-
-	if tenantID != "" {
-		query["filter"] = map[string]interface{}{
+		"filter": map[string]interface{}{
 			"must": []map[string]interface{}{
 				{
 					"key":   "tenant_id",
 					"match": map[string]string{"value": tenantID},
 				},
+				{
+					"key": "permission",
+					"match": map[string]interface{}{
+						"any": allowedPermissions,
+					},
+				},
 			},
-		}
+		},
 	}
 
 	data, _ := json.Marshal(query)

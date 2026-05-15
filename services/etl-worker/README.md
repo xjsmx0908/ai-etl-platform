@@ -146,6 +146,7 @@ REDIS_PASSWORD=your-redis-password
 | **Parser 切块** | | |
 | `PARSER_MAX_CHUNK_SIZE` | `4096` | Chunk 最大字符数 |
 | `PARSER_CHUNK_OVERLAP` | `200` | Chunk 重叠字符数 |
+| `PARSER_INTERNAL_TOKEN` | _(空)_ | Parser Service 内部鉴权 token（非 dev 建议必配） |
 | **Embedding API** | | |
 | `EMBED_ENDPOINT` | `https://api.openai.com/v1/embeddings` | Embedding 接口地址（支持 Ollama `/api/embeddings`） |
 | `EMBED_API_KEY` | _(空)_ | API Key（**生产必填**） |
@@ -175,16 +176,28 @@ REDIS_PASSWORD=your-redis-password
 | `REDIS_ADDR` | `localhost:6379` | Redis 地址 |
 | `REDIS_PASSWORD` | _(空)_ | 密码 |
 | `REDIS_DB` | `0` | 数据库编号 |
+| **API 安全** | | |
+| `CORS_ALLOWED_ORIGINS` | `*`(dev) / 空(非dev) | 逗号分隔 CORS allowlist（production 不允许 `*`） |
+| `HTTP_READ_TIMEOUT` | `15s` | 请求体读取超时 |
+| `HTTP_READ_HEADER_TIMEOUT` | `10s` | 请求头读取超时 |
+| `HTTP_WRITE_TIMEOUT` | `60s` | 响应写入超时 |
+| `HTTP_IDLE_TIMEOUT` | `120s` | Keep-Alive 空闲超时 |
+| `HTTP_MAX_HEADER_BYTES` | `1048576` | 最大请求头大小 |
+| `IDEMPOTENCY_TTL` | `24h` | 上传幂等记录保留时长 |
 | **HTTP 服务 & 网关** | | |
 | `HEALTH_PORT` | `8080` | 服务端口 |
 | `UPLOAD_DIR` | `/data/uploads` | 文件上传存储目录 |
 | `MAX_UPLOAD_SIZE_MB` | `512` | 最大上传文件大小(MB) |
+
+敏感变量支持 `*_FILE` 读取（例如 `JWT_SECRET_FILE`、`EMBED_API_KEY_FILE`、`LLM_API_KEY_FILE`、`STORE_API_KEY_FILE`、`REDIS_PASSWORD_FILE`、`S3_ACCESS_KEY_FILE`、`S3_SECRET_KEY_FILE`、`PARSER_INTERNAL_TOKEN_FILE`）。读取优先级：`KEY` > `KEY_FILE` > 默认值。
 
 ### 2.5 Docker Compose 关键说明
 
 - `docker-compose.yml` 中应用容器已配置 `extra_hosts: host.docker.internal:host-gateway`，用于容器访问宿主机服务（如 Ollama）。
 - `UPLOAD_DIR` 推荐保持 `/data/uploads`，与镜像内目录及 volume 挂载一致。
 - `ENVIRONMENT=dev` 仅用于本地调试（会启用 mock source + 内存存储）；验证“上传 -> 消费 -> 入库 -> 检索 -> 生成”请使用 `staging` 或 `production`。
+- `docker-compose.yml` 已配置 secrets 挂载，默认占位文件在 `secrets/examples/`；建议复制到 `secrets/dev/` 后，通过 `.env` 中 `*_FILE_PATH` 覆盖为本机私有文件。
+- `production` 环境会拒绝 `CORS_ALLOWED_ORIGINS=*`，请配置明确域名白名单。
 
 ---
 
@@ -275,12 +288,13 @@ docker compose exec kafka kafka-topics.sh \
 
 ### 4.1 方式一：HTTP 文件上传（推荐）
 
-通过 `POST /upload` 接口直接上传文件，系统自动完成存储→推 Kafka→异步处理：
+通过 `POST /v1/upload` 接口直接上传文件，系统自动完成存储→推 Kafka→异步处理：
 
 ```bash
-curl -X POST http://localhost:8080/upload \
+curl -X POST http://localhost:8080/v1/upload \
+  -H "Authorization: Bearer <jwt>" \
+  -H "X-Idempotency-Key: upload-20260514-0001" \
   -F "file=@/path/to/report.pdf" \
-  -F "tenant_id=tenant-a" \
   -F "permission=internal"
 ```
 
@@ -289,8 +303,11 @@ curl -X POST http://localhost:8080/upload \
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `file` | file | 是 | 上传的文档文件 |
-| `tenant_id` | string | 是 | 租户 ID |
 | `permission` | string | 否 | 权限级别：`public`/`internal`/`confidential`（默认 `internal`） |
+
+请求头说明：建议传 `X-Idempotency-Key`，同一租户重复请求会返回首次成功响应，避免重复入队。
+
+租户隔离说明：上传接口不接受 `tenant_id` 表单字段，租户由 JWT `tenant_id` 强制注入。
 
 **响应示例**（HTTP 202 Accepted）：
 
@@ -311,7 +328,7 @@ curl -X POST http://localhost:8080/upload \
 
 ```json
 {
-  "file_path": "/data/documents/report.pdf",
+  "file_path": "tenant-a/report.pdf",
   "doc_id": "doc-001",
   "tenant_id": "tenant-a",
   "permission": "internal",
@@ -322,7 +339,7 @@ curl -X POST http://localhost:8080/upload \
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `file_path` | string | 是 | 文件绝对路径（容器内路径） |
+| `file_path` | string | 是 | 对象存储 Key（推荐）或容器内绝对路径（兼容） |
 | `doc_id` | string | 是 | 文档唯一 ID（用于去重和 Checkpoint） |
 | `tenant_id` | string | 是 | 租户 ID（多租户隔离） |
 | `permission` | string | 否 | 权限级别 |
@@ -331,15 +348,37 @@ curl -X POST http://localhost:8080/upload \
 
 ### 4.3 RAG 查询（问答接口）
 
-文档处理完成后，可通过 `/query` 接口进行知识检索 + LLM 回答：
+文档处理完成后，可通过 `/v1/query` 接口进行知识检索 + LLM 回答：
 
 ```bash
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:8080/v1/query \
+  -H "Authorization: Bearer <jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"question": "什么是向量数据库？", "tenant_id": "tenant-a", "top_k": 5}'
+  -d '{"question": "什么是向量数据库？", "top_k": 5}'
 ```
 
-`/query` 采用严格失败语义，不做答案兜底：
+租户隔离说明：`tenant_id` 由 JWT 解析并强制注入检索过滤，不接受请求体指定租户。
+权限隔离说明：检索会按 JWT `permission` 角色自动过滤文档权限，映射为 `admin -> public/internal/confidential`、`user -> public/internal`、`readonly/未知 -> public`。
+
+如果你在上线该策略前已经有历史向量数据（payload 缺少 `permission`），请先做回填：
+
+```bash
+# 仅统计缺失数量（dry-run）
+scripts/backfill-qdrant-permission.sh \
+  --endpoint http://localhost:6333 \
+  --collection documents
+
+# 执行回填（默认按最小权限写入 confidential）
+scripts/backfill-qdrant-permission.sh \
+  --apply \
+  --endpoint http://localhost:6333 \
+  --collection documents \
+  --permission confidential
+```
+
+说明：回填是保守兜底，想要精确权限标签建议重新入库。
+
+`/v1/query` 采用严格失败语义，不做答案兜底：
 - Embedding 失败：返回 `500 embedding failed`
 - 检索失败：返回 `500 search failed`
 - LLM 生成失败：返回 `500 generation failed`

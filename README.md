@@ -54,7 +54,8 @@ ai-etl-platform/
 │
 ├── scripts/                     # 部署脚本
 │   ├── start.sh
-│   └── stop.sh
+│   ├── stop.sh
+│   └── backfill-qdrant-permission.sh  # 历史向量 permission 回填
 │
 ├── docker-compose.yml           # 统一服务编排
 ├── .env.example                 # 环境变量模板
@@ -103,11 +104,20 @@ curl http://localhost:8090                  # Kafka UI
 ```bash
 # 上传文档进行解析
 curl -X POST http://localhost:8000/api/v1/parse \
+  -H "X-Internal-Token: ${PARSER_INTERNAL_TOKEN}" \
   -F "doc_id=test-001" \
   -F "tenant_id=tenant-a" \
   -F "file=@/path/to/document.pdf" \
-  -F "permission=read"
+  -F "permission=internal"
 ```
+
+### 5. 全链路烟雾测试
+
+```bash
+bash scripts/e2e-smoke.sh
+```
+
+该脚本会启动本地 `docker compose` 全链路，并用 mock OpenAI 服务验证 `上传 -> Kafka -> 解析 -> 向量化 -> 入库 -> 查询`。
 
 ## 🔧 开发指南
 
@@ -166,9 +176,11 @@ python -m app.main
 ### ETL Worker (Go)
 - ✅ Kafka 消费 + 手动 Commit
 - ✅ Worker Pool 并发处理
+- ✅ S3/MinIO 对象键自动落盘解析
 - ✅ Circuit Breaker 熔断器
 - ✅ Redis Checkpoint 断点续传
 - ✅ DLQ 死信队列
+- ✅ DLQ 成功后再 Commit（失败可重试）
 - ✅ OpenTelemetry 追踪
 - ✅ Graceful Drain 优雅关闭
 
@@ -178,6 +190,7 @@ python -m app.main
 - ✅ 自动编码检测（chardet）
 - ✅ 语义切块（标题感知）
 - ✅ 段落合并 + 重叠切分
+- ✅ 上传文件大小限制 + 扩展名白名单
 - ✅ FastAPI 异步处理
 
 ### Query API (Go)
@@ -211,9 +224,16 @@ EMBED_DIMENSION=768
 LLM_ENDPOINT=http://host.docker.internal:11434/v1
 LLM_MODEL=qwen2.5:7b
 
-# JWT
-JWT_SECRET=your-jwt-secret-change-in-production
+# 直接环境变量（可选，优先级高于 *_FILE）
+JWT_SECRET=
+PARSER_INTERNAL_TOKEN=
+
+# Docker secrets 文件路径覆盖（可选）
+# JWT_SECRET_FILE_PATH=./secrets/dev/jwt_secret
+# PARSER_INTERNAL_TOKEN_FILE_PATH=./secrets/dev/parser_internal_token
 ```
+
+敏感配置读取优先级：`KEY` > `KEY_FILE` > 默认值。`docker-compose.yml` 已为 `query-api`、`etl-worker`、`parser-service` 挂载 secrets，默认占位文件在 `secrets/examples/`，建议复制到 `secrets/dev/` 后替换为真实值。
 
 ## 📈 监控与可观测性
 
@@ -224,7 +244,29 @@ JWT_SECRET=your-jwt-secret-change-in-production
 
 ## 🔄 CI/CD
 
-（待添加 GitHub Actions 配置）
+- ✅ 已配置 GitHub Actions 工作流：`.github/workflows/ci.yml`
+- ✅ 已配置全链路烟雾测试工作流：`.github/workflows/e2e-smoke.yml`
+- 自动触发：`push`（`main/master`）与 `pull_request`
+- 覆盖检查：
+  - Go：`gofmt`、`go vet`、`go test ./...`
+  - Python：`pytest -q`
+  - 部署配置：`docker compose config`
+  - 安全门禁：Trivy（`CRITICAL` 漏洞/配置）
+- ✅ 已配置镜像发布工作流：`.github/workflows/cd.yml`
+  - 触发：`main/master` push、`v*` tag、手动触发
+  - 推送镜像：`ghcr.io/<owner>/ai-etl-platform-etl-worker`
+  - 推送镜像：`ghcr.io/<owner>/ai-etl-platform-query-api`
+  - 推送镜像：`ghcr.io/<owner>/ai-etl-platform-parser-service`
+- ✅ 已配置手动预发部署工作流：`.github/workflows/deploy-staging.yml`
+  - 依赖 `deploy/docker-compose.staging-images.yml` 进行 GHCR 镜像覆盖
+  - 需要预先配置 GitHub Environment `staging` secrets：
+    - `STAGING_SSH_HOST`
+    - `STAGING_SSH_USER`
+    - `STAGING_SSH_KEY`
+    - `STAGING_APP_DIR`
+    - `STAGING_GHCR_USERNAME`
+    - `STAGING_GHCR_TOKEN`
+- 🔒 PR 门禁策略说明见：`.github/BRANCH_PROTECTION.md`（在仓库 Settings 中启用）
 
 ## 📝 许可证
 

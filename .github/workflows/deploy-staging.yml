@@ -1,0 +1,107 @@
+name: Deploy Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref to deploy on staging host"
+        required: true
+        default: "main"
+      image_tag:
+        description: "Image tag to deploy (default: sha-<current workflow SHA>)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Pre-deploy E2E Smoke
+    uses: ./.github/workflows/e2e-smoke.yml
+
+  deploy:
+    name: Deploy To Staging Host
+    runs-on: ubuntu-latest
+    environment: staging
+    needs:
+      - smoke
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve deployment variables
+        id: vars
+        run: |
+          owner_lc="${GITHUB_REPOSITORY_OWNER,,}"
+          tag_input="${{ github.event.inputs.image_tag }}"
+          if [ -n "${tag_input}" ]; then
+            tag="${tag_input}"
+          else
+            tag="sha-${GITHUB_SHA}"
+          fi
+          echo "owner_lc=${owner_lc}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "git_ref=${{ github.event.inputs.git_ref }}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate required deployment secrets
+        env:
+          STAGING_SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_APP_DIR: ${{ secrets.STAGING_APP_DIR }}
+          STAGING_GHCR_USERNAME: ${{ secrets.STAGING_GHCR_USERNAME }}
+          STAGING_GHCR_TOKEN: ${{ secrets.STAGING_GHCR_TOKEN }}
+        run: |
+          required=(
+            STAGING_SSH_HOST
+            STAGING_SSH_USER
+            STAGING_SSH_KEY
+            STAGING_APP_DIR
+            STAGING_GHCR_USERNAME
+            STAGING_GHCR_TOKEN
+          )
+          for key in "${required[@]}"; do
+            if [ -z "${!key}" ]; then
+              echo "missing required secret: ${key}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          GIT_REF: ${{ steps.vars.outputs.git_ref }}
+          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+          OWNER_LC: ${{ steps.vars.outputs.owner_lc }}
+          STAGING_APP_DIR: ${{ secrets.STAGING_APP_DIR }}
+          STAGING_GHCR_USERNAME: ${{ secrets.STAGING_GHCR_USERNAME }}
+          STAGING_GHCR_TOKEN: ${{ secrets.STAGING_GHCR_TOKEN }}
+        with:
+          host: ${{ secrets.STAGING_SSH_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          envs: GIT_REF,IMAGE_TAG,OWNER_LC,STAGING_APP_DIR,STAGING_GHCR_USERNAME,STAGING_GHCR_TOKEN
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            cd "${STAGING_APP_DIR}"
+            git fetch --all --prune
+            git checkout "${GIT_REF}"
+            git pull --ff-only origin "${GIT_REF}"
+
+            export ETL_WORKER_IMAGE="ghcr.io/${OWNER_LC}/ai-etl-platform-etl-worker:${IMAGE_TAG}"
+            export QUERY_API_IMAGE="ghcr.io/${OWNER_LC}/ai-etl-platform-query-api:${IMAGE_TAG}"
+            export PARSER_SERVICE_IMAGE="ghcr.io/${OWNER_LC}/ai-etl-platform-parser-service:${IMAGE_TAG}"
+
+            echo "${STAGING_GHCR_TOKEN}" | docker login ghcr.io \
+              -u "${STAGING_GHCR_USERNAME}" --password-stdin
+
+            docker compose -f docker-compose.yml -f deploy/docker-compose.staging-images.yml pull \
+              etl-worker query-api parser-service
+
+            docker compose -f docker-compose.yml -f deploy/docker-compose.staging-images.yml up -d \
+              --no-build --remove-orphans
+
+            docker compose -f docker-compose.yml -f deploy/docker-compose.staging-images.yml ps

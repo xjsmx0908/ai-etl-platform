@@ -3,17 +3,23 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/idempotency"
 	"ai-etl-pipeline/internal/kafka"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/middleware"
@@ -29,9 +35,56 @@ var (
 	buildTime = "unknown"
 )
 
+var allowedUploadExtensions = map[string]struct{}{
+	".pdf":      {},
+	".docx":     {},
+	".doc":      {},
+	".txt":      {},
+	".md":       {},
+	".markdown": {},
+	".csv":      {},
+	".log":      {},
+	".rtf":      {},
+	".odt":      {},
+}
+
+var allowedPermissionLevels = map[string]struct{}{
+	"public":       {},
+	"internal":     {},
+	"confidential": {},
+}
+
+type uploadProducer interface {
+	Publish(ctx context.Context, task model.Task) error
+}
+
+type uploadObjectStore interface {
+	Upload(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
+}
+
+type uploadAcceptedResponse struct {
+	TaskID    string `json:"task_id"`
+	DocID     string `json:"doc_id"`
+	Status    string `json:"status"`
+	File      string `json:"file"`
+	FileHash  string `json:"file_hash"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.statusCode = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
 func main() {
 	cfg := config.Load()
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.ValidateAPI(); err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
@@ -57,16 +110,15 @@ func main() {
 	prom := prometheus.New("ai_etl")
 
 	// Initialize auth
-	jwtSecret := config.EnvStr("JWT_SECRET", "change-me-in-production")
-	verifier := auth.NewVerifier(jwtSecret)
+	verifier := auth.NewVerifier(cfg.JWTSecret)
 
 	// Initialize MinIO/S3 for file storage
 	s3Client, err := s3.New(s3.Config{
-		Endpoint:   config.EnvStr("S3_ENDPOINT", "localhost:9000"),
-		AccessKey:  config.EnvStr("S3_ACCESS_KEY", "minioadmin"),
-		SecretKey:  config.EnvStr("S3_SECRET_KEY", "minioadmin"),
-		Bucket:     config.EnvStr("S3_BUCKET", "documents"),
-		UseSSL:     config.EnvStr("S3_USE_SSL", "false") == "true",
+		Endpoint:   cfg.S3Endpoint,
+		AccessKey:  cfg.S3AccessKey,
+		SecretKey:  cfg.S3SecretKey,
+		Bucket:     cfg.S3Bucket,
+		UseSSL:     cfg.S3UseSSL,
 		AutoCreate: true,
 	})
 	if err != nil {
@@ -81,6 +133,20 @@ func main() {
 		os.Exit(1)
 	}
 	defer producer.Close()
+
+	// Initialize idempotency store for upload deduplication.
+	var idemStore idempotency.Store
+	if cfg.IsDev() {
+		idemStore = idempotency.NewMemoryStore(cfg.IdempotencyTTL)
+	} else {
+		redisStore, err := idempotency.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.IdempotencyTTL)
+		if err != nil {
+			slog.Error("failed to create idempotency store", "error", err)
+			os.Exit(1)
+		}
+		idemStore = redisStore
+	}
+	defer idemStore.Close()
 
 	// Initialize services
 	qs := query.NewService(cfg)
@@ -97,14 +163,16 @@ func main() {
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.HandleFunc("/v1/upload", handleUpload(producer, s3Client, jwtSecret))
+	apiV1.HandleFunc("/v1/upload", handleUpload(cfg.MaxUploadSize, producer, s3Client, idemStore))
 	apiV1.HandleFunc("/v1/query", qs.HandleQuery)
 
-	// Apply middleware chain: version → auth → rate limit → CORS → timeout
-	handler := middleware.APIVersion("1")(apiV1)
-	handler = verifier.Middleware("upload", "query")(handler)
+	// Apply middleware chain: version → auth → rate limit → CORS → timeout.
+	// Wrapper execution is outside-in, so compose in reverse.
+	handler := http.Handler(apiV1)
 	handler = rateLimiter.Middleware(handler)
-	handler = middleware.CORS([]string{"*"})(handler)
+	handler = verifier.Middleware("upload", "query")(handler)
+	handler = middleware.APIVersion("1")(handler)
+	handler = middleware.CORS(cfg.CORSAllowedOrigins)(handler)
 	handler = middleware.Timeout(60 * time.Second)(handler)
 
 	// Mount v1 routes
@@ -112,8 +180,13 @@ func main() {
 
 	// Start server
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.HealthPort),
-		Handler: mux,
+		Addr:              fmt.Sprintf(":%d", cfg.HealthPort),
+		Handler:           mux,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
+		MaxHeaderBytes:    cfg.HTTPMaxHeaderBytes,
 	}
 
 	go func() {
@@ -158,10 +231,25 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleUpload(producer *kafka.Producer, s3Client *s3.Client, jwtSecret string) http.HandlerFunc {
+func handleUpload(maxUploadSize int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		w = rec
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
 		// Get tenant from context (set by auth middleware)
 		tenantID := auth.GetTenantID(r.Context())
+		if tenantID == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Enforce upload body size limit.
+		r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
 		// Parse multipart form
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
@@ -177,20 +265,97 @@ func handleUpload(producer *kafka.Producer, s3Client *s3.Client, jwtSecret strin
 		}
 		defer file.Close()
 
+		if header.Size <= 0 || header.Size > maxUploadSize {
+			http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		ext, err := validateUploadExtension(header.Filename)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
+			return
+		}
+
+		permission, err := normalizePermission(r.FormValue("permission"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		idempotencyKey := readIdempotencyKey(r)
+		requestSig := buildUploadRequestSignature(
+			tenantID,
+			header.Filename,
+			header.Size,
+			header.Header.Get("Content-Type"),
+			permission,
+		)
+		if idempotencyKey != "" {
+			if len(idempotencyKey) > 128 {
+				http.Error(w, "idempotency key too long", http.StatusBadRequest)
+				return
+			}
+			res, err := idemStore.Reserve(r.Context(), tenantID, idempotencyKey, requestSig)
+			if err != nil {
+				slog.Error("idempotency reserve failed", "tenant_id", tenantID, "error", err)
+				http.Error(w, "idempotency service unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			reservedNew := res.State == idempotency.ReserveNew
+			defer func() {
+				// If processing fails after taking a new reservation, release lock for retry.
+				if reservedNew && rec.statusCode >= 400 {
+					if err := idemStore.Abort(r.Context(), tenantID, idempotencyKey, requestSig); err != nil {
+						slog.Warn("idempotency abort failed",
+							"tenant_id", tenantID,
+							"idempotency_key", idempotencyKey,
+							"error", err)
+					}
+				}
+			}()
+
+			switch res.State {
+			case idempotency.ReserveReplay:
+				if res.Cached != nil {
+					w.Header().Set("Content-Type", res.Cached.ContentType)
+					w.Header().Set("X-Idempotency-Replayed", "true")
+					w.WriteHeader(res.Cached.StatusCode)
+					_, _ = w.Write(res.Cached.Body)
+					return
+				}
+			case idempotency.ReserveProcessing:
+				http.Error(w, "request with same idempotency key is still processing", http.StatusConflict)
+				return
+			case idempotency.ReserveConflict:
+				http.Error(w, "idempotency key reused with different request payload", http.StatusConflict)
+				return
+			}
+		}
+
+		now := time.Now()
+		docID := fmt.Sprintf("doc-%d", now.UnixNano())
+		objectKey := fmt.Sprintf("%s/%s%s", tenantID, docID, ext)
+
+		// Upload to S3 while computing SHA-256.
+		hasher := sha256.New()
+		reader := io.TeeReader(file, hasher)
+
 		// Upload to S3
-		objectKey := fmt.Sprintf("%s/%s", tenantID, header.Filename)
-		if err := s3Client.Upload(r.Context(), objectKey, file, header.Size, header.Header.Get("Content-Type")); err != nil {
+		if err := s3Client.Upload(r.Context(), objectKey, reader, header.Size, header.Header.Get("Content-Type")); err != nil {
 			slog.Error("s3 upload failed", "error", err)
 			http.Error(w, "storage failed", http.StatusInternalServerError)
 			return
 		}
+		fileHash := hex.EncodeToString(hasher.Sum(nil))
 
 		// Create and publish task
 		task := model.Task{
-			FilePath:  objectKey,
-			DocID:     fmt.Sprintf("doc-%d", time.Now().UnixNano()),
-			TenantID:  tenantID,
-			CreatedAt: time.Now(),
+			FilePath:   objectKey,
+			DocID:      docID,
+			TenantID:   tenantID,
+			Permission: permission,
+			FileHash:   fileHash,
+			CreatedAt:  now,
 		}
 
 		if err := producer.Publish(r.Context(), task); err != nil {
@@ -199,12 +364,73 @@ func handleUpload(producer *kafka.Producer, s3Client *s3.Client, jwtSecret strin
 			return
 		}
 
+		resp := uploadAcceptedResponse{
+			TaskID:    task.DocID,
+			DocID:     task.DocID,
+			Status:    "processing",
+			File:      objectKey,
+			FileHash:  fileHash,
+			Message:   fmt.Sprintf("file '%s' accepted, processing in background", header.Filename),
+			Timestamp: now.Format(time.RFC3339),
+		}
+		respBytes, _ := json.Marshal(resp)
+
+		if idempotencyKey != "" {
+			if err := idemStore.Complete(r.Context(), tenantID, idempotencyKey, requestSig, idempotency.CachedResponse{
+				StatusCode:  http.StatusAccepted,
+				ContentType: "application/json",
+				Body:        respBytes,
+			}); err != nil {
+				slog.Warn("idempotency completion failed",
+					"tenant_id", tenantID,
+					"idempotency_key", idempotencyKey,
+					"error", err)
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"task_id": task.DocID,
-			"status":  "processing",
-			"file":    objectKey,
-		})
+		_, _ = w.Write(respBytes)
 	}
+}
+
+func validateUploadExtension(filename string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == "" {
+		return "", fmt.Errorf("unsupported file type")
+	}
+	if _, ok := allowedUploadExtensions[ext]; !ok {
+		return "", fmt.Errorf("unsupported file type")
+	}
+	return ext, nil
+}
+
+func normalizePermission(raw string) (string, error) {
+	permission := strings.ToLower(strings.TrimSpace(raw))
+	if permission == "" {
+		return "internal", nil
+	}
+	if _, ok := allowedPermissionLevels[permission]; !ok {
+		return "", fmt.Errorf("invalid permission")
+	}
+	return permission, nil
+}
+
+func readIdempotencyKey(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("X-Idempotency-Key")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+}
+
+func buildUploadRequestSignature(tenantID, filename string, size int64, contentType, permission string) string {
+	s := fmt.Sprintf("tenant=%s|filename=%s|size=%d|content_type=%s|permission=%s",
+		tenantID,
+		strings.ToLower(strings.TrimSpace(filename)),
+		size,
+		strings.ToLower(strings.TrimSpace(contentType)),
+		permission,
+	)
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }

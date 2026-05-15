@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/model"
 )
 
@@ -74,6 +75,9 @@ func (c *Client) ParseFile(ctx context.Context, task model.Task) ([]model.Chunk,
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if internalToken := config.EnvSecret("PARSER_INTERNAL_TOKEN", ""); internalToken != "" {
+		req.Header.Set("X-Internal-Token", internalToken)
+	}
 
 	// Send request
 	resp, err := c.httpClient.Do(req)

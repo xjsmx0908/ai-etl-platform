@@ -73,14 +73,16 @@ type Source struct {
 // NewSource creates a Kafka consumer connected to the given topic and group.
 func NewSource(brokers, topic, groupID string, dlq model.DLQStore) (*Source, error) {
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:        strings.Split(brokers, ","),
-		Topic:          topic,
-		GroupID:        groupID,
-		MinBytes:       1, // Allow low-throughput/small messages to be consumed promptly.
-		MaxBytes:       10e6,
-		MaxWait:        3 * time.Second,
-		CommitInterval: 0, // Manual commit (At-Least-Once)
-		StartOffset:    kafkago.LastOffset,
+		Brokers:                strings.Split(brokers, ","),
+		Topic:                  topic,
+		GroupID:                groupID,
+		MinBytes:               1, // Allow low-throughput/small messages to be consumed promptly.
+		MaxBytes:               10e6,
+		MaxWait:                3 * time.Second,
+		CommitInterval:         0, // Manual commit (At-Least-Once)
+		StartOffset:            kafkago.LastOffset,
+		WatchPartitionChanges:  true,
+		PartitionWatchInterval: 5 * time.Second,
 	})
 
 	slog.Info("kafka source connected",
@@ -125,7 +127,8 @@ func (ks *Source) Consume(ctx context.Context) <-chan model.TaskWithAck {
 					}
 				},
 				Nack: func(err error) {
-					_ = ks.reader.CommitMessages(ctx, msg)
+					slog.Warn("message not committed due to nack, will be retried",
+						"offset", msg.Offset, "doc_id", task.DocID, "error", err)
 				},
 			}
 
@@ -250,9 +253,8 @@ func (ks *MockSource) Consume(ctx context.Context) <-chan model.TaskWithAck {
 					slog.Debug("offset committed", "offset", offset, "doc_id", task.DocID)
 				},
 				Nack: func(err error) {
-					ks.mu.Lock()
-					ks.offsets[offset] = true
-					ks.mu.Unlock()
+					slog.Warn("mock source nack, offset not committed",
+						"offset", offset, "doc_id", task.DocID, "error", err)
 				},
 			}
 

@@ -117,6 +117,14 @@ func GetTenantID(ctx context.Context) string {
 	return ""
 }
 
+// GetPermission extracts user permission level from context.
+func GetPermission(ctx context.Context) string {
+	if v, ok := ctx.Value(CtxPermission).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // GenerateTestToken creates a JWT token for testing purposes.
 func GenerateTestToken(secret, tenantID, userID string, scopes []string) (string, error) {
 	claims := Claims{

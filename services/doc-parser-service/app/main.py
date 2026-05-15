@@ -26,7 +26,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=get_settings().cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,6 +34,16 @@ app.add_middleware(
 
 # Include routers
 app.include_router(parse.router)
+
+
+@app.on_event("startup")
+async def validate_security_config():
+    """Fail fast on insecure production/staging configuration."""
+    settings = get_settings()
+    if settings.ENVIRONMENT.lower() != "dev" and not settings.resolved_internal_api_token:
+        raise RuntimeError("INTERNAL_API_TOKEN or INTERNAL_API_TOKEN_FILE is required when ENVIRONMENT is not dev")
+    if settings.ENVIRONMENT.lower() != "dev" and "*" in settings.cors_allowed_origins:
+        raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain '*' when ENVIRONMENT is not dev")
 
 
 @app.get("/healthz", response_model=HealthResponse)

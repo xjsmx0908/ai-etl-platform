@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +65,12 @@ type QdrantStorer struct {
 	client     *http.Client
 }
 
+var allowedDocPermissions = map[string]struct{}{
+	"public":       {},
+	"internal":     {},
+	"confidential": {},
+}
+
 // NewQdrantStorer creates a Qdrant store and ensures the collection exists.
 func NewQdrantStorer(endpoint, apiKey, collection string, dimension int) (*QdrantStorer, error) {
 	qs := &QdrantStorer{
@@ -100,11 +107,12 @@ func (q *QdrantStorer) Upsert(ctx context.Context, chunk model.Chunk) error {
 		"id":     chunkIDToUint(chunk.ChunkID),
 		"vector": vectors,
 		"payload": map[string]interface{}{
-			"chunk_id":  chunk.ChunkID,
-			"doc_id":    chunk.DocID,
-			"tenant_id": chunk.TenantID,
-			"content":   chunk.Content,
-			"index":     chunk.Index,
+			"chunk_id":   chunk.ChunkID,
+			"doc_id":     chunk.DocID,
+			"tenant_id":  chunk.TenantID,
+			"content":    chunk.Content,
+			"index":      chunk.Index,
+			"permission": normalizeChunkPermission(chunk.Permission),
 		},
 	}
 
@@ -212,6 +220,17 @@ func (q *QdrantStorer) setHeaders(req *http.Request) {
 	if q.apiKey != "" {
 		req.Header.Set("api-key", q.apiKey)
 	}
+}
+
+func normalizeChunkPermission(raw string) string {
+	permission := strings.ToLower(strings.TrimSpace(raw))
+	if permission == "" {
+		return "internal"
+	}
+	if _, ok := allowedDocPermissions[permission]; !ok {
+		return "internal"
+	}
+	return permission
 }
 
 // chunkIDToUint converts a chunk ID to uint64 via FNV hash (Qdrant requires numeric or UUID IDs).

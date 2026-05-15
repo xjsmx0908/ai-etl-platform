@@ -57,6 +57,7 @@ docker compose up -d
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/parse \
+  -H "X-Internal-Token: <parser-internal-token>" \
   -F "doc_id=test-001" \
   -F "tenant_id=tenant-a" \
   -F "file=@/path/to/document.pdf" \
@@ -88,20 +89,7 @@ curl -X POST http://localhost:8000/api/v1/parse \
 }
 ```
 
-### 2. 服务器文件路径解析
-
-```bash
-curl -X POST http://localhost:8000/api/v1/parse-file-path \
-  -H "Content-Type: application/json" \
-  -d '{
-    "doc_id": "test-002",
-    "tenant_id": "tenant-a",
-    "file_path": "/data/documents/report.pdf",
-    "permission": "read"
-  }'
-```
-
-### 3. 健康检查
+### 2. 健康检查
 
 ```bash
 curl http://localhost:8000/healthz
@@ -120,6 +108,14 @@ curl http://localhost:8000/healthz
 | `CHUNK_OVERLAP` | `200` | 切块重叠大小（字符） |
 | `MAX_FILE_SIZE_MB` | `100` | 最大文件大小（MB） |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
+| `CORS_ALLOWED_ORIGINS` | `*` | 逗号分隔的 CORS allowlist（非 dev 不允许 `*`） |
+| `INTERNAL_API_TOKEN` | _(空)_ | 服务间鉴权 token（非 dev 环境必填） |
+| `INTERNAL_API_TOKEN_FILE` | _(空)_ | token 文件路径（`INTERNAL_API_TOKEN` 为空时生效） |
+
+> 安全说明：`/api/v1/parse-file-path` 已下线，不再支持客户端直接传入服务器文件路径。
+> 安全说明：`/api/v1/*` 默认要求 `X-Internal-Token`（非 dev 环境强制）。
+> 密钥优先级：`INTERNAL_API_TOKEN` > `INTERNAL_API_TOKEN_FILE`。
+> CORS 说明：非 dev 环境启动时会拒绝 `CORS_ALLOWED_ORIGINS=*`。
 
 ## 支持的文档格式
 

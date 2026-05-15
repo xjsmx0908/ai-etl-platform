@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go Checks (etl-worker)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/etl-worker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/etl-worker/go.mod
+          cache-dependency-path: services/etl-worker/go.sum
+
+      - name: Check gofmt
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "Unformatted files:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test ./... -count=1
+
+  python:
+    name: Python Tests (doc-parser-service)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/doc-parser-service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: services/doc-parser-service/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest -q
+
+  compose:
+    name: Compose Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose config > /dev/null
+
+  trivy:
+    name: Trivy Security Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy vulnerability scan (CRITICAL)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            aquasec/trivy:0.57.1 \
+            fs \
+            -q \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --scanners vuln \
+            --exit-code 1 \
+            .
+
+      - name: Trivy misconfiguration scan (CRITICAL)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            aquasec/trivy:0.57.1 \
+            config \
+            -q \
+            --severity CRITICAL \
+            --exit-code 1 \
+            .
+
+  required-checks:
+    name: Required Checks
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - go
+      - python
+      - compose
+      - trivy
+    steps:
+      - name: Enforce all required jobs passed
+        run: |
+          echo "go=${{ needs.go.result }}"
+          echo "python=${{ needs.python.result }}"
+          echo "compose=${{ needs.compose.result }}"
+          echo "trivy=${{ needs.trivy.result }}"
+
+          [ "${{ needs.go.result }}" = "success" ] || exit 1
+          [ "${{ needs.python.result }}" = "success" ] || exit 1
+          [ "${{ needs.compose.result }}" = "success" ] || exit 1
+          [ "${{ needs.trivy.result }}" = "success" ] || exit 1

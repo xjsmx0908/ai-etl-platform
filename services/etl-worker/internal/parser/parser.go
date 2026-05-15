@@ -12,12 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/s3"
 )
 
 // MinChunkSize defines the minimum character count before a chunk is emitted.
@@ -27,8 +29,11 @@ const MinChunkSize = 128
 // Parser provides streaming file parsing for various document formats.
 // Supported: .txt, .md (direct read), .pdf (pdftotext), .docx (pandoc)
 type Parser struct {
-	cfg     config.Config
-	metrics *metrics.Collector
+	cfg            config.Config
+	metrics        *metrics.Collector
+	objectStore    *s3.Client
+	objectStoreErr error
+	objectStoreMu  sync.Once
 }
 
 // New creates a parser with the given configuration.
@@ -155,21 +160,97 @@ func isMarkdownHeading(line string) bool {
 
 func (p *Parser) openFile(ctx context.Context, path string) (io.Reader, func(), int64, error) {
 	info, err := os.Stat(path)
-	if err != nil {
+	if err == nil {
+		return p.openPath(ctx, path, info.Size())
+	}
+
+	if p.cfg.IsDev() {
 		return nil, nil, 0, fmt.Errorf("file not found: %w", err)
 	}
 
+	// In non-dev environments, task file paths can be object keys in S3/MinIO.
+	// If local file is missing, fetch object to a temp file and parse from disk.
+	localPath, objectSize, objectCleanup, fetchErr := p.materializeObject(ctx, path)
+	if fetchErr != nil {
+		return nil, nil, 0, fmt.Errorf("file not found locally and object fetch failed: %w", fetchErr)
+	}
+
+	reader, cleanup, size, openErr := p.openPath(ctx, localPath, objectSize)
+	if openErr != nil {
+		objectCleanup()
+		return nil, nil, 0, openErr
+	}
+	combinedCleanup := func() {
+		cleanup()
+		objectCleanup()
+	}
+
+	return reader, combinedCleanup, size, nil
+}
+
+func (p *Parser) openPath(ctx context.Context, path string, size int64) (io.Reader, func(), int64, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".txt", ".md", ".csv", ".log":
-		return p.openDirect(path, info.Size())
+		return p.openDirect(path, size)
 	case ".pdf":
-		return p.openPDF(ctx, path, info.Size())
+		return p.openPDF(ctx, path, size)
 	case ".docx", ".doc", ".rtf", ".odt":
-		return p.openDocx(ctx, path, info.Size())
+		return p.openDocx(ctx, path, size)
 	default:
-		return p.openDirect(path, info.Size())
+		return p.openDirect(path, size)
 	}
+}
+
+func (p *Parser) materializeObject(ctx context.Context, key string) (string, int64, func(), error) {
+	client, err := p.getObjectStoreClient()
+	if err != nil {
+		return "", 0, nil, err
+	}
+
+	obj, err := client.Download(ctx, key)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("download object %s: %w", key, err)
+	}
+	defer obj.Close()
+
+	ext := strings.ToLower(filepath.Ext(key))
+	tmp, err := os.CreateTemp("", "ai-etl-object-*"+ext)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("create temp file: %w", err)
+	}
+	defer tmp.Close()
+
+	size, err := io.Copy(tmp, obj)
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+		return "", 0, nil, fmt.Errorf("copy object to temp file: %w", err)
+	}
+
+	slog.Info("materialized object to local temp file",
+		"object_key", key, "temp_path", tmp.Name(), "size", FmtBytes(size))
+
+	cleanup := func() {
+		_ = os.Remove(tmp.Name())
+	}
+	return tmp.Name(), size, cleanup, nil
+}
+
+func (p *Parser) getObjectStoreClient() (*s3.Client, error) {
+	p.objectStoreMu.Do(func() {
+		p.objectStore, p.objectStoreErr = s3.New(s3.Config{
+			Endpoint:   p.cfg.S3Endpoint,
+			AccessKey:  p.cfg.S3AccessKey,
+			SecretKey:  p.cfg.S3SecretKey,
+			Bucket:     p.cfg.S3Bucket,
+			UseSSL:     p.cfg.S3UseSSL,
+			AutoCreate: false,
+		})
+	})
+	if p.objectStoreErr != nil {
+		return nil, p.objectStoreErr
+	}
+	return p.objectStore, nil
 }
 
 func (p *Parser) openDirect(path string, size int64) (io.Reader, func(), int64, error) {

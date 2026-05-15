@@ -153,12 +153,15 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 		return
 	}
 
-	// Retries exhausted → Nack + DLQ
-	twa.Nack(lastErr)
+	// Retries exhausted → push to DLQ first, then commit offset only on DLQ success.
 	if err := p.dlq.Push(ctx, model.DLQMessage{Task: twa.Task, Error: lastErr.Error(), Time: time.Now()}); err != nil {
-		slog.Error("DLQ push failed", "doc_id", twa.Task.DocID, "error", err)
+		slog.Error("DLQ push failed, message will be retried", "doc_id", twa.Task.DocID, "error", err)
+		twa.Nack(err)
+		return
 	}
-	slog.Error("task exhausted retries", "doc_id", twa.Task.DocID, "error", lastErr)
+
+	twa.Ack()
+	slog.Error("task exhausted retries and moved to DLQ", "doc_id", twa.Task.DocID, "error", lastErr)
 }
 
 // processTask: streaming Parse → batch Embed → Store

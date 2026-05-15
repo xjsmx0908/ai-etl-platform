@@ -3,15 +3,6 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 
-
-class ParseRequest(BaseModel):
-    """Parse request model"""
-    doc_id: str = Field(..., description="Document ID")
-    tenant_id: str = Field(..., description="Tenant ID")
-    file_path: Optional[str] = Field(None, description="File path (for server-side files)")
-    permission: Optional[str] = Field(None, description="Permission level")
-
-
 class ChunkResponse(BaseModel):
     """Single chunk response"""
     chunk_id: str

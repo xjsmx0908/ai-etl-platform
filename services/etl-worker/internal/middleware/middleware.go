@@ -88,16 +88,37 @@ func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
-			for _, allowed := range allowedOrigins {
-				if allowed == "*" || allowed == origin {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key")
-					w.Header().Set("Access-Control-Max-Age", "86400")
+			allowAll := false
+			allowed := false
+
+			for _, v := range allowedOrigins {
+				if v == "*" {
+					allowAll = true
+					allowed = true
 					break
 				}
+				if origin != "" && v == origin {
+					allowed = true
+				}
 			}
+
+			if origin != "" && allowed {
+				if allowAll {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+				} else {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+				}
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Idempotency-Key")
+				w.Header().Set("Access-Control-Max-Age", "86400")
+			}
+
 			if r.Method == http.MethodOptions {
+				if origin != "" && !allowed {
+					http.Error(w, `{"error":"cors_forbidden"}`, http.StatusForbidden)
+					return
+				}
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}

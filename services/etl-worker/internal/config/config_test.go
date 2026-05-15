@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -26,6 +27,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.HealthPort != 8080 {
 		t.Errorf("expected HealthPort=8080, got %d", cfg.HealthPort)
+	}
+	if cfg.IdempotencyTTL != 24*time.Hour {
+		t.Errorf("expected IdempotencyTTL=24h, got %v", cfg.IdempotencyTTL)
 	}
 }
 
@@ -108,5 +112,150 @@ func TestEnvDuration(t *testing.T) {
 	d = EnvDuration("TEST_DURATION", 2*time.Second)
 	if d != 2*time.Second {
 		t.Errorf("expected 2s for invalid input, got %v", d)
+	}
+}
+
+func TestValidateAPI_ProductionWeakJWTRejected(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka.internal:9092"
+	cfg.StoreEndpoint = "http://qdrant.internal:6333"
+	cfg.RedisAddr = "redis.internal:6379"
+	cfg.JWTSecret = "change-me-in-production"
+	cfg.S3AccessKey = "prod-access"
+	cfg.S3SecretKey = "prod-secret"
+
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected weak JWT secret to be rejected in production")
+	}
+}
+
+func TestValidateAPI_ProductionDefaultS3Rejected(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka.internal:9092"
+	cfg.StoreEndpoint = "http://qdrant.internal:6333"
+	cfg.RedisAddr = "redis.internal:6379"
+	cfg.JWTSecret = "12345678901234567890123456789012"
+	cfg.S3AccessKey = "minioadmin"
+	cfg.S3SecretKey = "minioadmin"
+
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected default S3 credentials to be rejected in production")
+	}
+}
+
+func TestValidateAPI_ProductionStrongSecretsPass(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka.internal:9092"
+	cfg.StoreEndpoint = "http://qdrant.internal:6333"
+	cfg.RedisAddr = "redis.internal:6379"
+	cfg.JWTSecret = "12345678901234567890123456789012"
+	cfg.S3AccessKey = "prod-access"
+	cfg.S3SecretKey = "prod-secret"
+	cfg.CORSAllowedOrigins = []string{"https://console.example.com"}
+
+	if err := cfg.ValidateAPI(); err != nil {
+		t.Fatalf("expected strong production config to pass, got: %v", err)
+	}
+}
+
+func TestValidateAPI_ProductionWildcardCORSRejected(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka.internal:9092"
+	cfg.StoreEndpoint = "http://qdrant.internal:6333"
+	cfg.RedisAddr = "redis.internal:6379"
+	cfg.JWTSecret = "12345678901234567890123456789012"
+	cfg.S3AccessKey = "prod-access"
+	cfg.S3SecretKey = "prod-secret"
+	cfg.CORSAllowedOrigins = []string{"*"}
+
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected wildcard CORS to be rejected in production")
+	}
+}
+
+func TestEnvSecret_FromFileFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	secretFile := filepath.Join(tmpDir, "embed_api_key")
+	if err := os.WriteFile(secretFile, []byte("sk-from-file\n"), 0o600); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+
+	t.Setenv("EMBED_API_KEY", "")
+	t.Setenv("EMBED_API_KEY_FILE", secretFile)
+
+	if got := EnvSecret("EMBED_API_KEY", ""); got != "sk-from-file" {
+		t.Fatalf("expected secret from file, got %q", got)
+	}
+}
+
+func TestEnvSecret_EnvOverridesFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	secretFile := filepath.Join(tmpDir, "jwt_secret")
+	if err := os.WriteFile(secretFile, []byte("file-secret"), 0o600); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+
+	t.Setenv("JWT_SECRET", "env-secret")
+	t.Setenv("JWT_SECRET_FILE", secretFile)
+
+	if got := EnvSecret("JWT_SECRET", "default-secret"); got != "env-secret" {
+		t.Fatalf("expected env secret to win, got %q", got)
+	}
+}
+
+func TestLoad_ReadsSecretsFromFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	jwtFile := filepath.Join(tmpDir, "jwt_secret")
+	if err := os.WriteFile(jwtFile, []byte("file-jwt-secret"), 0o600); err != nil {
+		t.Fatalf("write jwt secret file: %v", err)
+	}
+	s3File := filepath.Join(tmpDir, "s3_secret_key")
+	if err := os.WriteFile(s3File, []byte("file-s3-secret"), 0o600); err != nil {
+		t.Fatalf("write s3 secret file: %v", err)
+	}
+
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("JWT_SECRET_FILE", jwtFile)
+	t.Setenv("S3_SECRET_KEY", "")
+	t.Setenv("S3_SECRET_KEY_FILE", s3File)
+
+	cfg := Load()
+	if cfg.JWTSecret != "file-jwt-secret" {
+		t.Fatalf("expected JWTSecret from file, got %q", cfg.JWTSecret)
+	}
+	if cfg.S3SecretKey != "file-s3-secret" {
+		t.Fatalf("expected S3SecretKey from file, got %q", cfg.S3SecretKey)
+	}
+}
+
+func TestEnvCSV(t *testing.T) {
+	t.Setenv("TEST_CSV", " a, b , ,c ")
+	got := EnvCSV("TEST_CSV", "")
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("unexpected csv parse result: %#v", got)
+	}
+}
+
+func TestLoad_CORSDefaultsByEnvironment(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "dev")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "")
+	cfgDev := Load()
+	if len(cfgDev.CORSAllowedOrigins) != 1 || cfgDev.CORSAllowedOrigins[0] != "*" {
+		t.Fatalf("expected dev default cors '*', got %#v", cfgDev.CORSAllowedOrigins)
+	}
+
+	t.Setenv("ENVIRONMENT", "staging")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "")
+	cfgStaging := Load()
+	if len(cfgStaging.CORSAllowedOrigins) != 0 {
+		t.Fatalf("expected non-dev default cors empty, got %#v", cfgStaging.CORSAllowedOrigins)
 	}
 }
