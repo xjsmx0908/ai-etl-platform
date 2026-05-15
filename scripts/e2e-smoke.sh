@@ -13,6 +13,7 @@ MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-180}"
 JWT_SECRET="${JWT_SECRET:-change-me-in-production-please-use-32-plus-chars}"
 E2E_KEEP_SERVICES="${E2E_KEEP_SERVICES:-0}"
 DOC_PERMISSION="${DOC_PERMISSION:-internal}"
+KAFKA_TOPIC="${KAFKA_TOPIC:-doc-processing}"
 
 TMP_DIR="$(mktemp -d)"
 MOCK_LOG="${TMP_DIR}/mock-openai.log"
@@ -76,6 +77,20 @@ if [[ "${api_healthy}" != "1" ]]; then
   docker compose logs --tail=120 query-api >&2 || true
   exit 1
 fi
+
+echo "[e2e] ensuring kafka topic exists: ${KAFKA_TOPIC}"
+docker compose exec -T kafka \
+  kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --create \
+  --if-not-exists \
+  --topic "${KAFKA_TOPIC}" \
+  --partitions 1 \
+  --replication-factor 1 >/dev/null
+
+echo "[e2e] restarting etl-worker after topic creation"
+docker compose restart etl-worker >/dev/null
+sleep 5
 
 cat >"${TOKEN_GO_FILE}" <<'EOF'
 package main
