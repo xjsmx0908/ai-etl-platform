@@ -261,6 +261,7 @@ PARSER_INTERNAL_TOKEN=
   - 依赖 `deploy/docker-compose.staging-images.yml` 进行 GHCR 镜像覆盖
   - 需要预先配置 GitHub Environment `staging` secrets：
     - `STAGING_SSH_HOST`
+    - `STAGING_SSH_PORT`（可选，默认 `22`）
     - `STAGING_SSH_USER`
     - `STAGING_SSH_KEY`
     - `STAGING_APP_DIR`

@@ -79,6 +79,7 @@ jobs:
           STAGING_GHCR_TOKEN: ${{ secrets.STAGING_GHCR_TOKEN }}
         with:
           host: ${{ secrets.STAGING_SSH_HOST }}
+          port: ${{ secrets.STAGING_SSH_PORT || 22 }}
           username: ${{ secrets.STAGING_SSH_USER }}
           key: ${{ secrets.STAGING_SSH_KEY }}
           envs: GIT_REF,IMAGE_TAG,OWNER_LC,STAGING_APP_DIR,STAGING_GHCR_USERNAME,STAGING_GHCR_TOKEN
