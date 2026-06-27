@@ -191,6 +191,8 @@ REDIS_PASSWORD=your-redis-password
 | `RERANK_ENDPOINT` | _(空)_ | Reranker HTTP 端点 |
 | `RERANK_API_KEY` | _(空)_ | Reranker API Key（可选） |
 | `RERANK_MODEL` | `bge-reranker-base` | Reranker 模型名 |
+| `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | 可选本地 reranker-service 模型 |
+| `RERANKER_DEVICE` | `cpu` | 可选本地 reranker-service 推理设备 |
 | `SEMANTIC_CACHE_ENABLED` | `true` | 是否启用 Redis 语义缓存 |
 | `SEMANTIC_CACHE_TTL` | `10m` | 检索缓存 TTL |
 | `SEMANTIC_CACHE_THRESHOLD` | `0.92` | 语义缓存向量相似度阈值 |

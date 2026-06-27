@@ -49,6 +49,11 @@ ai-etl-platform/
 │       ├── Dockerfile           # Python 服务镜像
 │       └── README.md
 │
+│   └── reranker-service/        # 可选 Cross-Encoder Reranker
+│       ├── app/                 # FastAPI rerank API
+│       ├── Dockerfile           # CPU 模型服务镜像
+│       └── README.md
+│
 ├── infrastructure/              # 基础设施配置
 │   └── prometheus.yml
 │
@@ -179,6 +184,7 @@ python -m app.main
 |------|------|------|
 | Query API | 8080 | HTTP API（查询 + 上传） |
 | Parser Service | 8000 | 文档解析服务 |
+| Reranker Service | 8091 | 可选 Cross-Encoder 重排服务（`rerank` profile） |
 | Kafka | 9092 | 消息队列 |
 | Redis | 6379 | 缓存 + Checkpoint |
 | Qdrant | 6333 | 向量数据库 |
@@ -250,6 +256,10 @@ RETRIEVAL_CANDIDATE_K=50
 RETRIEVAL_FINAL_TOP_K=5
 RETRIEVAL_ENABLE_ES=true
 RETRIEVAL_ENABLE_RERANK=false
+RERANK_ENDPOINT=
+RERANK_MODEL=bge-reranker-base
+RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L6-v2
+RERANKER_DEVICE=cpu
 SEMANTIC_CACHE_ENABLED=true
 SEMANTIC_CACHE_THRESHOLD=0.92
 
@@ -264,6 +274,14 @@ MULTIPART_MAX_MEMORY_MB=4
 # Docker secrets 文件路径覆盖（可选）
 # JWT_SECRET_FILE_PATH=./secrets/dev/jwt_secret
 # PARSER_INTERNAL_TOKEN_FILE_PATH=./secrets/dev/parser_internal_token
+```
+
+启用本地 CPU reranker：
+
+```bash
+RETRIEVAL_ENABLE_RERANK=true \
+RERANK_ENDPOINT=http://reranker-service:8091/rerank \
+docker compose --profile rerank up -d --build reranker-service query-api
 ```
 
 敏感配置读取优先级：`KEY` > `KEY_FILE` > 默认值。`docker-compose.yml` 已为 `query-api`、`etl-worker`、`parser-service` 挂载 secrets，默认占位文件在 `secrets/examples/`，建议复制到 `secrets/dev/` 后替换为真实值。
