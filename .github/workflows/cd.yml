@@ -34,6 +34,9 @@ jobs:
           - image_name: parser-service
             dockerfile: services/doc-parser-service/Dockerfile
             context: services/doc-parser-service
+          - image_name: reranker-service
+            dockerfile: services/reranker-service/Dockerfile
+            context: services/reranker-service
 
     steps:
       - name: Checkout
