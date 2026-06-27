@@ -1,0 +1,370 @@
+{
+  "version": "1.0",
+  "name": "rag-retrieval-golden-set",
+  "description": "Deterministic retrieval-focused evaluation set for AI ETL pipeline",
+  "cases": [
+    {
+      "id": "case-001",
+      "filename": "case-001.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha001. This note explains ETL retry policy and checkpoint safety.",
+      "query": "Which document mentions alpha001?",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha001", "来源:"]
+    },
+    {
+      "id": "case-002",
+      "filename": "case-002.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha002. This section covers idempotency keys and upload deduplication.",
+      "query": "Find the source that contains alpha002."
+    },
+    {
+      "id": "case-003",
+      "filename": "case-003.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha003. Topic: JWT scope validation for upload and query endpoints.",
+      "query": "Where is alpha003 discussed?"
+    },
+    {
+      "id": "case-004",
+      "filename": "case-004.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha004. Topic: multipart upload memory bound and disk spillover.",
+      "query": "I need the document containing alpha004."
+    },
+    {
+      "id": "case-005",
+      "filename": "case-005.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha005. Topic: parser chunk overlap strategy and heading-aware split.",
+      "query": "Which source includes alpha005?"
+    },
+    {
+      "id": "case-006",
+      "filename": "case-006.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha006. Topic: sparse vector BM25 parameter tuning in hybrid retrieval.",
+      "query": "Locate the text that has alpha006."
+    },
+    {
+      "id": "case-007",
+      "filename": "case-007.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha007. Topic: Redis checkpoint delete after successful ack.",
+      "query": "Show me the chunk mentioning alpha007."
+    },
+    {
+      "id": "case-008",
+      "filename": "case-008.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha008. Topic: DLQ push then commit offset ordering guarantee.",
+      "query": "Which document has alpha008?"
+    },
+    {
+      "id": "case-009",
+      "filename": "case-009.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha009. Topic: Qdrant named vectors dense plus sparse fusion.",
+      "query": "Please find alpha009 in indexed documents."
+    },
+    {
+      "id": "case-010",
+      "filename": "case-010.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha010. Topic: Prometheus metrics path and scrape target wiring.",
+      "query": "Search the source containing alpha010."
+    },
+    {
+      "id": "case-011",
+      "filename": "case-011.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha011. Topic: OpenTelemetry trace span for query execution path.",
+      "query": "Which file talks about alpha011?"
+    },
+    {
+      "id": "case-012",
+      "filename": "case-012.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha012. Topic: circuit breaker fallback for unstable model endpoints.",
+      "query": "Find alpha012 from the retrieval results.",
+      "acceptable_doc_ids": ["case-028"],
+      "max_strict_rank": 3,
+      "answer_must_include": ["alpha012", "来源:"]
+    },
+    {
+      "id": "case-013",
+      "filename": "case-013.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha013. Topic: upload extension allowlist and MIME safety check.",
+      "query": "Return the source where alpha013 appears."
+    },
+    {
+      "id": "case-014",
+      "filename": "case-014.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha014. Topic: tenant isolation filter in vector query payload.",
+      "query": "Which result includes alpha014?"
+    },
+    {
+      "id": "case-015",
+      "filename": "case-015.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha015. Topic: API timeout middleware and graceful failure response.",
+      "query": "Identify the document with alpha015."
+    },
+    {
+      "id": "case-016",
+      "filename": "case-016.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha016. Topic: MinIO object key naming for tenant and doc id.",
+      "query": "Need the source containing alpha016."
+    },
+    {
+      "id": "case-017",
+      "filename": "case-017.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha017. Topic: Kafka topic creation before worker consumption.",
+      "query": "Which file mentions alpha017?"
+    },
+    {
+      "id": "case-018",
+      "filename": "case-018.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha018. Topic: ETL worker graceful drain timeout behavior.",
+      "query": "Find the context with alpha018."
+    },
+    {
+      "id": "case-019",
+      "filename": "case-019.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha019. Topic: parser internal token check in non-dev environments.",
+      "query": "Retrieve the document that contains alpha019."
+    },
+    {
+      "id": "case-020",
+      "filename": "case-020.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha020. Topic: upload idempotency replay cached response semantics.",
+      "query": "Search for alpha020 source."
+    },
+    {
+      "id": "case-021",
+      "filename": "case-021.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha021. Topic: Backoff jitter configuration for eventual consistency sink.",
+      "query": "Which indexed text contains alpha021?"
+    },
+    {
+      "id": "case-022",
+      "filename": "case-022.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha022. Topic: Redis retry queue and deadletter queue key design.",
+      "query": "Find alpha022 in the knowledge base."
+    },
+    {
+      "id": "case-023",
+      "filename": "case-023.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha023. Topic: healthz and readyz endpoints for service probes.",
+      "query": "Locate the source that includes alpha023."
+    },
+    {
+      "id": "case-024",
+      "filename": "case-024.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha024. Topic: parser chunk token estimate and metadata payload.",
+      "query": "Which document references alpha024?"
+    },
+    {
+      "id": "case-025",
+      "filename": "case-025.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha025. Topic: ACL permission propagation from task to chunk payload.",
+      "query": "Find the entry that has alpha025."
+    },
+    {
+      "id": "case-026",
+      "filename": "case-026.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha026. Topic: CORS allowlist policy in staging and production.",
+      "query": "Show result containing alpha026."
+    },
+    {
+      "id": "case-027",
+      "filename": "case-027.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha027. Topic: S3 credentials loaded from docker secrets first.",
+      "query": "I want the source for alpha027."
+    },
+    {
+      "id": "case-028",
+      "filename": "case-028.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha028. Topic: rate limit middleware at tenant scope on API layer.",
+      "query": "Which chunk has alpha028?",
+      "acceptable_doc_ids": ["case-012"],
+      "max_strict_rank": 3,
+      "answer_must_include": ["alpha028", "来源:"]
+    },
+    {
+      "id": "case-029",
+      "filename": "case-029.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha029. Topic: Elasticsearch eventual index replay cycle control.",
+      "query": "Find the document with alpha029."
+    },
+    {
+      "id": "case-030",
+      "filename": "case-030.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha030. Topic: query service role based document permission filtering.",
+      "query": "Please locate alpha030."
+    },
+    {
+      "id": "case-031",
+      "filename": "case-031.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha031. Similarity group token gamma-shared-rank. Topic: reranker selection in near-duplicate retrieval.",
+      "query": "Find the source that mentions gamma-shared-rank and alpha031.",
+      "max_strict_rank": 3,
+      "answer_must_include": ["alpha031", "gamma-shared-rank", "来源:"]
+    },
+    {
+      "id": "case-032",
+      "filename": "case-032.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha032. Similarity group token gamma-shared-rank. Topic: fallback rank blending under comparable candidates.",
+      "query": "Find the source that mentions gamma-shared-rank and alpha032.",
+      "max_strict_rank": 3,
+      "answer_must_include": ["alpha032", "gamma-shared-rank", "来源:"]
+    },
+    {
+      "id": "case-033",
+      "filename": "case-033.txt",
+      "permission": "confidential",
+      "content": "Document anchor token alpha033secret. Topic: confidential policy draft for privileged review only.",
+      "query": "Locate the source containing alpha033secret.",
+      "expect_hit": false
+    },
+    {
+      "id": "case-034",
+      "filename": "case-034.txt",
+      "permission": "confidential",
+      "content": "Document anchor token alpha034secret. Topic: confidential incident retrospective not visible to user role.",
+      "query": "Which document includes alpha034secret?",
+      "expect_hit": false
+    },
+    {
+      "id": "case-035",
+      "filename": "case-035.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha035. Similarity cohort omega-shared-window. Shared terms: bronze queue drain fairness lease. Topic: tenant limiter spill queue decision for bronze lease protection.",
+      "query": "Find the omega-shared-window source for alpha035 with bronze queue drain fairness lease.",
+      "max_strict_rank": 1,
+      "must_not_hit_doc_ids": ["case-040", "case-041", "case-042"],
+      "answer_must_include": ["alpha035", "omega-shared-window", "来源:"]
+    },
+    {
+      "id": "case-036",
+      "filename": "case-036.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha036. Similarity cohort omega-shared-window. Shared terms: bronze queue drain fairness. Topic: tenant limiter spill queue fallback when lease token is absent.",
+      "query": "Find the omega-shared-window source for alpha036 with bronze queue drain fairness.",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha036", "omega-shared-window", "来源:"]
+    },
+    {
+      "id": "case-037",
+      "filename": "case-037.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha037. Similarity cohort omega-shared-window. Shared terms: bronze queue drain lease. Topic: tenant limiter spill queue branch that skips fairness balancing.",
+      "query": "Find the omega-shared-window source for alpha037 with bronze queue drain lease.",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha037", "omega-shared-window", "来源:"]
+    },
+    {
+      "id": "case-038",
+      "filename": "case-038.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha038. Similarity cohort omega-shared-window. Shared terms: bronze queue fairness lease. Topic: tenant limiter spill queue branch without drain pressure.",
+      "query": "Find the omega-shared-window source for alpha038 with bronze queue fairness lease.",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha038", "omega-shared-window", "来源:"]
+    },
+    {
+      "id": "case-039",
+      "filename": "case-039.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha039. Similarity cohort omega-shared-window. Shared terms: bronze drain fairness lease. Topic: tenant limiter branch that skips queue persistence.",
+      "query": "Find the omega-shared-window source for alpha039 with bronze drain fairness lease.",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha039", "omega-shared-window", "来源:"]
+    },
+    {
+      "id": "case-040",
+      "filename": "case-040.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha040. Similarity cohort omega-shared-window. Shared terms: bronze queue fairness. Topic: tenant limiter noisy sibling that misses drain lease requirements.",
+      "query": "Find the omega-shared-window source for alpha040 with bronze queue fairness.",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha040", "omega-shared-window", "来源:"]
+    },
+    {
+      "id": "case-041",
+      "filename": "case-041.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha041. Similarity cohort omega-shared-window. Shared terms: bronze drain lease. Topic: tenant limiter noisy sibling that misses queue fairness requirements.",
+      "query": "Find the omega-shared-window source for alpha041 with bronze drain lease.",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha041", "omega-shared-window", "来源:"]
+    },
+    {
+      "id": "case-042",
+      "filename": "case-042.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha042. Similarity cohort omega-shared-window. Shared terms: queue fairness lease. Topic: tenant limiter noisy sibling that misses bronze drain requirements.",
+      "query": "Find the omega-shared-window source for alpha042 with queue fairness lease.",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha042", "omega-shared-window", "来源:"]
+    },
+    {
+      "id": "case-043",
+      "filename": "case-043.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha043. Permission cohort sigma-permission-gate. Shared terms: ledger quota reconcile burst holdback. Topic: internal quota reconcile path for tenant burst holdback review.",
+      "query": "Find alpha043 in sigma-permission-gate with ledger quota reconcile burst holdback.",
+      "max_strict_rank": 1,
+      "must_not_hit_doc_ids": ["case-044"],
+      "answer_must_include": ["alpha043", "sigma-permission-gate", "来源:"]
+    },
+    {
+      "id": "case-044",
+      "filename": "case-044.txt",
+      "permission": "confidential",
+      "content": "Document anchor token alpha044secret. Permission cohort sigma-permission-gate. Shared terms: ledger quota reconcile burst holdback. Topic: confidential quota reconcile exception notes for tenant burst holdback review.",
+      "query": "Find alpha044secret in sigma-permission-gate with ledger quota reconcile burst holdback.",
+      "expect_hit": false
+    },
+    {
+      "id": "case-045",
+      "filename": "case-045.txt",
+      "permission": "public",
+      "content": "Document anchor token alpha045. Permission cohort tau-public-gate. Shared terms: catalog cache invalidate edge warmup. Topic: public cache invalidate flow for edge warmup tracking.",
+      "query": "Find alpha045 in tau-public-gate with catalog cache invalidate edge warmup.",
+      "query_permission": "readonly",
+      "max_strict_rank": 1,
+      "must_not_hit_doc_ids": ["case-046"],
+      "answer_must_include": ["alpha045", "tau-public-gate", "来源:"]
+    },
+    {
+      "id": "case-046",
+      "filename": "case-046.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha046. Permission cohort tau-public-gate. Shared terms: catalog cache invalidate edge warmup. Topic: internal cache invalidate diagnostics for edge warmup tracking.",
+      "query": "Find alpha046 in tau-public-gate with catalog cache invalidate edge warmup.",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha046", "tau-public-gate", "来源:"]
+    }
+  ]
+}

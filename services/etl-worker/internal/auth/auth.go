@@ -125,12 +125,15 @@ func GetPermission(ctx context.Context) string {
 	return ""
 }
 
-// GenerateTestToken creates a JWT token for testing purposes.
-func GenerateTestToken(secret, tenantID, userID string, scopes []string) (string, error) {
+// GenerateTestTokenWithPermission creates a JWT token for testing purposes.
+func GenerateTestTokenWithPermission(secret, tenantID, userID, permission string, scopes []string) (string, error) {
+	if strings.TrimSpace(permission) == "" {
+		permission = "user"
+	}
 	claims := Claims{
 		TenantID:   tenantID,
 		UserID:     userID,
-		Permission: "user",
+		Permission: permission,
 		Scopes:     scopes,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
@@ -140,4 +143,9 @@ func GenerateTestToken(secret, tenantID, userID string, scopes []string) (string
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
+}
+
+// GenerateTestToken creates a JWT token for testing purposes.
+func GenerateTestToken(secret, tenantID, userID string, scopes []string) (string, error) {
+	return GenerateTestTokenWithPermission(secret, tenantID, userID, "user", scopes)
 }

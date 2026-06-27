@@ -23,6 +23,7 @@ type Pipeline struct {
 	parser        *parser.Parser
 	embedder      model.Embedder
 	storer        model.Storer
+	fullTextSink  model.FullTextSink
 	metrics       *metrics.Collector
 	checkpoint    model.CheckpointStore
 	dlq           model.DLQStore
@@ -35,6 +36,11 @@ type Pipeline struct {
 
 // New creates a Pipeline with all dependencies injected.
 func New(cfg config.Config, emb model.Embedder, st model.Storer, m *metrics.Collector, ckpt model.CheckpointStore, dlq model.DLQStore) *Pipeline {
+	return NewWithSinks(cfg, emb, st, nil, m, ckpt, dlq)
+}
+
+// NewWithSinks creates Pipeline with optional eventual-consistency sinks.
+func NewWithSinks(cfg config.Config, emb model.Embedder, st model.Storer, ft model.FullTextSink, m *metrics.Collector, ckpt model.CheckpointStore, dlq model.DLQStore) *Pipeline {
 	sparseEnc := sparse.NewEncoder(sparse.Params{
 		K1:     cfg.SparseK1,
 		B:      cfg.SparseB,
@@ -49,6 +55,7 @@ func New(cfg config.Config, emb model.Embedder, st model.Storer, m *metrics.Coll
 		parser:        parser.New(cfg, m),
 		embedder:      emb,
 		storer:        st,
+		fullTextSink:  ft,
 		metrics:       m,
 		checkpoint:    ckpt,
 		dlq:           dlq,
@@ -169,6 +176,17 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 	taskCtx, cancel := context.WithTimeout(ctx, p.cfg.PipelineTimeout)
 	defer cancel()
 
+	resumeCheckpoint, hasCheckpoint, err := p.checkpoint.Load(taskCtx, task.DocID)
+	if err != nil {
+		return fmt.Errorf("load checkpoint: %w", err)
+	}
+	if hasCheckpoint {
+		slog.Info("resuming task from checkpoint",
+			"doc_id", task.DocID,
+			"chunks_done", resumeCheckpoint.ChunksDone,
+			"last_chunk_id", resumeCheckpoint.LastChunkID)
+	}
+
 	// Streaming parse with safe error propagation via channel
 	chunkCh := make(chan model.Chunk, 20)
 	parseErrCh := make(chan error, 1)
@@ -185,6 +203,17 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 		case <-taskCtx.Done():
 			return taskCtx.Err()
 		default:
+		}
+
+		if hasCheckpoint {
+			exists, err := p.storer.Exists(taskCtx, chunk.ChunkID)
+			if err != nil {
+				return fmt.Errorf("resume exists check for chunk %s: %w", chunk.ChunkID, err)
+			}
+			if exists {
+				total++
+				continue
+			}
 		}
 
 		batch = append(batch, chunk)
@@ -267,6 +296,7 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 
 	// Sequential store with failure threshold
 	storeFailed := 0
+	lastStoredChunkID := ""
 	for _, chunk := range successful {
 		select {
 		case <-stageCtx.Done():
@@ -282,14 +312,24 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 			continue
 		}
 		*total++
+		lastStoredChunkID = chunk.ChunkID
+
+		// Eventual-consistency full-text path:
+		// Qdrant success is primary; ES errors never fail main pipeline.
+		if p.fullTextSink != nil {
+			if err := p.fullTextSink.Enqueue(stageCtx, chunk); err != nil {
+				slog.Warn("full-text enqueue failed (ignored for eventual consistency)",
+					"chunk_id", chunk.ChunkID, "doc_id", chunk.DocID, "error", err)
+			}
+		}
 	}
 
 	// Update checkpoint
-	if *total > 0 {
+	if *total > 0 && lastStoredChunkID != "" {
 		_ = p.checkpoint.Save(ctx, model.Checkpoint{
 			DocID:       docID,
 			ChunksDone:  *total,
-			LastChunkID: successful[len(successful)-1].ChunkID,
+			LastChunkID: lastStoredChunkID,
 		})
 	}
 

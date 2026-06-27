@@ -3,7 +3,10 @@ package prometheus
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -173,4 +176,68 @@ func New(namespace string) *Metrics {
 // Handler returns an HTTP handler for the /metrics endpoint.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
+}
+
+// HandlerFor returns a /metrics handler backed by the provided gatherer.
+func (m *Metrics) HandlerFor(gatherer prometheus.Gatherer) http.Handler {
+	return promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{})
+}
+
+// HTTPMiddleware records request count and latency for application routes.
+func (m *Metrics) HTTPMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		path := routeLabel(r.URL.Path)
+
+		m.HTTPRequestInFlight.WithLabelValues(path).Inc()
+		defer func() {
+			m.HTTPRequestInFlight.WithLabelValues(path).Dec()
+			status := strconv.Itoa(rec.statusCode)
+			m.HTTPRequestDuration.WithLabelValues(r.Method, path, status).Observe(time.Since(start).Seconds())
+		}()
+
+		next.ServeHTTP(rec, r)
+	})
+}
+
+// SetCircuitState records circuit breaker state (0=closed, 1=open, 2=half-open).
+func (m *Metrics) SetCircuitState(name string, state int) {
+	m.CircuitState.WithLabelValues(name).Set(float64(state))
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.statusCode = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(data []byte) (int, error) {
+	if r.statusCode == 0 {
+		r.statusCode = http.StatusOK
+	}
+	return r.ResponseWriter.Write(data)
+}
+
+func routeLabel(path string) string {
+	switch {
+	case path == "/healthz":
+		return "/healthz"
+	case path == "/readyz":
+		return "/readyz"
+	case path == "/metrics":
+		return "/metrics"
+	case path == "/version":
+		return "/version"
+	case strings.HasPrefix(path, "/v1/upload"):
+		return "/v1/upload"
+	case strings.HasPrefix(path, "/v1/query"):
+		return "/v1/query"
+	default:
+		return "/other"
+	}
 }

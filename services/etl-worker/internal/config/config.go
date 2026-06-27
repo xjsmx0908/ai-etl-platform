@@ -44,10 +44,36 @@ type Config struct {
 	StoreAPIKey     string
 	StoreCollection string
 
+	// Elasticsearch (eventual consistency full-text index)
+	ESAddress          string
+	ESAPIKey           string
+	ESIndex            string
+	ESQueueKey         string
+	ESDeadLetterKey    string
+	ESReplayPeriod     time.Duration
+	ESMaxRetries       int
+	ESRetryBaseBackoff time.Duration
+	ESRetryMaxBackoff  time.Duration
+	ESRetryJitter      float64
+
 	// Sparse Vector (Hybrid Search / BM25)
 	SparseK1    float64 // BM25 k1 parameter
 	SparseB     float64 // BM25 b parameter
 	SparseAvgDL float64 // Average document length in tokens
+
+	// Retrieval Gateway (Module 2)
+	RetrievalTimeout        time.Duration
+	RetrievalCandidateK     int
+	RetrievalFinalTopK      int
+	RetrievalEnableES       bool
+	RetrievalEnableRerank   bool
+	RerankEndpoint          string
+	RerankAPIKey            string
+	RerankModel             string
+	SemanticCacheEnabled    bool
+	SemanticCacheTTL        time.Duration
+	SemanticCacheThreshold  float64
+	SemanticCacheMaxEntries int
 
 	// Kafka
 	KafkaBrokers  string
@@ -71,14 +97,15 @@ type Config struct {
 	IdempotencyTTL        time.Duration
 
 	// Gateway (file upload)
-	UploadDir     string
-	MaxUploadSize int64 // bytes
-	JWTSecret     string
-	S3Endpoint    string
-	S3AccessKey   string
-	S3SecretKey   string
-	S3Bucket      string
-	S3UseSSL      bool
+	UploadDir               string
+	MaxUploadSize           int64 // bytes
+	MultipartMaxMemoryBytes int64 // bytes kept in memory before multipart spills to disk
+	JWTSecret               string
+	S3Endpoint              string
+	S3AccessKey             string
+	S3SecretKey             string
+	S3Bucket                string
+	S3UseSSL                bool
 
 	// Runtime
 	Environment string // "dev" | "staging" | "production"
@@ -126,10 +153,36 @@ func Load() Config {
 		StoreAPIKey:     EnvSecret("STORE_API_KEY", ""),
 		StoreCollection: EnvStr("STORE_COLLECTION", "documents"),
 
+		// Elasticsearch (eventual consistency)
+		ESAddress:          EnvStr("ES_ADDRESS", "http://elasticsearch:9200"),
+		ESAPIKey:           EnvSecret("ES_API_KEY", ""),
+		ESIndex:            EnvStr("ES_INDEX", "documents_text"),
+		ESQueueKey:         EnvStr("ES_QUEUE_KEY", "es:index:retry"),
+		ESDeadLetterKey:    EnvStr("ES_DEADLETTER_KEY", "es:index:deadletter"),
+		ESReplayPeriod:     EnvDuration("ES_REPLAY_PERIOD", 2*time.Second),
+		ESMaxRetries:       EnvInt("ES_MAX_RETRIES", 12),
+		ESRetryBaseBackoff: EnvDuration("ES_RETRY_BASE_BACKOFF", 2*time.Second),
+		ESRetryMaxBackoff:  EnvDuration("ES_RETRY_MAX_BACKOFF", 5*time.Minute),
+		ESRetryJitter:      EnvFloat("ES_RETRY_JITTER", 0.2),
+
 		// Sparse Vector (BM25)
 		SparseK1:    EnvFloat("SPARSE_K1", 1.2),
 		SparseB:     EnvFloat("SPARSE_B", 0.75),
 		SparseAvgDL: EnvFloat("SPARSE_AVG_DL", 256),
+
+		// Retrieval Gateway
+		RetrievalTimeout:        EnvDuration("RETRIEVAL_TIMEOUT", 300*time.Millisecond),
+		RetrievalCandidateK:     EnvInt("RETRIEVAL_CANDIDATE_K", 50),
+		RetrievalFinalTopK:      EnvInt("RETRIEVAL_FINAL_TOP_K", 5),
+		RetrievalEnableES:       EnvBool("RETRIEVAL_ENABLE_ES", true),
+		RetrievalEnableRerank:   EnvBool("RETRIEVAL_ENABLE_RERANK", false),
+		RerankEndpoint:          EnvStr("RERANK_ENDPOINT", ""),
+		RerankAPIKey:            EnvSecret("RERANK_API_KEY", ""),
+		RerankModel:             EnvStr("RERANK_MODEL", "bge-reranker-base"),
+		SemanticCacheEnabled:    EnvBool("SEMANTIC_CACHE_ENABLED", true),
+		SemanticCacheTTL:        EnvDuration("SEMANTIC_CACHE_TTL", 10*time.Minute),
+		SemanticCacheThreshold:  EnvFloat("SEMANTIC_CACHE_THRESHOLD", 0.92),
+		SemanticCacheMaxEntries: EnvInt("SEMANTIC_CACHE_MAX_ENTRIES", 128),
 
 		// Kafka
 		KafkaBrokers:  EnvStr("KAFKA_BROKERS", "localhost:9092"),
@@ -153,14 +206,15 @@ func Load() Config {
 		IdempotencyTTL:        EnvDuration("IDEMPOTENCY_TTL", 24*time.Hour),
 
 		// Gateway
-		UploadDir:     EnvStr("UPLOAD_DIR", "/data/uploads"),
-		MaxUploadSize: int64(EnvInt("MAX_UPLOAD_SIZE_MB", 512)) * 1024 * 1024,
-		JWTSecret:     EnvSecret("JWT_SECRET", "change-me-in-production"),
-		S3Endpoint:    EnvStr("S3_ENDPOINT", "localhost:9000"),
-		S3AccessKey:   EnvSecret("S3_ACCESS_KEY", "minioadmin"),
-		S3SecretKey:   EnvSecret("S3_SECRET_KEY", "minioadmin"),
-		S3Bucket:      EnvStr("S3_BUCKET", "documents"),
-		S3UseSSL:      strings.EqualFold(EnvStr("S3_USE_SSL", "false"), "true"),
+		UploadDir:               EnvStr("UPLOAD_DIR", "/data/uploads"),
+		MaxUploadSize:           int64(EnvInt("MAX_UPLOAD_SIZE_MB", 512)) * 1024 * 1024,
+		MultipartMaxMemoryBytes: int64(EnvInt("MULTIPART_MAX_MEMORY_MB", 4)) * 1024 * 1024,
+		JWTSecret:               EnvSecret("JWT_SECRET", "change-me-in-production"),
+		S3Endpoint:              EnvStr("S3_ENDPOINT", "localhost:9000"),
+		S3AccessKey:             EnvSecret("S3_ACCESS_KEY", "minioadmin"),
+		S3SecretKey:             EnvSecret("S3_SECRET_KEY", "minioadmin"),
+		S3Bucket:                EnvStr("S3_BUCKET", "documents"),
+		S3UseSSL:                strings.EqualFold(EnvStr("S3_USE_SSL", "false"), "true"),
 
 		// Runtime
 		Environment: environment,
@@ -188,6 +242,51 @@ func (c Config) Validate() error {
 	}
 	if c.BatchSize < 1 || c.BatchSize > 100 {
 		return fmt.Errorf("PIPELINE_BATCH_SIZE must be between 1 and 100, got %d", c.BatchSize)
+	}
+	if c.MultipartMaxMemoryBytes < 1<<20 || c.MultipartMaxMemoryBytes > 64<<20 {
+		return fmt.Errorf("MULTIPART_MAX_MEMORY_MB must be between 1 and 64, got %d bytes", c.MultipartMaxMemoryBytes)
+	}
+	if c.ESReplayPeriod <= 0 {
+		return fmt.Errorf("ES_REPLAY_PERIOD must be > 0, got %s", c.ESReplayPeriod)
+	}
+	if c.ESMaxRetries < 1 {
+		return fmt.Errorf("ES_MAX_RETRIES must be >= 1, got %d", c.ESMaxRetries)
+	}
+	if strings.TrimSpace(c.ESQueueKey) == "" {
+		return fmt.Errorf("ES_QUEUE_KEY is required")
+	}
+	if strings.TrimSpace(c.ESDeadLetterKey) == "" {
+		return fmt.Errorf("ES_DEADLETTER_KEY is required")
+	}
+	if c.ESRetryBaseBackoff <= 0 {
+		return fmt.Errorf("ES_RETRY_BASE_BACKOFF must be > 0, got %s", c.ESRetryBaseBackoff)
+	}
+	if c.ESRetryMaxBackoff <= 0 {
+		return fmt.Errorf("ES_RETRY_MAX_BACKOFF must be > 0, got %s", c.ESRetryMaxBackoff)
+	}
+	if c.ESRetryMaxBackoff < c.ESRetryBaseBackoff {
+		return fmt.Errorf("ES_RETRY_MAX_BACKOFF must be >= ES_RETRY_BASE_BACKOFF, got max=%s base=%s", c.ESRetryMaxBackoff, c.ESRetryBaseBackoff)
+	}
+	if c.ESRetryJitter < 0 || c.ESRetryJitter > 1 {
+		return fmt.Errorf("ES_RETRY_JITTER must be between 0 and 1, got %v", c.ESRetryJitter)
+	}
+	if c.RetrievalTimeout <= 0 {
+		return fmt.Errorf("RETRIEVAL_TIMEOUT must be > 0, got %s", c.RetrievalTimeout)
+	}
+	if c.RetrievalCandidateK < 1 || c.RetrievalCandidateK > 500 {
+		return fmt.Errorf("RETRIEVAL_CANDIDATE_K must be between 1 and 500, got %d", c.RetrievalCandidateK)
+	}
+	if c.RetrievalFinalTopK < 1 || c.RetrievalFinalTopK > 100 {
+		return fmt.Errorf("RETRIEVAL_FINAL_TOP_K must be between 1 and 100, got %d", c.RetrievalFinalTopK)
+	}
+	if c.SemanticCacheTTL <= 0 {
+		return fmt.Errorf("SEMANTIC_CACHE_TTL must be > 0, got %s", c.SemanticCacheTTL)
+	}
+	if c.SemanticCacheThreshold <= 0 || c.SemanticCacheThreshold > 1 {
+		return fmt.Errorf("SEMANTIC_CACHE_THRESHOLD must be in (0, 1], got %v", c.SemanticCacheThreshold)
+	}
+	if c.SemanticCacheMaxEntries < 1 || c.SemanticCacheMaxEntries > 10000 {
+		return fmt.Errorf("SEMANTIC_CACHE_MAX_ENTRIES must be between 1 and 10000, got %d", c.SemanticCacheMaxEntries)
 	}
 	return nil
 }
@@ -278,6 +377,16 @@ func EnvFloat(key string, defaultVal float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return defaultVal
+}
+
+// EnvBool reads a boolean environment variable with a default value.
+func EnvBool(key string, defaultVal bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return defaultVal

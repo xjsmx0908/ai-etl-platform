@@ -19,6 +19,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.EmbedDimension != 1536 {
 		t.Errorf("expected EmbedDimension=1536, got %d", cfg.EmbedDimension)
 	}
+	if cfg.MultipartMaxMemoryBytes != 4*1024*1024 {
+		t.Errorf("expected MultipartMaxMemoryBytes=4MB, got %d", cfg.MultipartMaxMemoryBytes)
+	}
 	if cfg.Environment != "dev" {
 		t.Errorf("expected Environment=dev, got %s", cfg.Environment)
 	}
@@ -31,16 +34,114 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.IdempotencyTTL != 24*time.Hour {
 		t.Errorf("expected IdempotencyTTL=24h, got %v", cfg.IdempotencyTTL)
 	}
+	if cfg.ESAddress != "http://elasticsearch:9200" {
+		t.Errorf("expected ESAddress default, got %s", cfg.ESAddress)
+	}
+	if cfg.ESIndex != "documents_text" {
+		t.Errorf("expected ESIndex default, got %s", cfg.ESIndex)
+	}
+	if cfg.ESQueueKey != "es:index:retry" {
+		t.Errorf("expected ESQueueKey default, got %s", cfg.ESQueueKey)
+	}
+	if cfg.ESDeadLetterKey != "es:index:deadletter" {
+		t.Errorf("expected ESDeadLetterKey default, got %s", cfg.ESDeadLetterKey)
+	}
+	if cfg.ESReplayPeriod != 2*time.Second {
+		t.Errorf("expected ESReplayPeriod=2s, got %v", cfg.ESReplayPeriod)
+	}
+	if cfg.ESMaxRetries != 12 {
+		t.Errorf("expected ESMaxRetries=12, got %d", cfg.ESMaxRetries)
+	}
+	if cfg.ESRetryBaseBackoff != 2*time.Second {
+		t.Errorf("expected ESRetryBaseBackoff=2s, got %v", cfg.ESRetryBaseBackoff)
+	}
+	if cfg.ESRetryMaxBackoff != 5*time.Minute {
+		t.Errorf("expected ESRetryMaxBackoff=5m, got %v", cfg.ESRetryMaxBackoff)
+	}
+	if cfg.ESRetryJitter != 0.2 {
+		t.Errorf("expected ESRetryJitter=0.2, got %v", cfg.ESRetryJitter)
+	}
+	if cfg.RetrievalTimeout != 300*time.Millisecond {
+		t.Errorf("expected RetrievalTimeout=300ms, got %v", cfg.RetrievalTimeout)
+	}
+	if cfg.RetrievalCandidateK != 50 {
+		t.Errorf("expected RetrievalCandidateK=50, got %d", cfg.RetrievalCandidateK)
+	}
+	if cfg.RetrievalFinalTopK != 5 {
+		t.Errorf("expected RetrievalFinalTopK=5, got %d", cfg.RetrievalFinalTopK)
+	}
+	if !cfg.RetrievalEnableES {
+		t.Error("expected RetrievalEnableES=true")
+	}
+	if cfg.RetrievalEnableRerank {
+		t.Error("expected RetrievalEnableRerank=false")
+	}
+	if !cfg.SemanticCacheEnabled {
+		t.Error("expected SemanticCacheEnabled=true")
+	}
+	if cfg.SemanticCacheTTL != 10*time.Minute {
+		t.Errorf("expected SemanticCacheTTL=10m, got %v", cfg.SemanticCacheTTL)
+	}
+	if cfg.SemanticCacheThreshold != 0.92 {
+		t.Errorf("expected SemanticCacheThreshold=0.92, got %v", cfg.SemanticCacheThreshold)
+	}
+	if cfg.SemanticCacheMaxEntries != 128 {
+		t.Errorf("expected SemanticCacheMaxEntries=128, got %d", cfg.SemanticCacheMaxEntries)
+	}
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("PIPELINE_MAX_WORKERS", "20")
 	os.Setenv("ENVIRONMENT", "production")
 	os.Setenv("EMBED_API_KEY", "sk-test")
+	os.Setenv("ES_ADDRESS", "http://es:9200")
+	os.Setenv("ES_INDEX", "docs_v2")
+	os.Setenv("ES_QUEUE_KEY", "es:retry:v2")
+	os.Setenv("ES_DEADLETTER_KEY", "es:dead:v2")
+	os.Setenv("ES_REPLAY_PERIOD", "5s")
+	os.Setenv("ES_MAX_RETRIES", "20")
+	os.Setenv("ES_RETRY_BASE_BACKOFF", "3s")
+	os.Setenv("ES_RETRY_MAX_BACKOFF", "30s")
+	os.Setenv("ES_RETRY_JITTER", "0.4")
+	os.Setenv("MULTIPART_MAX_MEMORY_MB", "8")
+	os.Setenv("RETRIEVAL_TIMEOUT", "450ms")
+	os.Setenv("RETRIEVAL_CANDIDATE_K", "80")
+	os.Setenv("RETRIEVAL_FINAL_TOP_K", "7")
+	os.Setenv("RETRIEVAL_ENABLE_ES", "false")
+	os.Setenv("RETRIEVAL_ENABLE_RERANK", "true")
+	os.Setenv("RERANK_ENDPOINT", "http://reranker:8080/rerank")
+	os.Setenv("RERANK_API_KEY", "rk-test")
+	os.Setenv("RERANK_MODEL", "test-reranker")
+	os.Setenv("SEMANTIC_CACHE_ENABLED", "false")
+	os.Setenv("SEMANTIC_CACHE_TTL", "2m")
+	os.Setenv("SEMANTIC_CACHE_THRESHOLD", "0.88")
+	os.Setenv("SEMANTIC_CACHE_MAX_ENTRIES", "64")
 	defer func() {
 		os.Unsetenv("PIPELINE_MAX_WORKERS")
 		os.Unsetenv("ENVIRONMENT")
 		os.Unsetenv("EMBED_API_KEY")
+		os.Unsetenv("ES_ADDRESS")
+		os.Unsetenv("ES_INDEX")
+		os.Unsetenv("ES_QUEUE_KEY")
+		os.Unsetenv("ES_DEADLETTER_KEY")
+		os.Unsetenv("ES_REPLAY_PERIOD")
+		os.Unsetenv("ES_MAX_RETRIES")
+		os.Unsetenv("ES_RETRY_BASE_BACKOFF")
+		os.Unsetenv("ES_RETRY_MAX_BACKOFF")
+		os.Unsetenv("ES_RETRY_JITTER")
+		os.Unsetenv("MULTIPART_MAX_MEMORY_MB")
+		os.Unsetenv("RETRIEVAL_TIMEOUT")
+		os.Unsetenv("RETRIEVAL_CANDIDATE_K")
+		os.Unsetenv("RETRIEVAL_FINAL_TOP_K")
+		os.Unsetenv("RETRIEVAL_ENABLE_ES")
+		os.Unsetenv("RETRIEVAL_ENABLE_RERANK")
+		os.Unsetenv("RERANK_ENDPOINT")
+		os.Unsetenv("RERANK_API_KEY")
+		os.Unsetenv("RERANK_MODEL")
+		os.Unsetenv("SEMANTIC_CACHE_ENABLED")
+		os.Unsetenv("SEMANTIC_CACHE_TTL")
+		os.Unsetenv("SEMANTIC_CACHE_THRESHOLD")
+		os.Unsetenv("SEMANTIC_CACHE_MAX_ENTRIES")
 	}()
 
 	cfg := Load()
@@ -53,6 +154,72 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.EmbedAPIKey != "sk-test" {
 		t.Errorf("expected EmbedAPIKey=sk-test, got %s", cfg.EmbedAPIKey)
+	}
+	if cfg.ESAddress != "http://es:9200" {
+		t.Errorf("expected ESAddress override, got %s", cfg.ESAddress)
+	}
+	if cfg.ESIndex != "docs_v2" {
+		t.Errorf("expected ESIndex override, got %s", cfg.ESIndex)
+	}
+	if cfg.ESQueueKey != "es:retry:v2" {
+		t.Errorf("expected ESQueueKey override, got %s", cfg.ESQueueKey)
+	}
+	if cfg.ESDeadLetterKey != "es:dead:v2" {
+		t.Errorf("expected ESDeadLetterKey override, got %s", cfg.ESDeadLetterKey)
+	}
+	if cfg.ESReplayPeriod != 5*time.Second {
+		t.Errorf("expected ESReplayPeriod=5s, got %v", cfg.ESReplayPeriod)
+	}
+	if cfg.ESMaxRetries != 20 {
+		t.Errorf("expected ESMaxRetries=20, got %d", cfg.ESMaxRetries)
+	}
+	if cfg.ESRetryBaseBackoff != 3*time.Second {
+		t.Errorf("expected ESRetryBaseBackoff=3s, got %v", cfg.ESRetryBaseBackoff)
+	}
+	if cfg.ESRetryMaxBackoff != 30*time.Second {
+		t.Errorf("expected ESRetryMaxBackoff=30s, got %v", cfg.ESRetryMaxBackoff)
+	}
+	if cfg.ESRetryJitter != 0.4 {
+		t.Errorf("expected ESRetryJitter=0.4, got %v", cfg.ESRetryJitter)
+	}
+	if cfg.MultipartMaxMemoryBytes != 8*1024*1024 {
+		t.Errorf("expected MultipartMaxMemoryBytes=8MB, got %d", cfg.MultipartMaxMemoryBytes)
+	}
+	if cfg.RetrievalTimeout != 450*time.Millisecond {
+		t.Errorf("expected RetrievalTimeout=450ms, got %v", cfg.RetrievalTimeout)
+	}
+	if cfg.RetrievalCandidateK != 80 {
+		t.Errorf("expected RetrievalCandidateK=80, got %d", cfg.RetrievalCandidateK)
+	}
+	if cfg.RetrievalFinalTopK != 7 {
+		t.Errorf("expected RetrievalFinalTopK=7, got %d", cfg.RetrievalFinalTopK)
+	}
+	if cfg.RetrievalEnableES {
+		t.Error("expected RetrievalEnableES=false")
+	}
+	if !cfg.RetrievalEnableRerank {
+		t.Error("expected RetrievalEnableRerank=true")
+	}
+	if cfg.RerankEndpoint != "http://reranker:8080/rerank" {
+		t.Errorf("expected RerankEndpoint override, got %s", cfg.RerankEndpoint)
+	}
+	if cfg.RerankAPIKey != "rk-test" {
+		t.Errorf("expected RerankAPIKey override, got %s", cfg.RerankAPIKey)
+	}
+	if cfg.RerankModel != "test-reranker" {
+		t.Errorf("expected RerankModel override, got %s", cfg.RerankModel)
+	}
+	if cfg.SemanticCacheEnabled {
+		t.Error("expected SemanticCacheEnabled=false")
+	}
+	if cfg.SemanticCacheTTL != 2*time.Minute {
+		t.Errorf("expected SemanticCacheTTL=2m, got %v", cfg.SemanticCacheTTL)
+	}
+	if cfg.SemanticCacheThreshold != 0.88 {
+		t.Errorf("expected SemanticCacheThreshold=0.88, got %v", cfg.SemanticCacheThreshold)
+	}
+	if cfg.SemanticCacheMaxEntries != 64 {
+		t.Errorf("expected SemanticCacheMaxEntries=64, got %d", cfg.SemanticCacheMaxEntries)
 	}
 }
 
@@ -84,6 +251,89 @@ func TestValidate_WorkerRange(t *testing.T) {
 	cfg.MaxWorkers = 101
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for MaxWorkers=101")
+	}
+}
+
+func TestValidate_ESReplayPeriodAndRetries(t *testing.T) {
+	cfg := Load()
+	cfg.ESReplayPeriod = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for ESReplayPeriod <= 0")
+	}
+
+	cfg = Load()
+	cfg.ESMaxRetries = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for ESMaxRetries < 1")
+	}
+
+	cfg = Load()
+	cfg.ESRetryBaseBackoff = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for ESRetryBaseBackoff <= 0")
+	}
+
+	cfg = Load()
+	cfg.ESRetryMaxBackoff = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for ESRetryMaxBackoff <= 0")
+	}
+
+	cfg = Load()
+	cfg.ESRetryMaxBackoff = 1 * time.Second
+	cfg.ESRetryBaseBackoff = 2 * time.Second
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for ESRetryMaxBackoff < ESRetryBaseBackoff")
+	}
+
+	cfg = Load()
+	cfg.ESRetryJitter = -0.1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for ESRetryJitter < 0")
+	}
+
+	cfg = Load()
+	cfg.ESRetryJitter = 1.1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for ESRetryJitter > 1")
+	}
+}
+
+func TestValidate_RetrievalConfig(t *testing.T) {
+	cfg := Load()
+	cfg.RetrievalTimeout = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for RetrievalTimeout <= 0")
+	}
+
+	cfg = Load()
+	cfg.RetrievalCandidateK = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for RetrievalCandidateK < 1")
+	}
+
+	cfg = Load()
+	cfg.RetrievalFinalTopK = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for RetrievalFinalTopK < 1")
+	}
+
+	cfg = Load()
+	cfg.SemanticCacheTTL = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for SemanticCacheTTL <= 0")
+	}
+
+	cfg = Load()
+	cfg.SemanticCacheThreshold = 1.1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for SemanticCacheThreshold > 1")
+	}
+
+	cfg = Load()
+	cfg.SemanticCacheMaxEntries = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for SemanticCacheMaxEntries < 1")
 	}
 }
 

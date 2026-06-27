@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/auth"
+	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/idempotency"
 	"ai-etl-pipeline/internal/kafka"
@@ -108,6 +110,7 @@ func main() {
 
 	// Initialize Prometheus metrics
 	prom := prometheus.New("ai_etl")
+	circuit.SetStateObserver(prom.SetCircuitState)
 
 	// Initialize auth
 	verifier := auth.NewVerifier(cfg.JWTSecret)
@@ -163,7 +166,7 @@ func main() {
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.HandleFunc("/v1/upload", handleUpload(cfg.MaxUploadSize, producer, s3Client, idemStore))
+	apiV1.HandleFunc("/v1/upload", handleUpload(cfg.MaxUploadSize, cfg.MultipartMaxMemoryBytes, producer, s3Client, idemStore))
 	apiV1.HandleFunc("/v1/query", qs.HandleQuery)
 
 	// Apply middleware chain: version → auth → rate limit → CORS → timeout.
@@ -174,6 +177,7 @@ func main() {
 	handler = middleware.APIVersion("1")(handler)
 	handler = middleware.CORS(cfg.CORSAllowedOrigins)(handler)
 	handler = middleware.Timeout(60 * time.Second)(handler)
+	handler = prom.HTTPMiddleware(handler)
 
 	// Mount v1 routes
 	mux.Handle("/", handler)
@@ -231,10 +235,17 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleUpload(maxUploadSize int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store) http.HandlerFunc {
+func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		w = rec
+		defer func() {
+			if r.MultipartForm != nil {
+				if err := r.MultipartForm.RemoveAll(); err != nil {
+					slog.Warn("failed to remove multipart temp files", "error", err)
+				}
+			}
+		}()
 
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -252,7 +263,12 @@ func handleUpload(maxUploadSize int64, producer uploadProducer, s3Client uploadO
 		r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 
 		// Parse multipart form
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
+		if err := r.ParseMultipartForm(multipartMaxMemoryBytes); err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "invalid form", http.StatusBadRequest)
 			return
 		}

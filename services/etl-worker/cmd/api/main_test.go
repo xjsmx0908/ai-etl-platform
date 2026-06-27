@@ -1,8 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"mime/multipart"
 	"net/http/httptest"
 	"testing"
+
+	"ai-etl-pipeline/internal/auth"
+	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/idempotency"
+	"ai-etl-pipeline/internal/model"
 )
 
 func TestValidateUploadExtension(t *testing.T) {
@@ -90,5 +99,79 @@ func TestBuildUploadRequestSignature(t *testing.T) {
 	b := buildUploadRequestSignature("tenant-a", "report.pdf", 1024, "application/pdf", "internal")
 	if a != b {
 		t.Fatalf("expected normalized signatures to match, got %q != %q", a, b)
+	}
+}
+
+func TestConfig_DefaultMultipartMemory(t *testing.T) {
+	cfg := config.Load()
+	if cfg.MultipartMaxMemoryBytes != 4*1024*1024 {
+		t.Fatalf("expected default multipart memory to be 4MB, got %d", cfg.MultipartMaxMemoryBytes)
+	}
+}
+
+type noopProducer struct{}
+
+func (noopProducer) Publish(context.Context, model.Task) error { return nil }
+
+type noopObjectStore struct{}
+
+func (noopObjectStore) Upload(context.Context, string, io.Reader, int64, string) error { return nil }
+
+type noopIdempotencyStore struct{}
+
+func (noopIdempotencyStore) Reserve(context.Context, string, string, string) (idempotency.ReserveResult, error) {
+	return idempotency.ReserveResult{State: idempotency.ReserveNew}, nil
+}
+
+func (noopIdempotencyStore) Complete(context.Context, string, string, string, idempotency.CachedResponse) error {
+	return nil
+}
+
+func (noopIdempotencyStore) Abort(context.Context, string, string, string) error { return nil }
+
+func (noopIdempotencyStore) Close() error { return nil }
+
+func TestHandleUploadRequiresTenantContext(t *testing.T) {
+	req := httptest.NewRequest("POST", "/v1/upload", nil)
+	rr := httptest.NewRecorder()
+
+	handler := handleUpload(1024*1024, 64*1024, noopProducer{}, noopObjectStore{}, noopIdempotencyStore{})
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != 401 {
+		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+}
+
+func TestHandleUploadRejectsOversizedMultipartBody(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "big.txt")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("a"), 2048)); err != nil {
+		t.Fatalf("write file body: %v", err)
+	}
+	if err := writer.WriteField("permission", "internal"); err != nil {
+		t.Fatalf("write field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
+
+	rr := httptest.NewRecorder()
+	handler := handleUpload(1024, 512, noopProducer{}, noopObjectStore{}, noopIdempotencyStore{})
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != 413 {
+		t.Fatalf("expected 413 for oversized upload, got %d", rr.Code)
+	}
+	if got := rr.Body.String(); got == "" || !bytes.Contains([]byte(got), []byte("file too large")) {
+		t.Fatalf("expected file-too-large message, got %q", got)
 	}
 }

@@ -32,3 +32,9 @@ Thumbs.db
 # Local secrets (do not commit real credentials)
 secrets/dev/*
 !secrets/dev/.gitkeep
+
+# Local eval artifacts
+docs/evals/reports/
+
+# Local learning plans
+plan/

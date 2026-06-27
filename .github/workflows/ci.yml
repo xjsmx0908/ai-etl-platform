@@ -47,6 +47,17 @@ jobs:
       - name: Go test
         run: go test ./... -count=1
 
+  eval:
+    name: Deterministic RAG Eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run deterministic eval
+        run: python3 scripts/run-evals.py --min-hit-rate 0.90 --max-wait 180
+
   python:
     name: Python Tests (doc-parser-service)
     runs-on: ubuntu-latest
@@ -119,6 +130,7 @@ jobs:
     if: ${{ always() }}
     needs:
       - go
+      - eval
       - python
       - compose
       - trivy
@@ -126,11 +138,13 @@ jobs:
       - name: Enforce all required jobs passed
         run: |
           echo "go=${{ needs.go.result }}"
+          echo "eval=${{ needs.eval.result }}"
           echo "python=${{ needs.python.result }}"
           echo "compose=${{ needs.compose.result }}"
           echo "trivy=${{ needs.trivy.result }}"
 
           [ "${{ needs.go.result }}" = "success" ] || exit 1
+          [ "${{ needs.eval.result }}" = "success" ] || exit 1
           [ "${{ needs.python.result }}" = "success" ] || exit 1
           [ "${{ needs.compose.result }}" = "success" ] || exit 1
           [ "${{ needs.trivy.result }}" = "success" ] || exit 1

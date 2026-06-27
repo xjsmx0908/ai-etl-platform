@@ -110,3 +110,10 @@ type Embedder interface {
 	Embed(ctx context.Context, chunk *Chunk) error
 	Close() error
 }
+
+// FullTextSink accepts chunks that should be indexed to a full-text engine asynchronously.
+// Errors from this sink should not block the primary vector write path.
+type FullTextSink interface {
+	Enqueue(ctx context.Context, chunk Chunk) error
+	Close() error
+}

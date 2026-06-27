@@ -15,7 +15,11 @@ HTTP POST /upload ─────►│  Gateway ──► Kafka ──► Worke
                         │                         └─ Qdrant Upsert     │
                         │                                             │
 HTTP POST /query ──────►│  RAG Query Service                          │
-                        │    ├─ Hybrid Search (Dense + Sparse)        │
+                        │    ├─ Retrieval Gateway                     │
+                        │    │   ├─ Query Router                      │
+                        │    │   ├─ Qdrant + Elasticsearch Recall     │
+                        │    │   ├─ RRF Fusion + Reranker             │
+                        │    │   └─ Redis Semantic Cache              │
                         │    └─ LLM Generation                        │
                         │                                             │
                         │  Redis (Checkpoint)  ·  Kafka DLQ (死信)     │
@@ -163,10 +167,34 @@ REDIS_PASSWORD=your-redis-password
 | `STORE_ENDPOINT` | `http://localhost:6333` | Qdrant 地址 |
 | `STORE_API_KEY` | _(空)_ | Qdrant Cloud 鉴权 |
 | `STORE_COLLECTION` | `documents` | 集合名 |
+| **Elasticsearch（最终一致性全文索引）** | | |
+| `ES_ADDRESS` | `http://elasticsearch:9200` | Elasticsearch 地址 |
+| `ES_API_KEY` | _(空)_ | Elasticsearch API Key（可选） |
+| `ES_INDEX` | `documents_text` | 全文索引名称 |
+| `ES_QUEUE_KEY` | `es:index:retry` | ES 重试队列 Redis Key |
+| `ES_DEADLETTER_KEY` | `es:index:deadletter` | ES 死信队列 Redis Key |
+| `ES_REPLAY_PERIOD` | `2s` | 重放轮询周期 |
+| `ES_MAX_RETRIES` | `12` | 单条消息最大重试次数 |
+| `ES_RETRY_BASE_BACKOFF` | `2s` | 重试基础退避时间 |
+| `ES_RETRY_MAX_BACKOFF` | `5m` | 重试最大退避时间 |
+| `ES_RETRY_JITTER` | `0.2` | 退避抖动比例（0~1） |
 | **BM25 Sparse（混合检索）** | | |
 | `SPARSE_K1` | `1.2` | BM25 k1 参数 |
 | `SPARSE_B` | `0.75` | BM25 b 参数 |
 | `SPARSE_AVG_DL` | `256` | 平均文档长度 |
+| **Retrieval Gateway（多路召回）** | | |
+| `RETRIEVAL_TIMEOUT` | `300ms` | Scatter-Gather 召回总超时 |
+| `RETRIEVAL_CANDIDATE_K` | `50` | 每路粗召回候选数量 |
+| `RETRIEVAL_FINAL_TOP_K` | `5` | 请求未传 `top_k` 时的默认上下文数量 |
+| `RETRIEVAL_ENABLE_ES` | `true` | 是否启用 Elasticsearch BM25 召回 |
+| `RETRIEVAL_ENABLE_RERANK` | `false` | 是否启用 HTTP Cross-Encoder Reranker |
+| `RERANK_ENDPOINT` | _(空)_ | Reranker HTTP 端点 |
+| `RERANK_API_KEY` | _(空)_ | Reranker API Key（可选） |
+| `RERANK_MODEL` | `bge-reranker-base` | Reranker 模型名 |
+| `SEMANTIC_CACHE_ENABLED` | `true` | 是否启用 Redis 语义缓存 |
+| `SEMANTIC_CACHE_TTL` | `10m` | 检索缓存 TTL |
+| `SEMANTIC_CACHE_THRESHOLD` | `0.92` | 语义缓存向量相似度阈值 |
+| `SEMANTIC_CACHE_MAX_ENTRIES` | `128` | 每个租户权限范围保留的最近查询数量 |
 | **Kafka** | | |
 | `KAFKA_BROKERS` | `localhost:9092` | Broker 地址 |
 | `KAFKA_TOPIC` | `doc-processing` | 输入 Topic |
@@ -189,7 +217,7 @@ REDIS_PASSWORD=your-redis-password
 | `UPLOAD_DIR` | `/data/uploads` | 文件上传存储目录 |
 | `MAX_UPLOAD_SIZE_MB` | `512` | 最大上传文件大小(MB) |
 
-敏感变量支持 `*_FILE` 读取（例如 `JWT_SECRET_FILE`、`EMBED_API_KEY_FILE`、`LLM_API_KEY_FILE`、`STORE_API_KEY_FILE`、`REDIS_PASSWORD_FILE`、`S3_ACCESS_KEY_FILE`、`S3_SECRET_KEY_FILE`、`PARSER_INTERNAL_TOKEN_FILE`）。读取优先级：`KEY` > `KEY_FILE` > 默认值。
+敏感变量支持 `*_FILE` 读取（例如 `JWT_SECRET_FILE`、`EMBED_API_KEY_FILE`、`LLM_API_KEY_FILE`、`STORE_API_KEY_FILE`、`ES_API_KEY_FILE`、`REDIS_PASSWORD_FILE`、`S3_ACCESS_KEY_FILE`、`S3_SECRET_KEY_FILE`、`PARSER_INTERNAL_TOKEN_FILE`）。读取优先级：`KEY` > `KEY_FILE` > 默认值。
 
 ### 2.5 Docker Compose 关键说明
 
@@ -206,12 +234,12 @@ REDIS_PASSWORD=your-redis-password
 ### 3.1 启动全套服务
 
 ```bash
-# 后台启动（包含 Kafka + Redis + Qdrant + Pipeline + Kafka-UI）
+# 后台启动（包含 Kafka + Redis + Qdrant + Elasticsearch + Pipeline + Kafka-UI）
 docker compose up -d
 ```
 
 首次启动会自动：
-- 拉取 Kafka、Redis、Qdrant、Kafka-UI 镜像
+- 拉取 Kafka、Redis、Qdrant、Elasticsearch、Kafka-UI 镜像
 - 编译 Go 源码为 Docker 镜像
 - 按依赖顺序启动（基础设施就绪后才启动应用）
 
@@ -219,6 +247,7 @@ docker compose up -d
 - Kafka: `bitnamilegacy/kafka:3.7.1`
 - Redis: `redis:7-alpine`
 - Qdrant: `qdrant/qdrant:v1.14.1`
+- Elasticsearch: `docker.elastic.co/elasticsearch/elasticsearch:8.14.3`
 - Kafka UI: `provectuslabs/kafka-ui:latest`
 
 ### 3.2 确认服务状态
@@ -590,7 +619,9 @@ ai-etl-pipeline/
 │   ├── kafka/kafka.go           # Kafka Consumer + Producer + DLQ
 │   ├── checkpoint/checkpoint.go # Redis Checkpoint（断点续传）
 │   ├── metrics/collector.go     # 结构化日志 + 指标采集
-│   ├── query/service.go         # RAG Query Service（Hybrid Search + LLM + 熔断器）
+│   ├── query/service.go         # RAG Query Service（调用 Retrieval + LLM + 熔断器）
+│   ├── retrieval/               # Query Router + 多路召回 + 融合 + Rerank + 缓存
+│   ├── es/                      # Elasticsearch 全文索引与重试队列
 │   ├── auth/auth.go             # JWT 鉴权 + RBAC + 租户隔离
 │   ├── circuit/circuit.go       # 熔断器（Sony gobreaker 封装）
 │   ├── s3/client.go             # MinIO/S3 对象存储客户端
@@ -616,7 +647,7 @@ ai-etl-pipeline/
 | 特性 | 实现 |
 |------|------|
 | **语义切块** | Markdown 标题（H1-H6）自动分块 + 短段落智能合并 + Overlap |
-| **Hybrid Search** | Dense Vector (OpenAI 兼容/Ollama) + Sparse Vector (BM25) 双路检索，RRF 融合 |
+| **Hybrid Retrieval** | Query Router + Qdrant Dense/Sparse + Elasticsearch BM25 并发召回，RRF 融合、Rerank 和缓存降级 |
 | **数据血缘** | 每个 Chunk 携带 DocID、FileHash(SHA-256)、Permission、CreatedAt |
 | **At-Least-Once** | Kafka 手动 Commit + Redis Checkpoint 保证不丢数据 |
 | **限流 & 重试** | 令牌桶限流 + 指数退避重试 + DLQ 兜底 |

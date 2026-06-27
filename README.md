@@ -119,6 +119,22 @@ bash scripts/e2e-smoke.sh
 
 该脚本会启动本地 `docker compose` 全链路，并用 mock OpenAI 服务验证 `上传 -> Kafka -> 解析 -> 向量化 -> 入库 -> 查询`。
 
+### 6. 评测闭环
+
+```bash
+python3 scripts/run-evals.py
+```
+
+该脚本会用 `docs/evals/golden-set.json` 做确定性 retrieval 回归评测，并输出 JSON/Markdown 报告。
+
+### 7. 轻量压测
+
+```bash
+python3 scripts/load-test.py --requests 40 --concurrency 5
+```
+
+该脚本用于快速观察 `/v1/query` 的延迟、错误率和命中率。
+
 ## 🔧 开发指南
 
 ### Go 服务开发
@@ -196,7 +212,11 @@ python -m app.main
 ### Query API (Go)
 - ✅ JWT 鉴权 + RBAC
 - ✅ 租户级限流
-- ✅ Hybrid Search（Dense + Sparse）
+- ✅ Query Router（精确锚点 / 语义 / 混合意图）
+- ✅ Scatter-Gather 多路召回（Qdrant Dense+Sparse + Elasticsearch BM25）
+- ✅ RRF 融合去重 + 单路故障降级
+- ✅ 可插拔 HTTP Cross-Encoder Reranker
+- ✅ Redis 语义缓存（tenant + permission scope 隔离）
 - ✅ RAG 查询（向量检索 + LLM）
 - ✅ MinIO 文件上传
 - ✅ API 版本控制
@@ -224,9 +244,22 @@ EMBED_DIMENSION=768
 LLM_ENDPOINT=http://host.docker.internal:11434/v1
 LLM_MODEL=qwen2.5:7b
 
+# Retrieval Gateway
+RETRIEVAL_TIMEOUT=300ms
+RETRIEVAL_CANDIDATE_K=50
+RETRIEVAL_FINAL_TOP_K=5
+RETRIEVAL_ENABLE_ES=true
+RETRIEVAL_ENABLE_RERANK=false
+SEMANTIC_CACHE_ENABLED=true
+SEMANTIC_CACHE_THRESHOLD=0.92
+
 # 直接环境变量（可选，优先级高于 *_FILE）
 JWT_SECRET=
 PARSER_INTERNAL_TOKEN=
+
+# 上传限制（Query API）
+MAX_UPLOAD_SIZE_MB=512
+MULTIPART_MAX_MEMORY_MB=4
 
 # Docker secrets 文件路径覆盖（可选）
 # JWT_SECRET_FILE_PATH=./secrets/dev/jwt_secret

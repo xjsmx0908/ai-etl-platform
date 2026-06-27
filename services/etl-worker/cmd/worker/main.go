@@ -5,18 +5,22 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"ai-etl-pipeline/internal/checkpoint"
+	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/embedder"
+	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/kafka"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/pipeline"
+	"ai-etl-pipeline/internal/prometheus"
 	"ai-etl-pipeline/internal/store"
 	"ai-etl-pipeline/internal/tracing"
 )
@@ -51,6 +55,11 @@ func main() {
 	defer tracingShutdown()
 
 	mc := metrics.NewCollector(500)
+	prom := prometheus.New("ai_etl")
+	circuit.SetStateObserver(prom.SetCircuitState)
+	prom.DLQMessages.WithLabelValues("task_exhausted_retries").Add(0)
+	metricsPort := config.EnvInt("WORKER_METRICS_PORT", 8081)
+	metricsSrv := startMetricsServer(metricsPort, prom)
 
 	emb, err := embedder.NewHTTPEmbedder(cfg)
 	if err != nil {
@@ -78,7 +87,19 @@ func main() {
 		slog.Error("failed to create DLQ", "error", err)
 		os.Exit(1)
 	}
+	dlq = &instrumentedDLQ{delegate: dlq, prom: prom}
 	defer dlq.Close()
+
+	fullTextSink, err := newFullTextSink(cfg)
+	if err != nil {
+		slog.Error("failed to create full-text sink", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if fullTextSink != nil {
+			_ = fullTextSink.Close()
+		}
+	}()
 
 	source, err := newTaskSource(cfg, dlq)
 	if err != nil {
@@ -88,7 +109,7 @@ func main() {
 	defer source.Close()
 
 	// Build Pipeline
-	p := pipeline.New(cfg, emb, storer, mc, ckpt, dlq)
+	p := pipeline.NewWithSinks(cfg, emb, storer, fullTextSink, mc, ckpt, dlq)
 
 	// Start Pipeline
 	ctx, cancel := context.WithCancel(context.Background())
@@ -104,6 +125,11 @@ func main() {
 	slog.Info("shutdown signal received", "signal", received.String())
 
 	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("metrics server shutdown failed", "error", err)
+	}
 
 	drainDone := make(chan struct{})
 	go func() {
@@ -122,6 +148,53 @@ func main() {
 	mc.Stop()
 	mc.Summary()
 	slog.Info("worker shutdown complete")
+}
+
+func startMetricsServer(port int, prom *prometheus.Metrics) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", prom.Handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ok")
+	})
+
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadTimeout:       5 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+
+	go func() {
+		slog.Info("worker metrics server started", "port", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("worker metrics server error", "error", err)
+		}
+	}()
+	return srv
+}
+
+type instrumentedDLQ struct {
+	delegate model.DLQStore
+	prom     *prometheus.Metrics
+}
+
+func (d *instrumentedDLQ) Push(ctx context.Context, msg model.DLQMessage) error {
+	if err := d.delegate.Push(ctx, msg); err != nil {
+		return err
+	}
+	d.prom.DLQMessages.WithLabelValues("task_exhausted_retries").Inc()
+	return nil
+}
+
+func (d *instrumentedDLQ) List(ctx context.Context) ([]model.DLQMessage, error) {
+	return d.delegate.List(ctx)
+}
+
+func (d *instrumentedDLQ) Close() error {
+	return d.delegate.Close()
 }
 
 func newStorer(cfg config.Config) (model.Storer, error) {
@@ -155,4 +228,34 @@ func newTaskSource(cfg config.Config, dlq model.DLQStore) (model.TaskSource, err
 		return kafka.NewMockSource(tasks, dlq), nil
 	}
 	return kafka.NewSource(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, dlq)
+}
+
+func newFullTextSink(cfg config.Config) (model.FullTextSink, error) {
+	indexer, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	queue, err := es.NewRedisRetryQueue(
+		cfg.RedisAddr,
+		cfg.RedisPassword,
+		cfg.RedisDB,
+		cfg.ESQueueKey,
+		cfg.ESDeadLetterKey,
+		cfg.ESReplayPeriod,
+	)
+	if err != nil {
+		_ = indexer.Close()
+		return nil, err
+	}
+
+	return es.NewAsyncSink(
+		indexer,
+		queue,
+		cfg.ESReplayPeriod,
+		cfg.ESMaxRetries,
+		cfg.ESRetryBaseBackoff,
+		cfg.ESRetryMaxBackoff,
+		cfg.ESRetryJitter,
+	), nil
 }

@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 MOCK_PORT="${MOCK_PORT:-18080}"
-EMBED_DIMENSION="${EMBED_DIMENSION:-8}"
+EMBED_DIMENSION="${EMBED_DIMENSION:-768}"
 TENANT_ID="${TENANT_ID:-tenant-e2e}"
 QUERY_TOP_K="${QUERY_TOP_K:-3}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-180}"
@@ -14,6 +14,7 @@ JWT_SECRET="${JWT_SECRET:-change-me-in-production-please-use-32-plus-chars}"
 E2E_KEEP_SERVICES="${E2E_KEEP_SERVICES:-0}"
 DOC_PERMISSION="${DOC_PERMISSION:-internal}"
 KAFKA_TOPIC="${KAFKA_TOPIC:-doc-processing}"
+EXTERNAL_LLM_MODE="${EXTERNAL_LLM_MODE:-0}"
 
 TMP_DIR="$(mktemp -d)"
 MOCK_LOG="${TMP_DIR}/mock-openai.log"
@@ -35,29 +36,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[e2e] starting mock model server on :${MOCK_PORT}"
-python3 scripts/mock-openai-server.py --port "${MOCK_PORT}" --dim "${EMBED_DIMENSION}" >"${MOCK_LOG}" 2>&1 &
-MOCK_PID=$!
+if [[ "${EXTERNAL_LLM_MODE}" != "1" ]]; then
+  echo "[e2e] starting mock model server on :${MOCK_PORT}"
+  python3 scripts/mock-openai-server.py --port "${MOCK_PORT}" --dim "${EMBED_DIMENSION}" >"${MOCK_LOG}" 2>&1 &
+  MOCK_PID=$!
 
-for _ in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:${MOCK_PORT}/healthz" >/dev/null; then
-    break
-  fi
-  sleep 1
-done
-curl -fsS "http://127.0.0.1:${MOCK_PORT}/healthz" >/dev/null
+  for _ in $(seq 1 30); do
+    if curl -fsS "http://127.0.0.1:${MOCK_PORT}/healthz" >/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  curl -fsS "http://127.0.0.1:${MOCK_PORT}/healthz" >/dev/null
+else
+  echo "[e2e] EXTERNAL_LLM_MODE=1, using LLM/Embedding config from .env or shell env"
+fi
 
 export ENVIRONMENT=staging
 export WORKER_REPLICAS=1
 export API_REPLICAS=1
 export EMBED_DIMENSION
-export EMBED_MODEL=smoke-embed
-export LLM_MODEL=smoke-chat
-export EMBED_ENDPOINT="http://host.docker.internal:${MOCK_PORT}/v1/embeddings"
-export LLM_ENDPOINT="http://host.docker.internal:${MOCK_PORT}/v1/chat/completions"
-export JWT_SECRET
 export REDIS_ADDR=redis:6379
 export REDIS_DB=0
+
+if [[ "${EXTERNAL_LLM_MODE}" != "1" ]]; then
+  export EMBED_MODEL=smoke-embed
+  export LLM_MODEL=smoke-chat
+  export EMBED_ENDPOINT="http://host.docker.internal:${MOCK_PORT}/v1/embeddings"
+  export LLM_ENDPOINT="http://host.docker.internal:${MOCK_PORT}/v1/chat/completions"
+  export JWT_SECRET
+fi
 
 echo "[e2e] starting docker compose stack"
 docker compose up -d --build
@@ -76,6 +84,21 @@ if [[ "${api_healthy}" != "1" ]]; then
   echo "[e2e] query-api not healthy in time" >&2
   docker compose logs --tail=120 query-api >&2 || true
   exit 1
+fi
+
+if [[ "${EXTERNAL_LLM_MODE}" == "1" ]]; then
+  runtime_jwt_secret="$(
+    docker compose exec -T query-api sh -c '
+      if [ -n "${JWT_SECRET:-}" ]; then
+        printf "%s" "${JWT_SECRET}"
+      elif [ -f /run/secrets/jwt_secret ]; then
+        cat /run/secrets/jwt_secret
+      fi
+    ' 2>/dev/null || true
+  )"
+  if [[ -n "${runtime_jwt_secret}" ]]; then
+    JWT_SECRET="${runtime_jwt_secret}"
+  fi
 fi
 
 echo "[e2e] ensuring kafka topic exists: ${KAFKA_TOPIC}"
@@ -175,8 +198,10 @@ if [[ "${success}" != "1" ]]; then
   echo "[e2e] query did not return indexed sources within ${MAX_WAIT_SECONDS}s" >&2
   cat "${TMP_DIR}/query.json" >&2 || true
   docker compose logs --tail=120 query-api etl-worker parser-service >&2 || true
-  echo "[e2e] mock model log:" >&2
-  tail -n 80 "${MOCK_LOG}" >&2 || true
+  if [[ "${EXTERNAL_LLM_MODE}" != "1" ]]; then
+    echo "[e2e] mock model log:" >&2
+    tail -n 80 "${MOCK_LOG}" >&2 || true
+  fi
   exit 1
 fi
 

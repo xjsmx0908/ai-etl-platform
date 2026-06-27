@@ -1,0 +1,137 @@
+package retrieval
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+// ElasticRetriever performs tenant- and permission-filtered BM25 retrieval.
+type ElasticRetriever struct {
+	address string
+	apiKey  string
+	index   string
+	client  *http.Client
+}
+
+// NewElasticRetriever creates an Elasticsearch retrieval backend.
+func NewElasticRetriever(address, apiKey, index string, client *http.Client) *ElasticRetriever {
+	return &ElasticRetriever{
+		address: trimRightSlash(address),
+		apiKey:  strings.TrimSpace(apiKey),
+		index:   strings.TrimSpace(index),
+		client:  client,
+	}
+}
+
+func (r *ElasticRetriever) Name() string {
+	return SourceElasticsearch
+}
+
+func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Candidate, error) {
+	if r.address == "" || r.index == "" {
+		return nil, fmt.Errorf("elasticsearch address and index are required")
+	}
+	if req.TenantID == "" {
+		return nil, fmt.Errorf("tenant_id is required")
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	allowed := req.AllowedPermissions
+	if len(allowed) == 0 {
+		allowed = []string{"public"}
+	}
+
+	body := map[string]interface{}{
+		"size": limit,
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"must": []map[string]interface{}{
+					{
+						"match": map[string]interface{}{
+							"content": map[string]interface{}{
+								"query": req.Question,
+							},
+						},
+					},
+				},
+				"filter": []map[string]interface{}{
+					{
+						"term": map[string]interface{}{
+							"tenant_id": req.TenantID,
+						},
+					},
+					{
+						"terms": map[string]interface{}{
+							"permission": allowed,
+						},
+					},
+				},
+			},
+		},
+		"_source": []string{"chunk_id", "doc_id", "tenant_id", "content"},
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal es query: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/%s/_search", r.address, url.PathEscape(r.index))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("create es search request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if r.apiKey != "" {
+		httpReq.Header.Set("Authorization", "ApiKey "+r.apiKey)
+	}
+
+	resp, err := r.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("es search failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("es search error %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var result struct {
+		Hits struct {
+			Hits []struct {
+				Score  float64 `json:"_score"`
+				Source struct {
+					ChunkID  string `json:"chunk_id"`
+					DocID    string `json:"doc_id"`
+					TenantID string `json:"tenant_id"`
+					Content  string `json:"content"`
+				} `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode es response: %w", err)
+	}
+
+	candidates := make([]Candidate, 0, len(result.Hits.Hits))
+	for i, hit := range result.Hits.Hits {
+		candidates = append(candidates, Candidate{
+			ChunkID:  hit.Source.ChunkID,
+			DocID:    hit.Source.DocID,
+			Content:  hit.Source.Content,
+			TenantID: hit.Source.TenantID,
+			Score:    hit.Score,
+			Source:   SourceElasticsearch,
+			Rank:     i + 1,
+		})
+	}
+	return candidates, nil
+}

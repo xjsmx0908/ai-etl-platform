@@ -18,6 +18,8 @@ ALLOWED_EXTENSIONS = {
     ".pdf", ".docx", ".doc", ".txt", ".md", ".markdown", ".csv", ".log", ".rtf", ".odt"
 }
 
+STREAM_CHUNK_SIZE = 1024 * 1024
+
 
 @router.post("/parse", response_model=ParseResponse)
 async def parse_document_endpoint(
@@ -38,24 +40,33 @@ async def parse_document_endpoint(
     """
     start_time = time.time()
     tmp_path = None
+    file_size = 0
+    content_hash = None
     
     try:
         settings = get_settings()
         max_file_size_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
 
-        # Save uploaded file to temp
+        # Save uploaded file to temp in chunks to avoid loading the entire file into memory.
         suffix = os.path.splitext(file.filename or "")[1].lower()
         if suffix not in ALLOWED_EXTENSIONS:
             raise HTTPException(status_code=415, detail=f"unsupported file type: {suffix or 'unknown'}")
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            content = await file.read(max_file_size_bytes + 1)
-            if len(content) > max_file_size_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"file too large (max {settings.MAX_FILE_SIZE_MB}MB)"
-                )
-            tmp.write(content)
+            hasher = hashlib.sha256()
+            while True:
+                chunk = await file.read(STREAM_CHUNK_SIZE)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > max_file_size_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"file too large (max {settings.MAX_FILE_SIZE_MB}MB)"
+                    )
+                tmp.write(chunk)
+                hasher.update(chunk)
             tmp_path = tmp.name
+            content_hash = hasher.hexdigest()
         
         logger.info(f"Processing file: {file.filename} -> {tmp_path}")
         
@@ -64,7 +75,7 @@ async def parse_document_endpoint(
         
         # Generate file hash if not provided
         if not file_hash:
-            file_hash = hashlib.sha256(content).hexdigest()
+            file_hash = content_hash
         
         # Chunk text
         chunks = chunk_text(
