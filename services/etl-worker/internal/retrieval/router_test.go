@@ -20,6 +20,14 @@ func TestRouteQuery(t *testing.T) {
 			eWeight: 0.75,
 		},
 		{
+			name:    "short anchor token routes to exact keyword",
+			query:   "Find the omega-shared-window source for alpha040 with bronze queue fairness.",
+			want:    StrategyExactKeyword,
+			wantES:  true,
+			qWeight: 0.25,
+			eWeight: 0.75,
+		},
+		{
 			name:    "semantic question routes to semantic",
 			query:   "公司的报销制度是什么",
 			want:    StrategySemantic,

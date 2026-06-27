@@ -134,7 +134,7 @@ def http_json(
         except json.JSONDecodeError:
             payload = {"error": text}
         return e.code, payload
-    except urllib_error.URLError:
+    except (urllib_error.URLError, TimeoutError, ConnectionError, OSError):
         return 0, {}
 
 

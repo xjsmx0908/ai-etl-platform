@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	structuredTokenPattern = regexp.MustCompile(`(?i)(\b[A-Z]{1,10}[-_]?\d{4,}\b|\b\d{6,}\b|\b[0-9a-f]{8,}\b)`)
+	structuredTokenPattern = regexp.MustCompile(`(?i)(\b[A-Z]{1,10}[-_]?\d{3,}\b|\b\d{6,}\b|\b[0-9a-f]{8,}\b)`)
 	exactIntentKeywords    = []string{"订单", "工单", "合同", "编号", "错误码", "trace", "traceid", "request id", "email", "手机号"}
 	semanticIntentKeywords = []string{"是什么", "如何", "怎么", "为什么", "流程", "制度", "原则", "说明", "解释", "对比"}
 )
