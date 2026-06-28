@@ -4,7 +4,7 @@
 
 ## 文件说明
 
-- `golden-set.json`: 黄金样本集（当前 34 条）。
+- `golden-set.json`: 黄金样本集（当前 46 条）。
   - 可选字段：`acceptable_doc_ids`，允许一个 query 命中多个等价文档（可写 case id 或 doc_id）。
   - 可选字段：`expect_hit`，默认 `true`；`false` 表示负样本（断言不应命中目标文档）。
   - 可选字段：`max_strict_rank`，要求严格命中的最小排名上界（如 `1`/`3`）。
@@ -19,6 +19,20 @@
 ```bash
 python3 scripts/run-evals.py
 ```
+
+Reranker 策略专项验证：
+
+```bash
+docker run --rm \
+  -v /home/ubuntu/ai-projects/ai-etl-platform/services/etl-worker:/app \
+  -w /app golang:1.24 \
+  go test ./internal/retrieval -run TestEngineRerankPolicy -v
+```
+
+该测试构造两类确定性场景：
+
+- 语义查询：融合排序把干扰文档排第一，`RETRIEVAL_RERANK_POLICY=auto` 调用 reranker 后把目标文档提升到第一。
+- 精确查询：BM25/向量融合把精确订单文档排第一，`auto` 跳过 reranker；若改成 `always`，同一个 reranker 会把干扰文档排第一，用于证明全量 rerank 的退化风险。
 
 常用参数：
 
