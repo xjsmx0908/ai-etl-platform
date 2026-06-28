@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+const (
+	// RerankPolicyAuto routes only fuzzy/semantic searches through reranking.
+	RerankPolicyAuto = "auto"
+	// RerankPolicyAlways preserves the previous behavior for offline experiments.
+	RerankPolicyAlways = "always"
+)
+
 // Config holds all application configuration with environment variable overrides.
 type Config struct {
 	// Pipeline
@@ -67,6 +74,7 @@ type Config struct {
 	RetrievalFinalTopK      int
 	RetrievalEnableES       bool
 	RetrievalEnableRerank   bool
+	RetrievalRerankPolicy   string
 	RerankEndpoint          string
 	RerankAPIKey            string
 	RerankModel             string
@@ -176,6 +184,7 @@ func Load() Config {
 		RetrievalFinalTopK:      EnvInt("RETRIEVAL_FINAL_TOP_K", 5),
 		RetrievalEnableES:       EnvBool("RETRIEVAL_ENABLE_ES", true),
 		RetrievalEnableRerank:   EnvBool("RETRIEVAL_ENABLE_RERANK", false),
+		RetrievalRerankPolicy:   strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
 		RerankEndpoint:          EnvStr("RERANK_ENDPOINT", ""),
 		RerankAPIKey:            EnvSecret("RERANK_API_KEY", ""),
 		RerankModel:             EnvStr("RERANK_MODEL", "bge-reranker-base"),
@@ -278,6 +287,11 @@ func (c Config) Validate() error {
 	}
 	if c.RetrievalFinalTopK < 1 || c.RetrievalFinalTopK > 100 {
 		return fmt.Errorf("RETRIEVAL_FINAL_TOP_K must be between 1 and 100, got %d", c.RetrievalFinalTopK)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.RetrievalRerankPolicy)) {
+	case RerankPolicyAuto, RerankPolicyAlways:
+	default:
+		return fmt.Errorf("RETRIEVAL_RERANK_POLICY must be %q or %q, got %q", RerankPolicyAuto, RerankPolicyAlways, c.RetrievalRerankPolicy)
 	}
 	if c.SemanticCacheTTL <= 0 {
 		return fmt.Errorf("SEMANTIC_CACHE_TTL must be > 0, got %s", c.SemanticCacheTTL)

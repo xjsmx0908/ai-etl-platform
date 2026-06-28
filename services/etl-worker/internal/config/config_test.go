@@ -76,6 +76,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.RetrievalEnableRerank {
 		t.Error("expected RetrievalEnableRerank=false")
 	}
+	if cfg.RetrievalRerankPolicy != RerankPolicyAuto {
+		t.Errorf("expected RetrievalRerankPolicy=auto, got %s", cfg.RetrievalRerankPolicy)
+	}
 	if !cfg.SemanticCacheEnabled {
 		t.Error("expected SemanticCacheEnabled=true")
 	}
@@ -109,6 +112,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("RETRIEVAL_FINAL_TOP_K", "7")
 	os.Setenv("RETRIEVAL_ENABLE_ES", "false")
 	os.Setenv("RETRIEVAL_ENABLE_RERANK", "true")
+	os.Setenv("RETRIEVAL_RERANK_POLICY", "always")
 	os.Setenv("RERANK_ENDPOINT", "http://reranker:8080/rerank")
 	os.Setenv("RERANK_API_KEY", "rk-test")
 	os.Setenv("RERANK_MODEL", "test-reranker")
@@ -135,6 +139,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("RETRIEVAL_FINAL_TOP_K")
 		os.Unsetenv("RETRIEVAL_ENABLE_ES")
 		os.Unsetenv("RETRIEVAL_ENABLE_RERANK")
+		os.Unsetenv("RETRIEVAL_RERANK_POLICY")
 		os.Unsetenv("RERANK_ENDPOINT")
 		os.Unsetenv("RERANK_API_KEY")
 		os.Unsetenv("RERANK_MODEL")
@@ -199,6 +204,9 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if !cfg.RetrievalEnableRerank {
 		t.Error("expected RetrievalEnableRerank=true")
+	}
+	if cfg.RetrievalRerankPolicy != RerankPolicyAlways {
+		t.Errorf("expected RetrievalRerankPolicy=always, got %s", cfg.RetrievalRerankPolicy)
 	}
 	if cfg.RerankEndpoint != "http://reranker:8080/rerank" {
 		t.Errorf("expected RerankEndpoint override, got %s", cfg.RerankEndpoint)
@@ -296,6 +304,15 @@ func TestValidate_ESReplayPeriodAndRetries(t *testing.T) {
 	cfg.ESRetryJitter = 1.1
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for ESRetryJitter > 1")
+	}
+}
+
+func TestValidate_RerankPolicy(t *testing.T) {
+	cfg := Load()
+	cfg.RetrievalRerankPolicy = "semantic-only"
+
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid rerank policy")
 	}
 }
 

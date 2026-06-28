@@ -12,9 +12,12 @@ Run with Docker Compose:
 
 ```bash
 RETRIEVAL_ENABLE_RERANK=true \
+RETRIEVAL_RERANK_POLICY=auto \
 RERANK_ENDPOINT=http://reranker-service:8091/rerank \
 docker compose --profile rerank up -d --build reranker-service query-api
 ```
+
+The Query API uses `RETRIEVAL_RERANK_POLICY=auto` by default: exact identifier and keyword queries keep the fused retrieval order, while semantic and hybrid queries call this service.
 
 API:
 
@@ -46,4 +49,3 @@ For local tests without downloading a model, set:
 ```bash
 RERANKER_BACKEND=lexical
 ```
-

@@ -191,10 +191,18 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 		return Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}, nil
 	}
 
-	ranked, err := e.reranker.Rerank(ctx, req.Question, fused, req.TopK)
-	if err != nil {
-		partialErrors = append(partialErrors, "reranker: "+err.Error())
-		ranked = topCandidates(fused, req.TopK)
+	ranked := topCandidates(fused, req.TopK)
+	if e.rerankerConfigured() {
+		if ok, reason := shouldRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused); ok {
+			reranked, err := e.reranker.Rerank(ctx, req.Question, fused, req.TopK)
+			if err != nil {
+				partialErrors = append(partialErrors, "reranker: "+err.Error())
+			} else {
+				ranked = reranked
+			}
+		} else {
+			slog.Debug("reranker skipped", "reason", reason, "strategy", route.Strategy, "tenant_id", req.TenantID)
+		}
 	}
 
 	if err := e.cache.Store(ctx, cacheKey, denseVector, ranked); err != nil {
@@ -218,6 +226,10 @@ func (e *Engine) Close() error {
 func (e *Engine) hasRetriever(name string) bool {
 	_, ok := e.retrievers[name]
 	return ok
+}
+
+func (e *Engine) rerankerConfigured() bool {
+	return e.cfg.RetrievalEnableRerank && strings.TrimSpace(e.cfg.RerankEndpoint) != ""
 }
 
 func (e *Engine) activeRetrievers(route Route) []Retriever {
