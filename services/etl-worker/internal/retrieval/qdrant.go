@@ -139,6 +139,7 @@ func (r *QdrantRetriever) Search(ctx context.Context, req SearchRequest) ([]Cand
 		if v, ok := p.Payload["tenant_id"].(string); ok {
 			c.TenantID = v
 		}
+		c.Metadata = exactMetadataFromPayload(p.Payload, req.ExactSchemaFields)
 		candidates = append(candidates, c)
 	}
 	return candidates, nil

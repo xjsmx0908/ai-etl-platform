@@ -131,7 +131,7 @@ func TestEngineRerankPolicy_SkipsRerankerWhenExactFusionIsBetter(t *testing.T) {
 	}
 }
 
-func TestEngineRerankPolicy_SkipsRerankerForUnroutedExactCandidateEvidence(t *testing.T) {
+func TestEngineRerankPolicy_ProtectsUnroutedExactCandidateEvidence(t *testing.T) {
 	embedServer := newPolicyEvalEmbedServer(t)
 	defer embedServer.Close()
 
@@ -167,8 +167,49 @@ func TestEngineRerankPolicy_SkipsRerankerForUnroutedExactCandidateEvidence(t *te
 	if got := firstChunkID(result); got != "unrouted-exact-target" {
 		t.Fatalf("expected candidate-aware exact protection to keep target first, got %q", got)
 	}
-	if reranker.calls != 0 {
-		t.Fatalf("expected reranker skipped by exact candidate evidence, got %d calls", reranker.calls)
+	if reranker.calls != 1 {
+		t.Fatalf("expected reranker called once before exact candidate pinning, got %d calls", reranker.calls)
+	}
+}
+
+func TestEngineRerankPolicy_ProtectsSchemaMetadataEvidence(t *testing.T) {
+	embedServer := newPolicyEvalEmbedServer(t)
+	defer embedServer.Close()
+
+	retrievers := map[string]Retriever{
+		SourceQdrant: staticPolicyEvalRetriever{
+			name: SourceQdrant,
+			candidates: []Candidate{
+				{ChunkID: "schema-exact-target", DocID: "doc-customer-reference", Content: "客户参考号当前处于已处理状态。", Metadata: map[string]string{"customer_ref": "x9k-77q-plum"}, Rank: 1},
+				{ChunkID: "schema-distractor", DocID: "doc-reference-guide", Content: "客户参考号通用处理说明。", Rank: 2},
+			},
+		},
+	}
+	req := Request{
+		Question:           "请解释客户参考号 x9k-77q-plum 的处理说明",
+		TopK:               1,
+		TenantID:           "tenant-policy-eval",
+		AllowedPermissions: []string{"public"},
+	}
+	reranker := &scoringPolicyEvalReranker{
+		scores: map[string]float64{
+			"schema-distractor":   0.99,
+			"schema-exact-target": 0.10,
+		},
+	}
+	engine := newPolicyEvalEngine(embedServer.URL, embedServer.Client(), retrievers, reranker, true, config.RerankPolicyAuto)
+	result, err := engine.Retrieve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retrieve with schema metadata exact protection: %v", err)
+	}
+	if result.Route.Strategy != StrategySemantic {
+		t.Fatalf("expected old route rules to classify query as semantic, got %+v", result.Route)
+	}
+	if got := firstChunkID(result); got != "schema-exact-target" {
+		t.Fatalf("expected schema metadata exact target first, got %q", got)
+	}
+	if reranker.calls != 1 {
+		t.Fatalf("expected reranker called before schema exact pinning, got %d calls", reranker.calls)
 	}
 }
 

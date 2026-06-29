@@ -277,6 +277,7 @@ services:
       - RETRIEVAL_ENABLE_ES=${RETRIEVAL_ENABLE_ES:-true}
       - RETRIEVAL_ENABLE_RERANK=${RETRIEVAL_ENABLE_RERANK:-false}
       - RETRIEVAL_RERANK_POLICY=${RETRIEVAL_RERANK_POLICY:-auto}
+      - RETRIEVAL_EXACT_SCHEMA_FIELDS=${RETRIEVAL_EXACT_SCHEMA_FIELDS:-doc_id,chunk_id,order_id,order_no,contract_id,contract_no,ticket_id,invoice_no,trace_id,request_id,customer_ref,email,phone,sku,user_id}
       - RERANK_ENDPOINT=${RERANK_ENDPOINT:-}
       - RERANK_API_KEY=${RERANK_API_KEY:-}
       - RERANK_MODEL=${RERANK_MODEL:-bge-reranker-base}

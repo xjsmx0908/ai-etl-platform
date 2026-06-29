@@ -133,6 +133,7 @@ func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 				},
 				"file_hash":  map[string]string{"type": "keyword"},
 				"created_at": map[string]string{"type": "date"},
+				"metadata":   map[string]string{"type": "flattened"},
 			},
 		},
 	}
@@ -180,14 +181,15 @@ func (i *HTTPIndexer) setHeaders(req *http.Request) {
 }
 
 type esChunkDoc struct {
-	ChunkID    string `json:"chunk_id"`
-	DocID      string `json:"doc_id"`
-	TenantID   string `json:"tenant_id"`
-	Content    string `json:"content"`
-	Permission string `json:"permission"`
-	ChunkIndex int    `json:"chunk_index"`
-	FileHash   string `json:"file_hash,omitempty"`
-	CreatedAt  string `json:"created_at"`
+	ChunkID    string            `json:"chunk_id"`
+	DocID      string            `json:"doc_id"`
+	TenantID   string            `json:"tenant_id"`
+	Content    string            `json:"content"`
+	Permission string            `json:"permission"`
+	ChunkIndex int               `json:"chunk_index"`
+	FileHash   string            `json:"file_hash,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	CreatedAt  string            `json:"created_at"`
 }
 
 func mapChunkToESDoc(chunk model.Chunk) esChunkDoc {
@@ -203,8 +205,20 @@ func mapChunkToESDoc(chunk model.Chunk) esChunkDoc {
 		Permission: normalizePermission(chunk.Permission),
 		ChunkIndex: chunk.Index,
 		FileHash:   chunk.FileHash,
+		Metadata:   copyMetadata(chunk.Metadata),
 		CreatedAt:  createdAt.UTC().Format(time.RFC3339Nano),
 	}
+}
+
+func copyMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		out[key] = value
+	}
+	return out
 }
 
 func normalizePermission(raw string) string {

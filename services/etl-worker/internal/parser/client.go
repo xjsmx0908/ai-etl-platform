@@ -54,6 +54,11 @@ func (c *Client) ParseFile(ctx context.Context, task model.Task) ([]model.Chunk,
 	if task.FileHash != "" {
 		_ = writer.WriteField("file_hash", task.FileHash)
 	}
+	if len(task.Metadata) > 0 {
+		if data, err := json.Marshal(task.Metadata); err == nil {
+			_ = writer.WriteField("metadata", string(data))
+		}
+	}
 
 	// Add file
 	part, err := writer.CreateFormFile("file", task.FilePath)
@@ -96,14 +101,15 @@ func (c *Client) ParseFile(ctx context.Context, task model.Task) ([]model.Chunk,
 		DocID    string `json:"doc_id"`
 		TenantID string `json:"tenant_id"`
 		Chunks   []struct {
-			ChunkID    string  `json:"chunk_id"`
-			DocID      string  `json:"doc_id"`
-			TenantID   string  `json:"tenant_id"`
-			Content    string  `json:"content"`
-			Index      int     `json:"index"`
-			TokenCount *int    `json:"token_count"`
-			Permission *string `json:"permission"`
-			FileHash   *string `json:"file_hash"`
+			ChunkID    string            `json:"chunk_id"`
+			DocID      string            `json:"doc_id"`
+			TenantID   string            `json:"tenant_id"`
+			Content    string            `json:"content"`
+			Index      int               `json:"index"`
+			TokenCount *int              `json:"token_count"`
+			Permission *string           `json:"permission"`
+			FileHash   *string           `json:"file_hash"`
+			Metadata   map[string]string `json:"metadata"`
 		} `json:"chunks"`
 		TotalChunks   int     `json:"total_chunks"`
 		ParseTimeMs   float64 `json:"parse_time_ms"`
@@ -133,6 +139,9 @@ func (c *Client) ParseFile(ctx context.Context, task model.Task) ([]model.Chunk,
 		}
 		if c.FileHash != nil {
 			chunk.FileHash = *c.FileHash
+		}
+		if len(c.Metadata) > 0 {
+			chunk.Metadata = c.Metadata
 		}
 		chunks = append(chunks, chunk)
 	}

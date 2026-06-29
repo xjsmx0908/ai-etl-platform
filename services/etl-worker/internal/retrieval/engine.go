@@ -164,6 +164,7 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 				Limit:              candidateLimit,
 				TenantID:           req.TenantID,
 				AllowedPermissions: req.AllowedPermissions,
+				ExactSchemaFields:  e.cfg.RetrievalExactSchemaFields,
 			})
 			resultCh <- backendResult{name: r.Name(), candidates: candidates, err: err}
 		}(retriever)
@@ -193,16 +194,26 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 
 	ranked := topCandidates(fused, req.TopK)
 	if e.rerankerConfigured() {
-		if ok, reason := shouldRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused); ok {
-			reranked, err := e.reranker.Rerank(ctx, req.Question, fused, req.TopK)
+		decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused)
+		rerankErr := ""
+		if decision.ShouldRerank {
+			rerankTopK := req.TopK
+			if decision.ProtectExactMatches {
+				rerankTopK = len(fused)
+			}
+			reranked, err := e.reranker.Rerank(ctx, req.Question, fused, rerankTopK)
 			if err != nil {
 				partialErrors = append(partialErrors, "reranker: "+err.Error())
+				rerankErr = err.Error()
 			} else {
-				ranked = reranked
+				if decision.ProtectExactMatches {
+					ranked = protectExactMatches(reranked, fused, decision.Evidence, req.TopK)
+				} else {
+					ranked = topCandidates(reranked, req.TopK)
+				}
 			}
-		} else {
-			slog.Debug("reranker skipped", "reason", reason, "strategy", route.Strategy, "tenant_id", req.TenantID)
 		}
+		e.logRerankDecision(req, route, decision, fused, ranked, rerankErr)
 	}
 
 	if err := e.cache.Store(ctx, cacheKey, denseVector, ranked); err != nil {
@@ -245,6 +256,61 @@ func (e *Engine) activeRetrievers(route Route) []Retriever {
 		}
 	}
 	return active
+}
+
+func (e *Engine) logRerankDecision(req Request, route Route, decision rerankDecision, fused, ranked []Candidate, rerankErr string) {
+	topFused := firstCandidateID(fused)
+	topFinal := firstCandidateID(ranked)
+	previousRank := rankOfCandidate(fused, topFinal)
+	rankDelta := 0
+	if previousRank > 0 {
+		rankDelta = previousRank - 1
+	}
+
+	slog.Info("retrieval rerank decision",
+		"tenant_id", req.TenantID,
+		"strategy", route.Strategy,
+		"rerank_policy", strings.ToLower(strings.TrimSpace(e.cfg.RetrievalRerankPolicy)),
+		"should_rerank", decision.ShouldRerank,
+		"reason", decision.Reason,
+		"protect_exact_matches", decision.ProtectExactMatches,
+		"exact_tokens_count", len(decision.Evidence.QueryTokens),
+		"exact_token_hashes", decision.Evidence.TokenHashes(),
+		"exact_match_candidates", decision.Evidence.MatchedCandidateCount(),
+		"top_fused_chunk_id", topFused,
+		"top_final_chunk_id", topFinal,
+		"top_fused_contains_exact", decision.Evidence.TopCandidateMatched,
+		"top_final_contains_exact", topCandidateMatches(decision.Evidence, ranked),
+		"top_final_previous_rank", previousRank,
+		"rank_delta", rankDelta,
+		"rerank_error", rerankErr != "",
+	)
+}
+
+func firstCandidateID(candidates []Candidate) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0].ChunkID
+}
+
+func rankOfCandidate(candidates []Candidate, id string) int {
+	if id == "" {
+		return 0
+	}
+	for i, candidate := range candidates {
+		if candidate.ChunkID == id {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func topCandidateMatches(evidence exactEvidence, candidates []Candidate) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	return evidence.MatchesCandidate(candidates[0])
 }
 
 func (e *Engine) embedQuestion(ctx context.Context, question string) ([]float64, error) {

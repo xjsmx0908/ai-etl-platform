@@ -29,3 +29,13 @@ Reason: exact-match protection should use both query intent and retrieval eviden
 Act: added broad exact-token extraction for emails, UUIDs, phone-like numbers, structured IDs, and mixed alphanumeric tokens with separators; added candidate evidence checks with separator normalization; `auto` now skips reranking for semantic/hybrid routes when exact candidate evidence exists.
 
 Refine: added tests proving an unrouted exact token query remains semantic under old route rules but is still protected because the fused candidates contain the exact token.
+
+## 2026-06-29T19:20:00+08:00 - Full Enterprise Rerank Guardrail
+
+Perceive: the candidate-aware policy still treated exact evidence as a rerank skip, and it did not carry business schema fields through ingestion, storage, retrieval, and evaluation.
+
+Reason: enterprise RAG needs layered protection rather than a larger keyword list. Rules catch obvious intent, schema fields carry business identifiers, retrieval evidence proves candidate-level exact matches, and protective rerank prevents a cross-encoder from demoting deterministic evidence.
+
+Act: added metadata propagation from upload to parser chunks, Qdrant, Elasticsearch, and candidates; added `RETRIEVAL_EXACT_SCHEMA_FIELDS`; added ES metadata exact-term recall; changed `auto` to rerank semantic/hybrid exact-evidence cases with exact-match pinning; added privacy-safe rerank decision logs.
+
+Refine: added unit tests for schema metadata evidence, Qdrant/ES metadata extraction, protective pinning, and engine behavior; extended the golden eval set with a metadata-only exact retrieval case.

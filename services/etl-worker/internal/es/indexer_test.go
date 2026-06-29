@@ -21,6 +21,7 @@ func TestMapChunkToESDoc_NormalizesPermissionAndCreatedAt(t *testing.T) {
 		Index:      1,
 		Permission: "UNKNOWN",
 		FileHash:   "abc",
+		Metadata:   map[string]string{"contract_no": "CN-2026-0001"},
 		CreatedAt:  time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC),
 	}
 	doc := mapChunkToESDoc(chunk)
@@ -30,6 +31,9 @@ func TestMapChunkToESDoc_NormalizesPermissionAndCreatedAt(t *testing.T) {
 	}
 	if doc.CreatedAt != "2026-05-24T09:00:00Z" {
 		t.Fatalf("unexpected created_at: %q", doc.CreatedAt)
+	}
+	if doc.Metadata["contract_no"] != "CN-2026-0001" {
+		t.Fatalf("expected metadata copied, got %+v", doc.Metadata)
 	}
 }
 
@@ -75,6 +79,7 @@ func TestHTTPIndexer_IndexChunk(t *testing.T) {
 		Content:    "content",
 		Index:      3,
 		Permission: "public",
+		Metadata:   map[string]string{"contract_no": "CN-2026-0001"},
 		CreatedAt:  time.Date(2026, 5, 24, 9, 1, 2, 0, time.UTC),
 	}
 	if err := idx.IndexChunk(context.Background(), chunk); err != nil {
@@ -92,6 +97,10 @@ func TestHTTPIndexer_IndexChunk(t *testing.T) {
 	}
 	if gotDoc["doc_id"] != "doc-1" {
 		t.Fatalf("expected doc_id=doc-1, got %#v", gotDoc["doc_id"])
+	}
+	metadata := gotDoc["metadata"].(map[string]interface{})
+	if metadata["contract_no"] != "CN-2026-0001" {
+		t.Fatalf("expected metadata indexed, got %#v", metadata)
 	}
 }
 

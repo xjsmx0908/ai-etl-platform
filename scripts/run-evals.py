@@ -41,6 +41,7 @@ class EvalCase:
     permission: str
     content: str
     query: str
+    metadata: Dict[str, str] = field(default_factory=dict)
     query_permission: str = ""
     acceptable_doc_ids: List[str] = field(default_factory=list)
     expect_hit: bool = True
@@ -244,8 +245,15 @@ func main() {
             pass
 
 
-def create_multipart_body(field_name: str, filename: str, content: bytes, permission: str) -> Tuple[bytes, str]:
-    boundary = f"----aietl{hashlib.sha256((filename + permission).encode()).hexdigest()[:24]}"
+def create_multipart_body(
+    field_name: str,
+    filename: str,
+    content: bytes,
+    permission: str,
+    metadata: Dict[str, str] | None = None,
+) -> Tuple[bytes, str]:
+    metadata_json = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
+    boundary = f"----aietl{hashlib.sha256((filename + permission + metadata_json).encode()).hexdigest()[:24]}"
     lines: List[bytes] = []
 
     def add_part(name: str, value: str) -> None:
@@ -265,6 +273,8 @@ def create_multipart_body(field_name: str, filename: str, content: bytes, permis
     lines.append(b"\r\n")
 
     add_part("permission", permission)
+    if metadata:
+        add_part("metadata", metadata_json)
 
     lines.append(f"--{boundary}--\r\n".encode())
     body = b"".join(lines)
@@ -278,6 +288,7 @@ def upload_case(api_base: str, token: str, case: EvalCase) -> str:
         case.filename,
         case.content.encode("utf-8"),
         case.permission,
+        case.metadata,
     )
     headers = {
         "Authorization": f"Bearer {token}",
@@ -573,6 +584,7 @@ def load_cases(path: Path) -> List[EvalCase]:
                 permission=str(raw.get("permission", "internal")),
                 content=str(raw["content"]),
                 query=str(raw["query"]),
+                metadata={str(k): str(v) for k, v in raw.get("metadata", {}).items()},
                 query_permission=str(raw.get("query_permission", "")),
                 acceptable_doc_ids=[str(v) for v in raw.get("acceptable_doc_ids", [])],
                 expect_hit=bool(raw.get("expect_hit", True)),

@@ -103,17 +103,22 @@ func (q *QdrantStorer) Upsert(ctx context.Context, chunk model.Chunk) error {
 		}
 	}
 
+	payload := map[string]interface{}{
+		"chunk_id":   chunk.ChunkID,
+		"doc_id":     chunk.DocID,
+		"tenant_id":  chunk.TenantID,
+		"content":    chunk.Content,
+		"index":      chunk.Index,
+		"permission": normalizeChunkPermission(chunk.Permission),
+	}
+	if len(chunk.Metadata) > 0 {
+		payload["metadata"] = chunk.Metadata
+	}
+
 	point := map[string]interface{}{
-		"id":     chunkIDToUint(chunk.ChunkID),
-		"vector": vectors,
-		"payload": map[string]interface{}{
-			"chunk_id":   chunk.ChunkID,
-			"doc_id":     chunk.DocID,
-			"tenant_id":  chunk.TenantID,
-			"content":    chunk.Content,
-			"index":      chunk.Index,
-			"permission": normalizeChunkPermission(chunk.Permission),
-		},
+		"id":      chunkIDToUint(chunk.ChunkID),
+		"vector":  vectors,
+		"payload": payload,
 	}
 
 	body := map[string]interface{}{

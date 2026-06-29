@@ -67,6 +67,7 @@ func Fuse(results map[string][]Candidate, route Route, limit int) []Candidate {
 			if current.TenantID == "" {
 				current.TenantID = candidate.TenantID
 			}
+			current.Metadata = mergeCandidateMetadata(current.Metadata, candidate.Metadata)
 		}
 	}
 

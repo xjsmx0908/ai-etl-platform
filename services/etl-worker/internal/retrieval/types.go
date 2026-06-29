@@ -49,17 +49,19 @@ type SearchRequest struct {
 	Limit              int
 	TenantID           string
 	AllowedPermissions []string
+	ExactSchemaFields  []string
 }
 
 // Candidate is one retrieved chunk candidate from one or more backends.
 type Candidate struct {
-	ChunkID  string  `json:"chunk_id"`
-	DocID    string  `json:"doc_id"`
-	Content  string  `json:"content"`
-	Score    float64 `json:"score"`
-	TenantID string  `json:"tenant_id,omitempty"`
-	Source   string  `json:"source,omitempty"`
-	Rank     int     `json:"rank,omitempty"`
+	ChunkID  string            `json:"chunk_id"`
+	DocID    string            `json:"doc_id"`
+	Content  string            `json:"content"`
+	Score    float64           `json:"score"`
+	TenantID string            `json:"tenant_id,omitempty"`
+	Source   string            `json:"source,omitempty"`
+	Rank     int               `json:"rank,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // Result is the output consumed by the RAG answer-generation layer.

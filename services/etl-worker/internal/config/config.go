@@ -14,6 +14,8 @@ const (
 	RerankPolicyAuto = "auto"
 	// RerankPolicyAlways preserves the previous behavior for offline experiments.
 	RerankPolicyAlways = "always"
+
+	DefaultRetrievalExactSchemaFields = "doc_id,chunk_id,order_id,order_no,contract_id,contract_no,ticket_id,invoice_no,trace_id,request_id,customer_ref,email,phone,sku,user_id"
 )
 
 // Config holds all application configuration with environment variable overrides.
@@ -69,19 +71,20 @@ type Config struct {
 	SparseAvgDL float64 // Average document length in tokens
 
 	// Retrieval Gateway (Module 2)
-	RetrievalTimeout        time.Duration
-	RetrievalCandidateK     int
-	RetrievalFinalTopK      int
-	RetrievalEnableES       bool
-	RetrievalEnableRerank   bool
-	RetrievalRerankPolicy   string
-	RerankEndpoint          string
-	RerankAPIKey            string
-	RerankModel             string
-	SemanticCacheEnabled    bool
-	SemanticCacheTTL        time.Duration
-	SemanticCacheThreshold  float64
-	SemanticCacheMaxEntries int
+	RetrievalTimeout           time.Duration
+	RetrievalCandidateK        int
+	RetrievalFinalTopK         int
+	RetrievalEnableES          bool
+	RetrievalEnableRerank      bool
+	RetrievalRerankPolicy      string
+	RetrievalExactSchemaFields []string
+	RerankEndpoint             string
+	RerankAPIKey               string
+	RerankModel                string
+	SemanticCacheEnabled       bool
+	SemanticCacheTTL           time.Duration
+	SemanticCacheThreshold     float64
+	SemanticCacheMaxEntries    int
 
 	// Kafka
 	KafkaBrokers  string
@@ -179,19 +182,20 @@ func Load() Config {
 		SparseAvgDL: EnvFloat("SPARSE_AVG_DL", 256),
 
 		// Retrieval Gateway
-		RetrievalTimeout:        EnvDuration("RETRIEVAL_TIMEOUT", 300*time.Millisecond),
-		RetrievalCandidateK:     EnvInt("RETRIEVAL_CANDIDATE_K", 50),
-		RetrievalFinalTopK:      EnvInt("RETRIEVAL_FINAL_TOP_K", 5),
-		RetrievalEnableES:       EnvBool("RETRIEVAL_ENABLE_ES", true),
-		RetrievalEnableRerank:   EnvBool("RETRIEVAL_ENABLE_RERANK", false),
-		RetrievalRerankPolicy:   strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
-		RerankEndpoint:          EnvStr("RERANK_ENDPOINT", ""),
-		RerankAPIKey:            EnvSecret("RERANK_API_KEY", ""),
-		RerankModel:             EnvStr("RERANK_MODEL", "bge-reranker-base"),
-		SemanticCacheEnabled:    EnvBool("SEMANTIC_CACHE_ENABLED", true),
-		SemanticCacheTTL:        EnvDuration("SEMANTIC_CACHE_TTL", 10*time.Minute),
-		SemanticCacheThreshold:  EnvFloat("SEMANTIC_CACHE_THRESHOLD", 0.92),
-		SemanticCacheMaxEntries: EnvInt("SEMANTIC_CACHE_MAX_ENTRIES", 128),
+		RetrievalTimeout:           EnvDuration("RETRIEVAL_TIMEOUT", 300*time.Millisecond),
+		RetrievalCandidateK:        EnvInt("RETRIEVAL_CANDIDATE_K", 50),
+		RetrievalFinalTopK:         EnvInt("RETRIEVAL_FINAL_TOP_K", 5),
+		RetrievalEnableES:          EnvBool("RETRIEVAL_ENABLE_ES", true),
+		RetrievalEnableRerank:      EnvBool("RETRIEVAL_ENABLE_RERANK", false),
+		RetrievalRerankPolicy:      strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
+		RetrievalExactSchemaFields: EnvCSV("RETRIEVAL_EXACT_SCHEMA_FIELDS", DefaultRetrievalExactSchemaFields),
+		RerankEndpoint:             EnvStr("RERANK_ENDPOINT", ""),
+		RerankAPIKey:               EnvSecret("RERANK_API_KEY", ""),
+		RerankModel:                EnvStr("RERANK_MODEL", "bge-reranker-base"),
+		SemanticCacheEnabled:       EnvBool("SEMANTIC_CACHE_ENABLED", true),
+		SemanticCacheTTL:           EnvDuration("SEMANTIC_CACHE_TTL", 10*time.Minute),
+		SemanticCacheThreshold:     EnvFloat("SEMANTIC_CACHE_THRESHOLD", 0.92),
+		SemanticCacheMaxEntries:    EnvInt("SEMANTIC_CACHE_MAX_ENTRIES", 128),
 
 		// Kafka
 		KafkaBrokers:  EnvStr("KAFKA_BROKERS", "localhost:9092"),
@@ -293,6 +297,11 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("RETRIEVAL_RERANK_POLICY must be %q or %q, got %q", RerankPolicyAuto, RerankPolicyAlways, c.RetrievalRerankPolicy)
 	}
+	for _, field := range c.RetrievalExactSchemaFields {
+		if !validSchemaFieldName(field) {
+			return fmt.Errorf("RETRIEVAL_EXACT_SCHEMA_FIELDS contains invalid field %q", field)
+		}
+	}
 	if c.SemanticCacheTTL <= 0 {
 		return fmt.Errorf("SEMANTIC_CACHE_TTL must be > 0, got %s", c.SemanticCacheTTL)
 	}
@@ -340,6 +349,29 @@ func weakSecret(secret string) bool {
 	default:
 		return false
 	}
+}
+
+func validSchemaFieldName(raw string) bool {
+	field := strings.TrimSpace(raw)
+	if field == "" || len(field) > 64 {
+		return false
+	}
+	for _, r := range field {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // --- Environment variable helpers (exported for reuse) ---

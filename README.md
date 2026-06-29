@@ -221,7 +221,8 @@ python -m app.main
 - ✅ Query Router（精确锚点 / 语义 / 混合意图）
 - ✅ Scatter-Gather 多路召回（Qdrant Dense+Sparse + Elasticsearch BM25）
 - ✅ RRF 融合去重 + 单路故障降级
-- ✅ 可插拔 HTTP Cross-Encoder Reranker
+- ✅ 可插拔 HTTP Cross-Encoder Reranker + exact-match pin 保护
+- ✅ 业务 metadata schema exact evidence（订单号、合同号、trace、客户参考号等）
 - ✅ Redis 语义缓存（tenant + permission scope 隔离）
 - ✅ RAG 查询（向量检索 + LLM）
 - ✅ MinIO 文件上传
@@ -257,6 +258,7 @@ RETRIEVAL_FINAL_TOP_K=5
 RETRIEVAL_ENABLE_ES=true
 RETRIEVAL_ENABLE_RERANK=false
 RETRIEVAL_RERANK_POLICY=auto
+RETRIEVAL_EXACT_SCHEMA_FIELDS=doc_id,chunk_id,order_id,order_no,contract_id,contract_no,ticket_id,invoice_no,trace_id,request_id,customer_ref,email,phone,sku,user_id
 RERANK_ENDPOINT=
 RERANK_MODEL=bge-reranker-base
 RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L6-v2
@@ -286,7 +288,9 @@ RERANK_ENDPOINT=http://reranker-service:8091/rerank \
 docker compose --profile rerank up -d --build reranker-service query-api
 ```
 
-`RETRIEVAL_RERANK_POLICY=auto` 是推荐的企业级默认策略：精确编号、订单、错误码、trace 等查询保留混合召回融合排序；即使查询没有被关键词规则识别为精确查询，只要候选中包含 query 的强 exact token，也会跳过 reranker 保护该候选。其余语义/混合查询才调用 Cross-Encoder 重排。需要做离线对比实验时可设为 `always` 复现“所有查询都重排”的旧行为。
+`RETRIEVAL_RERANK_POLICY=auto` 是推荐的企业级默认策略：明确的精确编号、订单、错误码、trace 等路由直接保留 BM25/向量融合排序；语义/混合查询会调用 Cross-Encoder，但如果候选的 `doc_id`、`chunk_id`、正文或配置的业务 `metadata` 字段命中 query 里的强 exact token，最终会 pin exact-match 候选，避免被非 exact 候选超过。需要做离线对比实验时可设为 `always` 复现裸 rerank 行为。
+
+上传业务字段时使用 multipart 字段 `metadata`，值为 JSON object，例如 `{"contract_no":"CN-2026-0001","customer_ref":"x9k-77q-plum"}`；参与 exact evidence 的字段由 `RETRIEVAL_EXACT_SCHEMA_FIELDS` 控制。
 
 敏感配置读取优先级：`KEY` > `KEY_FILE` > 默认值。`docker-compose.yml` 已为 `query-api`、`etl-worker`、`parser-service` 挂载 secrets，默认占位文件在 `secrets/examples/`，建议复制到 `secrets/dev/` 后替换为真实值。
 

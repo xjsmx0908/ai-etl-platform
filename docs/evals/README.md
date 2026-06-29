@@ -32,8 +32,9 @@ docker run --rm \
 该测试构造两类确定性场景：
 
 - 语义查询：融合排序把干扰文档排第一，`RETRIEVAL_RERANK_POLICY=auto` 调用 reranker 后把目标文档提升到第一。
-- 精确查询：BM25/向量融合把精确订单文档排第一，`auto` 跳过 reranker；若改成 `always`，同一个 reranker 会把干扰文档排第一，用于证明全量 rerank 的退化风险。
-- 候选证据保护：即使 query 没有被关键词/旧正则路由为精确查询，只要 query 中的疑似 ID/token 在候选 `doc_id`、`chunk_id` 或正文中完整出现，`auto` 也会跳过 reranker，保护 exact-match 候选。
+- 精确查询：BM25/向量融合把精确订单文档排第一，`auto` 对明确精确路由跳过 reranker；若改成 `always`，同一个 reranker 会把干扰文档排第一，用于证明裸 rerank 的退化风险。
+- 候选证据保护：即使 query 没有被关键词/旧正则路由为精确查询，只要 query 中的疑似 ID/token 在候选 `doc_id`、`chunk_id`、正文或配置的业务 `metadata` 字段中完整出现，`auto` 会调用 reranker 后 pin exact-match 候选，保证非 exact 候选不能超过 exact 候选。
+- Schema eval：`golden-set.json` 的 `case-047` 使用 metadata-only 的 `customer_ref`，正文不包含该参考号，用于验证业务 schema 字段能参与召回和保护性 rerank。
 
 常用参数：
 

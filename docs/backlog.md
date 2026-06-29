@@ -2,7 +2,7 @@
 
 ## 2026-06-28 - Enterprise Rerank Policy
 
-Status: implemented
+Status: implemented, superseded by Full Enterprise Rerank Guardrail
 
 Goal: make the optional Cross-Encoder reranker behave like an enterprise retrieval stage instead of reranking every query.
 
@@ -28,7 +28,7 @@ Plan:
 
 ## 2026-06-29 - Candidate-Aware Exact Evidence Protection
 
-Status: implemented
+Status: implemented, superseded by Full Enterprise Rerank Guardrail
 
 Goal: reduce dependence on finite keyword/regex routing for exact queries by checking whether retrieved candidates contain strong exact tokens from the query.
 
@@ -36,5 +36,20 @@ Plan:
 
 1. Extract strong exact tokens from the query, including email, UUID, phone-like numbers, structured IDs, and mixed alphanumeric tokens with separators.
 2. Check fused candidates for exact token evidence in `doc_id`, `chunk_id`, or `content`, with separator normalization.
-3. In `auto` mode, skip reranker when exact candidate evidence exists, even if the original route is semantic or hybrid.
+3. Originally skipped reranker when exact candidate evidence existed; this was superseded by protective rerank + pinning in the full guardrail.
 4. Add tests for normalized exact evidence and an unrouted exact-token query that old query-only routing would classify as semantic.
+
+## 2026-06-29 - Full Enterprise Rerank Guardrail
+
+Status: implemented
+
+Goal: complete the enterprise rerank design across rule, business schema, retrieval signal, protective rerank, and observability/eval layers.
+
+Plan:
+
+1. Add document/task/chunk `metadata` propagation from upload to parser, Qdrant payload, Elasticsearch document, and retrieval candidates.
+2. Add `RETRIEVAL_EXACT_SCHEMA_FIELDS` so configured business fields such as `contract_no`, `trace_id`, and `customer_ref` participate in exact evidence.
+3. Add Elasticsearch metadata exact-term `should` clauses so metadata-only identifiers can be recalled even when the content body does not contain the token.
+4. Replace candidate-evidence skip with protective rerank in `auto`: semantic/hybrid queries may use reranker, then exact-match candidates are pinned above non-exact candidates.
+5. Add structured rerank-decision logs with route, policy, rerank decision, exact token hashes, matched candidate count, top-rank changes, and protection state.
+6. Extend deterministic unit tests and golden eval data with metadata-only exact retrieval coverage.

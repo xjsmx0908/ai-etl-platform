@@ -95,10 +95,14 @@ func TestReadIdempotencyKey(t *testing.T) {
 }
 
 func TestBuildUploadRequestSignature(t *testing.T) {
-	a := buildUploadRequestSignature("tenant-a", "Report.PDF", 1024, "application/pdf", "internal")
-	b := buildUploadRequestSignature("tenant-a", "report.pdf", 1024, "application/pdf", "internal")
+	a := buildUploadRequestSignature("tenant-a", "Report.PDF", 1024, "application/pdf", "internal", map[string]string{"contract_no": "CN-2026-0001"})
+	b := buildUploadRequestSignature("tenant-a", "report.pdf", 1024, "application/pdf", "internal", map[string]string{"contract_no": "CN-2026-0001"})
 	if a != b {
 		t.Fatalf("expected normalized signatures to match, got %q != %q", a, b)
+	}
+	c := buildUploadRequestSignature("tenant-a", "report.pdf", 1024, "application/pdf", "internal", map[string]string{"contract_no": "CN-2026-0002"})
+	if a == c {
+		t.Fatal("expected metadata changes to affect upload signature")
 	}
 }
 

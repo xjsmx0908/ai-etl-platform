@@ -365,6 +365,18 @@
       "query": "Find alpha046 in tau-public-gate with catalog cache invalidate edge warmup.",
       "max_strict_rank": 1,
       "answer_must_include": ["alpha046", "tau-public-gate", "来源:"]
+    },
+    {
+      "id": "case-047",
+      "filename": "case-047.txt",
+      "permission": "internal",
+      "content": "Document anchor token alpha047. Topic: metadata-only customer reference retrieval for enterprise schema fields.",
+      "metadata": {
+        "customer_ref": "x9k-77q-plum"
+      },
+      "query": "请解释客户参考号 x9k-77q-plum 的处理说明",
+      "max_strict_rank": 1,
+      "answer_must_include": ["alpha047", "来源:"]
     }
   ]
 }

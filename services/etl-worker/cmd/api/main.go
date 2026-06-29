@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -297,6 +298,11 @@ func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadP
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		metadata, err := parseUploadMetadata(r.FormValue("metadata"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		idempotencyKey := readIdempotencyKey(r)
 		requestSig := buildUploadRequestSignature(
@@ -305,6 +311,7 @@ func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadP
 			header.Size,
 			header.Header.Get("Content-Type"),
 			permission,
+			metadata,
 		)
 		if idempotencyKey != "" {
 			if len(idempotencyKey) > 128 {
@@ -371,6 +378,7 @@ func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadP
 			TenantID:   tenantID,
 			Permission: permission,
 			FileHash:   fileHash,
+			Metadata:   metadata,
 			CreatedAt:  now,
 		}
 
@@ -439,14 +447,64 @@ func readIdempotencyKey(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 }
 
-func buildUploadRequestSignature(tenantID, filename string, size int64, contentType, permission string) string {
-	s := fmt.Sprintf("tenant=%s|filename=%s|size=%d|content_type=%s|permission=%s",
+func parseUploadMetadata(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var values map[string]string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil, fmt.Errorf("metadata must be a JSON object with string values")
+	}
+	clean := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		if len(key) > 64 || len(value) > 512 {
+			return nil, fmt.Errorf("metadata key/value too long")
+		}
+		clean[key] = value
+	}
+	if len(clean) == 0 {
+		return nil, nil
+	}
+	return clean, nil
+}
+
+func buildUploadRequestSignature(tenantID, filename string, size int64, contentType, permission string, metadata map[string]string) string {
+	s := fmt.Sprintf("tenant=%s|filename=%s|size=%d|content_type=%s|permission=%s|metadata=%s",
 		tenantID,
 		strings.ToLower(strings.TrimSpace(filename)),
 		size,
 		strings.ToLower(strings.TrimSpace(contentType)),
 		permission,
+		canonicalMetadata(metadata),
 	)
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+func canonicalMetadata(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	for i, key := range keys {
+		if i > 0 {
+			b.WriteByte('&')
+		}
+		b.WriteString(strings.ToLower(strings.TrimSpace(key)))
+		b.WriteByte('=')
+		b.WriteString(strings.TrimSpace(metadata[key]))
+	}
+	return b.String()
 }

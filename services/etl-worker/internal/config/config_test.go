@@ -79,6 +79,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.RetrievalRerankPolicy != RerankPolicyAuto {
 		t.Errorf("expected RetrievalRerankPolicy=auto, got %s", cfg.RetrievalRerankPolicy)
 	}
+	if len(cfg.RetrievalExactSchemaFields) == 0 {
+		t.Error("expected default RetrievalExactSchemaFields")
+	}
 	if !cfg.SemanticCacheEnabled {
 		t.Error("expected SemanticCacheEnabled=true")
 	}
@@ -113,6 +116,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("RETRIEVAL_ENABLE_ES", "false")
 	os.Setenv("RETRIEVAL_ENABLE_RERANK", "true")
 	os.Setenv("RETRIEVAL_RERANK_POLICY", "always")
+	os.Setenv("RETRIEVAL_EXACT_SCHEMA_FIELDS", "contract_no,trace_id")
 	os.Setenv("RERANK_ENDPOINT", "http://reranker:8080/rerank")
 	os.Setenv("RERANK_API_KEY", "rk-test")
 	os.Setenv("RERANK_MODEL", "test-reranker")
@@ -140,6 +144,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("RETRIEVAL_ENABLE_ES")
 		os.Unsetenv("RETRIEVAL_ENABLE_RERANK")
 		os.Unsetenv("RETRIEVAL_RERANK_POLICY")
+		os.Unsetenv("RETRIEVAL_EXACT_SCHEMA_FIELDS")
 		os.Unsetenv("RERANK_ENDPOINT")
 		os.Unsetenv("RERANK_API_KEY")
 		os.Unsetenv("RERANK_MODEL")
@@ -207,6 +212,9 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.RetrievalRerankPolicy != RerankPolicyAlways {
 		t.Errorf("expected RetrievalRerankPolicy=always, got %s", cfg.RetrievalRerankPolicy)
+	}
+	if len(cfg.RetrievalExactSchemaFields) != 2 || cfg.RetrievalExactSchemaFields[0] != "contract_no" || cfg.RetrievalExactSchemaFields[1] != "trace_id" {
+		t.Errorf("unexpected RetrievalExactSchemaFields override: %v", cfg.RetrievalExactSchemaFields)
 	}
 	if cfg.RerankEndpoint != "http://reranker:8080/rerank" {
 		t.Errorf("expected RerankEndpoint override, got %s", cfg.RerankEndpoint)
@@ -313,6 +321,15 @@ func TestValidate_RerankPolicy(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for invalid rerank policy")
+	}
+}
+
+func TestValidate_RetrievalExactSchemaFields(t *testing.T) {
+	cfg := Load()
+	cfg.RetrievalExactSchemaFields = []string{"contract_no", "bad.field"}
+
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid exact schema field")
 	}
 }
 

@@ -8,12 +8,13 @@ import (
 
 // Task represents a document processing task from the message queue.
 type Task struct {
-	FilePath   string    `json:"file_path"`
-	DocID      string    `json:"doc_id"`
-	TenantID   string    `json:"tenant_id"`
-	Permission string    `json:"permission,omitempty"` // "public" | "internal" | "confidential"
-	FileHash   string    `json:"file_hash,omitempty"`  // SHA-256 of source file
-	CreatedAt  time.Time `json:"created_at"`
+	FilePath   string            `json:"file_path"`
+	DocID      string            `json:"doc_id"`
+	TenantID   string            `json:"tenant_id"`
+	Permission string            `json:"permission,omitempty"` // "public" | "internal" | "confidential"
+	FileHash   string            `json:"file_hash,omitempty"`  // SHA-256 of source file
+	Metadata   map[string]string `json:"metadata,omitempty"`   // Business exact-match fields, e.g. order_id or trace_id
+	CreatedAt  time.Time         `json:"created_at"`
 }
 
 // TaskWithAck wraps a Task with acknowledgment callbacks for At-Least-Once delivery.
@@ -25,17 +26,18 @@ type TaskWithAck struct {
 
 // Chunk represents a semantic segment of a document with its vector representations.
 type Chunk struct {
-	ChunkID      string       `json:"chunk_id"`
-	DocID        string       `json:"doc_id"`
-	TenantID     string       `json:"tenant_id"`
-	Content      string       `json:"content"`
-	Index        int          `json:"index"`
-	Vector       []float64    `json:"vector,omitempty"`        // Dense vector (OpenAI Embedding)
-	SparseVector SparseVector `json:"sparse_vector,omitempty"` // Sparse vector (BM25)
-	TokenUsed    int          `json:"token_used"`
-	CreatedAt    time.Time    `json:"created_at"`           // Chunk creation timestamp
-	Permission   string       `json:"permission,omitempty"` // Inherited from Task
-	FileHash     string       `json:"file_hash,omitempty"`  // SHA-256 of source file
+	ChunkID      string            `json:"chunk_id"`
+	DocID        string            `json:"doc_id"`
+	TenantID     string            `json:"tenant_id"`
+	Content      string            `json:"content"`
+	Index        int               `json:"index"`
+	Vector       []float64         `json:"vector,omitempty"`        // Dense vector (OpenAI Embedding)
+	SparseVector SparseVector      `json:"sparse_vector,omitempty"` // Sparse vector (BM25)
+	TokenUsed    int               `json:"token_used"`
+	CreatedAt    time.Time         `json:"created_at"`           // Chunk creation timestamp
+	Permission   string            `json:"permission,omitempty"` // Inherited from Task
+	FileHash     string            `json:"file_hash,omitempty"`  // SHA-256 of source file
+	Metadata     map[string]string `json:"metadata,omitempty"`   // Business exact-match fields inherited from Task
 }
 
 // SparseVector represents a sparse vector in Qdrant format (indices + values).

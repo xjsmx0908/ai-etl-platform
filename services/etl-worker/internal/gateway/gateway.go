@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -82,6 +83,13 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if permission == "" {
 		permission = "internal" // default permission level
 	}
+	metadata, err := parseMetadataFormValue(r.FormValue("metadata"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+		return
+	}
 
 	// Get uploaded file
 	file, header, err := r.FormFile("file")
@@ -133,6 +141,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		TenantID:   tenantID,
 		Permission: permission,
 		FileHash:   fileHash,
+		Metadata:   metadata,
 		CreatedAt:  now,
 	}
 
@@ -168,4 +177,31 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+func parseMetadataFormValue(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var values map[string]string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil, fmt.Errorf("metadata must be a JSON object with string values")
+	}
+	clean := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		if len(key) > 64 || len(value) > 512 {
+			return nil, fmt.Errorf("metadata key/value too long")
+		}
+		clean[key] = value
+	}
+	if len(clean) == 0 {
+		return nil, nil
+	}
+	return clean, nil
 }

@@ -1,6 +1,6 @@
 """Pydantic Data Models"""
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 
 class ChunkResponse(BaseModel):
@@ -13,6 +13,7 @@ class ChunkResponse(BaseModel):
     token_count: Optional[int] = None
     permission: Optional[str] = None
     file_hash: Optional[str] = None
+    metadata: Optional[Dict[str, str]] = None
 
 
 class ParseResponse(BaseModel):

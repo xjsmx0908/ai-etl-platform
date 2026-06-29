@@ -303,6 +303,7 @@ func (p *Parser) emit(ctx context.Context, out chan<- model.Chunk, task model.Ta
 		CreatedAt:  time.Now(),
 		Permission: task.Permission,
 		FileHash:   task.FileHash,
+		Metadata:   copyStringMap(task.Metadata),
 	}
 	*idx++
 	select {
@@ -318,6 +319,17 @@ func (p *Parser) overlap(s string) string {
 		return s
 	}
 	return s[len(s)-p.cfg.ChunkOverlap:]
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 // FmtBytes formats byte counts in human-readable form.

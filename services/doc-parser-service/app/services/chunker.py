@@ -10,7 +10,8 @@ def chunk_text(
     doc_id: str,
     tenant_id: str,
     permission: str = None,
-    file_hash: str = None
+    file_hash: str = None,
+    metadata: Dict[str, str] = None
 ) -> List[Dict[str, Any]]:
     """
     Split text into semantic chunks
@@ -27,6 +28,7 @@ def chunk_text(
         tenant_id: Tenant ID
         permission: Permission level
         file_hash: File hash
+        metadata: Business exact-match fields
         
     Returns:
         List of chunk dictionaries
@@ -49,7 +51,7 @@ def chunk_text(
             if chunk_text:
                 chunks.extend(
                     split_oversized_chunk(chunk_text, doc_id, tenant_id, chunk_idx, 
-                                         permission, file_hash, max_size, overlap)
+                                         permission, file_hash, metadata, max_size, overlap)
                 )
                 chunk_idx = len(chunks)
             buffer = [line]
@@ -63,7 +65,7 @@ def chunk_text(
             if len(buffer_text) >= min_size:
                 chunks.extend(
                     split_oversized_chunk(buffer_text, doc_id, tenant_id, chunk_idx,
-                                         permission, file_hash, max_size, overlap)
+                                         permission, file_hash, metadata, max_size, overlap)
                 )
                 chunk_idx = len(chunks)
                 
@@ -82,7 +84,7 @@ def chunk_text(
         if len(buffer_text) >= max_size:
             chunks.extend(
                 split_oversized_chunk(buffer_text, doc_id, tenant_id, chunk_idx,
-                                     permission, file_hash, max_size, overlap)
+                                     permission, file_hash, metadata, max_size, overlap)
             )
             chunk_idx = len(chunks)
             
@@ -96,7 +98,7 @@ def chunk_text(
         if chunk_text:
             chunks.extend(
                 split_oversized_chunk(chunk_text, doc_id, tenant_id, chunk_idx,
-                                     permission, file_hash, max_size, overlap)
+                                     permission, file_hash, metadata, max_size, overlap)
             )
     
     logger.info(f"Chunked document {doc_id}: {len(chunks)} chunks created")
@@ -126,6 +128,7 @@ def split_oversized_chunk(
     start_idx: int,
     permission: str,
     file_hash: str,
+    metadata: Dict[str, str],
     max_size: int,
     overlap: int
 ) -> List[Dict[str, Any]]:
@@ -142,7 +145,8 @@ def split_oversized_chunk(
             'index': start_idx,
             'token_count': estimate_tokens(text),
             'permission': permission,
-            'file_hash': file_hash
+            'file_hash': file_hash,
+            'metadata': dict(metadata) if metadata else None
         })
         return chunks
     
@@ -163,7 +167,8 @@ def split_oversized_chunk(
                 'index': start_idx + local_idx,
                 'token_count': estimate_tokens(chunk_text),
                 'permission': permission,
-                'file_hash': file_hash
+                'file_hash': file_hash,
+                'metadata': dict(metadata) if metadata else None
             })
             local_idx += 1
         

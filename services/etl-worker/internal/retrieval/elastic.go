@@ -49,34 +49,40 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 		allowed = []string{"public"}
 	}
 
-	body := map[string]interface{}{
-		"size": limit,
-		"query": map[string]interface{}{
-			"bool": map[string]interface{}{
-				"must": []map[string]interface{}{
-					{
-						"match": map[string]interface{}{
-							"content": map[string]interface{}{
-								"query": req.Question,
-							},
-						},
-					},
+	contentMatch := map[string]interface{}{
+		"match": map[string]interface{}{
+			"content": map[string]interface{}{
+				"query": req.Question,
+			},
+		},
+	}
+	boolQuery := map[string]interface{}{
+		"filter": []map[string]interface{}{
+			{
+				"term": map[string]interface{}{
+					"tenant_id": req.TenantID,
 				},
-				"filter": []map[string]interface{}{
-					{
-						"term": map[string]interface{}{
-							"tenant_id": req.TenantID,
-						},
-					},
-					{
-						"terms": map[string]interface{}{
-							"permission": allowed,
-						},
-					},
+			},
+			{
+				"terms": map[string]interface{}{
+					"permission": allowed,
 				},
 			},
 		},
-		"_source": []string{"chunk_id", "doc_id", "tenant_id", "content"},
+	}
+	if should := metadataExactShouldClauses(req.Question, req.ExactSchemaFields); len(should) > 0 {
+		boolQuery["should"] = append([]map[string]interface{}{contentMatch}, should...)
+		boolQuery["minimum_should_match"] = 1
+	} else {
+		boolQuery["must"] = []map[string]interface{}{contentMatch}
+	}
+
+	body := map[string]interface{}{
+		"size": limit,
+		"query": map[string]interface{}{
+			"bool": boolQuery,
+		},
+		"_source": []string{"chunk_id", "doc_id", "tenant_id", "content", "metadata"},
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -109,10 +115,11 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 			Hits []struct {
 				Score  float64 `json:"_score"`
 				Source struct {
-					ChunkID  string `json:"chunk_id"`
-					DocID    string `json:"doc_id"`
-					TenantID string `json:"tenant_id"`
-					Content  string `json:"content"`
+					ChunkID  string                 `json:"chunk_id"`
+					DocID    string                 `json:"doc_id"`
+					TenantID string                 `json:"tenant_id"`
+					Content  string                 `json:"content"`
+					Metadata map[string]interface{} `json:"metadata"`
 				} `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
@@ -131,7 +138,37 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 			Score:    hit.Score,
 			Source:   SourceElasticsearch,
 			Rank:     i + 1,
+			Metadata: exactMetadataFromPayload(map[string]interface{}{"metadata": hit.Source.Metadata}, req.ExactSchemaFields),
 		})
 	}
 	return candidates, nil
+}
+
+func metadataExactShouldClauses(question string, fields []string) []map[string]interface{} {
+	if len(fields) == 0 {
+		return nil
+	}
+	tokens := extractExactTokens(question)
+	if len(tokens) == 0 {
+		return nil
+	}
+
+	clauses := make([]map[string]interface{}, 0, len(tokens)*len(fields))
+	for _, token := range tokens {
+		for _, field := range fields {
+			field = strings.TrimSpace(field)
+			if field == "" || field == "doc_id" || field == "chunk_id" {
+				continue
+			}
+			clauses = append(clauses, map[string]interface{}{
+				"term": map[string]interface{}{
+					"metadata." + field: map[string]interface{}{
+						"value": token,
+						"boost": 4.0,
+					},
+				},
+			})
+		}
+	}
+	return clauses
 }

@@ -26,12 +26,13 @@ async def test_parse_endpoint_streams_upload_in_chunks(monkeypatch):
 
     captured = {}
 
-    def fake_chunk_text(text, doc_id, tenant_id, permission, file_hash):
+    def fake_chunk_text(text, doc_id, tenant_id, permission, file_hash, metadata):
         captured["text"] = text
         captured["doc_id"] = doc_id
         captured["tenant_id"] = tenant_id
         captured["permission"] = permission
         captured["file_hash"] = file_hash
+        captured["metadata"] = metadata
         return [
             {
                 "chunk_id": "chunk-1",
@@ -42,6 +43,7 @@ async def test_parse_endpoint_streams_upload_in_chunks(monkeypatch):
                 "token_count": None,
                 "permission": permission,
                 "file_hash": file_hash,
+                "metadata": metadata,
             }
         ]
 
@@ -54,13 +56,16 @@ async def test_parse_endpoint_streams_upload_in_chunks(monkeypatch):
         file=fake_file,
         permission="internal",
         file_hash=None,
+        metadata='{"contract_no":"CN-2026-0001"}',
     )
 
     assert fake_file.read_sizes == [parse_module.STREAM_CHUNK_SIZE] * 4
     assert captured["file_hash"] == hashlib.sha256(b"abcdefghij").hexdigest()
+    assert captured["metadata"] == {"contract_no": "CN-2026-0001"}
     assert response.file_size_bytes == 13
     assert response.total_chunks == 1
     assert response.chunks[0].file_hash == hashlib.sha256(b"abcdefghij").hexdigest()
+    assert response.chunks[0].metadata == {"contract_no": "CN-2026-0001"}
 
 
 @pytest.mark.asyncio
@@ -78,6 +83,7 @@ async def test_parse_endpoint_rejects_oversized_upload_without_full_buffer(monke
             file=fake_file,
             permission="internal",
             file_hash=None,
+            metadata=None,
         )
 
     assert exc.value.status_code == 413
