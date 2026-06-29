@@ -49,3 +49,13 @@ Reason: exact-evidence protection is an enterprise retrieval invariant, not a si
 Act: applied the existing exact-evidence planner when the reranker is unconfigured and pinned exact candidates directly over fused ranking; added an engine regression test for schema metadata evidence with the reranker disabled.
 
 Refine: verified targeted retrieval tests, full Go tests, and the deterministic eval with `RETRIEVAL_ENABLE_RERANK=false`, all passing with the metadata-only case included.
+
+## 2026-06-29T21:01:13+08:00 - Module 2 Lightweight Load Test
+
+Perceive: module 2 was functionally complete, but it needed lightweight latency and throughput evidence across cache miss, reranker enabled, cache hit, and schema exact paths.
+
+Reason: benchmark runs are useful not only for numbers but also for finding policy gaps under realistic candidate competition. The schema exact load test showed that an exact route could detect exact evidence in a non-top candidate while still leaving a distractor first because exact routes skipped reranker without applying pinning.
+
+Act: extended the load-test script with scenario labels, noise documents, metadata upload, top-hit rate, and throughput reporting; fixed exact-route candidate pinning by applying `protectExactMatches` whenever the auto policy marks exact evidence protection, even if `ShouldRerank=false`.
+
+Refine: reran module-2 load scenarios and Go verification. Final lightweight results: cache-miss rerank-off p95 49.67 ms, cache-miss rerank-on p95 321.26 ms, cache-hit p95 15.83 ms, schema exact p95 48.79 ms, all with 100% success and 100% top-hit rate.

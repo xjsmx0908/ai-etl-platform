@@ -30,6 +30,15 @@ func TestPlanRerankPolicy(t *testing.T) {
 			reason:     "exact_keyword_intent",
 		},
 		{
+			name:        "auto pins exact route when exact evidence is not top",
+			policy:      config.RerankPolicyAuto,
+			route:       Route{Strategy: StrategyExactKeyword},
+			question:    "订单 A20240518001 的退款状态",
+			wantRerank:  false,
+			wantProtect: true,
+			reason:      "exact_keyword_candidate_pinned",
+		},
+		{
 			name:       "auto skips exact intent even when route is semantic",
 			policy:     config.RerankPolicyAuto,
 			route:      Route{Strategy: StrategySemantic},
@@ -79,6 +88,11 @@ func TestPlanRerankPolicy(t *testing.T) {
 				testCandidates = []Candidate{
 					{ChunkID: "c1", Content: "客户参考号 x9k-77q-plum 已完成处理。"},
 					{ChunkID: "c2", Content: "客户参考号的通用处理说明。"},
+				}
+			} else if tc.reason == "exact_keyword_candidate_pinned" {
+				testCandidates = []Candidate{
+					{ChunkID: "c1", Content: "通用退款政策说明。"},
+					{ChunkID: "c2", Metadata: map[string]string{"order_id": "A20240518001"}, Content: "订单退款状态说明。"},
 				}
 			}
 			decision := planRerank(tc.policy, tc.route, tc.question, testCandidates)

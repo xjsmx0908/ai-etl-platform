@@ -131,6 +131,54 @@ func TestEngineRerankPolicy_SkipsRerankerWhenExactFusionIsBetter(t *testing.T) {
 	}
 }
 
+func TestEngineRerankPolicy_PinsExactRouteCandidateEvidenceWithoutCallingReranker(t *testing.T) {
+	embedServer := newPolicyEvalEmbedServer(t)
+	defer embedServer.Close()
+
+	retrievers := map[string]Retriever{
+		SourceQdrant: staticPolicyEvalRetriever{
+			name: SourceQdrant,
+			candidates: []Candidate{
+				{ChunkID: "exact-route-distractor", DocID: "doc-general-refund", Content: "通用退款政策说明。", Rank: 1},
+				{ChunkID: "exact-route-target", DocID: "doc-order-status", Content: "订单退款状态说明。", Metadata: map[string]string{"order_id": "A20240601001"}, Rank: 2},
+			},
+		},
+		SourceElasticsearch: staticPolicyEvalRetriever{
+			name: SourceElasticsearch,
+			candidates: []Candidate{
+				{ChunkID: "exact-route-distractor", DocID: "doc-general-refund", Content: "通用退款政策说明。", Rank: 1},
+				{ChunkID: "exact-route-target", DocID: "doc-order-status", Content: "订单退款状态说明。", Metadata: map[string]string{"order_id": "A20240601001"}, Rank: 2},
+			},
+		},
+	}
+	req := Request{
+		Question:           "订单 A20240601001 的退款状态",
+		TopK:               1,
+		TenantID:           "tenant-policy-eval",
+		AllowedPermissions: []string{"public"},
+	}
+	reranker := &scoringPolicyEvalReranker{
+		scores: map[string]float64{
+			"exact-route-distractor": 0.99,
+			"exact-route-target":     0.10,
+		},
+	}
+	engine := newPolicyEvalEngine(embedServer.URL, embedServer.Client(), retrievers, reranker, true, config.RerankPolicyAuto)
+	result, err := engine.Retrieve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retrieve with exact route candidate pinning: %v", err)
+	}
+	if result.Route.Strategy != StrategyExactKeyword {
+		t.Fatalf("expected exact route, got %+v", result.Route)
+	}
+	if got := firstChunkID(result); got != "exact-route-target" {
+		t.Fatalf("expected exact route evidence target pinned first, got %q", got)
+	}
+	if reranker.calls != 0 {
+		t.Fatalf("expected exact route pinning without reranker call, got %d calls", reranker.calls)
+	}
+}
+
 func TestEngineRerankPolicy_ProtectsUnroutedExactCandidateEvidence(t *testing.T) {
 	embedServer := newPolicyEvalEmbedServer(t)
 	defer embedServer.Close()

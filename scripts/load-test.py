@@ -36,8 +36,10 @@ DEFAULT_MOCK_PORT = 18080
 class Result:
     ok: bool
     hit: bool
+    top_hit: bool
     status: int
     latency_ms: float
+    top_doc_id: str
 
 
 class LoadTestError(RuntimeError):
@@ -180,8 +182,14 @@ func main() {
             pass
 
 
-def create_multipart_body(filename: str, content: bytes, permission: str) -> Tuple[bytes, str]:
-    boundary = f"----aietl{hashlib.sha256((filename + permission).encode()).hexdigest()[:24]}"
+def create_multipart_body(
+    filename: str,
+    content: bytes,
+    permission: str,
+    metadata: Dict[str, str] | None = None,
+) -> Tuple[bytes, str]:
+    metadata_json = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
+    boundary = f"----aietl{hashlib.sha256((filename + permission + metadata_json).encode()).hexdigest()[:24]}"
     parts: List[bytes] = []
 
     def add_field(name: str, value: str) -> None:
@@ -200,12 +208,21 @@ def create_multipart_body(filename: str, content: bytes, permission: str) -> Tup
     parts.append(content)
     parts.append(b"\r\n")
     add_field("permission", permission)
+    if metadata:
+        add_field("metadata", metadata_json)
     parts.append(f"--{boundary}--\r\n".encode())
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
-def upload_document(api_base: str, token: str, filename: str, content: bytes, permission: str) -> str:
-    body, content_type = create_multipart_body(filename, content, permission)
+def upload_document(
+    api_base: str,
+    token: str,
+    filename: str,
+    content: bytes,
+    permission: str,
+    metadata: Dict[str, str] | None = None,
+) -> str:
+    body, content_type = create_multipart_body(filename, content, permission, metadata)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": content_type,
@@ -219,7 +236,7 @@ def upload_document(api_base: str, token: str, filename: str, content: bytes, pe
     return doc_id
 
 
-def query_once(api_base: str, token: str, question: str, top_k: int) -> Result:
+def query_once(api_base: str, token: str, question: str, top_k: int, expected_doc_id: str = "") -> Result:
     body = json.dumps({"question": question, "top_k": top_k}, ensure_ascii=False).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {token}",
@@ -228,7 +245,11 @@ def query_once(api_base: str, token: str, question: str, top_k: int) -> Result:
     status, payload, latency_ms = http_json("POST", f"{api_base}/v1/query", headers=headers, body=body, timeout=30.0)
     sources = payload.get("sources") or []
     hit = any(isinstance(src, dict) and src.get("doc_id") for src in sources)
-    return Result(ok=status == 200, hit=hit, status=status, latency_ms=latency_ms)
+    top_doc_id = ""
+    if sources and isinstance(sources[0], dict):
+        top_doc_id = str(sources[0].get("doc_id", ""))
+    top_hit = bool(expected_doc_id and top_doc_id == expected_doc_id)
+    return Result(ok=status == 200, hit=hit, top_hit=top_hit, status=status, latency_ms=latency_ms, top_doc_id=top_doc_id)
 
 
 def percentile(values: List[float], p: float) -> float:
@@ -257,9 +278,14 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
     lines = [
         "# Load Test Report",
         "",
+        f"- Scenario: {result['scenario']}",
+        f"- Tenant ID: {result['tenant_id']}",
+        f"- Concurrency: {result['config']['concurrency']}",
         f"- Total requests: {result['summary']['total_requests']}",
         f"- Success rate: {result['summary']['success_rate']:.2%}",
         f"- Hit rate: {result['summary']['hit_rate']:.2%}",
+        f"- Top hit rate: {result['summary']['top_hit_rate']:.2%}",
+        f"- Throughput: {result['summary']['throughput_qps']:.2f} qps",
         f"- p50: {result['summary']['p50_ms']:.2f} ms",
         f"- p95: {result['summary']['p95_ms']:.2f} ms",
         f"- p99: {result['summary']['p99_ms']:.2f} ms",
@@ -280,6 +306,7 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Lightweight load test for query API")
     parser.add_argument("--api-base", default="http://127.0.0.1:8080")
+    parser.add_argument("--scenario", default="default")
     parser.add_argument("--tenant-id", default="tenant-loadtest")
     parser.add_argument("--jwt-secret", default="change-me-in-production-please-use-32-plus-chars")
     parser.add_argument("--token", default="")
@@ -291,6 +318,8 @@ def main() -> int:
     parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
     parser.add_argument("--seed-file", default="")
     parser.add_argument("--seed-name", default="")
+    parser.add_argument("--metadata-json", default="")
+    parser.add_argument("--noise-docs", type=int, default=0)
     parser.add_argument("--mock-port", type=int, default=DEFAULT_MOCK_PORT)
     parser.add_argument("--embed-dim", type=int, default=768)
     parser.add_argument("--keep-mock-server", action="store_true")
@@ -309,6 +338,15 @@ def main() -> int:
             print("[loadtest] starting mock model server")
             mock_proc = start_mock_server(args.mock_port, args.embed_dim)
             wait_health(f"http://127.0.0.1:{args.mock_port}/healthz", timeout_sec=30)
+
+        metadata: Dict[str, str] = {}
+        if args.metadata_json.strip():
+            raw_metadata = json.loads(args.metadata_json)
+            if not isinstance(raw_metadata, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in raw_metadata.items()
+            ):
+                raise LoadTestError("--metadata-json must be a JSON object with string keys and values")
+            metadata = raw_metadata
 
         if args.seed_file:
             seed_path = Path(args.seed_file)
@@ -330,22 +368,33 @@ def main() -> int:
             question = args.question or f"Which document contains {anchor}?"
 
         print("[loadtest] uploading seed document")
-        doc_id = upload_document(args.api_base, token, filename, content, args.permission)
+        doc_id = upload_document(args.api_base, token, filename, content, args.permission, metadata)
+        for i in range(args.noise_docs):
+            noise_name = f"noise-{i + 1}-{filename}"
+            noise_content = (
+                f"Load test distractor document {i + 1}. "
+                "This document discusses query throughput, latency, cache behavior, "
+                "concurrent retrieval, and reranker tradeoffs for comparison."
+            ).encode("utf-8")
+            upload_document(args.api_base, token, noise_name, noise_content, args.permission)
 
         deadline = time.time() + 120
         while time.time() < deadline:
-            result = query_once(args.api_base, token, question, args.top_k)
-            if result.ok and result.hit:
+            result = query_once(args.api_base, token, question, args.top_k, doc_id)
+            if result.ok and result.top_hit:
                 break
             time.sleep(2)
         else:
-            raise LoadTestError("seed document did not become queryable in time")
+            raise LoadTestError("seed document did not become queryable as top result in time")
 
         print("[loadtest] starting concurrent queries")
         results: List[Result] = []
         started = time.perf_counter()
         with futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-            futs = [pool.submit(query_once, args.api_base, token, question, args.top_k) for _ in range(args.requests)]
+            futs = [
+                pool.submit(query_once, args.api_base, token, question, args.top_k, doc_id)
+                for _ in range(args.requests)
+            ]
             for fut in futures.as_completed(futs):
                 results.append(fut.result())
         total_ms = (time.perf_counter() - started) * 1000.0
@@ -357,13 +406,18 @@ def main() -> int:
 
         success_count = sum(1 for r in results if r.ok)
         hit_count = sum(1 for r in results if r.hit)
+        top_hit_count = sum(1 for r in results if r.top_hit)
+        duration_sec = total_ms / 1000.0 if total_ms > 0 else 0.0
         summary = {
             "total_requests": len(results),
             "success_count": success_count,
             "hit_count": hit_count,
+            "top_hit_count": top_hit_count,
             "error_count": len(results) - success_count,
             "success_rate": success_count / len(results) if results else 0.0,
             "hit_rate": hit_count / len(results) if results else 0.0,
+            "top_hit_rate": top_hit_count / len(results) if results else 0.0,
+            "throughput_qps": len(results) / duration_sec if duration_sec > 0 else 0.0,
             "avg_ms": statistics.mean(latencies) if latencies else 0.0,
             "p50_ms": percentile(latencies, 0.50),
             "p95_ms": percentile(latencies, 0.95),
@@ -373,13 +427,33 @@ def main() -> int:
             "status_counts": status_counts,
             "seed_doc_id": doc_id,
             "question": question,
+            "top_doc_counts": {},
         }
-        result = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "summary": summary}
+        for r in results:
+            if r.top_doc_id:
+                summary["top_doc_counts"][r.top_doc_id] = summary["top_doc_counts"].get(r.top_doc_id, 0) + 1
+        result = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "scenario": args.scenario,
+            "tenant_id": args.tenant_id,
+            "config": {
+                "concurrency": args.concurrency,
+                "requests": args.requests,
+                "top_k": args.top_k,
+                "noise_docs": args.noise_docs,
+                "metadata_keys": sorted(metadata.keys()),
+            },
+            "summary": summary,
+        }
 
         json_path, md_path = write_report(Path(args.report_dir), result)
         print(f"[loadtest] report json: {json_path}")
         print(f"[loadtest] report md:   {md_path}")
-        print(f"[loadtest] success_rate={summary['success_rate']:.2%} hit_rate={summary['hit_rate']:.2%} p95={summary['p95_ms']:.2f}ms")
+        print(
+            f"[loadtest] scenario={args.scenario} success_rate={summary['success_rate']:.2%} "
+            f"hit_rate={summary['hit_rate']:.2%} top_hit_rate={summary['top_hit_rate']:.2%} "
+            f"qps={summary['throughput_qps']:.2f} p95={summary['p95_ms']:.2f}ms"
+        )
         return 0
     finally:
         stop_process(mock_proc)

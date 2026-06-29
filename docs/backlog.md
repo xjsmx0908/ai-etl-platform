@@ -68,3 +68,17 @@ Plan:
 3. Log the decision with reason `reranker_not_configured_exact_candidate_pinned` for observability.
 4. Add an engine-level regression test where `customer_ref` metadata is the only exact evidence and the fused top candidate is a distractor.
 5. Rerun Go tests and CI-like deterministic eval with reranker disabled.
+
+## 2026-06-29 - Module 2 Lightweight Load Test
+
+Status: implemented
+
+Goal: produce a lightweight performance baseline for the completed Hybrid Retrieval & Reranking Engine.
+
+Plan:
+
+1. Extend the query load-test script to report scenario name, throughput, top-hit rate, and business metadata exact-match cases.
+2. Run cache-miss rerank-off, cache-miss rerank-on, cache-hit rerank-on, and schema exact rerank-on scenarios with low concurrency.
+3. Use the benchmark to verify latency impact from CPU Cross-Encoder reranking and latency reduction from Redis semantic cache.
+4. Fix the exact-route guardrail gap found during schema exact pressure testing.
+5. Document the benchmark result in `docs/module2-load-test-report.md`.

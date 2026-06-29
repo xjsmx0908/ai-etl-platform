@@ -50,6 +50,14 @@ func planRerank(policy string, route Route, question string, candidates []Candid
 	case "", config.RerankPolicyAuto:
 		q := strings.ToLower(strings.TrimSpace(question))
 		if route.Strategy == StrategyExactKeyword || isExactKeywordIntent(q) {
+			if evidence.HasMatches() && !evidence.TopCandidateMatched {
+				return rerankDecision{
+					ShouldRerank:        false,
+					Reason:              "exact_keyword_candidate_pinned",
+					ProtectExactMatches: true,
+					Evidence:            evidence,
+				}
+			}
 			return rerankDecision{ShouldRerank: false, Reason: "exact_keyword_intent", Evidence: evidence}
 		}
 		if evidence.HasMatches() {

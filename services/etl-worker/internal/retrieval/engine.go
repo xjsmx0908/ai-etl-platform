@@ -212,6 +212,8 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 					ranked = topCandidates(reranked, req.TopK)
 				}
 			}
+		} else if decision.ProtectExactMatches {
+			ranked = protectExactMatches(fused, fused, decision.Evidence, req.TopK)
 		}
 		e.logRerankDecision(req, route, decision, fused, ranked, rerankErr)
 	} else if decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused); decision.ProtectExactMatches {
