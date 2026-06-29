@@ -213,6 +213,47 @@ func TestEngineRerankPolicy_ProtectsSchemaMetadataEvidence(t *testing.T) {
 	}
 }
 
+func TestEngineRerankPolicy_PinsSchemaMetadataEvidenceWithoutReranker(t *testing.T) {
+	embedServer := newPolicyEvalEmbedServer(t)
+	defer embedServer.Close()
+
+	retrievers := map[string]Retriever{
+		SourceQdrant: staticPolicyEvalRetriever{
+			name: SourceQdrant,
+			candidates: []Candidate{
+				{ChunkID: "schema-distractor", DocID: "doc-reference-guide", Content: "客户参考号通用处理说明。", Rank: 1},
+				{ChunkID: "schema-exact-target", DocID: "doc-customer-reference", Content: "客户参考号当前处于已处理状态。", Metadata: map[string]string{"customer_ref": "x9k-77q-plum"}, Rank: 2},
+			},
+		},
+	}
+	req := Request{
+		Question:           "请解释客户参考号 x9k-77q-plum 的处理说明",
+		TopK:               1,
+		TenantID:           "tenant-policy-eval-no-reranker",
+		AllowedPermissions: []string{"public"},
+	}
+	reranker := &scoringPolicyEvalReranker{
+		scores: map[string]float64{
+			"schema-distractor":   0.99,
+			"schema-exact-target": 0.10,
+		},
+	}
+	engine := newPolicyEvalEngine(embedServer.URL, embedServer.Client(), retrievers, reranker, false, config.RerankPolicyAuto)
+	result, err := engine.Retrieve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retrieve with no-reranker schema exact protection: %v", err)
+	}
+	if result.Route.Strategy != StrategySemantic {
+		t.Fatalf("expected semantic route, got %+v", result.Route)
+	}
+	if got := firstChunkID(result); got != "schema-exact-target" {
+		t.Fatalf("expected schema metadata exact target pinned without reranker, got %q", got)
+	}
+	if reranker.calls != 0 {
+		t.Fatalf("expected disabled reranker not called, got %d calls", reranker.calls)
+	}
+}
+
 type staticPolicyEvalRetriever struct {
 	name       string
 	candidates []Candidate

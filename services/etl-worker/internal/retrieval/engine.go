@@ -214,6 +214,11 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 			}
 		}
 		e.logRerankDecision(req, route, decision, fused, ranked, rerankErr)
+	} else if decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused); decision.ProtectExactMatches {
+		decision.ShouldRerank = false
+		decision.Reason = "reranker_not_configured_exact_candidate_pinned"
+		ranked = protectExactMatches(fused, fused, decision.Evidence, req.TopK)
+		e.logRerankDecision(req, route, decision, fused, ranked, "")
 	}
 
 	if err := e.cache.Store(ctx, cacheKey, denseVector, ranked); err != nil {

@@ -41,7 +41,7 @@ Plan:
 
 ## 2026-06-29 - Full Enterprise Rerank Guardrail
 
-Status: implemented
+Status: implemented, completed with no-reranker exact pinning
 
 Goal: complete the enterprise rerank design across rule, business schema, retrieval signal, protective rerank, and observability/eval layers.
 
@@ -53,3 +53,18 @@ Plan:
 4. Replace candidate-evidence skip with protective rerank in `auto`: semantic/hybrid queries may use reranker, then exact-match candidates are pinned above non-exact candidates.
 5. Add structured rerank-decision logs with route, policy, rerank decision, exact token hashes, matched candidate count, top-rank changes, and protection state.
 6. Extend deterministic unit tests and golden eval data with metadata-only exact retrieval coverage.
+7. Pin exact-evidence candidates even when reranker is disabled or unconfigured, so CI/default deployments keep the same deterministic business-identifier protection.
+
+## 2026-06-29 - No-Reranker Exact Candidate Pinning
+
+Status: implemented
+
+Goal: close the CI/default deployment gap where metadata-only exact candidates could be recalled but still lose fused ranking when no reranker service was configured.
+
+Plan:
+
+1. Reuse the same exact-evidence planner when `RETRIEVAL_ENABLE_RERANK=false` or `RERANK_ENDPOINT` is empty.
+2. If semantic/hybrid candidates contain exact evidence, apply `protectExactMatches` directly to fused candidates.
+3. Log the decision with reason `reranker_not_configured_exact_candidate_pinned` for observability.
+4. Add an engine-level regression test where `customer_ref` metadata is the only exact evidence and the fused top candidate is a distractor.
+5. Rerun Go tests and CI-like deterministic eval with reranker disabled.

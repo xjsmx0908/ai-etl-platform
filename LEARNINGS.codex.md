@@ -39,3 +39,13 @@ Reason: enterprise RAG needs layered protection rather than a larger keyword lis
 Act: added metadata propagation from upload to parser chunks, Qdrant, Elasticsearch, and candidates; added `RETRIEVAL_EXACT_SCHEMA_FIELDS`; added ES metadata exact-term recall; changed `auto` to rerank semantic/hybrid exact-evidence cases with exact-match pinning; added privacy-safe rerank decision logs.
 
 Refine: added unit tests for schema metadata evidence, Qdrant/ES metadata extraction, protective pinning, and engine behavior; extended the golden eval set with a metadata-only exact retrieval case.
+
+## 2026-06-29T19:53:41+08:00 - No-Reranker Exact Candidate Pinning
+
+Perceive: CI defaults do not enable the optional reranker service, so the metadata-only golden eval case could recall the exact candidate but still return a higher fused distractor.
+
+Reason: exact-evidence protection is an enterprise retrieval invariant, not a side effect of calling a reranker. Business identifiers in configured schema metadata must be protected in both reranker-enabled and reranker-disabled deployments.
+
+Act: applied the existing exact-evidence planner when the reranker is unconfigured and pinned exact candidates directly over fused ranking; added an engine regression test for schema metadata evidence with the reranker disabled.
+
+Refine: verified targeted retrieval tests, full Go tests, and the deterministic eval with `RETRIEVAL_ENABLE_RERANK=false`, all passing with the metadata-only case included.
