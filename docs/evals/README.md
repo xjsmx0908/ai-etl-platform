@@ -33,6 +33,7 @@ docker run --rm \
 
 - 语义查询：融合排序把干扰文档排第一，`RETRIEVAL_RERANK_POLICY=auto` 调用 reranker 后把目标文档提升到第一。
 - 精确查询：BM25/向量融合把精确订单文档排第一，`auto` 跳过 reranker；若改成 `always`，同一个 reranker 会把干扰文档排第一，用于证明全量 rerank 的退化风险。
+- 候选证据保护：即使 query 没有被关键词/旧正则路由为精确查询，只要 query 中的疑似 ID/token 在候选 `doc_id`、`chunk_id` 或正文中完整出现，`auto` 也会跳过 reranker，保护 exact-match 候选。
 
 常用参数：
 

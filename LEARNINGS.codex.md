@@ -19,3 +19,13 @@ Reason: a useful enterprise rerank gate needs both sides of evidence: semantic o
 Act: added deterministic retrieval-engine tests that compare rerank-off, `auto`, and `always` behavior with fake retrievers and a scoring reranker. The semantic case proves rerank promotion; the exact case proves `auto` skips a reranker that would otherwise regress the top result.
 
 Refine: documented the focused rerank policy eval command in `docs/evals/README.md`; the broader golden eval still remains the regression gate for full-stack behavior.
+
+## 2026-06-29T18:15:11+08:00 - Candidate-Aware Exact Evidence Protection
+
+Perceive: query-only keyword and regex routing cannot enumerate every enterprise identifier shape, so relying only on `RouteQuery` leaves gaps for domain-specific IDs.
+
+Reason: exact-match protection should use both query intent and retrieval evidence. If a strong token from the user query is present in retrieved `doc_id`, `chunk_id`, or content, that candidate carries deterministic evidence that a cross-encoder should not casually override.
+
+Act: added broad exact-token extraction for emails, UUIDs, phone-like numbers, structured IDs, and mixed alphanumeric tokens with separators; added candidate evidence checks with separator normalization; `auto` now skips reranking for semantic/hybrid routes when exact candidate evidence exists.
+
+Refine: added tests proving an unrouted exact token query remains semantic under old route rules but is still protected because the fused candidates contain the exact token.

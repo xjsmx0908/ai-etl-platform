@@ -286,7 +286,7 @@ RERANK_ENDPOINT=http://reranker-service:8091/rerank \
 docker compose --profile rerank up -d --build reranker-service query-api
 ```
 
-`RETRIEVAL_RERANK_POLICY=auto` 是推荐的企业级默认策略：精确编号、订单、错误码、trace 等查询保留混合召回融合排序，语义/混合查询才调用 Cross-Encoder 重排。需要做离线对比实验时可设为 `always` 复现“所有查询都重排”的旧行为。
+`RETRIEVAL_RERANK_POLICY=auto` 是推荐的企业级默认策略：精确编号、订单、错误码、trace 等查询保留混合召回融合排序；即使查询没有被关键词规则识别为精确查询，只要候选中包含 query 的强 exact token，也会跳过 reranker 保护该候选。其余语义/混合查询才调用 Cross-Encoder 重排。需要做离线对比实验时可设为 `always` 复现“所有查询都重排”的旧行为。
 
 敏感配置读取优先级：`KEY` > `KEY_FILE` > 默认值。`docker-compose.yml` 已为 `query-api`、`etl-worker`、`parser-service` 挂载 secrets，默认占位文件在 `secrets/examples/`，建议复制到 `secrets/dev/` 后替换为真实值。
 

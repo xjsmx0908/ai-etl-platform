@@ -188,7 +188,7 @@ REDIS_PASSWORD=your-redis-password
 | `RETRIEVAL_FINAL_TOP_K` | `5` | 请求未传 `top_k` 时的默认上下文数量 |
 | `RETRIEVAL_ENABLE_ES` | `true` | 是否启用 Elasticsearch BM25 召回 |
 | `RETRIEVAL_ENABLE_RERANK` | `false` | 是否启用 HTTP Cross-Encoder Reranker |
-| `RETRIEVAL_RERANK_POLICY` | `auto` | Rerank 策略：`auto` 跳过精确编号/关键词查询，`always` 对所有候选重排 |
+| `RETRIEVAL_RERANK_POLICY` | `auto` | Rerank 策略：`auto` 跳过精确编号/关键词查询，并在候选包含 query 精确 token 时保护融合排序；`always` 对所有候选重排 |
 | `RERANK_ENDPOINT` | _(空)_ | Reranker HTTP 端点 |
 | `RERANK_API_KEY` | _(空)_ | Reranker API Key（可选） |
 | `RERANK_MODEL` | `bge-reranker-base` | Reranker 模型名 |

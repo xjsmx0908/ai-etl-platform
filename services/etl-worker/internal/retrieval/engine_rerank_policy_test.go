@@ -131,6 +131,47 @@ func TestEngineRerankPolicy_SkipsRerankerWhenExactFusionIsBetter(t *testing.T) {
 	}
 }
 
+func TestEngineRerankPolicy_SkipsRerankerForUnroutedExactCandidateEvidence(t *testing.T) {
+	embedServer := newPolicyEvalEmbedServer(t)
+	defer embedServer.Close()
+
+	retrievers := map[string]Retriever{
+		SourceQdrant: staticPolicyEvalRetriever{
+			name: SourceQdrant,
+			candidates: []Candidate{
+				{ChunkID: "unrouted-exact-target", DocID: "doc-customer-reference", Content: "客户参考号 x9k-77q-plum 当前处于已处理状态。", Rank: 1},
+				{ChunkID: "unrouted-exact-distractor", DocID: "doc-reference-guide", Content: "客户参考号的通用处理说明。", Rank: 2},
+			},
+		},
+	}
+	req := Request{
+		Question:           "请解释客户参考号 x9k-77q-plum 的处理说明",
+		TopK:               1,
+		TenantID:           "tenant-policy-eval",
+		AllowedPermissions: []string{"public"},
+	}
+	reranker := &scoringPolicyEvalReranker{
+		scores: map[string]float64{
+			"unrouted-exact-distractor": 0.99,
+			"unrouted-exact-target":     0.10,
+		},
+	}
+	engine := newPolicyEvalEngine(embedServer.URL, embedServer.Client(), retrievers, reranker, true, config.RerankPolicyAuto)
+	result, err := engine.Retrieve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retrieve with candidate-aware exact protection: %v", err)
+	}
+	if result.Route.Strategy != StrategySemantic {
+		t.Fatalf("expected old route rules to classify query as semantic, got %+v", result.Route)
+	}
+	if got := firstChunkID(result); got != "unrouted-exact-target" {
+		t.Fatalf("expected candidate-aware exact protection to keep target first, got %q", got)
+	}
+	if reranker.calls != 0 {
+		t.Fatalf("expected reranker skipped by exact candidate evidence, got %d calls", reranker.calls)
+	}
+}
+
 type staticPolicyEvalRetriever struct {
 	name       string
 	candidates []Candidate
