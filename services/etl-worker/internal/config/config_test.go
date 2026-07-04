@@ -476,30 +476,6 @@ func TestValidate_RetrievalConfig(t *testing.T) {
 	}
 
 	cfg = Load()
-	cfg.AgentNodeID = ""
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty AgentNodeID")
-	}
-
-	cfg = Load()
-	cfg.AgentMaxSteps = 0
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for AgentMaxSteps < 1")
-	}
-
-	cfg = Load()
-	cfg.AgentLockTTL = 0
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for AgentLockTTL <= 0")
-	}
-
-	cfg = Load()
-	cfg.AgentRunTTL = 0
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for AgentRunTTL <= 0")
-	}
-
-	cfg = Load()
 	cfg.TaskStatusTTL = 0
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for TaskStatusTTL <= 0")
@@ -510,37 +486,84 @@ func TestValidate_RetrievalConfig(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for invalid TaskStatusStore")
 	}
+}
+
+func TestValidate_DoesNotRequireAgentPlannerForWorker(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "staging"
+	cfg.AgentPlannerType = AgentPlannerAuto
+	cfg.AgentPlannerEndpoint = "https://api.openai.com/v1/chat/completions"
+	cfg.AgentPlannerAPIKey = ""
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("worker/base validation should not require Agent planner config, got: %v", err)
+	}
+}
+
+func TestValidateAPI_AgentConfig(t *testing.T) {
+	cfg := Load()
+	cfg.AgentNodeID = ""
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for empty AgentNodeID")
+	}
+
+	cfg = Load()
+	cfg.AgentMaxSteps = 0
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for AgentMaxSteps < 1")
+	}
+
+	cfg = Load()
+	cfg.AgentLockTTL = 0
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for AgentLockTTL <= 0")
+	}
+
+	cfg = Load()
+	cfg.AgentRunTTL = 0
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for AgentRunTTL <= 0")
+	}
 
 	cfg = Load()
 	cfg.AgentPlannerType = "random"
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected error for invalid AgentPlannerType")
 	}
 
 	cfg = Load()
 	cfg.AgentPlannerType = AgentPlannerLLM
 	cfg.AgentPlannerEndpoint = ""
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected error for empty AgentPlannerEndpoint with llm planner")
 	}
 
 	cfg = Load()
 	cfg.AgentPlannerType = AgentPlannerLLM
 	cfg.AgentPlannerModel = ""
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected error for empty AgentPlannerModel with llm planner")
 	}
 
 	cfg = Load()
 	cfg.AgentPlannerTimeout = 0
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected error for AgentPlannerTimeout <= 0")
 	}
 
 	cfg = Load()
 	cfg.AgentPlannerMaxTokens = 0
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected error for AgentPlannerMaxTokens < 1")
+	}
+
+	cfg = Load()
+	cfg.Environment = "staging"
+	cfg.AgentPlannerType = AgentPlannerAuto
+	cfg.AgentPlannerEndpoint = "https://api.openai.com/v1/chat/completions"
+	cfg.AgentPlannerAPIKey = ""
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected API validation to require key for OpenAI planner endpoint")
 	}
 }
 
@@ -551,10 +574,14 @@ func TestValidate_ProductionAgentPlanner(t *testing.T) {
 	cfg.KafkaBrokers = "kafka:9092"
 	cfg.StoreEndpoint = "http://qdrant:6333"
 	cfg.RedisAddr = "redis:6379"
+	cfg.JWTSecret = "12345678901234567890123456789012"
+	cfg.S3AccessKey = "prod-access"
+	cfg.S3SecretKey = "prod-secret"
+	cfg.CORSAllowedOrigins = []string{"https://console.example.com"}
 	cfg.AgentPlannerType = AgentPlannerAuto
 	cfg.AgentPlannerEndpoint = "http://planner:8080/v1/chat/completions"
 
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.ValidateAPI(); err != nil {
 		t.Fatalf("expected production auto planner to resolve to llm, got %v", err)
 	}
 	if cfg.ResolvedAgentPlannerType() != AgentPlannerLLM {
@@ -562,14 +589,14 @@ func TestValidate_ProductionAgentPlanner(t *testing.T) {
 	}
 
 	cfg.AgentPlannerType = AgentPlannerRule
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected production rule planner to be rejected")
 	}
 
 	cfg.AgentPlannerType = AgentPlannerLLM
 	cfg.AgentPlannerEndpoint = "https://api.openai.com/v1/chat/completions"
 	cfg.AgentPlannerAPIKey = ""
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected OpenAI planner endpoint to require API key in production")
 	}
 }

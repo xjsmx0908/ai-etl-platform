@@ -10,6 +10,16 @@ Act: added `TaskStatusStore`, memory and Redis implementations, upload queued wr
 
 Refine: added tests for tenant-scoped status persistence, upload status recording, worker status transitions, Agent tool execution, cross-tenant not-found behavior, and LLM Planner selection of `etl_task_status`.
 
+## 2026-07-04T16:45:10+08:00 - Module 3 CI and E2E Hardening
+
+Perceive: remote deterministic eval stalled after the Agent Planner work. Local smoke showed `etl-worker` was restarting because base config validation required Agent Planner credentials even though only `query-api` owns Agent planning.
+
+Reason: enterprise services should validate only the capabilities they actually host. Worker startup must not depend on Agent Planner configuration; Query API still must reject invalid Agent Planner configuration. Agent audit state also needs completed tool steps, not long-lived `running` step states.
+
+Act: moved Agent-specific validation behind `ValidateAPI()`, exposed Agent config through `docker-compose.yml` for `query-api`, and changed successful tool steps to persist as `completed` while the run continues.
+
+Refine: verified full Go tests, Docker Compose config, RAG smoke, `rag_query` Agent HTTP E2E, and `etl_task_status` Agent HTTP E2E with an OpenAI-compatible planner mock.
+
 ## 2026-07-04T12:07:08+08:00 - Module 3 LLM Planner Integration
 
 Perceive: the Agent API could run end-to-end, but its planner was still a fixed rule path. The user wanted a real enterprise-style LLM Planner while keeping deterministic dev/test fallback.

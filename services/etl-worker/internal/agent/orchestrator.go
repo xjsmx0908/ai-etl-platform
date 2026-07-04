@@ -213,7 +213,7 @@ func (o *Orchestrator) recoverWaitingTool(ctx context.Context, run Run, actor Ac
 	}
 	if step.ToolResult != nil {
 		run.State = StateRunning
-		run.Steps[last].State = StateRunning
+		run.Steps[last].State = StateCompleted
 		run.UpdatedAt = o.now().UTC()
 		return o.saveRun(ctx, run, lease)
 	}
@@ -260,7 +260,7 @@ func (o *Orchestrator) executePersistedTool(ctx context.Context, run Run, actor 
 
 	current.ToolResult = &result
 	current.Observation = result.Content
-	current.State = StateRunning
+	current.State = StateCompleted
 	run.State = StateRunning
 	run.UpdatedAt = completedAt
 	return o.saveRun(ctx, run, lease)

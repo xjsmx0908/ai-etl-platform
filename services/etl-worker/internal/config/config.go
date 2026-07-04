@@ -353,6 +353,18 @@ func (c Config) Validate() error {
 	if c.SemanticCacheMaxEntries < 1 || c.SemanticCacheMaxEntries > 10000 {
 		return fmt.Errorf("SEMANTIC_CACHE_MAX_ENTRIES must be between 1 and 10000, got %d", c.SemanticCacheMaxEntries)
 	}
+	if c.TaskStatusTTL <= 0 {
+		return fmt.Errorf("TASK_STATUS_TTL must be > 0, got %s", c.TaskStatusTTL)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.TaskStatusStore)) {
+	case TaskStatusStoreAuto, TaskStatusStoreMemory, TaskStatusStoreRedis:
+	default:
+		return fmt.Errorf("TASK_STATUS_STORE must be %q, %q, or %q, got %q", TaskStatusStoreAuto, TaskStatusStoreMemory, TaskStatusStoreRedis, c.TaskStatusStore)
+	}
+	return nil
+}
+
+func (c Config) validateAgentConfig() error {
 	if strings.TrimSpace(c.AgentNodeID) == "" {
 		return fmt.Errorf("AGENT_NODE_ID is required")
 	}
@@ -364,14 +376,6 @@ func (c Config) Validate() error {
 	}
 	if c.AgentRunTTL <= 0 {
 		return fmt.Errorf("AGENT_RUN_TTL must be > 0, got %s", c.AgentRunTTL)
-	}
-	if c.TaskStatusTTL <= 0 {
-		return fmt.Errorf("TASK_STATUS_TTL must be > 0, got %s", c.TaskStatusTTL)
-	}
-	switch strings.ToLower(strings.TrimSpace(c.TaskStatusStore)) {
-	case TaskStatusStoreAuto, TaskStatusStoreMemory, TaskStatusStoreRedis:
-	default:
-		return fmt.Errorf("TASK_STATUS_STORE must be %q, %q, or %q, got %q", TaskStatusStoreAuto, TaskStatusStoreMemory, TaskStatusStoreRedis, c.TaskStatusStore)
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AgentPlannerType)) {
 	case AgentPlannerAuto, AgentPlannerLLM, AgentPlannerRule:
@@ -441,6 +445,9 @@ func (c Config) ResolvedTaskStatusStore() string {
 // ValidateAPI extends base validation for Query API specific security requirements.
 func (c Config) ValidateAPI() error {
 	if err := c.Validate(); err != nil {
+		return err
+	}
+	if err := c.validateAgentConfig(); err != nil {
 		return err
 	}
 	if c.Environment != "production" {

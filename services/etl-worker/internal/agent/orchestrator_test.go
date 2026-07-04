@@ -67,6 +67,9 @@ func TestOrchestrator_RunToCompletionPersistsSteps(t *testing.T) {
 	if len(run.Steps) != 2 {
 		t.Fatalf("expected 2 steps, got %d", len(run.Steps))
 	}
+	if run.Steps[0].State != StateCompleted {
+		t.Fatalf("expected completed tool step, got %+v", run.Steps[0])
+	}
 	if run.Steps[0].ToolResult == nil || run.Steps[0].ToolResult.Content != "stock available" {
 		t.Fatalf("expected persisted tool result, got %+v", run.Steps[0])
 	}
@@ -109,6 +112,9 @@ func TestOrchestrator_ResumesRunFromPersistedState(t *testing.T) {
 	}
 	if run.State != StateRunning || len(run.Steps) != 1 {
 		t.Fatalf("expected resumable running state, got %+v", run)
+	}
+	if run.Steps[0].State != StateCompleted {
+		t.Fatalf("expected completed tool step before resume, got %+v", run.Steps[0])
 	}
 
 	second := newTestOrchestratorWithLocks(t, store, locks, registry, planner, 4, "node-b")
@@ -263,6 +269,9 @@ func TestOrchestrator_RecoversWaitingToolWithSameIdempotencyKey(t *testing.T) {
 	}
 	if gotKey != "agent:run-recover:1:check_inventory" {
 		t.Fatalf("expected stable idempotency key, got %q", gotKey)
+	}
+	if run.Steps[0].State != StateCompleted {
+		t.Fatalf("expected recovered tool step to complete, got %+v", run.Steps[0])
 	}
 }
 

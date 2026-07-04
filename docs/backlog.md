@@ -34,6 +34,20 @@ Plan:
 7. Reject `AGENT_PLANNER_TYPE=rule` in production to keep RulePlanner as dev/test fallback only.
 8. Add tests for LLM tool-call planning, final planning, guardrail failures, planner selection, and production config validation.
 
+## 2026-07-04 - Module 3 CI and E2E Hardening
+
+Status: implemented
+
+Goal: unblock CI/deterministic eval and prove the Agent API works through real HTTP boundaries.
+
+Plan:
+
+1. Move Agent Planner validation from shared worker/API config validation into `ValidateAPI()`.
+2. Keep production Query API guardrails for LLM Planner while allowing worker startup without Agent Planner credentials.
+3. Expose Agent runtime/planner environment variables in `docker-compose.yml` for `query-api`.
+4. Persist successful tool-call steps as `completed` for correct audit semantics.
+5. Verify full Go tests, compose config, RAG smoke, `rag_query` Agent HTTP E2E, and `etl_task_status` Agent HTTP E2E.
+
 ## 2026-07-04 - Module 3 Agent API Integration
 
 Status: implemented
