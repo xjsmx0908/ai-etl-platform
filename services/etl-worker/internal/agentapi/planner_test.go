@@ -75,6 +75,32 @@ func TestLLMPlannerPlansFinalFromObservation(t *testing.T) {
 	}
 }
 
+func TestLLMPlannerPlansTaskStatusToolCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writePlannerResponse(t, w, `{"type":"tool_call","thought":"need task status","tool_name":"etl_task_status","arguments":{"task_id":"doc-123"}}`)
+	}))
+	defer server.Close()
+
+	planner := newTestLLMPlanner(t, server.URL, "")
+	decision, err := planner.Plan(context.Background(), agent.Run{
+		Task:  "查询任务 doc-123 状态",
+		State: agent.StateRunning,
+	})
+	if err != nil {
+		t.Fatalf("plan task status tool call: %v", err)
+	}
+	if decision.Type != agent.DecisionToolCall || decision.ToolName != etlTaskStatusToolName {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(decision.Arguments, &args); err != nil {
+		t.Fatalf("decode decision args: %v", err)
+	}
+	if args["task_id"] != "doc-123" {
+		t.Fatalf("unexpected args: %+v", args)
+	}
+}
+
 func TestLLMPlannerRejectsInvalidDecision(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -173,6 +199,17 @@ func newTestLLMPlanner(t *testing.T, endpoint string, apiKey string) *LLMPlanner
 					Properties: map[string]agent.SchemaProperty{
 						"question": {Type: "string"},
 						"top_k":    {Type: "integer"},
+					},
+				},
+			},
+			{
+				Name:        etlTaskStatusToolName,
+				Description: "query task status",
+				Parameters: agent.JSONSchema{
+					Type:     "object",
+					Required: []string{"task_id"},
+					Properties: map[string]agent.SchemaProperty{
+						"task_id": {Type: "string"},
 					},
 				},
 			},

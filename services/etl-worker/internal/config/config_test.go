@@ -34,6 +34,15 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.IdempotencyTTL != 24*time.Hour {
 		t.Errorf("expected IdempotencyTTL=24h, got %v", cfg.IdempotencyTTL)
 	}
+	if cfg.TaskStatusTTL != 7*24*time.Hour {
+		t.Errorf("expected TaskStatusTTL=168h, got %v", cfg.TaskStatusTTL)
+	}
+	if cfg.TaskStatusStore != TaskStatusStoreAuto {
+		t.Errorf("expected TaskStatusStore=auto, got %s", cfg.TaskStatusStore)
+	}
+	if cfg.ResolvedTaskStatusStore() != TaskStatusStoreMemory {
+		t.Errorf("expected dev task status store memory, got %s", cfg.ResolvedTaskStatusStore())
+	}
 	if cfg.ESAddress != "http://elasticsearch:9200" {
 		t.Errorf("expected ESAddress default, got %s", cfg.ESAddress)
 	}
@@ -164,6 +173,8 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("AGENT_PLANNER_MODEL", "planner-model")
 	os.Setenv("AGENT_PLANNER_TIMEOUT", "12s")
 	os.Setenv("AGENT_PLANNER_MAX_TOKENS", "768")
+	os.Setenv("TASK_STATUS_STORE", "redis")
+	os.Setenv("TASK_STATUS_TTL", "48h")
 	defer func() {
 		os.Unsetenv("PIPELINE_MAX_WORKERS")
 		os.Unsetenv("ENVIRONMENT")
@@ -202,6 +213,8 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("AGENT_PLANNER_MODEL")
 		os.Unsetenv("AGENT_PLANNER_TIMEOUT")
 		os.Unsetenv("AGENT_PLANNER_MAX_TOKENS")
+		os.Unsetenv("TASK_STATUS_STORE")
+		os.Unsetenv("TASK_STATUS_TTL")
 	}()
 
 	cfg := Load()
@@ -319,6 +332,15 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.AgentPlannerMaxTokens != 768 {
 		t.Errorf("expected AgentPlannerMaxTokens=768, got %d", cfg.AgentPlannerMaxTokens)
+	}
+	if cfg.TaskStatusTTL != 48*time.Hour {
+		t.Errorf("expected TaskStatusTTL=48h, got %v", cfg.TaskStatusTTL)
+	}
+	if cfg.TaskStatusStore != TaskStatusStoreRedis {
+		t.Errorf("expected TaskStatusStore=redis, got %s", cfg.TaskStatusStore)
+	}
+	if cfg.ResolvedTaskStatusStore() != TaskStatusStoreRedis {
+		t.Errorf("expected resolved task status store redis, got %s", cfg.ResolvedTaskStatusStore())
 	}
 }
 
@@ -475,6 +497,18 @@ func TestValidate_RetrievalConfig(t *testing.T) {
 	cfg.AgentRunTTL = 0
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for AgentRunTTL <= 0")
+	}
+
+	cfg = Load()
+	cfg.TaskStatusTTL = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for TaskStatusTTL <= 0")
+	}
+
+	cfg = Load()
+	cfg.TaskStatusStore = "postgres"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid TaskStatusStore")
 	}
 
 	cfg = Load()

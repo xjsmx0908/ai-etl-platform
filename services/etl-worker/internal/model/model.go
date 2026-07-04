@@ -70,6 +70,33 @@ type Checkpoint struct {
 	LastChunkID string `json:"last_chunk_id"`
 }
 
+// TaskStatusState describes a document processing task lifecycle.
+type TaskStatusState string
+
+const (
+	TaskStatusQueued     TaskStatusState = "queued"
+	TaskStatusProcessing TaskStatusState = "processing"
+	TaskStatusCompleted  TaskStatusState = "completed"
+	TaskStatusFailed     TaskStatusState = "failed"
+)
+
+// TaskStatus is a tenant-scoped read model for upload/worker task progress.
+type TaskStatus struct {
+	TaskID      string            `json:"task_id"`
+	DocID       string            `json:"doc_id"`
+	TenantID    string            `json:"tenant_id"`
+	Status      TaskStatusState   `json:"status"`
+	Stage       string            `json:"stage,omitempty"`
+	Error       string            `json:"error,omitempty"`
+	FilePath    string            `json:"file_path,omitempty"`
+	FileHash    string            `json:"file_hash,omitempty"`
+	Permission  string            `json:"permission,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	CompletedAt time.Time         `json:"completed_at,omitempty"`
+}
+
 // DLQMessage represents a failed task destined for the dead letter queue.
 type DLQMessage struct {
 	Task  Task      `json:"task"`
@@ -97,6 +124,13 @@ type CheckpointStore interface {
 	Save(ctx context.Context, cp Checkpoint) error
 	Load(ctx context.Context, docID string) (Checkpoint, bool, error)
 	Delete(ctx context.Context, docID string) error
+	Close() error
+}
+
+// TaskStatusStore persists tenant-scoped task status for read-only status queries.
+type TaskStatusStore interface {
+	Save(ctx context.Context, status TaskStatus) error
+	Load(ctx context.Context, tenantID string, taskID string) (TaskStatus, bool, error)
 	Close() error
 }
 

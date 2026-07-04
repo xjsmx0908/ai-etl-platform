@@ -31,6 +31,7 @@ import (
 	"ai-etl-pipeline/internal/prometheus"
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/s3"
+	"ai-etl-pipeline/internal/taskstatus"
 	"ai-etl-pipeline/internal/tracing"
 )
 
@@ -179,7 +180,14 @@ func main() {
 
 	// Initialize services
 	qs := query.NewService(cfg)
-	agentSvc, err := agentapi.NewService(cfg, qs)
+	taskStatusStore, err := newTaskStatusStore(cfg)
+	if err != nil {
+		slog.Error("failed to create task status store", "error", err)
+		os.Exit(1)
+	}
+	defer taskStatusStore.Close()
+
+	agentSvc, err := agentapi.NewService(cfg, qs, taskStatusStore)
 	if err != nil {
 		slog.Error("failed to create agent api service", "error", err)
 		os.Exit(1)
@@ -198,7 +206,7 @@ func main() {
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg.MaxUploadSize, cfg.MultipartMaxMemoryBytes, producer, s3Client, idemStore))))
+	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg.MaxUploadSize, cfg.MultipartMaxMemoryBytes, producer, s3Client, idemStore, taskStatusStore))))
 	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(qs.HandleQuery)))
 	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
@@ -269,7 +277,14 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store) http.HandlerFunc {
+func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
+	if cfg.ResolvedTaskStatusStore() == config.TaskStatusStoreMemory {
+		return taskstatus.NewMemoryStore(), nil
+	}
+	return taskstatus.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.TaskStatusTTL)
+}
+
+func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		w = rec
@@ -415,8 +430,46 @@ func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadP
 			CreatedAt:  now,
 		}
 
+		if taskStatusStore != nil {
+			if err := taskStatusStore.Save(r.Context(), model.TaskStatus{
+				TaskID:     task.DocID,
+				DocID:      task.DocID,
+				TenantID:   task.TenantID,
+				Status:     model.TaskStatusQueued,
+				Stage:      "queued",
+				FilePath:   task.FilePath,
+				FileHash:   task.FileHash,
+				Permission: task.Permission,
+				Metadata:   task.Metadata,
+				CreatedAt:  task.CreatedAt,
+				UpdatedAt:  now,
+			}); err != nil {
+				slog.Error("task status save failed", "tenant_id", tenantID, "doc_id", task.DocID, "error", err)
+				http.Error(w, "task status unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+
 		if err := producer.Publish(r.Context(), task); err != nil {
 			slog.Error("kafka publish failed", "error", err)
+			if taskStatusStore != nil {
+				if statusErr := taskStatusStore.Save(r.Context(), model.TaskStatus{
+					TaskID:     task.DocID,
+					DocID:      task.DocID,
+					TenantID:   task.TenantID,
+					Status:     model.TaskStatusFailed,
+					Stage:      "enqueue",
+					Error:      err.Error(),
+					FilePath:   task.FilePath,
+					FileHash:   task.FileHash,
+					Permission: task.Permission,
+					Metadata:   task.Metadata,
+					CreatedAt:  task.CreatedAt,
+					UpdatedAt:  time.Now(),
+				}); statusErr != nil {
+					slog.Warn("task status failure update failed", "tenant_id", tenantID, "doc_id", task.DocID, "error", statusErr)
+				}
+			}
 			http.Error(w, "enqueue failed", http.StatusInternalServerError)
 			return
 		}

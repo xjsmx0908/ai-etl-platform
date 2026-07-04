@@ -86,6 +86,25 @@ func (d *dlqStub) Push(_ context.Context, _ model.DLQMessage) error {
 func (d *dlqStub) List(context.Context) ([]model.DLQMessage, error) { return nil, nil }
 func (d *dlqStub) Close() error                                     { return nil }
 
+type taskStatusStub struct {
+	statuses []model.TaskStatus
+	err      error
+}
+
+func (s *taskStatusStub) Save(_ context.Context, status model.TaskStatus) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.statuses = append(s.statuses, status)
+	return nil
+}
+
+func (s *taskStatusStub) Load(context.Context, string, string) (model.TaskStatus, bool, error) {
+	return model.TaskStatus{}, false, nil
+}
+
+func (s *taskStatusStub) Close() error { return nil }
+
 type fullTextSinkStub struct {
 	calls int
 	err   error
@@ -145,7 +164,8 @@ func baseTestConfig() config.Config {
 
 func TestHandleTask_CommitsOffsetOnlyAfterDLQSuccess(t *testing.T) {
 	dlq := &dlqStub{}
-	p := New(baseTestConfig(), noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, dlq)
+	statuses := &taskStatusStub{}
+	p := New(baseTestConfig(), noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, dlq).WithTaskStatusStore(statuses)
 
 	acked := 0
 	nacked := 0
@@ -170,11 +190,18 @@ func TestHandleTask_CommitsOffsetOnlyAfterDLQSuccess(t *testing.T) {
 	if nacked != 0 {
 		t.Fatalf("expected nack not called on DLQ success, got %d", nacked)
 	}
+	if len(statuses.statuses) != 2 {
+		t.Fatalf("expected processing and failed statuses, got %+v", statuses.statuses)
+	}
+	if statuses.statuses[0].Status != model.TaskStatusProcessing || statuses.statuses[1].Status != model.TaskStatusFailed {
+		t.Fatalf("unexpected status sequence: %+v", statuses.statuses)
+	}
 }
 
 func TestHandleTask_DoesNotCommitWhenDLQFails(t *testing.T) {
 	dlq := &dlqStub{err: errors.New("dlq unavailable")}
-	p := New(baseTestConfig(), noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, dlq)
+	statuses := &taskStatusStub{}
+	p := New(baseTestConfig(), noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, dlq).WithTaskStatusStore(statuses)
 
 	acked := 0
 	nacked := 0
@@ -198,6 +225,50 @@ func TestHandleTask_DoesNotCommitWhenDLQFails(t *testing.T) {
 	}
 	if nacked != 1 {
 		t.Fatalf("expected nack when DLQ push fails, got %d", nacked)
+	}
+	if len(statuses.statuses) != 1 || statuses.statuses[0].Status != model.TaskStatusProcessing {
+		t.Fatalf("expected only processing status when DLQ push fails, got %+v", statuses.statuses)
+	}
+}
+
+func TestHandleTask_RecordsCompletedStatus(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.Environment = "dev"
+	cfg.MaxChunkSize = 512
+	cfg.ReadBufferSize = 4096
+
+	tmp, err := os.CreateTemp(t.TempDir(), "complete-*.md")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if _, err := tmp.WriteString("# Done\n" + strings.Repeat("a", 140)); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+
+	statuses := &taskStatusStub{}
+	p := New(cfg, vectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).WithTaskStatusStore(statuses)
+	acked := 0
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: model.Task{
+			DocID:     "doc-ok",
+			TenantID:  "tenant-a",
+			FilePath:  tmp.Name(),
+			CreatedAt: time.Now().UTC(),
+		},
+		Ack:  func() { acked++ },
+		Nack: func(error) {},
+	})
+	if acked != 1 {
+		t.Fatalf("expected ack, got %d", acked)
+	}
+	if len(statuses.statuses) != 2 {
+		t.Fatalf("expected processing and completed statuses, got %+v", statuses.statuses)
+	}
+	if statuses.statuses[0].Status != model.TaskStatusProcessing || statuses.statuses[1].Status != model.TaskStatusCompleted {
+		t.Fatalf("unexpected status sequence: %+v", statuses.statuses)
 	}
 }
 

@@ -11,7 +11,9 @@ import (
 
 	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/auth"
+	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/query"
+	"ai-etl-pipeline/internal/taskstatus"
 )
 
 type fakeQueryService struct {
@@ -139,6 +141,90 @@ func TestHandleRunApproveResumesPendingTool(t *testing.T) {
 	}
 }
 
+func TestHandleRunsExecutesTaskStatusTool(t *testing.T) {
+	statusStore := taskstatus.NewMemoryStore()
+	now := time.Now().UTC()
+	if err := statusStore.Save(context.Background(), model.TaskStatus{
+		TaskID:    "doc-123",
+		DocID:     "doc-123",
+		TenantID:  "tenant-a",
+		Status:    model.TaskStatusProcessing,
+		Stage:     "embedding",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save task status: %v", err)
+	}
+
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerTaskStatusTool(registry, statusStore); err != nil {
+		t.Fatalf("register task status tool: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, taskStatusPlanner{taskID: "doc-123"}, 4)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"查询任务 doc-123 状态"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.State != agent.StateCompleted || len(run.Steps) != 2 {
+		t.Fatalf("expected completed run with tool and final steps, got %+v", run)
+	}
+	if run.Steps[0].ToolName != etlTaskStatusToolName {
+		t.Fatalf("expected task status tool, got %+v", run.Steps[0])
+	}
+	if run.Steps[0].ToolResult == nil || run.Steps[0].ToolResult.Data["found"] != true {
+		t.Fatalf("expected found task status result, got %+v", run.Steps[0].ToolResult)
+	}
+}
+
+func TestTaskStatusToolDoesNotLeakOtherTenantStatus(t *testing.T) {
+	statusStore := taskstatus.NewMemoryStore()
+	now := time.Now().UTC()
+	if err := statusStore.Save(context.Background(), model.TaskStatus{
+		TaskID:    "doc-secret",
+		DocID:     "doc-secret",
+		TenantID:  "tenant-b",
+		Status:    model.TaskStatusCompleted,
+		Stage:     "completed",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save task status: %v", err)
+	}
+
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerTaskStatusTool(registry, statusStore); err != nil {
+		t.Fatalf("register task status tool: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, taskStatusPlanner{taskID: "doc-secret"}, 4)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"查询任务 doc-secret 状态"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.Steps[0].ToolResult == nil || run.Steps[0].ToolResult.Data["found"] != false {
+		t.Fatalf("expected not_found without tenant leak, got %+v", run.Steps[0].ToolResult)
+	}
+}
+
 type approvalPlanner struct{}
 
 func (approvalPlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecision, error) {
@@ -147,6 +233,22 @@ func (approvalPlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecisio
 			Type:      agent.DecisionToolCall,
 			ToolName:  "publish_report",
 			Arguments: json.RawMessage(`{"title":"quarterly"}`),
+		}, nil
+	}
+	return agent.PlanDecision{Type: agent.DecisionFinal, Final: run.Steps[len(run.Steps)-1].ToolResult.Content}, nil
+}
+
+type taskStatusPlanner struct {
+	taskID string
+}
+
+func (p taskStatusPlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecision, error) {
+	if len(run.Steps) == 0 {
+		args, _ := json.Marshal(map[string]string{"task_id": p.taskID})
+		return agent.PlanDecision{
+			Type:      agent.DecisionToolCall,
+			ToolName:  etlTaskStatusToolName,
+			Arguments: args,
 		}, nil
 	}
 	return agent.PlanDecision{Type: agent.DecisionFinal, Final: run.Steps[len(run.Steps)-1].ToolResult.Content}, nil

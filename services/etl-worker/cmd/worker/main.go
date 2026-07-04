@@ -22,6 +22,7 @@ import (
 	"ai-etl-pipeline/internal/pipeline"
 	"ai-etl-pipeline/internal/prometheus"
 	"ai-etl-pipeline/internal/store"
+	"ai-etl-pipeline/internal/taskstatus"
 	"ai-etl-pipeline/internal/tracing"
 )
 
@@ -82,6 +83,13 @@ func main() {
 	}
 	defer ckpt.Close()
 
+	taskStatusStore, err := newTaskStatusStore(cfg)
+	if err != nil {
+		slog.Error("failed to create task status store", "error", err)
+		os.Exit(1)
+	}
+	defer taskStatusStore.Close()
+
 	dlq, err := newDLQ(cfg)
 	if err != nil {
 		slog.Error("failed to create DLQ", "error", err)
@@ -109,7 +117,7 @@ func main() {
 	defer source.Close()
 
 	// Build Pipeline
-	p := pipeline.NewWithSinks(cfg, emb, storer, fullTextSink, mc, ckpt, dlq)
+	p := pipeline.NewWithSinks(cfg, emb, storer, fullTextSink, mc, ckpt, dlq).WithTaskStatusStore(taskStatusStore)
 
 	// Start Pipeline
 	ctx, cancel := context.WithCancel(context.Background())
@@ -209,6 +217,13 @@ func newCheckpoint(cfg config.Config) (model.CheckpointStore, error) {
 		return checkpoint.NewMemoryStore(), nil
 	}
 	return checkpoint.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+}
+
+func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
+	if cfg.ResolvedTaskStatusStore() == config.TaskStatusStoreMemory {
+		return taskstatus.NewMemoryStore(), nil
+	}
+	return taskstatus.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.TaskStatusTTL)
 }
 
 func newDLQ(cfg config.Config) (model.DLQStore, error) {

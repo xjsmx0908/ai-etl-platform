@@ -158,15 +158,68 @@ func (noopIdempotencyStore) Abort(context.Context, string, string, string) error
 
 func (noopIdempotencyStore) Close() error { return nil }
 
+type captureTaskStatusStore struct {
+	statuses []model.TaskStatus
+}
+
+func (s *captureTaskStatusStore) Save(_ context.Context, status model.TaskStatus) error {
+	s.statuses = append(s.statuses, status)
+	return nil
+}
+
+func (s *captureTaskStatusStore) Load(context.Context, string, string) (model.TaskStatus, bool, error) {
+	return model.TaskStatus{}, false, nil
+}
+
+func (s *captureTaskStatusStore) Close() error { return nil }
+
 func TestHandleUploadRequiresTenantContext(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/upload", nil)
 	rr := httptest.NewRecorder()
 
-	handler := handleUpload(1024*1024, 64*1024, noopProducer{}, noopObjectStore{}, noopIdempotencyStore{})
+	handler := handleUpload(1024*1024, 64*1024, noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != 401 {
 		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+}
+
+func TestHandleUploadRecordsQueuedTaskStatus(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "status.txt")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write([]byte("hello status")); err != nil {
+		t.Fatalf("write file body: %v", err)
+	}
+	if err := writer.WriteField("permission", "internal"); err != nil {
+		t.Fatalf("write permission: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	statusStore := &captureTaskStatusStore{}
+	req := httptest.NewRequest("POST", "/v1/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
+	rr := httptest.NewRecorder()
+
+	handler := handleUpload(1024*1024, 64*1024, noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, statusStore)
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted upload, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(statusStore.statuses) != 1 {
+		t.Fatalf("expected one status save, got %+v", statusStore.statuses)
+	}
+	status := statusStore.statuses[0]
+	if status.TenantID != "tenant-a" || status.TaskID == "" || status.Status != model.TaskStatusQueued || status.Stage != "queued" {
+		t.Fatalf("unexpected queued status: %+v", status)
 	}
 }
 
@@ -192,7 +245,7 @@ func TestHandleUploadRejectsOversizedMultipartBody(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
 
 	rr := httptest.NewRecorder()
-	handler := handleUpload(1024, 512, noopProducer{}, noopObjectStore{}, noopIdempotencyStore{})
+	handler := handleUpload(1024, 512, noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != 413 {

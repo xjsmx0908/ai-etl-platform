@@ -27,6 +27,7 @@ type Pipeline struct {
 	metrics       *metrics.Collector
 	checkpoint    model.CheckpointStore
 	dlq           model.DLQStore
+	taskStatus    model.TaskStatusStore
 	sparseEncoder *sparse.Encoder
 
 	taskCh  chan model.TaskWithAck
@@ -62,6 +63,12 @@ func NewWithSinks(cfg config.Config, emb model.Embedder, st model.Storer, ft mod
 		sparseEncoder: sparseEnc,
 		taskCh:        make(chan model.TaskWithAck, cfg.TaskBufferSize),
 	}
+}
+
+// WithTaskStatusStore enables task lifecycle status updates.
+func (p *Pipeline) WithTaskStatusStore(store model.TaskStatusStore) *Pipeline {
+	p.taskStatus = store
+	return p
 }
 
 // Run starts consuming from the source and launches the worker pool.
@@ -132,6 +139,8 @@ func (p *Pipeline) workerLoop(ctx context.Context, id int) (normalExit bool) {
 func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskWithAck) {
 	var lastErr error
 
+	p.saveTaskStatus(ctx, twa.Task, model.TaskStatusProcessing, "processing", "")
+
 	for attempt := 0; attempt <= p.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := p.cfg.RetryBackoff * time.Duration(1<<(attempt-1))
@@ -156,6 +165,7 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 		if err := p.checkpoint.Delete(ctx, twa.Task.DocID); err != nil {
 			slog.Warn("checkpoint delete failed", "doc_id", twa.Task.DocID, "error", err)
 		}
+		p.saveTaskStatus(ctx, twa.Task, model.TaskStatusCompleted, "completed", "")
 		slog.Info("task completed", "worker", workerID, "doc_id", twa.Task.DocID)
 		return
 	}
@@ -168,7 +178,38 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 	}
 
 	twa.Ack()
+	p.saveTaskStatus(ctx, twa.Task, model.TaskStatusFailed, "failed", lastErr.Error())
 	slog.Error("task exhausted retries and moved to DLQ", "doc_id", twa.Task.DocID, "error", lastErr)
+}
+
+func (p *Pipeline) saveTaskStatus(ctx context.Context, task model.Task, state model.TaskStatusState, stage string, message string) {
+	if p.taskStatus == nil {
+		return
+	}
+	now := time.Now().UTC()
+	status := model.TaskStatus{
+		TaskID:     task.DocID,
+		DocID:      task.DocID,
+		TenantID:   task.TenantID,
+		Status:     state,
+		Stage:      stage,
+		Error:      message,
+		FilePath:   task.FilePath,
+		FileHash:   task.FileHash,
+		Permission: task.Permission,
+		Metadata:   task.Metadata,
+		CreatedAt:  task.CreatedAt,
+		UpdatedAt:  now,
+	}
+	if state == model.TaskStatusCompleted || state == model.TaskStatusFailed {
+		status.CompletedAt = now
+	}
+	if status.CreatedAt.IsZero() {
+		status.CreatedAt = now
+	}
+	if err := p.taskStatus.Save(ctx, status); err != nil {
+		slog.Warn("task status update failed", "doc_id", task.DocID, "status", state, "error", err)
+	}
 }
 
 // processTask: streaming Parse → batch Embed → Store

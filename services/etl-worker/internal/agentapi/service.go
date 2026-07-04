@@ -14,10 +14,14 @@ import (
 	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/query"
 )
 
-const ragQueryToolName = "rag_query"
+const (
+	ragQueryToolName      = "rag_query"
+	etlTaskStatusToolName = "etl_task_status"
+)
 
 // QueryService is the Query module surface consumed by the Agent RAG tool.
 type QueryService interface {
@@ -41,9 +45,12 @@ type approveRunRequest struct {
 }
 
 // NewService wires the Agent API with the default store, lock manager, planner, and tools.
-func NewService(cfg config.Config, qs QueryService) (*Service, error) {
+func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskStatusStore) (*Service, error) {
 	if qs == nil {
 		return nil, fmt.Errorf("query service is required")
+	}
+	if taskStatusStore == nil {
+		return nil, fmt.Errorf("task status store is required")
 	}
 
 	var store agent.Store
@@ -61,6 +68,9 @@ func NewService(cfg config.Config, qs QueryService) (*Service, error) {
 
 	registry := agent.NewRegistry()
 	if err := registerRAGQueryTool(registry, qs); err != nil {
+		return nil, err
+	}
+	if err := registerTaskStatusTool(registry, taskStatusStore); err != nil {
 		return nil, err
 	}
 	planner, err := newPlanner(cfg, registry)
@@ -281,6 +291,47 @@ func registerRAGQueryTool(registry *agent.Registry, qs QueryService) error {
 				"answer":   resp.Answer,
 				"sources":  resp.Sources,
 				"duration": resp.Duration,
+			},
+		}, nil
+	})
+}
+
+func registerTaskStatusTool(registry *agent.Registry, statusStore model.TaskStatusStore) error {
+	return registry.Register(agent.ToolDefinition{
+		Name:                etlTaskStatusToolName,
+		Description:         "Read the tenant-scoped ETL document processing task status by task_id.",
+		RequiredPermissions: []string{"agent"},
+		Timeout:             5 * time.Second,
+		Idempotent:          true,
+		Parameters: agent.JSONSchema{
+			Type:     "object",
+			Required: []string{"task_id"},
+			Properties: map[string]agent.SchemaProperty{
+				"task_id": {Type: "string", Description: "Upload task id, usually the doc_id returned by /v1/upload."},
+			},
+		},
+	}, func(ctx context.Context, inv agent.ToolInvocation) (agent.ToolResult, error) {
+		taskID, _ := inv.Arguments["task_id"].(string)
+		taskID = strings.TrimSpace(taskID)
+		status, found, err := statusStore.Load(ctx, inv.TenantID, taskID)
+		if err != nil {
+			return agent.ToolResult{}, err
+		}
+		if !found {
+			return agent.ToolResult{
+				Content: fmt.Sprintf("未找到任务 %s，或当前租户无权访问该任务。", taskID),
+				Data: map[string]interface{}{
+					"task_id": taskID,
+					"found":   false,
+					"status":  "not_found",
+				},
+			}, nil
+		}
+		return agent.ToolResult{
+			Content: fmt.Sprintf("任务 %s 当前状态为 %s，阶段为 %s。", status.TaskID, status.Status, status.Stage),
+			Data: map[string]interface{}{
+				"found":  true,
+				"status": status,
 			},
 		}, nil
 	})

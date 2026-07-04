@@ -1,5 +1,22 @@
 # Backlog
 
+## 2026-07-04 - Module 3 Task Status Tool
+
+Status: implemented
+
+Goal: add the second real read-only Agent tool and give it a real task-status read model instead of a fake lookup.
+
+Plan:
+
+1. Add `model.TaskStatus` and `model.TaskStatusStore`.
+2. Add `internal/taskstatus` with in-memory and Redis-backed stores.
+3. Add `TASK_STATUS_STORE` and `TASK_STATUS_TTL` configuration and environment templates.
+4. Save `queued` status from `/v1/upload` before publishing to Kafka.
+5. Save `processing`, `completed`, and `failed` statuses from the ETL worker pipeline.
+6. Register `etl_task_status` in the Agent Registry with schema validation and `agent` permission.
+7. Keep task lookup tenant-scoped so cross-tenant task ids return `not_found`.
+8. Add tests for the status store, upload status write, worker status transitions, Agent tool execution, tenant isolation, and LLM Planner selection of the new tool.
+
 ## 2026-07-04 - Module 3 LLM Planner Integration
 
 Status: implemented

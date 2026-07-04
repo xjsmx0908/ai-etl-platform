@@ -1,5 +1,15 @@
 # LEARNINGS.codex.md
 
+## 2026-07-04T15:56:45+08:00 - Module 3 Task Status Tool
+
+Perceive: adding a second Agent tool should not be a fake wrapper. The platform did not have a shared task-status table; upload responses only returned a transient processing status, while the worker used checkpoint and DLQ data internally.
+
+Reason: a useful enterprise read-only tool needs a real read model with tenant isolation. The Agent should query task status through a stable store, while API and worker update the store at lifecycle boundaries.
+
+Act: added `TaskStatusStore`, memory and Redis implementations, upload queued writes, worker processing/completed/failed writes, and the `etl_task_status` Agent tool.
+
+Refine: added tests for tenant-scoped status persistence, upload status recording, worker status transitions, Agent tool execution, cross-tenant not-found behavior, and LLM Planner selection of `etl_task_status`.
+
 ## 2026-07-04T12:07:08+08:00 - Module 3 LLM Planner Integration
 
 Perceive: the Agent API could run end-to-end, but its planner was still a fixed rule path. The user wanted a real enterprise-style LLM Planner while keeping deterministic dev/test fallback.

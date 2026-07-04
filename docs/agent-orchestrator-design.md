@@ -22,7 +22,7 @@ The MVP focuses on the enterprise control plane:
 - pending-approval state for high-risk tools
 - compensation handlers for failed side-effecting tools
 - public `/v1/agent/runs` API for create, inspect, resume, and approve
-- first real read-only tool: `rag_query`, backed by the existing Query Service
+- real read-only tools: `rag_query` and `etl_task_status`
 - OpenAI-compatible LLM Planner with structured JSON decision validation
 - deterministic Rule Planner for development and tests
 
@@ -90,8 +90,8 @@ POST /v1/agent/runs/{id}/approve
 
 The HTTP layer converts the authenticated JWT context into an `agent.Actor`.
 The state-machine core does not import HTTP or JWT packages.
-Because the first available production tool is `rag_query`, the mounted Agent
-routes require both `agent` and `query` scopes.
+Because the first tool set includes a RAG query tool, the mounted Agent routes
+require both `agent` and `query` scopes.
 
 ## State Model
 
@@ -234,9 +234,55 @@ orchestrator still persists the step first, then the Registry validates
 arguments, RBAC, approval, timeout, idempotency, and compensation before
 executing any tool.
 
-## First Tool Integration
+## Task Status Read Model
 
-The first registered production tool is:
+The task status read model records upload and worker lifecycle state:
+
+```text
+queued
+-> processing
+-> completed
+
+queued/processing
+-> failed
+```
+
+Write points:
+
+```text
+POST /v1/upload
+  -> saves queued before publishing to Kafka
+  -> saves failed if enqueue fails
+
+ETL worker
+  -> saves processing when a task is picked up
+  -> saves completed after successful processing and ack
+  -> saves failed after retries are exhausted and DLQ write succeeds
+```
+
+Persistence:
+
+```text
+TASK_STATUS_STORE=auto
+  dev        -> memory
+  non-dev    -> redis
+
+TASK_STATUS_STORE=memory
+  -> process-local memory, useful for unit tests and simple dev
+
+TASK_STATUS_STORE=redis
+  -> Redis store keyed by tenant_id + task_id
+  -> required when API and Worker run as separate processes and status updates must be shared
+```
+
+TTL is controlled by `TASK_STATUS_TTL`.
+
+The read model is tenant scoped. A lookup for another tenant's task returns the
+same not-found result as a missing task.
+
+## Tool Integration
+
+Current registered production tools:
 
 ```text
 rag_query
@@ -245,6 +291,13 @@ rag_query
   -> calls query.Service.Ask in-process
   -> preserves tenant id and role-based document permissions
   -> returns answer, sources, and duration as ToolResult
+
+etl_task_status
+  -> validates {task_id}
+  -> requires agent permission
+  -> reads tenant-scoped TaskStatusStore
+  -> returns queued, processing, completed, failed, or not_found
+  -> does not reveal whether another tenant owns a task id
 ```
 
 Additional tools should be registered through the same Registry path so the LLM
@@ -276,3 +329,7 @@ Current tests cover:
 - LLM Planner rejects invalid JSON, unregistered tools, invalid arguments, and empty final decisions
 - planner config resolves `auto` to rule in dev and llm outside dev
 - production config rejects `AGENT_PLANNER_TYPE=rule`
+- upload API writes queued task status
+- worker writes processing, completed, and failed task status
+- `etl_task_status` reads tenant-scoped task state
+- `etl_task_status` returns not_found for another tenant's task

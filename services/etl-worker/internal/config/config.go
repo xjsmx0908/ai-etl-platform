@@ -22,6 +22,13 @@ const (
 	// AgentPlannerRule uses a deterministic fixed RAG planning path.
 	AgentPlannerRule = "rule"
 
+	// TaskStatusStoreAuto uses memory in dev and redis outside dev.
+	TaskStatusStoreAuto = "auto"
+	// TaskStatusStoreMemory keeps task status in process memory.
+	TaskStatusStoreMemory = "memory"
+	// TaskStatusStoreRedis shares task status through Redis.
+	TaskStatusStoreRedis = "redis"
+
 	DefaultRetrievalExactSchemaFields = "doc_id,chunk_id,order_id,order_no,contract_id,contract_no,ticket_id,invoice_no,trace_id,request_id,customer_ref,email,phone,sku,user_id"
 )
 
@@ -125,6 +132,8 @@ type Config struct {
 	HTTPMaxHeaderBytes    int
 	CORSAllowedOrigins    []string
 	IdempotencyTTL        time.Duration
+	TaskStatusStore       string
+	TaskStatusTTL         time.Duration
 
 	// Gateway (file upload)
 	UploadDir               string
@@ -248,6 +257,8 @@ func Load() Config {
 		HTTPMaxHeaderBytes:    EnvInt("HTTP_MAX_HEADER_BYTES", 1<<20),
 		CORSAllowedOrigins:    EnvCSV("CORS_ALLOWED_ORIGINS", corsDefault),
 		IdempotencyTTL:        EnvDuration("IDEMPOTENCY_TTL", 24*time.Hour),
+		TaskStatusStore:       strings.ToLower(strings.TrimSpace(EnvStr("TASK_STATUS_STORE", TaskStatusStoreAuto))),
+		TaskStatusTTL:         EnvDuration("TASK_STATUS_TTL", 7*24*time.Hour),
 
 		// Gateway
 		UploadDir:               EnvStr("UPLOAD_DIR", "/data/uploads"),
@@ -354,6 +365,14 @@ func (c Config) Validate() error {
 	if c.AgentRunTTL <= 0 {
 		return fmt.Errorf("AGENT_RUN_TTL must be > 0, got %s", c.AgentRunTTL)
 	}
+	if c.TaskStatusTTL <= 0 {
+		return fmt.Errorf("TASK_STATUS_TTL must be > 0, got %s", c.TaskStatusTTL)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.TaskStatusStore)) {
+	case TaskStatusStoreAuto, TaskStatusStoreMemory, TaskStatusStoreRedis:
+	default:
+		return fmt.Errorf("TASK_STATUS_STORE must be %q, %q, or %q, got %q", TaskStatusStoreAuto, TaskStatusStoreMemory, TaskStatusStoreRedis, c.TaskStatusStore)
+	}
 	switch strings.ToLower(strings.TrimSpace(c.AgentPlannerType)) {
 	case AgentPlannerAuto, AgentPlannerLLM, AgentPlannerRule:
 	default:
@@ -401,6 +420,21 @@ func (c Config) ResolvedAgentPlannerType() string {
 			return AgentPlannerRule
 		}
 		return AgentPlannerLLM
+	}
+}
+
+// ResolvedTaskStatusStore returns the concrete task status store selected by config.
+func (c Config) ResolvedTaskStatusStore() string {
+	switch strings.ToLower(strings.TrimSpace(c.TaskStatusStore)) {
+	case TaskStatusStoreMemory:
+		return TaskStatusStoreMemory
+	case TaskStatusStoreRedis:
+		return TaskStatusStoreRedis
+	default:
+		if c.IsDev() {
+			return TaskStatusStoreMemory
+		}
+		return TaskStatusStoreRedis
 	}
 }
 
