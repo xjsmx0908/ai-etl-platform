@@ -1,5 +1,25 @@
 # Backlog
 
+## 2026-07-04 - Module 3 Agent Orchestrator MVP
+
+Status: implemented as internal core package
+
+Goal: introduce the first stateful Agent Orchestrator slice without coupling it to HTTP or a real LLM planner yet.
+
+Plan:
+
+1. Add `internal/agent` with durable `Run`, `Step`, state, planner, tool, store, lock, and policy types.
+2. Add a strict Tool Registry that validates JSON arguments before invoking handlers.
+3. Add RBAC-style tool authorization with required permissions and approval checks.
+4. Add an Orchestrator that acquires a per-run lock, persists state transitions, executes tools, and enforces max-step failure.
+5. Add in-memory Store and LockManager implementations for deterministic tests.
+6. Add version and fencing-token checks to reject stale writes from expired owners or concurrent writers.
+7. Add a Redis-backed Agent Store for process-independent run persistence.
+8. Add waiting-tool recovery so persisted tool calls resume with the same idempotency key instead of asking the planner for a new action.
+9. Add pending approval, side-effect registration guardrails, and compensation handlers for failed side-effecting tools.
+10. Add tests for schema validation, authorization, idempotency key generation, state persistence, recovery, max-step guardrails, lock takeover, stale lock rejection, stale write rejection, approval, and compensation.
+11. Document the MVP boundaries and next integration steps in `docs/agent-orchestrator-design.md`.
+
 ## 2026-06-28 - Enterprise Rerank Policy
 
 Status: implemented, superseded by Full Enterprise Rerank Guardrail
