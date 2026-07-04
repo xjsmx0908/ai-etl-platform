@@ -23,11 +23,11 @@ The MVP focuses on the enterprise control plane:
 - compensation handlers for failed side-effecting tools
 - public `/v1/agent/runs` API for create, inspect, resume, and approve
 - first real read-only tool: `rag_query`, backed by the existing Query Service
-- deterministic first planner: one tenant-scoped RAG tool call, then final answer
+- OpenAI-compatible LLM Planner with structured JSON decision validation
+- deterministic Rule Planner for development and tests
 
 Out of scope for this first cut:
 
-- real LLM planner integration
 - external human approval queue and approval audit service
 - full Saga workflow across multiple tools
 - Redis-backed distributed lock manager
@@ -90,8 +90,8 @@ POST /v1/agent/runs/{id}/approve
 
 The HTTP layer converts the authenticated JWT context into an `agent.Actor`.
 The state-machine core does not import HTTP or JWT packages.
-Because the first planner always calls the read-only RAG tool, the mounted
-Agent routes require both `agent` and `query` scopes.
+Because the first available production tool is `rag_query`, the mounted Agent
+routes require both `agent` and `query` scopes.
 
 ## State Model
 
@@ -183,6 +183,57 @@ with the same arguments and idempotency key. This is the required recovery path
 for crashes after the tool step has been persisted but before the result has
 been saved.
 
+## Planner Strategy
+
+The orchestrator depends only on the `agent.Planner` interface.
+
+Current planner implementations:
+
+```text
+LLMPlanner
+  -> production/default outside dev
+  -> calls an OpenAI-compatible chat-completions endpoint
+  -> requests a JSON object decision
+  -> accepts only tool_call or final
+  -> rejects unregistered tools
+  -> validates tool arguments against the registered JSON schema
+
+RulePlanner
+  -> dev/test fallback
+  -> calls rag_query once, then returns final from the tool result
+  -> must stay minimal and must not become a second business decision engine
+```
+
+Planner selection:
+
+```text
+AGENT_PLANNER_TYPE=auto
+  dev        -> rule
+  non-dev    -> llm
+
+AGENT_PLANNER_TYPE=llm
+  always use LLMPlanner
+
+AGENT_PLANNER_TYPE=rule
+  allowed for dev/test
+  rejected in production
+```
+
+LLM planner configuration:
+
+```text
+AGENT_PLANNER_ENDPOINT
+AGENT_PLANNER_API_KEY
+AGENT_PLANNER_MODEL
+AGENT_PLANNER_TIMEOUT
+AGENT_PLANNER_MAX_TOKENS
+```
+
+The LLM can propose a plan, but it cannot bypass the core guardrails. The
+orchestrator still persists the step first, then the Registry validates
+arguments, RBAC, approval, timeout, idempotency, and compensation before
+executing any tool.
+
 ## First Tool Integration
 
 The first registered production tool is:
@@ -196,17 +247,9 @@ rag_query
   -> returns answer, sources, and duration as ToolResult
 ```
 
-The first planner is intentionally deterministic:
-
-```text
-if no steps:
-  call rag_query(question = run.task, top_k = 5)
-else:
-  return final answer from last ToolResult
-```
-
-This makes the API usable before introducing an LLM planner. It also keeps the
-module testable because planner behavior is deterministic.
+Additional tools should be registered through the same Registry path so the LLM
+planner receives their contracts but cannot execute anything outside the
+registered tool set.
 
 ## Validation
 
@@ -229,3 +272,7 @@ Current tests cover:
 - Agent API creates and executes a RAG-backed run
 - Agent API loads tenant-scoped run state
 - Agent API approves and resumes a pending tool
+- LLM Planner accepts valid tool_call and final decisions
+- LLM Planner rejects invalid JSON, unregistered tools, invalid arguments, and empty final decisions
+- planner config resolves `auto` to rule in dev and llm outside dev
+- production config rejects `AGENT_PLANNER_TYPE=rule`

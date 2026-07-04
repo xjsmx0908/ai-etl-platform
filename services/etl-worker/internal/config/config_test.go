@@ -106,6 +106,24 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AgentRunTTL != 24*time.Hour {
 		t.Errorf("expected AgentRunTTL=24h, got %v", cfg.AgentRunTTL)
 	}
+	if cfg.AgentPlannerType != AgentPlannerAuto {
+		t.Errorf("expected AgentPlannerType=auto, got %s", cfg.AgentPlannerType)
+	}
+	if cfg.ResolvedAgentPlannerType() != AgentPlannerRule {
+		t.Errorf("expected dev auto planner to resolve to rule, got %s", cfg.ResolvedAgentPlannerType())
+	}
+	if cfg.AgentPlannerEndpoint != "https://api.openai.com/v1/chat/completions" {
+		t.Errorf("expected default AgentPlannerEndpoint, got %s", cfg.AgentPlannerEndpoint)
+	}
+	if cfg.AgentPlannerModel != "gpt-4o-mini" {
+		t.Errorf("expected default AgentPlannerModel, got %s", cfg.AgentPlannerModel)
+	}
+	if cfg.AgentPlannerTimeout != 30*time.Second {
+		t.Errorf("expected AgentPlannerTimeout=30s, got %v", cfg.AgentPlannerTimeout)
+	}
+	if cfg.AgentPlannerMaxTokens != 512 {
+		t.Errorf("expected AgentPlannerMaxTokens=512, got %d", cfg.AgentPlannerMaxTokens)
+	}
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
@@ -140,6 +158,12 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("AGENT_MAX_STEPS", "12")
 	os.Setenv("AGENT_LOCK_TTL", "15s")
 	os.Setenv("AGENT_RUN_TTL", "2h")
+	os.Setenv("AGENT_PLANNER_TYPE", "llm")
+	os.Setenv("AGENT_PLANNER_ENDPOINT", "http://planner:8080/v1/chat/completions")
+	os.Setenv("AGENT_PLANNER_API_KEY", "planner-key")
+	os.Setenv("AGENT_PLANNER_MODEL", "planner-model")
+	os.Setenv("AGENT_PLANNER_TIMEOUT", "12s")
+	os.Setenv("AGENT_PLANNER_MAX_TOKENS", "768")
 	defer func() {
 		os.Unsetenv("PIPELINE_MAX_WORKERS")
 		os.Unsetenv("ENVIRONMENT")
@@ -172,6 +196,12 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("AGENT_MAX_STEPS")
 		os.Unsetenv("AGENT_LOCK_TTL")
 		os.Unsetenv("AGENT_RUN_TTL")
+		os.Unsetenv("AGENT_PLANNER_TYPE")
+		os.Unsetenv("AGENT_PLANNER_ENDPOINT")
+		os.Unsetenv("AGENT_PLANNER_API_KEY")
+		os.Unsetenv("AGENT_PLANNER_MODEL")
+		os.Unsetenv("AGENT_PLANNER_TIMEOUT")
+		os.Unsetenv("AGENT_PLANNER_MAX_TOKENS")
 	}()
 
 	cfg := Load()
@@ -268,6 +298,27 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.AgentRunTTL != 2*time.Hour {
 		t.Errorf("expected AgentRunTTL=2h, got %v", cfg.AgentRunTTL)
+	}
+	if cfg.AgentPlannerType != AgentPlannerLLM {
+		t.Errorf("expected AgentPlannerType=llm, got %s", cfg.AgentPlannerType)
+	}
+	if cfg.ResolvedAgentPlannerType() != AgentPlannerLLM {
+		t.Errorf("expected resolved planner llm, got %s", cfg.ResolvedAgentPlannerType())
+	}
+	if cfg.AgentPlannerEndpoint != "http://planner:8080/v1/chat/completions" {
+		t.Errorf("expected AgentPlannerEndpoint override, got %s", cfg.AgentPlannerEndpoint)
+	}
+	if cfg.AgentPlannerAPIKey != "planner-key" {
+		t.Errorf("expected AgentPlannerAPIKey override, got %s", cfg.AgentPlannerAPIKey)
+	}
+	if cfg.AgentPlannerModel != "planner-model" {
+		t.Errorf("expected AgentPlannerModel override, got %s", cfg.AgentPlannerModel)
+	}
+	if cfg.AgentPlannerTimeout != 12*time.Second {
+		t.Errorf("expected AgentPlannerTimeout=12s, got %v", cfg.AgentPlannerTimeout)
+	}
+	if cfg.AgentPlannerMaxTokens != 768 {
+		t.Errorf("expected AgentPlannerMaxTokens=768, got %d", cfg.AgentPlannerMaxTokens)
 	}
 }
 
@@ -425,6 +476,68 @@ func TestValidate_RetrievalConfig(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for AgentRunTTL <= 0")
 	}
+
+	cfg = Load()
+	cfg.AgentPlannerType = "random"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid AgentPlannerType")
+	}
+
+	cfg = Load()
+	cfg.AgentPlannerType = AgentPlannerLLM
+	cfg.AgentPlannerEndpoint = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty AgentPlannerEndpoint with llm planner")
+	}
+
+	cfg = Load()
+	cfg.AgentPlannerType = AgentPlannerLLM
+	cfg.AgentPlannerModel = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty AgentPlannerModel with llm planner")
+	}
+
+	cfg = Load()
+	cfg.AgentPlannerTimeout = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for AgentPlannerTimeout <= 0")
+	}
+
+	cfg = Load()
+	cfg.AgentPlannerMaxTokens = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for AgentPlannerMaxTokens < 1")
+	}
+}
+
+func TestValidate_ProductionAgentPlanner(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "embed-key"
+	cfg.KafkaBrokers = "kafka:9092"
+	cfg.StoreEndpoint = "http://qdrant:6333"
+	cfg.RedisAddr = "redis:6379"
+	cfg.AgentPlannerType = AgentPlannerAuto
+	cfg.AgentPlannerEndpoint = "http://planner:8080/v1/chat/completions"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected production auto planner to resolve to llm, got %v", err)
+	}
+	if cfg.ResolvedAgentPlannerType() != AgentPlannerLLM {
+		t.Fatalf("expected production auto planner to resolve to llm, got %s", cfg.ResolvedAgentPlannerType())
+	}
+
+	cfg.AgentPlannerType = AgentPlannerRule
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected production rule planner to be rejected")
+	}
+
+	cfg.AgentPlannerType = AgentPlannerLLM
+	cfg.AgentPlannerEndpoint = "https://api.openai.com/v1/chat/completions"
+	cfg.AgentPlannerAPIKey = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected OpenAI planner endpoint to require API key in production")
+	}
 }
 
 func TestIsDev(t *testing.T) {
@@ -462,6 +575,7 @@ func TestValidateAPI_ProductionWeakJWTRejected(t *testing.T) {
 	cfg.KafkaBrokers = "kafka.internal:9092"
 	cfg.StoreEndpoint = "http://qdrant.internal:6333"
 	cfg.RedisAddr = "redis.internal:6379"
+	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
 	cfg.JWTSecret = "change-me-in-production"
 	cfg.S3AccessKey = "prod-access"
 	cfg.S3SecretKey = "prod-secret"
@@ -478,6 +592,7 @@ func TestValidateAPI_ProductionDefaultS3Rejected(t *testing.T) {
 	cfg.KafkaBrokers = "kafka.internal:9092"
 	cfg.StoreEndpoint = "http://qdrant.internal:6333"
 	cfg.RedisAddr = "redis.internal:6379"
+	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
 	cfg.JWTSecret = "12345678901234567890123456789012"
 	cfg.S3AccessKey = "minioadmin"
 	cfg.S3SecretKey = "minioadmin"
@@ -494,6 +609,7 @@ func TestValidateAPI_ProductionStrongSecretsPass(t *testing.T) {
 	cfg.KafkaBrokers = "kafka.internal:9092"
 	cfg.StoreEndpoint = "http://qdrant.internal:6333"
 	cfg.RedisAddr = "redis.internal:6379"
+	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
 	cfg.JWTSecret = "12345678901234567890123456789012"
 	cfg.S3AccessKey = "prod-access"
 	cfg.S3SecretKey = "prod-secret"
@@ -511,6 +627,7 @@ func TestValidateAPI_ProductionWildcardCORSRejected(t *testing.T) {
 	cfg.KafkaBrokers = "kafka.internal:9092"
 	cfg.StoreEndpoint = "http://qdrant.internal:6333"
 	cfg.RedisAddr = "redis.internal:6379"
+	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
 	cfg.JWTSecret = "12345678901234567890123456789012"
 	cfg.S3AccessKey = "prod-access"
 	cfg.S3SecretKey = "prod-secret"

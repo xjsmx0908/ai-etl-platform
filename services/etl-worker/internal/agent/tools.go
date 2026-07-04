@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +99,21 @@ func (r *Registry) Definition(name string) (ToolDefinition, bool) {
 		return ToolDefinition{}, false
 	}
 	return tool.def, true
+}
+
+// Definitions returns registered tool definitions sorted by name.
+func (r *Registry) Definitions() []ToolDefinition {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	definitions := make([]ToolDefinition, 0, len(r.tools))
+	for _, tool := range r.tools {
+		definitions = append(definitions, tool.def)
+	}
+	sort.Slice(definitions, func(i, j int) bool {
+		return definitions[i].Name < definitions[j].Name
+	})
+	return definitions
 }
 
 func (r *Registry) execute(ctx context.Context, actor Actor, runID string, stepIndex int, toolName string, rawArgs []byte, authorizer Authorizer) (ToolResult, error) {

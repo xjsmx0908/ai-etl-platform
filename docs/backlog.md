@@ -1,5 +1,22 @@
 # Backlog
 
+## 2026-07-04 - Module 3 LLM Planner Integration
+
+Status: implemented
+
+Goal: make the Agent Orchestrator use a real model-backed planner outside development while preserving deterministic dev/test execution.
+
+Plan:
+
+1. Add `LLMPlanner` backed by an OpenAI-compatible chat-completions endpoint.
+2. Require planner output to be a structured JSON decision: `tool_call` or `final`.
+3. Expose Registry tool definitions to the planner without exposing handlers.
+4. Reject unregistered tools, invalid decision JSON, invalid tool arguments, and empty final answers before the orchestrator executes anything.
+5. Add `AGENT_PLANNER_TYPE=auto|llm|rule`; resolve `auto` to `rule` in dev and `llm` outside dev.
+6. Add LLM planner endpoint, API key, model, timeout, and max-token configuration.
+7. Reject `AGENT_PLANNER_TYPE=rule` in production to keep RulePlanner as dev/test fallback only.
+8. Add tests for LLM tool-call planning, final planning, guardrail failures, planner selection, and production config validation.
+
 ## 2026-07-04 - Module 3 Agent API Integration
 
 Status: implemented

@@ -1,5 +1,15 @@
 # LEARNINGS.codex.md
 
+## 2026-07-04T12:07:08+08:00 - Module 3 LLM Planner Integration
+
+Perceive: the Agent API could run end-to-end, but its planner was still a fixed rule path. The user wanted a real enterprise-style LLM Planner while keeping deterministic dev/test fallback.
+
+Reason: enterprise Agent systems should let the model propose the next action but never let it bypass local tool contracts. Keeping RulePlanner is valuable for CI, local development, and smoke tests, but it must stay minimal and be rejected in production.
+
+Act: added an OpenAI-compatible `LLMPlanner`, exported Registry tool definitions, enforced structured JSON decisions, rejected unregistered tools and invalid arguments, added planner configuration, and made `auto` resolve to rule in dev and llm outside dev.
+
+Refine: added tests for valid tool calls, final decisions, invalid model outputs, planner selection, and production planner validation. Remaining work is connecting more real tools and adding an external approval/audit service.
+
 ## 2026-07-04T11:40:09+08:00 - Module 3 Agent API Integration
 
 Perceive: the Agent Orchestrator core was implemented and tested, but it was still only an internal library. The platform needed a usable boundary where clients can create, inspect, resume, and approve Agent runs.

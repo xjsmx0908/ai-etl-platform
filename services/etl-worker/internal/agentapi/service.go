@@ -63,7 +63,11 @@ func NewService(cfg config.Config, qs QueryService) (*Service, error) {
 	if err := registerRAGQueryTool(registry, qs); err != nil {
 		return nil, err
 	}
-	orchestrator, err := agent.NewOrchestrator(store, agent.NewMemoryLockManager(), registry, RulePlanner{}, agent.Options{
+	planner, err := newPlanner(cfg, registry)
+	if err != nil {
+		return nil, err
+	}
+	orchestrator, err := agent.NewOrchestrator(store, agent.NewMemoryLockManager(), registry, planner, agent.Options{
 		NodeID:     cfg.AgentNodeID,
 		MaxSteps:   cfg.AgentMaxSteps,
 		LockTTL:    cfg.AgentLockTTL,
@@ -77,6 +81,24 @@ func NewService(cfg config.Config, qs QueryService) (*Service, error) {
 
 func newServiceWithComponents(orchestrator *agent.Orchestrator, store agent.Store) *Service {
 	return &Service{orchestrator: orchestrator, store: store}
+}
+
+func newPlanner(cfg config.Config, registry *agent.Registry) (agent.Planner, error) {
+	switch cfg.ResolvedAgentPlannerType() {
+	case config.AgentPlannerRule:
+		return RulePlanner{}, nil
+	case config.AgentPlannerLLM:
+		return NewLLMPlanner(LLMPlannerOptions{
+			Endpoint:  cfg.AgentPlannerEndpoint,
+			APIKey:    cfg.AgentPlannerAPIKey,
+			Model:     cfg.AgentPlannerModel,
+			MaxTokens: cfg.AgentPlannerMaxTokens,
+			Timeout:   cfg.AgentPlannerTimeout,
+			Tools:     registry.Definitions(),
+		})
+	default:
+		return nil, fmt.Errorf("unsupported agent planner type %q", cfg.ResolvedAgentPlannerType())
+	}
 }
 
 // Close releases resources owned by the service.
