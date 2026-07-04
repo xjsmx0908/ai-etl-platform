@@ -1,5 +1,15 @@
 # LEARNINGS.codex.md
 
+## 2026-07-04T17:52:52+08:00 - Module 3 Redis Distributed Lock
+
+Perceive: the Agent run store and approval store were Redis-backed outside dev, but the Orchestrator still used an in-process memory lock. That protects a single process only and leaves multi-replica `query-api` unsafe.
+
+Reason: a distributed state machine needs both lease ownership and fencing. The lock prevents concurrent execution, while the store fencing token rejects stale writes after lease expiry or takeover. Same-owner reacquire should also be rejected because one service instance can receive concurrent requests for the same run.
+
+Act: added `RedisLockManager`, persisted owner and monotonic token in Redis, tightened MemoryLockManager acquire semantics, wired Redis locks into non-dev Agent API startup, and closed Redis lock resources with the service.
+
+Refine: verified `go vet ./...`, `go test ./...`, real Redis lock contract with `AGENT_REDIS_LOCK_TEST_ADDR=127.0.0.1:6379`, `docker compose config --quiet`, and `git diff --check`.
+
 ## 2026-07-04T17:17:26+08:00 - Module 3 External Approval and Audit
 
 Perceive: the Agent API had a `/approve` endpoint, but approval lived only in the current HTTP request by appending a tool name to `ApprovedTools`. That is not durable enough for enterprise side-effecting tools.

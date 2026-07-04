@@ -64,10 +64,12 @@ func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskSt
 
 	var store agent.Store
 	var approvalStore agent.ApprovalStore
+	var lockManager agent.LockManager
 	var closers []io.Closer
 	if cfg.IsDev() {
 		store = agent.NewMemoryStore()
 		approvalStore = agent.NewMemoryApprovalStore()
+		lockManager = agent.NewMemoryLockManager()
 	} else {
 		redisStore, err := agent.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.AgentRunTTL)
 		if err != nil {
@@ -83,6 +85,14 @@ func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskSt
 		}
 		approvalStore = redisApprovalStore
 		closers = append(closers, redisApprovalStore)
+
+		redisLockManager, err := agent.NewRedisLockManager(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.AgentRunTTL)
+		if err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+		lockManager = redisLockManager
+		closers = append(closers, redisLockManager)
 	}
 
 	registry := agent.NewRegistry()
@@ -96,13 +106,14 @@ func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskSt
 	if err != nil {
 		return nil, err
 	}
-	orchestrator, err := agent.NewOrchestrator(store, agent.NewMemoryLockManager(), registry, planner, agent.Options{
+	orchestrator, err := agent.NewOrchestrator(store, lockManager, registry, planner, agent.Options{
 		NodeID:     cfg.AgentNodeID,
 		MaxSteps:   cfg.AgentMaxSteps,
 		LockTTL:    cfg.AgentLockTTL,
 		Authorizer: agent.StaticAuthorizer{},
 	})
 	if err != nil {
+		closeAll(closers)
 		return nil, err
 	}
 	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, closers: closers}, nil
@@ -139,8 +150,12 @@ func newPlanner(cfg config.Config, registry *agent.Registry) (agent.Planner, err
 
 // Close releases resources owned by the service.
 func (s *Service) Close() error {
+	return closeAll(s.closers)
+}
+
+func closeAll(closers []io.Closer) error {
 	var firstErr error
-	for _, closer := range s.closers {
+	for _, closer := range closers {
 		if closer == nil {
 			continue
 		}

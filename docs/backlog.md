@@ -1,5 +1,22 @@
 # Backlog
 
+## 2026-07-04 - Module 3 Redis Distributed Lock
+
+Status: implemented
+
+Goal: make the Agent Orchestrator safe for multi-replica `query-api` deployments.
+
+Plan:
+
+1. Add a Redis-backed `LockManager` for Agent runs.
+2. Store short-lived lock ownership separately from a longer-lived monotonic fencing token.
+3. Reject any non-expired lock acquisition, including same-owner reacquire; use `Extend` for lease renewal.
+4. Keep stale owner release from deleting a newer lease.
+5. Preserve fencing token growth across release and reacquire so stale writes remain rejected by the store layer.
+6. Use `MemoryLockManager` in dev/test and `RedisLockManager` outside dev.
+7. Close Redis lock resources together with Agent run and approval stores.
+8. Add lock tests for competing owners, same-owner reacquire rejection, lease extension, stale release, and optional real Redis contract verification.
+
 ## 2026-07-04 - Module 3 External Approval and Audit
 
 Status: implemented
