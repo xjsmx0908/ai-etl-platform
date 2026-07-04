@@ -53,6 +53,10 @@ type rejectRunRequest struct {
 	Reason     string `json:"reason,omitempty"`
 }
 
+type cancelRunRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
 // NewService wires the Agent API with the default store, lock manager, planner, and tools.
 func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskStatusStore) (*Service, error) {
 	if qs == nil {
@@ -107,10 +111,12 @@ func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskSt
 		return nil, err
 	}
 	orchestrator, err := agent.NewOrchestrator(store, lockManager, registry, planner, agent.Options{
-		NodeID:     cfg.AgentNodeID,
-		MaxSteps:   cfg.AgentMaxSteps,
-		LockTTL:    cfg.AgentLockTTL,
-		Authorizer: agent.StaticAuthorizer{},
+		NodeID:          cfg.AgentNodeID,
+		MaxSteps:        cfg.AgentMaxSteps,
+		LockTTL:         cfg.AgentLockTTL,
+		RunTimeout:      cfg.AgentRunTimeout,
+		ApprovalTimeout: cfg.AgentApprovalTimeout,
+		Authorizer:      agent.StaticAuthorizer{},
 	})
 	if err != nil {
 		closeAll(closers)
@@ -250,6 +256,10 @@ func (s *Service) HandleRun(w http.ResponseWriter, r *http.Request) {
 			writeAgentError(w, err)
 			return
 		}
+		if agentTerminalState(current.State) {
+			http.Error(w, "terminal run cannot be resumed", http.StatusConflict)
+			return
+		}
 		actor, err = s.actorWithApprovedRunTools(r.Context(), current, actor)
 		if err != nil {
 			writeAgentError(w, err)
@@ -261,6 +271,10 @@ func (s *Service) HandleRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.ensurePendingApproval(r.Context(), run); err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		if err := s.rejectPendingApprovalAfterTimeout(r.Context(), current, run); err != nil {
 			writeAgentError(w, err)
 			return
 		}
@@ -283,6 +297,12 @@ func (s *Service) HandleRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleReject(w, r, runID, actor)
+	case "cancel":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleCancel(w, r, runID, actor)
 	default:
 		http.NotFound(w, r)
 	}
@@ -312,12 +332,21 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID st
 		return
 	}
 
-	run, err := s.loadTenantRun(r.Context(), runID, actor)
+	previous, err := s.loadTenantRun(r.Context(), runID, actor)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	run, err := s.orchestrator.ApplyLifecycle(r.Context(), runID, actor)
 	if err != nil {
 		writeAgentError(w, err)
 		return
 	}
 	if run.State != agent.StatePendingApproval {
+		if err := s.rejectPendingApprovalAfterTimeout(r.Context(), previous, run); err != nil {
+			writeAgentError(w, err)
+			return
+		}
 		http.Error(w, "run is not pending approval", http.StatusConflict)
 		return
 	}
@@ -378,12 +407,21 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request, runID str
 		return
 	}
 
-	run, err := s.loadTenantRun(r.Context(), runID, actor)
+	previous, err := s.loadTenantRun(r.Context(), runID, actor)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	run, err := s.orchestrator.ApplyLifecycle(r.Context(), runID, actor)
 	if err != nil {
 		writeAgentError(w, err)
 		return
 	}
 	if run.State != agent.StatePendingApproval {
+		if err := s.rejectPendingApprovalAfterTimeout(r.Context(), previous, run); err != nil {
+			writeAgentError(w, err)
+			return
+		}
 		http.Error(w, "run is not pending approval", http.StatusConflict)
 		return
 	}
@@ -419,6 +457,85 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request, runID str
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Service) handleCancel(w http.ResponseWriter, r *http.Request, runID string, actor agent.Actor) {
+	var req cancelRunRequest
+	if err := decodeOptionalJSON(r.Body, &req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	previous, err := s.loadTenantRun(r.Context(), runID, actor)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	current, err := s.orchestrator.ApplyLifecycle(r.Context(), runID, actor)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	if err := s.rejectPendingApprovalAfterTimeout(r.Context(), previous, current); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	if agentTerminalState(current.State) {
+		http.Error(w, "terminal run cannot be cancelled", http.StatusConflict)
+		return
+	}
+	run, err := s.orchestrator.Cancel(r.Context(), runID, actor, req.Reason)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	if err := s.rejectPendingApprovalAfterCancel(r.Context(), current, actor, req.Reason); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Service) rejectPendingApprovalAfterTimeout(ctx context.Context, previousRun, currentRun agent.Run) error {
+	if previousRun.State != agent.StatePendingApproval {
+		return nil
+	}
+	if currentRun.State != agent.StateFailed || !agentTimeoutError(currentRun.Error) {
+		return nil
+	}
+	if err := s.ensurePendingApproval(ctx, previousRun); err != nil {
+		return err
+	}
+	approval, _, err := s.currentApproval(ctx, previousRun.TenantID, previousRun, "", "")
+	if err != nil {
+		return err
+	}
+	if approval.Status != agent.ApprovalPending {
+		return nil
+	}
+	_, err = s.approvalStore.DecideApproval(ctx, previousRun.TenantID, approval.ID, agent.ApprovalRejected, "system", currentRun.Error, time.Now().UTC())
+	return err
+}
+
+func (s *Service) rejectPendingApprovalAfterCancel(ctx context.Context, run agent.Run, actor agent.Actor, reason string) error {
+	if run.State != agent.StatePendingApproval {
+		return nil
+	}
+	if err := s.ensurePendingApproval(ctx, run); err != nil {
+		return err
+	}
+	approval, _, err := s.currentApproval(ctx, actor.TenantID, run, "", "")
+	if err != nil {
+		return err
+	}
+	if approval.Status != agent.ApprovalPending {
+		return nil
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "run cancelled"
+	}
+	_, err = s.approvalStore.DecideApproval(ctx, actor.TenantID, approval.ID, agent.ApprovalRejected, actor.UserID, reason, time.Now().UTC())
+	return err
 }
 
 func (s *Service) ensurePendingApproval(ctx context.Context, run agent.Run) error {
@@ -710,6 +827,19 @@ func containsFold(values []string, target string) bool {
 	return false
 }
 
+func agentTerminalState(state agent.RunState) bool {
+	switch state {
+	case agent.StateCompleted, agent.StateFailed, agent.StateCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func agentTimeoutError(reason string) bool {
+	return reason == "approval_timeout_exceeded" || reason == "run_timeout_exceeded"
+}
+
 func parseRunPath(path string) (runID string, action string, ok bool) {
 	const prefix = "/v1/agent/runs/"
 	if !strings.HasPrefix(path, prefix) {
@@ -753,10 +883,17 @@ func writeAgentError(w http.ResponseWriter, err error) {
 		http.Error(w, "question is required", http.StatusBadRequest)
 	case errors.Is(err, query.ErrUnauthorized):
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	case strings.Contains(err.Error(), "missing cancel permission"):
+		http.Error(w, err.Error(), http.StatusForbidden)
 	case strings.Contains(err.Error(), "missing tool permission"):
 		http.Error(w, err.Error(), http.StatusForbidden)
+	case strings.Contains(err.Error(), "different tenant"):
+		http.Error(w, "not found", http.StatusNotFound)
 	case strings.Contains(err.Error(), "not found"):
 		http.Error(w, "not found", http.StatusNotFound)
+	case strings.Contains(err.Error(), "already terminal") ||
+		strings.Contains(err.Error(), "cannot be resumed"):
+		http.Error(w, err.Error(), http.StatusConflict)
 	case strings.Contains(err.Error(), "approval") &&
 		(strings.Contains(err.Error(), "pending") ||
 			strings.Contains(err.Error(), "already") ||

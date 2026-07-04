@@ -275,6 +275,179 @@ func TestOrchestrator_RejectApprovalFailsPendingRun(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_CancelPendingApprovalRun(t *testing.T) {
+	store := NewMemoryStore()
+	registry := NewRegistry()
+	calls := 0
+	err := registry.Register(ToolDefinition{
+		Name:                "refund_order",
+		RequiredPermissions: []string{"order:refund"},
+		RequiresApproval:    true,
+		SideEffect:          true,
+		Idempotent:          true,
+		Parameters: JSONSchema{
+			Type:     "object",
+			Required: []string{"order_id"},
+			Properties: map[string]SchemaProperty{
+				"order_id": {Type: "string"},
+			},
+		},
+	}, func(context.Context, ToolInvocation) (ToolResult, error) {
+		calls++
+		return ToolResult{Content: "refund accepted"}, nil
+	})
+	if err != nil {
+		t.Fatalf("register refund tool: %v", err)
+	}
+	planner := &sequencePlanner{decisions: []PlanDecision{
+		{Type: DecisionToolCall, ToolName: "refund_order", Arguments: json.RawMessage(`{"order_id":"ord-1"}`)},
+	}}
+	orchestrator := newTestOrchestrator(t, store, registry, planner, 4, "node-a")
+	actor := Actor{TenantID: "tenant-a", UserID: "user-a", Permissions: []string{"order:refund"}}
+
+	run, err := orchestrator.Start(context.Background(), actor, "refund order")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	run, err = orchestrator.ExecuteNext(context.Background(), run.ID, actor)
+	if err != nil {
+		t.Fatalf("execute pending approval step: %v", err)
+	}
+	if run.State != StatePendingApproval {
+		t.Fatalf("expected pending approval, got %+v", run)
+	}
+
+	run, err = orchestrator.Cancel(context.Background(), run.ID, actor, "user changed mind")
+	if err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+	if run.State != StateCancelled || run.CancelledBy != "user-a" || run.CancelReason != "user changed mind" {
+		t.Fatalf("expected cancelled run metadata, got %+v", run)
+	}
+	if len(run.Steps) != 1 || run.Steps[0].State != StateCancelled {
+		t.Fatalf("expected pending step to be cancelled, got %+v", run.Steps)
+	}
+	if calls != 0 {
+		t.Fatalf("tool should not execute after cancel, got calls=%d", calls)
+	}
+}
+
+func TestOrchestrator_CancelTerminalRunFails(t *testing.T) {
+	store := NewMemoryStore()
+	registry := testRegistry(t)
+	planner := &sequencePlanner{decisions: []PlanDecision{{Type: DecisionFinal, Final: "done"}}}
+	orchestrator := newTestOrchestrator(t, store, registry, planner, 4, "node-a")
+	actor := Actor{TenantID: "tenant-a", UserID: "user-a"}
+
+	run, err := orchestrator.Start(context.Background(), actor, "finish")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	run, err = orchestrator.RunToCompletion(context.Background(), run.ID, actor)
+	if err != nil {
+		t.Fatalf("complete run: %v", err)
+	}
+	if run.State != StateCompleted {
+		t.Fatalf("expected completed run, got %+v", run)
+	}
+	if _, err := orchestrator.Cancel(context.Background(), run.ID, actor, "too late"); err == nil || !strings.Contains(err.Error(), "already terminal") {
+		t.Fatalf("expected terminal cancel error, got %v", err)
+	}
+}
+
+func TestOrchestrator_RunTimeoutFailsRunBeforePlanning(t *testing.T) {
+	store := NewMemoryStore()
+	registry := testRegistry(t)
+	planner := &sequencePlanner{decisions: []PlanDecision{{Type: DecisionFinal, Final: "should not run"}}}
+	orchestrator := newTestOrchestrator(t, store, registry, planner, 4, "node-a")
+	started := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+	now := started
+	orchestrator.now = func() time.Time { return now }
+	orchestrator.runTimeout = time.Minute
+	actor := Actor{TenantID: "tenant-a", UserID: "user-a"}
+
+	run, err := orchestrator.Start(context.Background(), actor, "expire")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	now = started.Add(2 * time.Minute)
+	run, err = orchestrator.ExecuteNext(context.Background(), run.ID, actor)
+	if err != nil {
+		t.Fatalf("execute expired run: %v", err)
+	}
+	if run.State != StateFailed || run.Error != "run_timeout_exceeded" {
+		t.Fatalf("expected run timeout failure, got %+v", run)
+	}
+	if len(run.Steps) != 0 {
+		t.Fatalf("planner should not add steps after timeout, got %+v", run.Steps)
+	}
+}
+
+func TestOrchestrator_ApprovalTimeoutFailsPendingStep(t *testing.T) {
+	store := NewMemoryStore()
+	registry := NewRegistry()
+	calls := 0
+	err := registry.Register(ToolDefinition{
+		Name:                "refund_order",
+		RequiredPermissions: []string{"order:refund"},
+		RequiresApproval:    true,
+		SideEffect:          true,
+		Idempotent:          true,
+		Parameters: JSONSchema{
+			Type:     "object",
+			Required: []string{"order_id"},
+			Properties: map[string]SchemaProperty{
+				"order_id": {Type: "string"},
+			},
+		},
+	}, func(context.Context, ToolInvocation) (ToolResult, error) {
+		calls++
+		return ToolResult{Content: "refund accepted"}, nil
+	})
+	if err != nil {
+		t.Fatalf("register refund tool: %v", err)
+	}
+	planner := &sequencePlanner{decisions: []PlanDecision{
+		{Type: DecisionToolCall, ToolName: "refund_order", Arguments: json.RawMessage(`{"order_id":"ord-1"}`)},
+	}}
+	orchestrator := newTestOrchestrator(t, store, registry, planner, 4, "node-a")
+	started := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+	now := started
+	orchestrator.now = func() time.Time { return now }
+	orchestrator.runTimeout = time.Hour
+	orchestrator.approvalTimeout = time.Minute
+	actor := Actor{TenantID: "tenant-a", UserID: "user-a", Permissions: []string{"order:refund"}}
+
+	run, err := orchestrator.Start(context.Background(), actor, "refund order")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	run, err = orchestrator.ExecuteNext(context.Background(), run.ID, actor)
+	if err != nil {
+		t.Fatalf("execute pending approval step: %v", err)
+	}
+	if run.State != StatePendingApproval {
+		t.Fatalf("expected pending approval, got %+v", run)
+	}
+
+	now = started.Add(2 * time.Minute)
+	approved := actor
+	approved.ApprovedTools = []string{"refund_order"}
+	run, err = orchestrator.RunToCompletion(context.Background(), run.ID, approved)
+	if err != nil {
+		t.Fatalf("resume expired approval: %v", err)
+	}
+	if run.State != StateFailed || run.Error != "approval_timeout_exceeded" {
+		t.Fatalf("expected approval timeout failure, got %+v", run)
+	}
+	if len(run.Steps) != 1 || run.Steps[0].State != StateFailed || run.Steps[0].Error != "approval_timeout_exceeded" {
+		t.Fatalf("expected failed approval step, got %+v", run.Steps)
+	}
+	if calls != 0 {
+		t.Fatalf("tool should not execute after approval timeout, got calls=%d", calls)
+	}
+}
+
 func TestOrchestrator_RecoversWaitingToolWithSameIdempotencyKey(t *testing.T) {
 	store := NewMemoryStore()
 	registry := NewRegistry()

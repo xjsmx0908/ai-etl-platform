@@ -20,17 +20,20 @@ The MVP focuses on the enterprise control plane:
 - optimistic version checks for stale write rejection
 - Redis-backed run persistence
 - pending-approval state for high-risk tools
+- durable approval records with approve/reject audit
 - compensation handlers for failed side-effecting tools
-- public `/v1/agent/runs` API for create, inspect, resume, and approve
+- public `/v1/agent/runs` API for create, inspect, resume, approve, reject, approval listing, and cancel
 - real read-only tools: `rag_query` and `etl_task_status`
 - OpenAI-compatible LLM Planner with structured JSON decision validation
 - deterministic Rule Planner for development and tests
+- Redis-backed distributed locks outside dev
+- run timeout, approval timeout, and explicit cancellation
 
-Out of scope for this first cut:
+Out of scope for this cut:
 
-- external human approval queue and approval audit service
 - full Saga workflow across multiple tools
-- Redis-backed distributed lock manager
+- asynchronous approval notification channels
+- external workflow engine integration
 
 Those should be added after the core state machine is stable and tested.
 
@@ -86,6 +89,15 @@ POST /v1/agent/runs/{id}/resume
 
 POST /v1/agent/runs/{id}/approve
   -> approve the current pending tool and resume the Run
+
+POST /v1/agent/runs/{id}/reject
+  -> reject the current pending tool and fail the Run
+
+GET /v1/agent/runs/{id}/approvals
+  -> list durable approval audit records for a Run
+
+POST /v1/agent/runs/{id}/cancel
+  -> cancel a non-terminal Run
 ```
 
 The HTTP layer converts the authenticated JWT context into an `agent.Actor`.
@@ -114,6 +126,16 @@ created/running/waiting_tool/pending_approval
 -> cancelled
 ```
 
+Timeout transitions:
+
+```text
+created/running/waiting_tool/pending_approval
+-> failed(error=run_timeout_exceeded)
+
+pending_approval
+-> failed(error=approval_timeout_exceeded)
+```
+
 Each tool call is persisted before the handler runs. The result or error is then
 persisted on the same step. This makes a run resumable by another orchestrator
 node after a process crash.
@@ -123,6 +145,9 @@ Every run stores:
 ```text
 version
 fencing_token
+cancelled_by
+cancel_reason
+cancelled_at
 ```
 
 `Store.SaveRun` requires the caller's expected version and lock fencing token.
@@ -161,17 +186,18 @@ instead of spinning.
 
 ## Recovery Model
 
-The first cut includes in-memory implementations for deterministic tests:
+The module includes in-memory implementations for deterministic tests:
 
 ```text
 MemoryStore
 MemoryLockManager
 ```
 
-It also includes Redis-backed run persistence:
+It also includes Redis-backed run persistence and distributed locking:
 
 ```text
 RedisStore
+RedisLockManager
 ```
 
 The lock manager uses TTL and fencing tokens so a resumed owner can reject stale
@@ -182,6 +208,35 @@ does not ask the planner for a new action. It resumes the persisted tool step
 with the same arguments and idempotency key. This is the required recovery path
 for crashes after the tool step has been persisted but before the result has
 been saved.
+
+## Lifecycle Governance
+
+The Orchestrator enforces lifecycle rules before planning a new step or
+recovering a persisted tool step:
+
+```text
+1. acquire per-run lock
+2. load tenant-scoped Run
+3. return immediately for terminal states
+4. apply run timeout
+5. apply pending approval timeout
+6. continue planning or recovery only when still non-terminal
+```
+
+Run timeout is configured by `AGENT_RUN_TIMEOUT`. Approval timeout is configured
+by `AGENT_APPROVAL_TIMEOUT`.
+
+Cancellation is explicit:
+
+```text
+POST /v1/agent/runs/{id}/cancel
+```
+
+The caller must be either the original run owner or have `agent:approve`.
+Terminal runs cannot be cancelled. If the run is waiting on a tool or approval,
+the active step is also marked `cancelled`. If a cancellation or lifecycle timeout
+closes a run with a pending approval record, the approval record is rejected so
+the approval audit does not remain pending after the state machine is terminal.
 
 ## Planner Strategy
 
@@ -325,6 +380,10 @@ Current tests cover:
 - Agent API creates and executes a RAG-backed run
 - Agent API loads tenant-scoped run state
 - Agent API approves and resumes a pending tool
+- Agent API rejects pending approvals
+- Agent API lists durable approvals
+- Agent API cancels non-terminal runs and rejects pending approval audit records
+- Agent API rejects cancel/resume for terminal runs
 - LLM Planner accepts valid tool_call and final decisions
 - LLM Planner rejects invalid JSON, unregistered tools, invalid arguments, and empty final decisions
 - planner config resolves `auto` to rule in dev and llm outside dev
@@ -333,3 +392,6 @@ Current tests cover:
 - worker writes processing, completed, and failed task status
 - `etl_task_status` reads tenant-scoped task state
 - `etl_task_status` returns not_found for another tenant's task
+- run timeout fails stale runs before planning
+- approval timeout fails stale pending approvals before tool execution
+- pending approval audit records are rejected when lifecycle timeout closes the run

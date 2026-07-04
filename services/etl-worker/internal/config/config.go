@@ -105,6 +105,8 @@ type Config struct {
 	AgentMaxSteps         int
 	AgentLockTTL          time.Duration
 	AgentRunTTL           time.Duration
+	AgentRunTimeout       time.Duration
+	AgentApprovalTimeout  time.Duration
 	AgentPlannerType      string
 	AgentPlannerEndpoint  string
 	AgentPlannerAPIKey    string
@@ -230,6 +232,8 @@ func Load() Config {
 		AgentMaxSteps:         EnvInt("AGENT_MAX_STEPS", 8),
 		AgentLockTTL:          EnvDuration("AGENT_LOCK_TTL", 30*time.Second),
 		AgentRunTTL:           EnvDuration("AGENT_RUN_TTL", 24*time.Hour),
+		AgentRunTimeout:       EnvDuration("AGENT_RUN_TIMEOUT", 30*time.Minute),
+		AgentApprovalTimeout:  EnvDuration("AGENT_APPROVAL_TIMEOUT", 15*time.Minute),
 		AgentPlannerType:      strings.ToLower(strings.TrimSpace(EnvStr("AGENT_PLANNER_TYPE", AgentPlannerAuto))),
 		AgentPlannerEndpoint:  EnvStr("AGENT_PLANNER_ENDPOINT", EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
 		AgentPlannerAPIKey:    EnvSecret("AGENT_PLANNER_API_KEY", EnvSecret("LLM_API_KEY", "")),
@@ -376,6 +380,12 @@ func (c Config) validateAgentConfig() error {
 	}
 	if c.AgentRunTTL <= 0 {
 		return fmt.Errorf("AGENT_RUN_TTL must be > 0, got %s", c.AgentRunTTL)
+	}
+	if c.AgentRunTimeout <= 0 {
+		return fmt.Errorf("AGENT_RUN_TIMEOUT must be > 0, got %s", c.AgentRunTimeout)
+	}
+	if c.AgentApprovalTimeout <= 0 {
+		return fmt.Errorf("AGENT_APPROVAL_TIMEOUT must be > 0, got %s", c.AgentApprovalTimeout)
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AgentPlannerType)) {
 	case AgentPlannerAuto, AgentPlannerLLM, AgentPlannerRule:

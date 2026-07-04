@@ -1,5 +1,24 @@
 # Backlog
 
+## 2026-07-04 - Module 3 Agent Run Lifecycle Governance
+
+Status: implemented
+
+Goal: make Agent runs operationally controllable after creation, especially for hung executions and stale human approvals.
+
+Plan:
+
+1. Add explicit run cancellation with tenant isolation and owner-or-approver authorization.
+2. Persist cancellation metadata: cancelled by, cancel reason, and cancelled at.
+3. Mark the active step as cancelled when a non-terminal run is cancelled.
+4. Add run-level timeout enforcement before planning or tool recovery.
+5. Add approval timeout enforcement for runs stuck in `pending_approval`.
+6. Reject pending approval audit records when a lifecycle timeout or cancellation closes the run.
+7. Prevent terminal runs from being resumed or cancelled through the HTTP API.
+8. Expose `POST /v1/agent/runs/{id}/cancel`.
+9. Add `AGENT_RUN_TIMEOUT` and `AGENT_APPROVAL_TIMEOUT` configuration and Compose/env templates.
+10. Cover cancel, timeout, authorization, tenant isolation, terminal conflict, and approval-audit synchronization with tests.
+
 ## 2026-07-04 - Module 3 Redis Distributed Lock
 
 Status: implemented

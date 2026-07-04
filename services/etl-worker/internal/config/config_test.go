@@ -115,6 +115,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AgentRunTTL != 24*time.Hour {
 		t.Errorf("expected AgentRunTTL=24h, got %v", cfg.AgentRunTTL)
 	}
+	if cfg.AgentRunTimeout != 30*time.Minute {
+		t.Errorf("expected AgentRunTimeout=30m, got %v", cfg.AgentRunTimeout)
+	}
+	if cfg.AgentApprovalTimeout != 15*time.Minute {
+		t.Errorf("expected AgentApprovalTimeout=15m, got %v", cfg.AgentApprovalTimeout)
+	}
 	if cfg.AgentPlannerType != AgentPlannerAuto {
 		t.Errorf("expected AgentPlannerType=auto, got %s", cfg.AgentPlannerType)
 	}
@@ -167,6 +173,8 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("AGENT_MAX_STEPS", "12")
 	os.Setenv("AGENT_LOCK_TTL", "15s")
 	os.Setenv("AGENT_RUN_TTL", "2h")
+	os.Setenv("AGENT_RUN_TIMEOUT", "20m")
+	os.Setenv("AGENT_APPROVAL_TIMEOUT", "5m")
 	os.Setenv("AGENT_PLANNER_TYPE", "llm")
 	os.Setenv("AGENT_PLANNER_ENDPOINT", "http://planner:8080/v1/chat/completions")
 	os.Setenv("AGENT_PLANNER_API_KEY", "planner-key")
@@ -207,6 +215,8 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("AGENT_MAX_STEPS")
 		os.Unsetenv("AGENT_LOCK_TTL")
 		os.Unsetenv("AGENT_RUN_TTL")
+		os.Unsetenv("AGENT_RUN_TIMEOUT")
+		os.Unsetenv("AGENT_APPROVAL_TIMEOUT")
 		os.Unsetenv("AGENT_PLANNER_TYPE")
 		os.Unsetenv("AGENT_PLANNER_ENDPOINT")
 		os.Unsetenv("AGENT_PLANNER_API_KEY")
@@ -311,6 +321,12 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.AgentRunTTL != 2*time.Hour {
 		t.Errorf("expected AgentRunTTL=2h, got %v", cfg.AgentRunTTL)
+	}
+	if cfg.AgentRunTimeout != 20*time.Minute {
+		t.Errorf("expected AgentRunTimeout=20m, got %v", cfg.AgentRunTimeout)
+	}
+	if cfg.AgentApprovalTimeout != 5*time.Minute {
+		t.Errorf("expected AgentApprovalTimeout=5m, got %v", cfg.AgentApprovalTimeout)
 	}
 	if cfg.AgentPlannerType != AgentPlannerLLM {
 		t.Errorf("expected AgentPlannerType=llm, got %s", cfg.AgentPlannerType)
@@ -523,6 +539,18 @@ func TestValidateAPI_AgentConfig(t *testing.T) {
 	cfg.AgentRunTTL = 0
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected error for AgentRunTTL <= 0")
+	}
+
+	cfg = Load()
+	cfg.AgentRunTimeout = 0
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for AgentRunTimeout <= 0")
+	}
+
+	cfg = Load()
+	cfg.AgentApprovalTimeout = 0
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for AgentApprovalTimeout <= 0")
 	}
 
 	cfg = Load()

@@ -253,6 +253,323 @@ func TestHandleRunRejectFailsPendingToolAndAuditsDecision(t *testing.T) {
 	}
 }
 
+func TestHandleRunCancelPendingApprovalRejectsApprovalAudit(t *testing.T) {
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	calls := 0
+	if err := registry.Register(agent.ToolDefinition{
+		Name:                "publish_report",
+		RequiredPermissions: []string{"agent"},
+		RequiresApproval:    true,
+		SideEffect:          true,
+		Idempotent:          true,
+		Parameters: agent.JSONSchema{
+			Type: "object",
+			Properties: map[string]agent.SchemaProperty{
+				"title": {Type: "string"},
+			},
+		},
+	}, func(context.Context, agent.ToolInvocation) (agent.ToolResult, error) {
+		calls++
+		return agent.ToolResult{Content: "report published"}, nil
+	}); err != nil {
+		t.Fatalf("register publish_report: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, &approvalPlanner{}, 4)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"发布报表"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode pending run: %v", err)
+	}
+	approvals, err := svc.approvalStore.ListRunApprovals(context.Background(), "tenant-a", run.ID)
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected one approval, got %+v", approvals)
+	}
+
+	cancelReq := authenticatedRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/cancel", []byte(`{"reason":"duplicate request"}`))
+	cancelRR := httptest.NewRecorder()
+	svc.HandleRun(cancelRR, cancelReq)
+	if cancelRR.Code != http.StatusOK {
+		t.Fatalf("expected cancel status %d, got %d body=%s", http.StatusOK, cancelRR.Code, cancelRR.Body.String())
+	}
+	if err := json.NewDecoder(cancelRR.Body).Decode(&run); err != nil {
+		t.Fatalf("decode cancelled run: %v", err)
+	}
+	if run.State != agent.StateCancelled || run.CancelledBy != "user-a" || run.CancelReason != "duplicate request" {
+		t.Fatalf("expected cancelled run metadata, got %+v", run)
+	}
+	if len(run.Steps) != 1 || run.Steps[0].State != agent.StateCancelled {
+		t.Fatalf("expected pending step cancelled, got %+v", run.Steps)
+	}
+	if calls != 0 {
+		t.Fatalf("tool should not execute after cancel, got %d", calls)
+	}
+	decided, err := svc.approvalStore.LoadApproval(context.Background(), "tenant-a", approvals[0].ID)
+	if err != nil {
+		t.Fatalf("load cancelled approval: %v", err)
+	}
+	if decided.Status != agent.ApprovalRejected || decided.DecidedBy != "user-a" || decided.Reason != "duplicate request" {
+		t.Fatalf("expected rejected approval after cancel, got %+v", decided)
+	}
+}
+
+func TestHandleRunApproveExpiredApprovalRejectsAudit(t *testing.T) {
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	calls := 0
+	if err := registry.Register(agent.ToolDefinition{
+		Name:                "publish_report",
+		RequiredPermissions: []string{"agent"},
+		RequiresApproval:    true,
+		SideEffect:          true,
+		Idempotent:          true,
+		Parameters: agent.JSONSchema{
+			Type: "object",
+			Properties: map[string]agent.SchemaProperty{
+				"title": {Type: "string"},
+			},
+		},
+	}, func(context.Context, agent.ToolInvocation) (agent.ToolResult, error) {
+		calls++
+		return agent.ToolResult{Content: "report published"}, nil
+	}); err != nil {
+		t.Fatalf("register publish_report: %v", err)
+	}
+	orchestrator := newTestOrchestratorWithTimeouts(t, store, registry, &approvalPlanner{}, 4, time.Hour, time.Nanosecond)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"发布报表"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode pending run: %v", err)
+	}
+	approvals, err := svc.approvalStore.ListRunApprovals(context.Background(), "tenant-a", run.ID)
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected one approval, got %+v", approvals)
+	}
+	stored, err := store.LoadRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("load pending run: %v", err)
+	}
+	stored.Steps[0].StartedAt = time.Now().UTC().Add(-time.Hour)
+	if _, err := store.SaveRun(context.Background(), stored, agent.SaveOptions{ExpectedVersion: stored.Version, FencingToken: stored.FencingToken}); err != nil {
+		t.Fatalf("age pending approval step: %v", err)
+	}
+
+	approveReq := adminRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/approve", []byte(`{"approval_id":"`+approvals[0].ID+`","tool_name":"publish_report"}`))
+	approveRR := httptest.NewRecorder()
+	svc.HandleRun(approveRR, approveReq)
+	if approveRR.Code != http.StatusConflict {
+		t.Fatalf("expected expired approve status %d, got %d body=%s", http.StatusConflict, approveRR.Code, approveRR.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("tool should not execute after approval timeout, got %d", calls)
+	}
+	decided, err := svc.approvalStore.LoadApproval(context.Background(), "tenant-a", approvals[0].ID)
+	if err != nil {
+		t.Fatalf("load timed-out approval: %v", err)
+	}
+	if decided.Status != agent.ApprovalRejected || decided.DecidedBy != "system" || decided.Reason != "approval_timeout_exceeded" {
+		t.Fatalf("expected system-rejected timeout approval, got %+v", decided)
+	}
+	stored, err = store.LoadRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("load timed-out run: %v", err)
+	}
+	if stored.State != agent.StateFailed || stored.Error != "approval_timeout_exceeded" {
+		t.Fatalf("expected timed-out run, got %+v", stored)
+	}
+}
+
+func TestHandleRunApproveExpiredRunRejectsAudit(t *testing.T) {
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	calls := 0
+	if err := registry.Register(agent.ToolDefinition{
+		Name:                "publish_report",
+		RequiredPermissions: []string{"agent"},
+		RequiresApproval:    true,
+		SideEffect:          true,
+		Idempotent:          true,
+		Parameters: agent.JSONSchema{
+			Type: "object",
+			Properties: map[string]agent.SchemaProperty{
+				"title": {Type: "string"},
+			},
+		},
+	}, func(context.Context, agent.ToolInvocation) (agent.ToolResult, error) {
+		calls++
+		return agent.ToolResult{Content: "report published"}, nil
+	}); err != nil {
+		t.Fatalf("register publish_report: %v", err)
+	}
+	orchestrator := newTestOrchestratorWithTimeouts(t, store, registry, &approvalPlanner{}, 4, time.Minute, time.Hour)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"发布报表"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode pending run: %v", err)
+	}
+	if run.State != agent.StatePendingApproval {
+		t.Fatalf("expected pending approval, got %+v", run)
+	}
+	approvals, err := svc.approvalStore.ListRunApprovals(context.Background(), "tenant-a", run.ID)
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected one approval, got %+v", approvals)
+	}
+
+	stored, err := store.LoadRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("load pending run: %v", err)
+	}
+	stored.CreatedAt = time.Now().UTC().Add(-2 * time.Minute)
+	if _, err := store.SaveRun(context.Background(), stored, agent.SaveOptions{ExpectedVersion: stored.Version, FencingToken: stored.FencingToken}); err != nil {
+		t.Fatalf("age pending run: %v", err)
+	}
+
+	approveReq := adminRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/approve", []byte(`{"approval_id":"`+approvals[0].ID+`","tool_name":"publish_report"}`))
+	approveRR := httptest.NewRecorder()
+	svc.HandleRun(approveRR, approveReq)
+	if approveRR.Code != http.StatusConflict {
+		t.Fatalf("expected expired approve status %d, got %d body=%s", http.StatusConflict, approveRR.Code, approveRR.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("tool should not execute after run timeout, got %d", calls)
+	}
+	decided, err := svc.approvalStore.LoadApproval(context.Background(), "tenant-a", approvals[0].ID)
+	if err != nil {
+		t.Fatalf("load timed-out approval: %v", err)
+	}
+	if decided.Status != agent.ApprovalRejected || decided.DecidedBy != "system" || decided.Reason != "run_timeout_exceeded" {
+		t.Fatalf("expected system-rejected run timeout approval, got %+v", decided)
+	}
+	stored, err = store.LoadRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("load timed-out run: %v", err)
+	}
+	if stored.State != agent.StateFailed || stored.Error != "run_timeout_exceeded" {
+		t.Fatalf("expected timed-out run, got %+v", stored)
+	}
+}
+
+func TestHandleRunCancelRejectsTerminalAndOtherTenant(t *testing.T) {
+	qs := &fakeQueryService{}
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerRAGQueryTool(registry, qs); err != nil {
+		t.Fatalf("register rag tool: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, RulePlanner{}, 4)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"公司的报销制度是什么"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.State != agent.StateCompleted {
+		t.Fatalf("expected completed run, got %+v", run)
+	}
+
+	cancelReq := authenticatedRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/cancel", []byte(`{"reason":"too late"}`))
+	cancelRR := httptest.NewRecorder()
+	svc.HandleRun(cancelRR, cancelReq)
+	if cancelRR.Code != http.StatusConflict {
+		t.Fatalf("expected terminal cancel status %d, got %d body=%s", http.StatusConflict, cancelRR.Code, cancelRR.Body.String())
+	}
+
+	resumeReq := authenticatedRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/resume", nil)
+	resumeRR := httptest.NewRecorder()
+	svc.HandleRun(resumeRR, resumeReq)
+	if resumeRR.Code != http.StatusConflict {
+		t.Fatalf("expected terminal resume status %d, got %d body=%s", http.StatusConflict, resumeRR.Code, resumeRR.Body.String())
+	}
+
+	otherTenantReq := authenticatedRequestAs(http.MethodPost, "/v1/agent/runs/"+run.ID+"/cancel", []byte(`{"reason":"wrong tenant"}`), "tenant-b", "user-b", "user", []string{"agent", "query"})
+	otherTenantRR := httptest.NewRecorder()
+	svc.HandleRun(otherTenantRR, otherTenantReq)
+	if otherTenantRR.Code != http.StatusNotFound {
+		t.Fatalf("expected tenant isolation status %d, got %d body=%s", http.StatusNotFound, otherTenantRR.Code, otherTenantRR.Body.String())
+	}
+}
+
+func TestHandleRunCancelRejectsSameTenantNonOwner(t *testing.T) {
+	qs := &fakeQueryService{}
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerRAGQueryTool(registry, qs); err != nil {
+		t.Fatalf("register rag tool: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, RulePlanner{}, 4)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"公司的报销制度是什么","auto_execute":false}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.State != agent.StateCreated {
+		t.Fatalf("expected created run, got %+v", run)
+	}
+
+	otherUserReq := authenticatedRequestAs(http.MethodPost, "/v1/agent/runs/"+run.ID+"/cancel", []byte(`{"reason":"not mine"}`), "tenant-a", "user-b", "user", []string{"agent", "query"})
+	otherUserRR := httptest.NewRecorder()
+	svc.HandleRun(otherUserRR, otherUserReq)
+	if otherUserRR.Code != http.StatusForbidden {
+		t.Fatalf("expected same-tenant non-owner cancel status %d, got %d body=%s", http.StatusForbidden, otherUserRR.Code, otherUserRR.Body.String())
+	}
+
+	adminReq := adminRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/cancel", []byte(`{"reason":"admin stop"}`))
+	adminRR := httptest.NewRecorder()
+	svc.HandleRun(adminRR, adminReq)
+	if adminRR.Code != http.StatusOK {
+		t.Fatalf("expected admin cancel status %d, got %d body=%s", http.StatusOK, adminRR.Code, adminRR.Body.String())
+	}
+	if err := json.NewDecoder(adminRR.Body).Decode(&run); err != nil {
+		t.Fatalf("decode cancelled run: %v", err)
+	}
+	if run.State != agent.StateCancelled || run.CancelledBy != "admin-a" {
+		t.Fatalf("expected admin-cancelled run, got %+v", run)
+	}
+}
+
 func TestHandleRunResumeUsesApprovedAuditRecord(t *testing.T) {
 	store := agent.NewMemoryStore()
 	registry := agent.NewRegistry()
@@ -448,11 +765,18 @@ func authenticatedRequestAs(method, target string, body []byte, tenantID, userID
 
 func newTestOrchestrator(t *testing.T, store agent.Store, registry *agent.Registry, planner agent.Planner, maxSteps int) *agent.Orchestrator {
 	t.Helper()
+	return newTestOrchestratorWithTimeouts(t, store, registry, planner, maxSteps, 0, 0)
+}
+
+func newTestOrchestratorWithTimeouts(t *testing.T, store agent.Store, registry *agent.Registry, planner agent.Planner, maxSteps int, runTimeout, approvalTimeout time.Duration) *agent.Orchestrator {
+	t.Helper()
 	orchestrator, err := agent.NewOrchestrator(store, agent.NewMemoryLockManager(), registry, planner, agent.Options{
-		NodeID:     "agentapi-test",
-		MaxSteps:   maxSteps,
-		LockTTL:    time.Second,
-		Authorizer: agent.StaticAuthorizer{},
+		NodeID:          "agentapi-test",
+		MaxSteps:        maxSteps,
+		LockTTL:         time.Second,
+		RunTimeout:      runTimeout,
+		ApprovalTimeout: approvalTimeout,
+		Authorizer:      agent.StaticAuthorizer{},
 	})
 	if err != nil {
 		t.Fatalf("new orchestrator: %v", err)

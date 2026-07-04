@@ -1,5 +1,15 @@
 # LEARNINGS.codex.md
 
+## 2026-07-04T18:26:44+08:00 - Module 3 Agent Run Lifecycle Governance
+
+Perceive: Agent runs had durable state, approvals, Redis persistence, and distributed locks, but an operator still could not cancel a non-terminal run and stale pending approvals had no timeout closure.
+
+Reason: enterprise Agent orchestration needs lifecycle boundaries in addition to planning. Runs should fail deterministically when their wall-clock budget is exhausted, pending approvals should not stay pending forever, terminal runs should stay immutable, and approval audit must be synchronized when a run is closed by timeout or cancellation.
+
+Act: added cancellation metadata, `POST /v1/agent/runs/{id}/cancel`, run timeout enforcement, approval timeout enforcement, terminal resume/cancel conflicts, approval-audit rejection on lifecycle timeout or cancel, and config through env and Docker Compose.
+
+Refine: verified `gofmt`, `go vet ./...`, `go test ./...`, `docker compose config --quiet`, and `git diff --check`.
+
 ## 2026-07-04T17:52:52+08:00 - Module 3 Redis Distributed Lock
 
 Perceive: the Agent run store and approval store were Redis-backed outside dev, but the Orchestrator still used an in-process memory lock. That protects a single process only and leaves multi-replica `query-api` unsafe.

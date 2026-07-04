@@ -51,6 +51,9 @@ type Run struct {
 	Memory       map[string]interface{} `json:"memory,omitempty"`
 	Final        string                 `json:"final,omitempty"`
 	Error        string                 `json:"error,omitempty"`
+	CancelledBy  string                 `json:"cancelled_by,omitempty"`
+	CancelReason string                 `json:"cancel_reason,omitempty"`
+	CancelledAt  time.Time              `json:"cancelled_at,omitempty"`
 	CreatedAt    time.Time              `json:"created_at"`
 	UpdatedAt    time.Time              `json:"updated_at"`
 }

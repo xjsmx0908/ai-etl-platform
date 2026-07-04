@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	defaultMaxSteps = 8
-	defaultLockTTL  = 30 * time.Second
+	defaultMaxSteps        = 8
+	defaultLockTTL         = 30 * time.Second
+	defaultRunTimeout      = 30 * time.Minute
+	defaultApprovalTimeout = 15 * time.Minute
 )
 
 // Planner decides the next Agent action from the durable run state.
@@ -22,23 +24,27 @@ type Planner interface {
 
 // Orchestrator coordinates planner decisions, tool execution, persistence, and locking.
 type Orchestrator struct {
-	store      Store
-	locks      LockManager
-	registry   *Registry
-	planner    Planner
-	authorizer Authorizer
-	nodeID     string
-	maxSteps   int
-	lockTTL    time.Duration
-	now        func() time.Time
+	store           Store
+	locks           LockManager
+	registry        *Registry
+	planner         Planner
+	authorizer      Authorizer
+	nodeID          string
+	maxSteps        int
+	lockTTL         time.Duration
+	runTimeout      time.Duration
+	approvalTimeout time.Duration
+	now             func() time.Time
 }
 
 // Options configures an Orchestrator.
 type Options struct {
-	NodeID     string
-	MaxSteps   int
-	LockTTL    time.Duration
-	Authorizer Authorizer
+	NodeID          string
+	MaxSteps        int
+	LockTTL         time.Duration
+	RunTimeout      time.Duration
+	ApprovalTimeout time.Duration
+	Authorizer      Authorizer
 }
 
 // NewOrchestrator creates a stateful Agent orchestrator.
@@ -64,19 +70,27 @@ func NewOrchestrator(store Store, locks LockManager, registry *Registry, planner
 	if opts.LockTTL <= 0 {
 		opts.LockTTL = defaultLockTTL
 	}
+	if opts.RunTimeout <= 0 {
+		opts.RunTimeout = defaultRunTimeout
+	}
+	if opts.ApprovalTimeout <= 0 {
+		opts.ApprovalTimeout = defaultApprovalTimeout
+	}
 	if opts.Authorizer == nil {
 		opts.Authorizer = StaticAuthorizer{}
 	}
 	return &Orchestrator{
-		store:      store,
-		locks:      locks,
-		registry:   registry,
-		planner:    planner,
-		authorizer: opts.Authorizer,
-		nodeID:     opts.NodeID,
-		maxSteps:   opts.MaxSteps,
-		lockTTL:    opts.LockTTL,
-		now:        time.Now,
+		store:           store,
+		locks:           locks,
+		registry:        registry,
+		planner:         planner,
+		authorizer:      opts.Authorizer,
+		nodeID:          opts.NodeID,
+		maxSteps:        opts.MaxSteps,
+		lockTTL:         opts.LockTTL,
+		runTimeout:      opts.RunTimeout,
+		approvalTimeout: opts.ApprovalTimeout,
+		now:             time.Now,
 	}, nil
 }
 
@@ -125,6 +139,13 @@ func (o *Orchestrator) ExecuteNext(ctx context.Context, runID string, actor Acto
 		return Run{}, fmt.Errorf("run %q belongs to a different tenant", runID)
 	}
 	if terminalState(run.State) {
+		return run, nil
+	}
+	run, expired, err := o.expireRunIfNeeded(ctx, run, lease)
+	if err != nil {
+		return Run{}, err
+	}
+	if expired {
 		return run, nil
 	}
 	run, err = o.claimRun(ctx, run, lease)
@@ -177,6 +198,72 @@ func (o *Orchestrator) RunToCompletion(ctx context.Context, runID string, actor 
 	}
 }
 
+func (o *Orchestrator) ApplyLifecycle(ctx context.Context, runID string, actor Actor) (Run, error) {
+	lease, err := o.locks.Acquire(ctx, runID, o.nodeID, o.lockTTL)
+	if err != nil {
+		return Run{}, err
+	}
+	defer o.locks.Release(context.Background(), lease)
+
+	run, err := o.store.LoadRun(ctx, runID)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.TenantID != actor.TenantID {
+		return Run{}, fmt.Errorf("run %q belongs to a different tenant", runID)
+	}
+	if terminalState(run.State) {
+		return run, nil
+	}
+	run, _, err = o.expireRunIfNeeded(ctx, run, lease)
+	if err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+func (o *Orchestrator) Cancel(ctx context.Context, runID string, actor Actor, reason string) (Run, error) {
+	lease, err := o.locks.Acquire(ctx, runID, o.nodeID, o.lockTTL)
+	if err != nil {
+		return Run{}, err
+	}
+	defer o.locks.Release(context.Background(), lease)
+
+	run, err := o.store.LoadRun(ctx, runID)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.TenantID != actor.TenantID {
+		return Run{}, fmt.Errorf("run %q belongs to a different tenant", runID)
+	}
+	if run.UserID != actor.UserID && !hasString(actor.Permissions, "agent:approve") {
+		return Run{}, fmt.Errorf("missing cancel permission for run %q", runID)
+	}
+	if terminalState(run.State) {
+		return Run{}, fmt.Errorf("run %q is already terminal", runID)
+	}
+
+	now := o.now().UTC()
+	reason = strings.TrimSpace(reason)
+	message := "run cancelled"
+	if reason != "" {
+		message += ": " + reason
+	}
+	run.State = StateCancelled
+	run.Error = message
+	run.CancelledBy = actor.UserID
+	run.CancelReason = reason
+	run.CancelledAt = now
+	run.UpdatedAt = now
+	if idx := activeStepIndex(run); idx >= 0 {
+		run.Steps[idx].State = StateCancelled
+		run.Steps[idx].Error = message
+		run.Steps[idx].CompletedAt = now
+		run.Steps[idx].Duration = now.Sub(run.Steps[idx].StartedAt)
+	}
+	return o.saveRun(ctx, run, lease)
+}
+
 func (o *Orchestrator) RejectApproval(ctx context.Context, runID string, actor Actor, reason string) (Run, error) {
 	lease, err := o.locks.Acquire(ctx, runID, o.nodeID, o.lockTTL)
 	if err != nil {
@@ -214,6 +301,37 @@ func (o *Orchestrator) RejectApproval(ctx context.Context, runID string, actor A
 	return o.saveRun(ctx, run, lease)
 }
 
+func (o *Orchestrator) expireRunIfNeeded(ctx context.Context, run Run, lease LockLease) (Run, bool, error) {
+	now := o.now().UTC()
+	if o.runTimeout > 0 && !run.CreatedAt.IsZero() && !now.Before(run.CreatedAt.Add(o.runTimeout)) {
+		run = o.failActiveRun(run, now, "run_timeout_exceeded")
+		saved, err := o.saveRun(ctx, run, lease)
+		return saved, true, err
+	}
+	if run.State == StatePendingApproval && o.approvalTimeout > 0 {
+		idx := pendingApprovalStepIndex(run)
+		if idx >= 0 && !run.Steps[idx].StartedAt.IsZero() && !now.Before(run.Steps[idx].StartedAt.Add(o.approvalTimeout)) {
+			run = o.failActiveRun(run, now, "approval_timeout_exceeded")
+			saved, err := o.saveRun(ctx, run, lease)
+			return saved, true, err
+		}
+	}
+	return run, false, nil
+}
+
+func (o *Orchestrator) failActiveRun(run Run, now time.Time, reason string) Run {
+	if idx := activeStepIndex(run); idx >= 0 {
+		run.Steps[idx].State = StateFailed
+		run.Steps[idx].Error = reason
+		run.Steps[idx].CompletedAt = now
+		run.Steps[idx].Duration = now.Sub(run.Steps[idx].StartedAt)
+	}
+	run.State = StateFailed
+	run.Error = reason
+	run.UpdatedAt = now
+	return run
+}
+
 func (o *Orchestrator) executeToolDecision(ctx context.Context, run Run, actor Actor, lease LockLease, decision PlanDecision) (Run, error) {
 	start := o.now().UTC()
 	stepIndex := len(run.Steps) + 1
@@ -242,6 +360,16 @@ func (o *Orchestrator) executeToolDecision(ctx context.Context, run Run, actor A
 func pendingApprovalStepIndex(run Run) int {
 	for i := len(run.Steps) - 1; i >= 0; i-- {
 		if run.Steps[i].Type == StepToolCall && run.Steps[i].State == StatePendingApproval {
+			return i
+		}
+	}
+	return -1
+}
+
+func activeStepIndex(run Run) int {
+	for i := len(run.Steps) - 1; i >= 0; i-- {
+		switch run.Steps[i].State {
+		case StateCreated, StateRunning, StateWaitingTool, StatePendingApproval:
 			return i
 		}
 	}
