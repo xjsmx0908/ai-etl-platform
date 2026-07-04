@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,6 +60,19 @@ type SourceContext struct {
 	TenantID string  `json:"tenant_id,omitempty"`
 }
 
+// AccessContext is the authenticated caller context used by HTTP handlers and internal tools.
+type AccessContext struct {
+	TenantID string
+	Role     string
+}
+
+var (
+	ErrQuestionRequired = errors.New("question is required")
+	ErrUnauthorized     = errors.New("unauthorized")
+	ErrSearchFailed     = errors.New("search failed")
+	ErrGenerationFailed = errors.New("generation failed")
+)
+
 var roleAllowedDocPermissions = map[string][]string{
 	"admin":    {"public", "internal", "confidential"},
 	"user":     {"public", "internal"},
@@ -95,24 +109,57 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Question == "" {
+
+	resp, err := s.Ask(ctx, req, AccessContext{
+		TenantID: auth.GetTenantID(r.Context()),
+		Role:     auth.GetPermission(r.Context()),
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrQuestionRequired):
 		http.Error(w, "question is required", http.StatusBadRequest)
 		return
+	case errors.Is(err, ErrUnauthorized):
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	case errors.Is(err, ErrSearchFailed):
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "search failed")
+		http.Error(w, "search failed", http.StatusInternalServerError)
+		return
+	case errors.Is(err, ErrGenerationFailed):
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "generation failed")
+		http.Error(w, "generation failed", http.StatusInternalServerError)
+		return
+	default:
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// Ask executes the RAG query pipeline for an authenticated caller.
+func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (Response, error) {
+	if strings.TrimSpace(req.Question) == "" {
+		return Response{}, ErrQuestionRequired
+	}
+	if strings.TrimSpace(access.TenantID) == "" {
+		return Response{}, ErrUnauthorized
 	}
 	if req.TopK <= 0 {
 		req.TopK = 5
 	}
-	tenantID := auth.GetTenantID(r.Context())
-	if tenantID == "" {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	role := auth.GetPermission(r.Context())
-	allowedPermissions := allowedDocumentPermissionsForRole(role)
+	allowedPermissions := allowedDocumentPermissionsForRole(access.Role)
+	span := trace.SpanFromContext(ctx)
 
 	span.SetAttributes(
-		attribute.String("tenant_id", tenantID),
-		attribute.String("permission_role", role),
+		attribute.String("tenant_id", access.TenantID),
+		attribute.String("permission_role", access.Role),
 		attribute.Int("allowed_permission_levels", len(allowedPermissions)),
 		attribute.Int("top_k", req.TopK),
 		attribute.Int("question_len", len(req.Question)),
@@ -123,32 +170,27 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	retrievalResult, err := s.retriever.Retrieve(ctx, retrieval.Request{
 		Question:           req.Question,
 		TopK:               req.TopK,
-		TenantID:           tenantID,
+		TenantID:           access.TenantID,
 		AllowedPermissions: allowedPermissions,
 	})
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "search failed")
 		slog.Error("retrieval failed", "error", err)
-		http.Error(w, "search failed", http.StatusInternalServerError)
-		return
+		return Response{}, fmt.Errorf("%w: %v", ErrSearchFailed, err)
 	}
 	if len(retrievalResult.PartialErrors) > 0 {
 		slog.Warn("retrieval completed with partial errors",
-			"tenant_id", tenantID,
+			"tenant_id", access.TenantID,
 			"route", retrievalResult.Route.Strategy,
 			"errors", retrievalResult.PartialErrors)
 	}
 	sources := sourceContextsFromCandidates(retrievalResult.Sources)
 
 	if len(sources) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{
+		return Response{
 			Answer:   "未找到相关文档，无法回答该问题。",
 			Sources:  []SourceContext{},
 			Duration: time.Since(start).String(),
-		})
-		return
+		}, nil
 	}
 
 	span.SetAttributes(
@@ -160,11 +202,8 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	answer, err := s.generateAnswer(ctx, req.Question, sources)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "generation failed")
 		slog.Error("LLM generation failed", "error", err)
-		http.Error(w, "generation failed", http.StatusInternalServerError)
-		return
+		return Response{}, fmt.Errorf("%w: %v", ErrGenerationFailed, err)
 	}
 
 	resp := Response{
@@ -182,8 +221,7 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	span.SetAttributes(attribute.Int("answer_len", len(answer)))
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	return resp, nil
 }
 
 // normalizeLLMEndpoint accepts either a full chat-completions URL or a base URL.

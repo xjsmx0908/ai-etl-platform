@@ -30,6 +30,8 @@ const (
 	CtxUserID ContextKey = "user_id"
 	// CtxPermission is the context key for permission level.
 	CtxPermission ContextKey = "permission"
+	// CtxScopes is the context key for OAuth-style scopes.
+	CtxScopes ContextKey = "scopes"
 )
 
 // Verifier validates JWT tokens.
@@ -94,6 +96,7 @@ func (v *Verifier) Middleware(requiredScopes ...string) func(http.Handler) http.
 			ctx := context.WithValue(r.Context(), CtxTenantID, claims.TenantID)
 			ctx = context.WithValue(ctx, CtxUserID, claims.UserID)
 			ctx = context.WithValue(ctx, CtxPermission, claims.Permission)
+			ctx = context.WithValue(ctx, CtxScopes, append([]string(nil), claims.Scopes...))
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -117,12 +120,28 @@ func GetTenantID(ctx context.Context) string {
 	return ""
 }
 
+// GetUserID extracts user ID from context.
+func GetUserID(ctx context.Context) string {
+	if v, ok := ctx.Value(CtxUserID).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // GetPermission extracts user permission level from context.
 func GetPermission(ctx context.Context) string {
 	if v, ok := ctx.Value(CtxPermission).(string); ok {
 		return v
 	}
 	return ""
+}
+
+// GetScopes extracts authenticated scopes from context.
+func GetScopes(ctx context.Context) []string {
+	if v, ok := ctx.Value(CtxScopes).([]string); ok {
+		return append([]string(nil), v...)
+	}
+	return nil
 }
 
 // GenerateTestTokenWithPermission creates a JWT token for testing purposes.

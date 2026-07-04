@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"ai-etl-pipeline/internal/agentapi"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
@@ -78,6 +79,30 @@ type uploadAcceptedResponse struct {
 type statusRecorder struct {
 	http.ResponseWriter
 	statusCode int
+}
+
+func requireScopes(requiredScopes ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			scopes := auth.GetScopes(r.Context())
+			for _, required := range requiredScopes {
+				if !scopeAllowed(scopes, required) {
+					http.Error(w, `{"error":"forbidden","message":"missing scope: `+required+`"}`, http.StatusForbidden)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func scopeAllowed(scopes []string, required string) bool {
+	for _, scope := range scopes {
+		if scope == required {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -154,6 +179,12 @@ func main() {
 
 	// Initialize services
 	qs := query.NewService(cfg)
+	agentSvc, err := agentapi.NewService(cfg, qs)
+	if err != nil {
+		slog.Error("failed to create agent api service", "error", err)
+		os.Exit(1)
+	}
+	defer agentSvc.Close()
 	rateLimiter := middleware.NewTenantRateLimiter(cfg.EmbedRateLimit, 100)
 
 	// Build HTTP server with enterprise middleware
@@ -167,14 +198,16 @@ func main() {
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.HandleFunc("/v1/upload", handleUpload(cfg.MaxUploadSize, cfg.MultipartMaxMemoryBytes, producer, s3Client, idemStore))
-	apiV1.HandleFunc("/v1/query", qs.HandleQuery)
+	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg.MaxUploadSize, cfg.MultipartMaxMemoryBytes, producer, s3Client, idemStore))))
+	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(qs.HandleQuery)))
+	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
+	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
 
-	// Apply middleware chain: version → auth → rate limit → CORS → timeout.
+	// Apply middleware chain: version → JWT auth → rate limit → route scope checks → CORS → timeout.
 	// Wrapper execution is outside-in, so compose in reverse.
 	handler := http.Handler(apiV1)
 	handler = rateLimiter.Middleware(handler)
-	handler = verifier.Middleware("upload", "query")(handler)
+	handler = verifier.Middleware()(handler)
 	handler = middleware.APIVersion("1")(handler)
 	handler = middleware.CORS(cfg.CORSAllowedOrigins)(handler)
 	handler = middleware.Timeout(60 * time.Second)(handler)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -91,6 +92,28 @@ func TestReadIdempotencyKey(t *testing.T) {
 	req2.Header.Set("X-Idempotency-Key", "x-key")
 	if got := readIdempotencyKey(req2); got != "x-key" {
 		t.Fatalf("expected X-Idempotency-Key to take precedence, got %q", got)
+	}
+}
+
+func TestRequireScopes(t *testing.T) {
+	handler := requireScopes("agent", "query")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agent/runs", nil)
+	ctx := context.WithValue(req.Context(), auth.CtxScopes, []string{"agent", "query"})
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req.WithContext(ctx))
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected allowed request, got %d", rr.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/agent/runs", nil)
+	ctx = context.WithValue(req.Context(), auth.CtxScopes, []string{"agent"})
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req.WithContext(ctx))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden request, got %d", rr.Code)
 	}
 }
 

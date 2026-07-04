@@ -1,5 +1,15 @@
 # LEARNINGS.codex.md
 
+## 2026-07-04T11:40:09+08:00 - Module 3 Agent API Integration
+
+Perceive: the Agent Orchestrator core was implemented and tested, but it was still only an internal library. The platform needed a usable boundary where clients can create, inspect, resume, and approve Agent runs.
+
+Reason: a production Agent system should keep the state-machine core independent from HTTP and JWT concerns. The first business tool should reuse an existing trusted capability, so the safest integration path is a read-only `rag_query` tool backed by the existing Query Service before introducing an LLM planner.
+
+Act: added `query.Service.Ask`, propagated authenticated user/scopes, added `internal/agentapi`, registered the first RAG tool, added deterministic one-step planning, mounted `/v1/agent/runs`, added Agent config, and normalized Agent API metrics.
+
+Refine: added tests for create-and-execute, tenant-scoped lookup, pending approval resume, and Agent config defaults/overrides. Remaining work is the real LLM planner, external approval queue/audit, additional tools, and distributed lock manager.
+
 ## 2026-06-28T16:51:16+08:00 - Enterprise Rerank Policy
 
 Perceive: enabling reranker globally improved the architecture but regressed deterministic exact-token evaluation cases because Cross-Encoder scoring overrode strong keyword and identifier matches.

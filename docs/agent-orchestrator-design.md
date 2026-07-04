@@ -3,7 +3,10 @@
 ## Scope
 
 Module 3 adds a stateful Agent Orchestrator to the existing `etl-worker` service.
-The first implementation is an internal Go package, not a public HTTP API.
+The first implementation has two layers:
+
+- `internal/agent`: durable state-machine core
+- `internal/agentapi`: HTTP adapter and first real tool integration
 
 The MVP focuses on the enterprise control plane:
 
@@ -18,13 +21,16 @@ The MVP focuses on the enterprise control plane:
 - Redis-backed run persistence
 - pending-approval state for high-risk tools
 - compensation handlers for failed side-effecting tools
+- public `/v1/agent/runs` API for create, inspect, resume, and approve
+- first real read-only tool: `rag_query`, backed by the existing Query Service
+- deterministic first planner: one tenant-scoped RAG tool call, then final answer
 
 Out of scope for this first cut:
 
 - real LLM planner integration
-- public `/v1/agent/runs` API
-- external human approval API and queue
+- external human approval queue and approval audit service
 - full Saga workflow across multiple tools
+- Redis-backed distributed lock manager
 
 Those should be added after the core state machine is stable and tested.
 
@@ -64,6 +70,28 @@ Store
 LockManager
   -> grants per-run ownership with TTL and fencing token
 ```
+
+HTTP adapter:
+
+```text
+POST /v1/agent/runs
+  -> create Run
+  -> optionally execute until completed, failed, or pending_approval
+
+GET /v1/agent/runs/{id}
+  -> load tenant-scoped Run state
+
+POST /v1/agent/runs/{id}/resume
+  -> continue a non-terminal Run
+
+POST /v1/agent/runs/{id}/approve
+  -> approve the current pending tool and resume the Run
+```
+
+The HTTP layer converts the authenticated JWT context into an `agent.Actor`.
+The state-machine core does not import HTTP or JWT packages.
+Because the first planner always calls the read-only RAG tool, the mounted
+Agent routes require both `agent` and `query` scopes.
 
 ## State Model
 
@@ -155,6 +183,31 @@ with the same arguments and idempotency key. This is the required recovery path
 for crashes after the tool step has been persisted but before the result has
 been saved.
 
+## First Tool Integration
+
+The first registered production tool is:
+
+```text
+rag_query
+  -> validates {question, top_k}
+  -> requires query permission
+  -> calls query.Service.Ask in-process
+  -> preserves tenant id and role-based document permissions
+  -> returns answer, sources, and duration as ToolResult
+```
+
+The first planner is intentionally deterministic:
+
+```text
+if no steps:
+  call rag_query(question = run.task, top_k = 5)
+else:
+  return final answer from last ToolResult
+```
+
+This makes the API usable before introducing an LLM planner. It also keeps the
+module testable because planner behavior is deterministic.
+
 ## Validation
 
 Current tests cover:
@@ -173,3 +226,6 @@ Current tests cover:
 - waiting tool recovery reuses the same idempotency key
 - failed side-effecting tools can be compensated
 - unsafe side-effecting tool registration is rejected
+- Agent API creates and executes a RAG-backed run
+- Agent API loads tenant-scoped run state
+- Agent API approves and resumes a pending tool

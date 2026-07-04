@@ -1,5 +1,22 @@
 # Backlog
 
+## 2026-07-04 - Module 3 Agent API Integration
+
+Status: implemented
+
+Goal: expose the stateful Agent Orchestrator through a minimal HTTP API and connect it to one real platform capability.
+
+Plan:
+
+1. Export `query.Service.Ask` so tools can reuse the existing retrieval and generation pipeline in-process.
+2. Add authenticated actor propagation for user id, role, and scopes.
+3. Add `internal/agentapi` with `POST /v1/agent/runs`, `GET /v1/agent/runs/{id}`, `POST /v1/agent/runs/{id}/resume`, and `POST /v1/agent/runs/{id}/approve`.
+4. Register `rag_query` as the first real read-only Agent tool backed by Query Service.
+5. Add a deterministic first planner that calls `rag_query` once and finalizes from the tool result.
+6. Add Agent configuration for node id, max steps, lock TTL, and run TTL.
+7. Normalize Agent API metric labels to avoid high-cardinality run ids.
+8. Add tests for RAG-backed run creation/execution, run lookup, approval, and config defaults/overrides.
+
 ## 2026-07-04 - Module 3 Agent Orchestrator MVP
 
 Status: implemented as internal core package

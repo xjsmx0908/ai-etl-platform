@@ -94,6 +94,18 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.SemanticCacheMaxEntries != 128 {
 		t.Errorf("expected SemanticCacheMaxEntries=128, got %d", cfg.SemanticCacheMaxEntries)
 	}
+	if cfg.AgentNodeID != "agent-api-1" {
+		t.Errorf("expected AgentNodeID=agent-api-1, got %s", cfg.AgentNodeID)
+	}
+	if cfg.AgentMaxSteps != 8 {
+		t.Errorf("expected AgentMaxSteps=8, got %d", cfg.AgentMaxSteps)
+	}
+	if cfg.AgentLockTTL != 30*time.Second {
+		t.Errorf("expected AgentLockTTL=30s, got %v", cfg.AgentLockTTL)
+	}
+	if cfg.AgentRunTTL != 24*time.Hour {
+		t.Errorf("expected AgentRunTTL=24h, got %v", cfg.AgentRunTTL)
+	}
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
@@ -124,6 +136,10 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("SEMANTIC_CACHE_TTL", "2m")
 	os.Setenv("SEMANTIC_CACHE_THRESHOLD", "0.88")
 	os.Setenv("SEMANTIC_CACHE_MAX_ENTRIES", "64")
+	os.Setenv("AGENT_NODE_ID", "agent-api-test")
+	os.Setenv("AGENT_MAX_STEPS", "12")
+	os.Setenv("AGENT_LOCK_TTL", "15s")
+	os.Setenv("AGENT_RUN_TTL", "2h")
 	defer func() {
 		os.Unsetenv("PIPELINE_MAX_WORKERS")
 		os.Unsetenv("ENVIRONMENT")
@@ -152,6 +168,10 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("SEMANTIC_CACHE_TTL")
 		os.Unsetenv("SEMANTIC_CACHE_THRESHOLD")
 		os.Unsetenv("SEMANTIC_CACHE_MAX_ENTRIES")
+		os.Unsetenv("AGENT_NODE_ID")
+		os.Unsetenv("AGENT_MAX_STEPS")
+		os.Unsetenv("AGENT_LOCK_TTL")
+		os.Unsetenv("AGENT_RUN_TTL")
 	}()
 
 	cfg := Load()
@@ -236,6 +256,18 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.SemanticCacheMaxEntries != 64 {
 		t.Errorf("expected SemanticCacheMaxEntries=64, got %d", cfg.SemanticCacheMaxEntries)
+	}
+	if cfg.AgentNodeID != "agent-api-test" {
+		t.Errorf("expected AgentNodeID override, got %s", cfg.AgentNodeID)
+	}
+	if cfg.AgentMaxSteps != 12 {
+		t.Errorf("expected AgentMaxSteps=12, got %d", cfg.AgentMaxSteps)
+	}
+	if cfg.AgentLockTTL != 15*time.Second {
+		t.Errorf("expected AgentLockTTL=15s, got %v", cfg.AgentLockTTL)
+	}
+	if cfg.AgentRunTTL != 2*time.Hour {
+		t.Errorf("expected AgentRunTTL=2h, got %v", cfg.AgentRunTTL)
 	}
 }
 
@@ -368,6 +400,30 @@ func TestValidate_RetrievalConfig(t *testing.T) {
 	cfg.SemanticCacheMaxEntries = 0
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for SemanticCacheMaxEntries < 1")
+	}
+
+	cfg = Load()
+	cfg.AgentNodeID = ""
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty AgentNodeID")
+	}
+
+	cfg = Load()
+	cfg.AgentMaxSteps = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for AgentMaxSteps < 1")
+	}
+
+	cfg = Load()
+	cfg.AgentLockTTL = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for AgentLockTTL <= 0")
+	}
+
+	cfg = Load()
+	cfg.AgentRunTTL = 0
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for AgentRunTTL <= 0")
 	}
 }
 

@@ -86,6 +86,12 @@ type Config struct {
 	SemanticCacheThreshold     float64
 	SemanticCacheMaxEntries    int
 
+	// Agent Orchestrator (Module 3)
+	AgentNodeID   string
+	AgentMaxSteps int
+	AgentLockTTL  time.Duration
+	AgentRunTTL   time.Duration
+
 	// Kafka
 	KafkaBrokers  string
 	KafkaTopic    string
@@ -196,6 +202,12 @@ func Load() Config {
 		SemanticCacheTTL:           EnvDuration("SEMANTIC_CACHE_TTL", 10*time.Minute),
 		SemanticCacheThreshold:     EnvFloat("SEMANTIC_CACHE_THRESHOLD", 0.92),
 		SemanticCacheMaxEntries:    EnvInt("SEMANTIC_CACHE_MAX_ENTRIES", 128),
+
+		// Agent Orchestrator
+		AgentNodeID:   EnvStr("AGENT_NODE_ID", "agent-api-1"),
+		AgentMaxSteps: EnvInt("AGENT_MAX_STEPS", 8),
+		AgentLockTTL:  EnvDuration("AGENT_LOCK_TTL", 30*time.Second),
+		AgentRunTTL:   EnvDuration("AGENT_RUN_TTL", 24*time.Hour),
 
 		// Kafka
 		KafkaBrokers:  EnvStr("KAFKA_BROKERS", "localhost:9092"),
@@ -310,6 +322,18 @@ func (c Config) Validate() error {
 	}
 	if c.SemanticCacheMaxEntries < 1 || c.SemanticCacheMaxEntries > 10000 {
 		return fmt.Errorf("SEMANTIC_CACHE_MAX_ENTRIES must be between 1 and 10000, got %d", c.SemanticCacheMaxEntries)
+	}
+	if strings.TrimSpace(c.AgentNodeID) == "" {
+		return fmt.Errorf("AGENT_NODE_ID is required")
+	}
+	if c.AgentMaxSteps < 1 || c.AgentMaxSteps > 64 {
+		return fmt.Errorf("AGENT_MAX_STEPS must be between 1 and 64, got %d", c.AgentMaxSteps)
+	}
+	if c.AgentLockTTL <= 0 {
+		return fmt.Errorf("AGENT_LOCK_TTL must be > 0, got %s", c.AgentLockTTL)
+	}
+	if c.AgentRunTTL <= 0 {
+		return fmt.Errorf("AGENT_RUN_TTL must be > 0, got %s", c.AgentRunTTL)
 	}
 	return nil
 }

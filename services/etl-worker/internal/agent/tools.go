@@ -26,6 +26,8 @@ type ToolInvocation struct {
 	StepIndex      int
 	TenantID       string
 	UserID         string
+	Role           string
+	Permissions    []string
 	ToolName       string
 	Arguments      map[string]interface{}
 	IdempotencyKey string
@@ -114,6 +116,8 @@ func (r *Registry) execute(ctx context.Context, actor Actor, runID string, stepI
 		StepIndex:      stepIndex,
 		TenantID:       actor.TenantID,
 		UserID:         actor.UserID,
+		Role:           actor.Role,
+		Permissions:    append([]string(nil), actor.Permissions...),
 		ToolName:       tool.def.Name,
 		Arguments:      args,
 		IdempotencyKey: idempotencyKey(runID, stepIndex, tool.def.Name),
@@ -133,6 +137,8 @@ func (r *Registry) compensate(ctx context.Context, actor Actor, runID string, st
 		StepIndex:      stepIndex,
 		TenantID:       actor.TenantID,
 		UserID:         actor.UserID,
+		Role:           actor.Role,
+		Permissions:    append([]string(nil), actor.Permissions...),
 		ToolName:       tool.def.Name,
 		Arguments:      args,
 		IdempotencyKey: idempotencyKey(runID, stepIndex, tool.def.Name),
