@@ -1,5 +1,23 @@
 # Backlog
 
+## 2026-07-04 - Module 3 External Approval and Audit
+
+Status: implemented
+
+Goal: replace request-local approval with durable, tenant-scoped approval records for side-effecting Agent tools.
+
+Plan:
+
+1. Add `ApprovalRequest` and `ApprovalStore` with in-memory and Redis-backed implementations.
+2. Use deterministic per-run-step approval ids so pending approval creation is idempotent.
+3. Create an approval record whenever an Agent run reaches `pending_approval`.
+4. Add `GET /v1/agent/runs/{id}/approvals`, `POST /v1/agent/runs/{id}/approve`, and `POST /v1/agent/runs/{id}/reject`.
+5. Require `agent:approve` for approve/reject while keeping approval listing tenant-scoped.
+6. Persist approval decisions with approver, decision time, and reason.
+7. Resume approved runs from the durable approval record so execution can recover after request interruption.
+8. Add rejection handling that marks the pending tool step and run as failed without executing the tool.
+9. Cover store isolation, approve, reject, tenant isolation, and approved-record resume behavior with tests.
+
 ## 2026-07-04 - Module 3 Task Status Tool
 
 Status: implemented

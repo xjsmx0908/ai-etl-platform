@@ -209,6 +209,72 @@ func TestOrchestrator_WaitsForApprovalThenResumesSameToolStep(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_RejectApprovalFailsPendingRun(t *testing.T) {
+	store := NewMemoryStore()
+	registry := NewRegistry()
+	calls := 0
+	err := registry.Register(ToolDefinition{
+		Name:                "refund_order",
+		RequiredPermissions: []string{"order:refund"},
+		RequiresApproval:    true,
+		SideEffect:          true,
+		Idempotent:          true,
+		Parameters: JSONSchema{
+			Type:     "object",
+			Required: []string{"order_id"},
+			Properties: map[string]SchemaProperty{
+				"order_id": {Type: "string"},
+			},
+		},
+	}, func(context.Context, ToolInvocation) (ToolResult, error) {
+		calls++
+		return ToolResult{Content: "refund accepted"}, nil
+	})
+	if err != nil {
+		t.Fatalf("register refund tool: %v", err)
+	}
+	planner := &sequencePlanner{decisions: []PlanDecision{
+		{Type: DecisionToolCall, ToolName: "refund_order", Arguments: json.RawMessage(`{"order_id":"ord-1"}`)},
+		{Type: DecisionFinal, Final: "refund completed"},
+	}}
+	orchestrator := newTestOrchestrator(t, store, registry, planner, 4, "node-a")
+	actor := Actor{TenantID: "tenant-a", UserID: "user-a", Permissions: []string{"order:refund"}}
+
+	run, err := orchestrator.Start(context.Background(), actor, "refund order")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	run, err = orchestrator.ExecuteNext(context.Background(), run.ID, actor)
+	if err != nil {
+		t.Fatalf("execute pending approval step: %v", err)
+	}
+	if run.State != StatePendingApproval {
+		t.Fatalf("expected pending approval, got %+v", run)
+	}
+
+	run, err = orchestrator.RejectApproval(context.Background(), run.ID, actor, "risk too high")
+	if err != nil {
+		t.Fatalf("reject approval: %v", err)
+	}
+	if run.State != StateFailed || !strings.Contains(run.Error, "risk too high") {
+		t.Fatalf("expected rejected failed run, got %+v", run)
+	}
+	if len(run.Steps) != 1 || run.Steps[0].State != StateFailed || !strings.Contains(run.Steps[0].Error, "approval rejected") {
+		t.Fatalf("expected failed pending step, got %+v", run.Steps)
+	}
+	if calls != 0 {
+		t.Fatalf("tool should not execute after rejection, got calls=%d", calls)
+	}
+
+	stored, err := store.LoadRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("load stored run: %v", err)
+	}
+	if stored.State != StateFailed {
+		t.Fatalf("expected stored failed run, got %+v", stored)
+	}
+}
+
 func TestOrchestrator_RecoversWaitingToolWithSameIdempotencyKey(t *testing.T) {
 	store := NewMemoryStore()
 	registry := NewRegistry()

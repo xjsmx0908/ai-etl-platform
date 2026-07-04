@@ -124,7 +124,34 @@ func TestHandleRunApproveResumesPendingTool(t *testing.T) {
 		t.Fatalf("tool should not execute before approval, got calls=%d", calls)
 	}
 
-	approveReq := authenticatedRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/approve", []byte(`{"tool_name":"publish_report"}`))
+	listReq := authenticatedRequest(http.MethodGet, "/v1/agent/runs/"+run.ID+"/approvals", nil)
+	listRR := httptest.NewRecorder()
+	svc.HandleRun(listRR, listReq)
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("expected approval list status %d, got %d body=%s", http.StatusOK, listRR.Code, listRR.Body.String())
+	}
+	var approvals []agent.ApprovalRequest
+	if err := json.NewDecoder(listRR.Body).Decode(&approvals); err != nil {
+		t.Fatalf("decode approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected one pending approval, got %+v", approvals)
+	}
+	if approvals[0].Status != agent.ApprovalPending || approvals[0].ToolName != "publish_report" {
+		t.Fatalf("unexpected pending approval: %+v", approvals[0])
+	}
+
+	userApproveReq := authenticatedRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/approve", []byte(`{"tool_name":"publish_report"}`))
+	userApproveRR := httptest.NewRecorder()
+	svc.HandleRun(userApproveRR, userApproveReq)
+	if userApproveRR.Code != http.StatusForbidden {
+		t.Fatalf("expected user approve status %d, got %d body=%s", http.StatusForbidden, userApproveRR.Code, userApproveRR.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("tool should not execute after forbidden approval, got calls=%d", calls)
+	}
+
+	approveReq := adminRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/approve", []byte(`{"approval_id":"`+approvals[0].ID+`","tool_name":"publish_report","reason":"release approved"}`))
 	approveRR := httptest.NewRecorder()
 	svc.HandleRun(approveRR, approveReq)
 	if approveRR.Code != http.StatusOK {
@@ -138,6 +165,148 @@ func TestHandleRunApproveResumesPendingTool(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected one tool execution after approval, got %d", calls)
+	}
+
+	decided, err := svc.approvalStore.LoadApproval(context.Background(), "tenant-a", approvals[0].ID)
+	if err != nil {
+		t.Fatalf("load decided approval: %v", err)
+	}
+	if decided.Status != agent.ApprovalApproved || decided.DecidedBy != "admin-a" || decided.Reason != "release approved" {
+		t.Fatalf("expected approved audit record, got %+v", decided)
+	}
+}
+
+func TestHandleRunRejectFailsPendingToolAndAuditsDecision(t *testing.T) {
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	calls := 0
+	if err := registry.Register(agent.ToolDefinition{
+		Name:                "publish_report",
+		RequiredPermissions: []string{"agent"},
+		RequiresApproval:    true,
+		SideEffect:          true,
+		Idempotent:          true,
+		Parameters: agent.JSONSchema{
+			Type: "object",
+			Properties: map[string]agent.SchemaProperty{
+				"title": {Type: "string"},
+			},
+		},
+	}, func(context.Context, agent.ToolInvocation) (agent.ToolResult, error) {
+		calls++
+		return agent.ToolResult{Content: "report published"}, nil
+	}); err != nil {
+		t.Fatalf("register publish_report: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, &approvalPlanner{}, 4)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"发布报表"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode pending run: %v", err)
+	}
+	approvals, err := svc.approvalStore.ListRunApprovals(context.Background(), "tenant-a", run.ID)
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected one approval, got %+v", approvals)
+	}
+
+	otherTenantReq := authenticatedRequestAs(http.MethodGet, "/v1/agent/runs/"+run.ID+"/approvals", nil, "tenant-b", "user-b", "user", []string{"agent", "query"})
+	otherTenantRR := httptest.NewRecorder()
+	svc.HandleRun(otherTenantRR, otherTenantReq)
+	if otherTenantRR.Code != http.StatusNotFound {
+		t.Fatalf("expected tenant isolation status %d, got %d body=%s", http.StatusNotFound, otherTenantRR.Code, otherTenantRR.Body.String())
+	}
+
+	rejectReq := adminRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/reject", []byte(`{"approval_id":"`+approvals[0].ID+`","reason":"missing release window"}`))
+	rejectRR := httptest.NewRecorder()
+	svc.HandleRun(rejectRR, rejectReq)
+	if rejectRR.Code != http.StatusOK {
+		t.Fatalf("expected reject status %d, got %d body=%s", http.StatusOK, rejectRR.Code, rejectRR.Body.String())
+	}
+	if err := json.NewDecoder(rejectRR.Body).Decode(&run); err != nil {
+		t.Fatalf("decode rejected run: %v", err)
+	}
+	if run.State != agent.StateFailed {
+		t.Fatalf("expected failed run after rejection, got %+v", run)
+	}
+	if len(run.Steps) != 1 || run.Steps[0].State != agent.StateFailed {
+		t.Fatalf("expected failed pending step, got %+v", run.Steps)
+	}
+	if calls != 0 {
+		t.Fatalf("tool should not execute after rejection, got %d", calls)
+	}
+	decided, err := svc.approvalStore.LoadApproval(context.Background(), "tenant-a", approvals[0].ID)
+	if err != nil {
+		t.Fatalf("load rejected approval: %v", err)
+	}
+	if decided.Status != agent.ApprovalRejected || decided.DecidedBy != "admin-a" || decided.Reason != "missing release window" {
+		t.Fatalf("expected rejected audit record, got %+v", decided)
+	}
+}
+
+func TestHandleRunResumeUsesApprovedAuditRecord(t *testing.T) {
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	calls := 0
+	if err := registry.Register(agent.ToolDefinition{
+		Name:                "publish_report",
+		RequiredPermissions: []string{"agent"},
+		RequiresApproval:    true,
+		SideEffect:          true,
+		Idempotent:          true,
+		Parameters: agent.JSONSchema{
+			Type: "object",
+			Properties: map[string]agent.SchemaProperty{
+				"title": {Type: "string"},
+			},
+		},
+	}, func(context.Context, agent.ToolInvocation) (agent.ToolResult, error) {
+		calls++
+		return agent.ToolResult{Content: "report published"}, nil
+	}); err != nil {
+		t.Fatalf("register publish_report: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, &approvalPlanner{}, 4)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"发布报表"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected create status %d, got %d body=%s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode pending run: %v", err)
+	}
+	approvalID := agent.ApprovalIDForStep(run.ID, 1)
+	if _, err := svc.approvalStore.DecideApproval(context.Background(), "tenant-a", approvalID, agent.ApprovalApproved, "admin-a", "pre-approved", time.Now().UTC()); err != nil {
+		t.Fatalf("pre-approve audit record: %v", err)
+	}
+
+	resumeReq := authenticatedRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/resume", nil)
+	resumeRR := httptest.NewRecorder()
+	svc.HandleRun(resumeRR, resumeReq)
+	if resumeRR.Code != http.StatusOK {
+		t.Fatalf("expected resume status %d, got %d body=%s", http.StatusOK, resumeRR.Code, resumeRR.Body.String())
+	}
+	if err := json.NewDecoder(resumeRR.Body).Decode(&run); err != nil {
+		t.Fatalf("decode resumed run: %v", err)
+	}
+	if run.State != agent.StateCompleted || run.Final != "report published" {
+		t.Fatalf("expected resume to use approved audit record, got %+v", run)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one tool execution after resume, got %d", calls)
 	}
 }
 
@@ -255,6 +424,14 @@ func (p taskStatusPlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDec
 }
 
 func authenticatedRequest(method, target string, body []byte) *http.Request {
+	return authenticatedRequestAs(method, target, body, "tenant-a", "user-a", "user", []string{"agent", "query"})
+}
+
+func adminRequest(method, target string, body []byte) *http.Request {
+	return authenticatedRequestAs(method, target, body, "tenant-a", "admin-a", "admin", []string{"agent", "query"})
+}
+
+func authenticatedRequestAs(method, target string, body []byte, tenantID, userID, role string, scopes []string) *http.Request {
 	var reader *bytes.Reader
 	if body == nil {
 		reader = bytes.NewReader(nil)
@@ -262,10 +439,10 @@ func authenticatedRequest(method, target string, body []byte) *http.Request {
 		reader = bytes.NewReader(body)
 	}
 	req := httptest.NewRequest(method, target, reader)
-	ctx := context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a")
-	ctx = context.WithValue(ctx, auth.CtxUserID, "user-a")
-	ctx = context.WithValue(ctx, auth.CtxPermission, "user")
-	ctx = context.WithValue(ctx, auth.CtxScopes, []string{"agent", "query"})
+	ctx := context.WithValue(req.Context(), auth.CtxTenantID, tenantID)
+	ctx = context.WithValue(ctx, auth.CtxUserID, userID)
+	ctx = context.WithValue(ctx, auth.CtxPermission, role)
+	ctx = context.WithValue(ctx, auth.CtxScopes, scopes)
 	return req.WithContext(ctx)
 }
 

@@ -30,9 +30,10 @@ type QueryService interface {
 
 // Service owns the HTTP adapter for Agent runs.
 type Service struct {
-	orchestrator *agent.Orchestrator
-	store        agent.Store
-	closer       io.Closer
+	orchestrator  *agent.Orchestrator
+	store         agent.Store
+	approvalStore agent.ApprovalStore
+	closers       []io.Closer
 }
 
 type createRunRequest struct {
@@ -41,7 +42,15 @@ type createRunRequest struct {
 }
 
 type approveRunRequest struct {
-	ToolName string `json:"tool_name,omitempty"`
+	ApprovalID string `json:"approval_id,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+type rejectRunRequest struct {
+	ApprovalID string `json:"approval_id,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // NewService wires the Agent API with the default store, lock manager, planner, and tools.
@@ -54,16 +63,26 @@ func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskSt
 	}
 
 	var store agent.Store
-	var closer io.Closer
+	var approvalStore agent.ApprovalStore
+	var closers []io.Closer
 	if cfg.IsDev() {
 		store = agent.NewMemoryStore()
+		approvalStore = agent.NewMemoryApprovalStore()
 	} else {
 		redisStore, err := agent.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.AgentRunTTL)
 		if err != nil {
 			return nil, err
 		}
 		store = redisStore
-		closer = redisStore
+		closers = append(closers, redisStore)
+
+		redisApprovalStore, err := agent.NewRedisApprovalStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.AgentRunTTL)
+		if err != nil {
+			_ = redisStore.Close()
+			return nil, err
+		}
+		approvalStore = redisApprovalStore
+		closers = append(closers, redisApprovalStore)
 	}
 
 	registry := agent.NewRegistry()
@@ -86,11 +105,18 @@ func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskSt
 	if err != nil {
 		return nil, err
 	}
-	return &Service{orchestrator: orchestrator, store: store, closer: closer}, nil
+	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, closers: closers}, nil
 }
 
 func newServiceWithComponents(orchestrator *agent.Orchestrator, store agent.Store) *Service {
-	return &Service{orchestrator: orchestrator, store: store}
+	return newServiceWithComponentsAndApprovalStore(orchestrator, store, agent.NewMemoryApprovalStore())
+}
+
+func newServiceWithComponentsAndApprovalStore(orchestrator *agent.Orchestrator, store agent.Store, approvalStore agent.ApprovalStore) *Service {
+	if approvalStore == nil {
+		approvalStore = agent.NewMemoryApprovalStore()
+	}
+	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore}
 }
 
 func newPlanner(cfg config.Config, registry *agent.Registry) (agent.Planner, error) {
@@ -113,10 +139,16 @@ func newPlanner(cfg config.Config, registry *agent.Registry) (agent.Planner, err
 
 // Close releases resources owned by the service.
 func (s *Service) Close() error {
-	if s.closer == nil {
-		return nil
+	var firstErr error
+	for _, closer := range s.closers {
+		if closer == nil {
+			continue
+		}
+		if err := closer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return s.closer.Close()
+	return firstErr
 }
 
 // HandleRuns handles POST /v1/agent/runs.
@@ -158,6 +190,10 @@ func (s *Service) HandleRuns(w http.ResponseWriter, r *http.Request) {
 			writeAgentError(w, err)
 			return
 		}
+		if err := s.ensurePendingApproval(r.Context(), run); err != nil {
+			writeAgentError(w, err)
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, run)
@@ -194,24 +230,67 @@ func (s *Service) HandleRun(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		current, err := s.loadTenantRun(r.Context(), runID, actor)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		actor, err = s.actorWithApprovedRunTools(r.Context(), current, actor)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
 		run, err := s.orchestrator.RunToCompletion(r.Context(), runID, actor)
 		if err != nil {
 			writeAgentError(w, err)
 			return
 		}
+		if err := s.ensurePendingApproval(r.Context(), run); err != nil {
+			writeAgentError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, run)
+	case "approvals":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleApprovals(w, r, runID, actor)
 	case "approve":
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		s.handleApprove(w, r, runID, actor)
+	case "reject":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleReject(w, r, runID, actor)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
+func (s *Service) handleApprovals(w http.ResponseWriter, r *http.Request, runID string, actor agent.Actor) {
+	if _, err := s.loadTenantRun(r.Context(), runID, actor); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	approvals, err := s.approvalStore.ListRunApprovals(r.Context(), actor.TenantID, runID)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, approvals)
+}
+
 func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID string, actor agent.Actor) {
+	if !hasPermission(actor, "agent:approve") {
+		http.Error(w, "missing approval permission", http.StatusForbidden)
+		return
+	}
 	var req approveRunRequest
 	if err := decodeOptionalJSON(r.Body, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -227,14 +306,37 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID st
 		http.Error(w, "run is not pending approval", http.StatusConflict)
 		return
 	}
-	toolName, err := pendingToolName(run)
+	if err := s.ensurePendingApproval(r.Context(), run); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	approval, toolName, err := s.currentApproval(r.Context(), actor.TenantID, run, req.ApprovalID, req.ToolName)
 	if err != nil {
 		writeAgentError(w, err)
 		return
 	}
-	if strings.TrimSpace(req.ToolName) != "" && !strings.EqualFold(req.ToolName, toolName) {
-		http.Error(w, "approval tool does not match pending tool", http.StatusConflict)
+	if approval.Status == agent.ApprovalRejected {
+		http.Error(w, "approval is already rejected", http.StatusConflict)
 		return
+	}
+	if approval.Status != agent.ApprovalPending && approval.Status != agent.ApprovalApproved {
+		http.Error(w, "approval status is invalid", http.StatusConflict)
+		return
+	}
+	if approval.Status == agent.ApprovalPending {
+		_, err = s.approvalStore.DecideApproval(
+			r.Context(),
+			actor.TenantID,
+			approval.ID,
+			agent.ApprovalApproved,
+			actor.UserID,
+			strings.TrimSpace(req.Reason),
+			time.Now().UTC(),
+		)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
 	}
 
 	actor.ApprovedTools = append(actor.ApprovedTools, toolName)
@@ -243,7 +345,172 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID st
 		writeAgentError(w, err)
 		return
 	}
+	if err := s.ensurePendingApproval(r.Context(), run); err != nil {
+		writeAgentError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Service) handleReject(w http.ResponseWriter, r *http.Request, runID string, actor agent.Actor) {
+	if !hasPermission(actor, "agent:approve") {
+		http.Error(w, "missing approval permission", http.StatusForbidden)
+		return
+	}
+	var req rejectRunRequest
+	if err := decodeOptionalJSON(r.Body, &req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	run, err := s.loadTenantRun(r.Context(), runID, actor)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	if run.State != agent.StatePendingApproval {
+		http.Error(w, "run is not pending approval", http.StatusConflict)
+		return
+	}
+	if err := s.ensurePendingApproval(r.Context(), run); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	approval, _, err := s.currentApproval(r.Context(), actor.TenantID, run, req.ApprovalID, req.ToolName)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	if approval.Status != agent.ApprovalPending {
+		http.Error(w, "approval is not pending", http.StatusConflict)
+		return
+	}
+	if _, err := s.approvalStore.DecideApproval(
+		r.Context(),
+		actor.TenantID,
+		approval.ID,
+		agent.ApprovalRejected,
+		actor.UserID,
+		strings.TrimSpace(req.Reason),
+		time.Now().UTC(),
+	); err != nil {
+		writeAgentError(w, err)
+		return
+	}
+
+	run, err = s.orchestrator.RejectApproval(r.Context(), runID, actor, req.Reason)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Service) ensurePendingApproval(ctx context.Context, run agent.Run) error {
+	if run.State != agent.StatePendingApproval {
+		return nil
+	}
+	step, err := pendingToolStep(run)
+	if err != nil {
+		return err
+	}
+	approvals, err := s.approvalStore.ListRunApprovals(ctx, run.TenantID, run.ID)
+	if err != nil {
+		return err
+	}
+	for _, approval := range approvals {
+		if approval.StepIndex == step.Index && strings.EqualFold(approval.ToolName, step.ToolName) {
+			return nil
+		}
+	}
+	err = s.approvalStore.CreateApproval(ctx, agent.ApprovalRequest{
+		ID:            agent.ApprovalIDForStep(run.ID, step.Index),
+		RunID:         run.ID,
+		TenantID:      run.TenantID,
+		StepIndex:     step.Index,
+		ToolName:      step.ToolName,
+		ToolArguments: append([]byte(nil), step.ToolArguments...),
+		Status:        agent.ApprovalPending,
+		RequestedBy:   run.UserID,
+		RequestedAt:   time.Now().UTC(),
+	})
+	if err != nil && strings.Contains(err.Error(), "already exists") {
+		return nil
+	}
+	return err
+}
+
+func (s *Service) actorWithApprovedRunTools(ctx context.Context, run agent.Run, actor agent.Actor) (agent.Actor, error) {
+	if run.State != agent.StatePendingApproval {
+		return actor, nil
+	}
+	step, err := pendingToolStep(run)
+	if err != nil {
+		return actor, err
+	}
+	approvals, err := s.approvalStore.ListRunApprovals(ctx, actor.TenantID, run.ID)
+	if err != nil {
+		return actor, err
+	}
+	for _, approval := range approvals {
+		if approval.Status == agent.ApprovalApproved &&
+			approval.StepIndex == step.Index &&
+			strings.EqualFold(approval.ToolName, step.ToolName) &&
+			!containsFold(actor.ApprovedTools, step.ToolName) {
+			actor.ApprovedTools = append(actor.ApprovedTools, step.ToolName)
+		}
+	}
+	return actor, nil
+}
+
+func (s *Service) currentApproval(ctx context.Context, tenantID string, run agent.Run, approvalID, toolName string) (agent.ApprovalRequest, string, error) {
+	step, err := pendingToolStep(run)
+	if err != nil {
+		return agent.ApprovalRequest{}, "", err
+	}
+	if strings.TrimSpace(toolName) != "" && !strings.EqualFold(toolName, step.ToolName) {
+		return agent.ApprovalRequest{}, "", fmt.Errorf("approval tool does not match pending tool")
+	}
+	if strings.TrimSpace(approvalID) != "" {
+		approval, err := s.approvalStore.LoadApproval(ctx, tenantID, strings.TrimSpace(approvalID))
+		if err != nil {
+			return agent.ApprovalRequest{}, "", err
+		}
+		if err := validateCurrentApproval(approval, run, step); err != nil {
+			return agent.ApprovalRequest{}, "", err
+		}
+		return approval, step.ToolName, nil
+	}
+
+	if approval, err := s.approvalStore.LoadApproval(ctx, tenantID, agent.ApprovalIDForStep(run.ID, step.Index)); err == nil {
+		if err := validateCurrentApproval(approval, run, step); err != nil {
+			return agent.ApprovalRequest{}, "", err
+		}
+		return approval, step.ToolName, nil
+	} else if !strings.Contains(err.Error(), "not found") {
+		return agent.ApprovalRequest{}, "", err
+	}
+
+	approvals, err := s.approvalStore.ListRunApprovals(ctx, tenantID, run.ID)
+	if err != nil {
+		return agent.ApprovalRequest{}, "", err
+	}
+	for _, approval := range approvals {
+		if approval.StepIndex == step.Index && strings.EqualFold(approval.ToolName, step.ToolName) {
+			return approval, step.ToolName, nil
+		}
+	}
+	return agent.ApprovalRequest{}, "", fmt.Errorf("approval for pending step not found")
+}
+
+func validateCurrentApproval(approval agent.ApprovalRequest, run agent.Run, step agent.Step) error {
+	if approval.TenantID != run.TenantID || approval.RunID != run.ID {
+		return fmt.Errorf("approval does not belong to run")
+	}
+	if approval.StepIndex != step.Index || !strings.EqualFold(approval.ToolName, step.ToolName) {
+		return fmt.Errorf("approval tool does not match pending tool")
+	}
+	return nil
 }
 
 func (s *Service) loadTenantRun(ctx context.Context, runID string, actor agent.Actor) (agent.Run, error) {
@@ -415,6 +682,19 @@ func agentPermissions(role string, scopes []string) []string {
 	return out
 }
 
+func hasPermission(actor agent.Actor, permission string) bool {
+	return containsFold(actor.Permissions, permission)
+}
+
+func containsFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
+}
+
 func parseRunPath(path string) (runID string, action string, ok bool) {
 	const prefix = "/v1/agent/runs/"
 	if !strings.HasPrefix(path, prefix) {
@@ -431,14 +711,14 @@ func parseRunPath(path string) (runID string, action string, ok bool) {
 	return "", "", false
 }
 
-func pendingToolName(run agent.Run) (string, error) {
+func pendingToolStep(run agent.Run) (agent.Step, error) {
 	for i := len(run.Steps) - 1; i >= 0; i-- {
 		step := run.Steps[i]
 		if step.Type == agent.StepToolCall && step.State == agent.StatePendingApproval {
-			return step.ToolName, nil
+			return step, nil
 		}
 	}
-	return "", fmt.Errorf("pending approval tool step not found")
+	return agent.Step{}, fmt.Errorf("pending approval tool step not found")
 }
 
 func decodeOptionalJSON(body io.Reader, dst interface{}) error {
@@ -462,6 +742,12 @@ func writeAgentError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusForbidden)
 	case strings.Contains(err.Error(), "not found"):
 		http.Error(w, "not found", http.StatusNotFound)
+	case strings.Contains(err.Error(), "approval") &&
+		(strings.Contains(err.Error(), "pending") ||
+			strings.Contains(err.Error(), "already") ||
+			strings.Contains(err.Error(), "does not belong") ||
+			strings.Contains(err.Error(), "does not match")):
+		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

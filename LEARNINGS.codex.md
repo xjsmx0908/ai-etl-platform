@@ -1,5 +1,15 @@
 # LEARNINGS.codex.md
 
+## 2026-07-04T17:17:26+08:00 - Module 3 External Approval and Audit
+
+Perceive: the Agent API had a `/approve` endpoint, but approval lived only in the current HTTP request by appending a tool name to `ApprovedTools`. That is not durable enough for enterprise side-effecting tools.
+
+Reason: approval should be its own tenant-scoped audit record with pending/approved/rejected states. The state machine should continue from a durable approved record, and rejection should fail the pending tool step without executing the side effect.
+
+Act: added memory and Redis approval stores, idempotent per-step approval ids, approval listing, approve/reject endpoints, `agent:approve` enforcement, rejection state transitions, and resume-from-approved-audit behavior.
+
+Refine: verified `go vet ./...`, `go test ./...`, `docker compose config --quiet`, and `git diff --check`. Tests cover approval store tenant isolation, API approve/reject audit records, non-approver 403, cross-tenant not-found, and resume from persisted approval.
+
 ## 2026-07-04T15:56:45+08:00 - Module 3 Task Status Tool
 
 Perceive: adding a second Agent tool should not be a fake wrapper. The platform did not have a shared task-status table; upload responses only returned a transient processing status, while the worker used checkpoint and DLQ data internally.

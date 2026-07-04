@@ -177,6 +177,43 @@ func (o *Orchestrator) RunToCompletion(ctx context.Context, runID string, actor 
 	}
 }
 
+func (o *Orchestrator) RejectApproval(ctx context.Context, runID string, actor Actor, reason string) (Run, error) {
+	lease, err := o.locks.Acquire(ctx, runID, o.nodeID, o.lockTTL)
+	if err != nil {
+		return Run{}, err
+	}
+	defer o.locks.Release(context.Background(), lease)
+
+	run, err := o.store.LoadRun(ctx, runID)
+	if err != nil {
+		return Run{}, err
+	}
+	if run.TenantID != actor.TenantID {
+		return Run{}, fmt.Errorf("run %q belongs to a different tenant", runID)
+	}
+	if run.State != StatePendingApproval {
+		return Run{}, fmt.Errorf("run %q is not pending approval", runID)
+	}
+	last := pendingApprovalStepIndex(run)
+	if last < 0 {
+		return o.failRun(ctx, run, lease, "pending_approval_without_tool_call_step")
+	}
+	now := o.now().UTC()
+	message := "approval rejected"
+	reason = strings.TrimSpace(reason)
+	if reason != "" {
+		message += ": " + reason
+	}
+	run.Steps[last].State = StateFailed
+	run.Steps[last].Error = message
+	run.Steps[last].CompletedAt = now
+	run.Steps[last].Duration = now.Sub(run.Steps[last].StartedAt)
+	run.State = StateFailed
+	run.Error = message
+	run.UpdatedAt = now
+	return o.saveRun(ctx, run, lease)
+}
+
 func (o *Orchestrator) executeToolDecision(ctx context.Context, run Run, actor Actor, lease LockLease, decision PlanDecision) (Run, error) {
 	start := o.now().UTC()
 	stepIndex := len(run.Steps) + 1
@@ -200,6 +237,15 @@ func (o *Orchestrator) executeToolDecision(ctx context.Context, run Run, actor A
 	}
 
 	return o.executePersistedTool(ctx, run, actor, lease, len(run.Steps)-1)
+}
+
+func pendingApprovalStepIndex(run Run) int {
+	for i := len(run.Steps) - 1; i >= 0; i-- {
+		if run.Steps[i].Type == StepToolCall && run.Steps[i].State == StatePendingApproval {
+			return i
+		}
+	}
+	return -1
 }
 
 func (o *Orchestrator) recoverWaitingTool(ctx context.Context, run Run, actor Actor, lease LockLease) (Run, error) {
