@@ -5,6 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"ai-etl-pipeline/internal/agent"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -42,6 +45,34 @@ func TestSetCircuitStateRecordsGauge(t *testing.T) {
 	got := gaugeValue(t, m.CircuitState.WithLabelValues("llm-api"))
 	if got != 1 {
 		t.Fatalf("expected circuit state 1, got %v", got)
+	}
+}
+
+func TestAgentMetricsRecordLifecycleEvents(t *testing.T) {
+	m := New("test_ai_etl_agent")
+
+	m.RecordAgentRunStarted(true)
+	m.RecordAgentRunFinished(agent.StateFailed, "run_timeout_exceeded", 2*time.Second)
+	m.RecordAgentToolStep("rag_query", agent.StateCompleted, 25*time.Millisecond)
+	m.RecordAgentApprovalDecision(agent.ApprovalRejected, "publish_report")
+
+	if got := counterValue(t, m.AgentRunsStarted.WithLabelValues("true")); got != 1 {
+		t.Fatalf("expected one started run, got %v", got)
+	}
+	if got := counterValue(t, m.AgentRunCompletions.WithLabelValues(string(agent.StateFailed), "run_timeout_exceeded")); got != 1 {
+		t.Fatalf("expected one failed run completion, got %v", got)
+	}
+	if got := histogramCount(t, m.AgentRunDuration.WithLabelValues(string(agent.StateFailed), "run_timeout_exceeded").(prometheus.Metric)); got != 1 {
+		t.Fatalf("expected one run duration sample, got %v", got)
+	}
+	if got := counterValue(t, m.AgentToolSteps.WithLabelValues("rag_query", string(agent.StateCompleted))); got != 1 {
+		t.Fatalf("expected one completed tool step, got %v", got)
+	}
+	if got := histogramCount(t, m.AgentToolStepDuration.WithLabelValues("rag_query", string(agent.StateCompleted)).(prometheus.Metric)); got != 1 {
+		t.Fatalf("expected one tool step duration sample, got %v", got)
+	}
+	if got := counterValue(t, m.AgentApprovalDecisions.WithLabelValues(string(agent.ApprovalRejected), "publish_report")); got != 1 {
+		t.Fatalf("expected one rejected approval decision, got %v", got)
 	}
 }
 
@@ -90,4 +121,17 @@ func gaugeValue(t *testing.T, metric prometheus.Metric) float64 {
 		t.Fatalf("expected gauge metric")
 	}
 	return out.Gauge.GetValue()
+}
+
+func counterValue(t *testing.T, metric prometheus.Metric) float64 {
+	t.Helper()
+
+	var out dto.Metric
+	if err := metric.Write(&out); err != nil {
+		t.Fatalf("write metric: %v", err)
+	}
+	if out.Counter == nil {
+		t.Fatalf("expected counter metric")
+	}
+	return out.Counter.GetValue()
 }

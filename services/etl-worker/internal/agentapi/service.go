@@ -28,11 +28,20 @@ type QueryService interface {
 	Ask(ctx context.Context, req query.Request, access query.AccessContext) (query.Response, error)
 }
 
+// Observer receives low-cardinality Agent lifecycle events for metrics and audit adapters.
+type Observer interface {
+	RecordAgentRunStarted(autoExecute bool)
+	RecordAgentRunFinished(state agent.RunState, errorType string, duration time.Duration)
+	RecordAgentToolStep(toolName string, state agent.RunState, duration time.Duration)
+	RecordAgentApprovalDecision(decision agent.ApprovalStatus, toolName string)
+}
+
 // Service owns the HTTP adapter for Agent runs.
 type Service struct {
 	orchestrator  *agent.Orchestrator
 	store         agent.Store
 	approvalStore agent.ApprovalStore
+	observer      Observer
 	closers       []io.Closer
 }
 
@@ -59,6 +68,11 @@ type cancelRunRequest struct {
 
 // NewService wires the Agent API with the default store, lock manager, planner, and tools.
 func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskStatusStore) (*Service, error) {
+	return NewServiceWithObserver(cfg, qs, taskStatusStore, nil)
+}
+
+// NewServiceWithObserver wires the Agent API and emits lifecycle events to observer when provided.
+func NewServiceWithObserver(cfg config.Config, qs QueryService, taskStatusStore model.TaskStatusStore, observer Observer) (*Service, error) {
 	if qs == nil {
 		return nil, fmt.Errorf("query service is required")
 	}
@@ -122,7 +136,7 @@ func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskSt
 		closeAll(closers)
 		return nil, err
 	}
-	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, closers: closers}, nil
+	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, observer: observerOrNoop(observer), closers: closers}, nil
 }
 
 func newServiceWithComponents(orchestrator *agent.Orchestrator, store agent.Store) *Service {
@@ -130,10 +144,14 @@ func newServiceWithComponents(orchestrator *agent.Orchestrator, store agent.Stor
 }
 
 func newServiceWithComponentsAndApprovalStore(orchestrator *agent.Orchestrator, store agent.Store, approvalStore agent.ApprovalStore) *Service {
+	return newServiceWithComponentsAndObserver(orchestrator, store, approvalStore, nil)
+}
+
+func newServiceWithComponentsAndObserver(orchestrator *agent.Orchestrator, store agent.Store, approvalStore agent.ApprovalStore, observer Observer) *Service {
 	if approvalStore == nil {
 		approvalStore = agent.NewMemoryApprovalStore()
 	}
-	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore}
+	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, observer: observerOrNoop(observer)}
 }
 
 func newPlanner(cfg config.Config, registry *agent.Registry) (agent.Planner, error) {
@@ -205,6 +223,8 @@ func (s *Service) HandleRuns(w http.ResponseWriter, r *http.Request) {
 	if req.AutoExecute != nil {
 		autoExecute = *req.AutoExecute
 	}
+	s.observer.RecordAgentRunStarted(autoExecute)
+	previous := run
 	if autoExecute {
 		run, err = s.orchestrator.RunToCompletion(r.Context(), run.ID, actor)
 		if err != nil {
@@ -215,6 +235,7 @@ func (s *Service) HandleRuns(w http.ResponseWriter, r *http.Request) {
 			writeAgentError(w, err)
 			return
 		}
+		s.observeRunChange(previous, run)
 	}
 
 	writeJSON(w, http.StatusCreated, run)
@@ -278,6 +299,7 @@ func (s *Service) HandleRun(w http.ResponseWriter, r *http.Request) {
 			writeAgentError(w, err)
 			return
 		}
+		s.observeRunChange(current, run)
 		writeJSON(w, http.StatusOK, run)
 	case "approvals":
 		if r.Method != http.MethodGet {
@@ -347,6 +369,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID st
 			writeAgentError(w, err)
 			return
 		}
+		s.observeRunChange(previous, run)
 		http.Error(w, "run is not pending approval", http.StatusConflict)
 		return
 	}
@@ -368,7 +391,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID st
 		return
 	}
 	if approval.Status == agent.ApprovalPending {
-		_, err = s.approvalStore.DecideApproval(
+		approval, err = s.approvalStore.DecideApproval(
 			r.Context(),
 			actor.TenantID,
 			approval.ID,
@@ -381,9 +404,11 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID st
 			writeAgentError(w, err)
 			return
 		}
+		s.observer.RecordAgentApprovalDecision(approval.Status, approval.ToolName)
 	}
 
 	actor.ApprovedTools = append(actor.ApprovedTools, toolName)
+	previous = run
 	run, err = s.orchestrator.RunToCompletion(r.Context(), runID, actor)
 	if err != nil {
 		writeAgentError(w, err)
@@ -393,6 +418,7 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID st
 		writeAgentError(w, err)
 		return
 	}
+	s.observeRunChange(previous, run)
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -422,6 +448,7 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request, runID str
 			writeAgentError(w, err)
 			return
 		}
+		s.observeRunChange(previous, run)
 		http.Error(w, "run is not pending approval", http.StatusConflict)
 		return
 	}
@@ -438,7 +465,7 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request, runID str
 		http.Error(w, "approval is not pending", http.StatusConflict)
 		return
 	}
-	if _, err := s.approvalStore.DecideApproval(
+	approval, err = s.approvalStore.DecideApproval(
 		r.Context(),
 		actor.TenantID,
 		approval.ID,
@@ -446,16 +473,20 @@ func (s *Service) handleReject(w http.ResponseWriter, r *http.Request, runID str
 		actor.UserID,
 		strings.TrimSpace(req.Reason),
 		time.Now().UTC(),
-	); err != nil {
+	)
+	if err != nil {
 		writeAgentError(w, err)
 		return
 	}
+	s.observer.RecordAgentApprovalDecision(approval.Status, approval.ToolName)
 
+	previous = run
 	run, err = s.orchestrator.RejectApproval(r.Context(), runID, actor, req.Reason)
 	if err != nil {
 		writeAgentError(w, err)
 		return
 	}
+	s.observeRunChange(previous, run)
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -479,6 +510,7 @@ func (s *Service) handleCancel(w http.ResponseWriter, r *http.Request, runID str
 		writeAgentError(w, err)
 		return
 	}
+	s.observeRunChange(previous, current)
 	if agentTerminalState(current.State) {
 		http.Error(w, "terminal run cannot be cancelled", http.StatusConflict)
 		return
@@ -492,6 +524,7 @@ func (s *Service) handleCancel(w http.ResponseWriter, r *http.Request, runID str
 		writeAgentError(w, err)
 		return
 	}
+	s.observeRunChange(current, run)
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -512,8 +545,12 @@ func (s *Service) rejectPendingApprovalAfterTimeout(ctx context.Context, previou
 	if approval.Status != agent.ApprovalPending {
 		return nil
 	}
-	_, err = s.approvalStore.DecideApproval(ctx, previousRun.TenantID, approval.ID, agent.ApprovalRejected, "system", currentRun.Error, time.Now().UTC())
-	return err
+	approval, err = s.approvalStore.DecideApproval(ctx, previousRun.TenantID, approval.ID, agent.ApprovalRejected, "system", currentRun.Error, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	s.observer.RecordAgentApprovalDecision(approval.Status, approval.ToolName)
+	return nil
 }
 
 func (s *Service) rejectPendingApprovalAfterCancel(ctx context.Context, run agent.Run, actor agent.Actor, reason string) error {
@@ -534,8 +571,12 @@ func (s *Service) rejectPendingApprovalAfterCancel(ctx context.Context, run agen
 	if reason == "" {
 		reason = "run cancelled"
 	}
-	_, err = s.approvalStore.DecideApproval(ctx, actor.TenantID, approval.ID, agent.ApprovalRejected, actor.UserID, reason, time.Now().UTC())
-	return err
+	approval, err = s.approvalStore.DecideApproval(ctx, actor.TenantID, approval.ID, agent.ApprovalRejected, actor.UserID, reason, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	s.observer.RecordAgentApprovalDecision(approval.Status, approval.ToolName)
+	return nil
 }
 
 func (s *Service) ensurePendingApproval(ctx context.Context, run agent.Run) error {
@@ -766,6 +807,85 @@ func (RulePlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecision, e
 		Thought: "use the retrieved answer as the final response",
 		Final:   last.ToolResult.Content,
 	}, nil
+}
+
+func observerOrNoop(observer Observer) Observer {
+	if observer == nil {
+		return noopObserver{}
+	}
+	return observer
+}
+
+type noopObserver struct{}
+
+func (noopObserver) RecordAgentRunStarted(bool) {}
+
+func (noopObserver) RecordAgentRunFinished(agent.RunState, string, time.Duration) {}
+
+func (noopObserver) RecordAgentToolStep(string, agent.RunState, time.Duration) {}
+
+func (noopObserver) RecordAgentApprovalDecision(agent.ApprovalStatus, string) {}
+
+func (s *Service) observeRunChange(previous, current agent.Run) {
+	previousStepStates := make(map[int]agent.RunState, len(previous.Steps))
+	for _, step := range previous.Steps {
+		previousStepStates[step.Index] = step.State
+	}
+	for _, step := range current.Steps {
+		if step.Type != agent.StepToolCall || !observableStepState(step.State) {
+			continue
+		}
+		previousState, existed := previousStepStates[step.Index]
+		if existed && previousState == step.State {
+			continue
+		}
+		s.observer.RecordAgentToolStep(step.ToolName, step.State, nonNegativeDuration(step.Duration))
+	}
+	if agentTerminalState(current.State) && !agentTerminalState(previous.State) {
+		s.observer.RecordAgentRunFinished(current.State, agentRunErrorType(current), agentRunDuration(current))
+	}
+}
+
+func observableStepState(state agent.RunState) bool {
+	switch state {
+	case agent.StatePendingApproval, agent.StateCompleted, agent.StateFailed, agent.StateCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func agentRunDuration(run agent.Run) time.Duration {
+	if run.CreatedAt.IsZero() || run.UpdatedAt.IsZero() {
+		return 0
+	}
+	return nonNegativeDuration(run.UpdatedAt.Sub(run.CreatedAt))
+}
+
+func agentRunErrorType(run agent.Run) string {
+	if run.Error == "" {
+		return "none"
+	}
+	if agentTimeoutError(run.Error) {
+		return run.Error
+	}
+	switch {
+	case strings.HasPrefix(run.Error, "run cancelled"):
+		return "cancelled"
+	case strings.HasPrefix(run.Error, "approval rejected"):
+		return "approval_rejected"
+	case strings.Contains(run.Error, "max_steps_exceeded"):
+		return "max_steps_exceeded"
+	default:
+		return "error"
+	}
+}
+
+func nonNegativeDuration(duration time.Duration) time.Duration {
+	if duration < 0 {
+		return 0
+	}
+	return duration
 }
 
 func actorFromRequest(r *http.Request) (agent.Actor, error) {

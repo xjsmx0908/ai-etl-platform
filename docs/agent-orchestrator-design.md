@@ -28,6 +28,7 @@ The MVP focuses on the enterprise control plane:
 - deterministic Rule Planner for development and tests
 - Redis-backed distributed locks outside dev
 - run timeout, approval timeout, and explicit cancellation
+- Prometheus metrics for Agent run outcomes, tool steps, approval decisions, and lifecycle latency
 
 Out of scope for this cut:
 
@@ -238,6 +239,34 @@ the active step is also marked `cancelled`. If a cancellation or lifecycle timeo
 closes a run with a pending approval record, the approval record is rejected so
 the approval audit does not remain pending after the state machine is terminal.
 
+## Observability
+
+The Agent API emits low-cardinality lifecycle events through an observer
+interface. The production adapter is the existing Prometheus metrics registry.
+
+Current Agent metrics:
+
+```text
+ai_etl_agent_runs_started_total{auto_execute}
+ai_etl_agent_run_completions_total{state,error_type}
+ai_etl_agent_run_duration_seconds{state,error_type}
+ai_etl_agent_tool_steps_total{tool_name,state}
+ai_etl_agent_tool_step_duration_seconds{tool_name,state}
+ai_etl_agent_approval_decisions_total{decision,tool_name}
+```
+
+The metrics intentionally avoid `run_id`, `tenant_id`, prompt text, or user id
+labels. That keeps the cardinality bounded and makes the metrics safe for
+Prometheus dashboards and alerts.
+
+Alert rules cover:
+
+```text
+AgentRunFailures
+AgentLifecycleTimeouts
+AgentRunHighLatency
+```
+
 ## Planner Strategy
 
 The orchestrator depends only on the `agent.Planner` interface.
@@ -384,6 +413,7 @@ Current tests cover:
 - Agent API lists durable approvals
 - Agent API cancels non-terminal runs and rejects pending approval audit records
 - Agent API rejects cancel/resume for terminal runs
+- Agent API emits run, step, and approval observer events without duplicate read counts
 - LLM Planner accepts valid tool_call and final decisions
 - LLM Planner rejects invalid JSON, unregistered tools, invalid arguments, and empty final decisions
 - planner config resolves `auto` to rule in dev and llm outside dev
@@ -395,3 +425,4 @@ Current tests cover:
 - run timeout fails stale runs before planning
 - approval timeout fails stale pending approvals before tool execution
 - pending approval audit records are rejected when lifecycle timeout closes the run
+- Prometheus exposes Agent run, step, and approval metrics

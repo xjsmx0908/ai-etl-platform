@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"ai-etl-pipeline/internal/agent"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -35,6 +37,14 @@ type Metrics struct {
 
 	// Circuit breaker
 	CircuitState *prometheus.GaugeVec
+
+	// Agent orchestration metrics
+	AgentRunsStarted       *prometheus.CounterVec
+	AgentRunCompletions    *prometheus.CounterVec
+	AgentRunDuration       *prometheus.HistogramVec
+	AgentToolSteps         *prometheus.CounterVec
+	AgentToolStepDuration  *prometheus.HistogramVec
+	AgentApprovalDecisions *prometheus.CounterVec
 }
 
 // New creates a new Metrics instance with all counters registered.
@@ -153,6 +163,62 @@ func New(namespace string) *Metrics {
 			},
 			[]string{"name"},
 		),
+		AgentRunsStarted: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "agent",
+				Name:      "runs_started_total",
+				Help:      "Total Agent runs created",
+			},
+			[]string{"auto_execute"},
+		),
+		AgentRunCompletions: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "agent",
+				Name:      "run_completions_total",
+				Help:      "Total Agent runs reaching a terminal state",
+			},
+			[]string{"state", "error_type"},
+		),
+		AgentRunDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Subsystem: "agent",
+				Name:      "run_duration_seconds",
+				Help:      "Agent run duration from creation to terminal state",
+				Buckets:   []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 300, 1800},
+			},
+			[]string{"state", "error_type"},
+		),
+		AgentToolSteps: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "agent",
+				Name:      "tool_steps_total",
+				Help:      "Total Agent tool steps by terminal or approval-waiting state",
+			},
+			[]string{"tool_name", "state"},
+		),
+		AgentToolStepDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Subsystem: "agent",
+				Name:      "tool_step_duration_seconds",
+				Help:      "Agent tool step duration by tool and state",
+				Buckets:   []float64{0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60},
+			},
+			[]string{"tool_name", "state"},
+		),
+		AgentApprovalDecisions: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "agent",
+				Name:      "approval_decisions_total",
+				Help:      "Total Agent approval decisions",
+			},
+			[]string{"decision", "tool_name"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -168,6 +234,12 @@ func New(namespace string) *Metrics {
 		m.QueryFailures,
 		m.RetrievalCount,
 		m.CircuitState,
+		m.AgentRunsStarted,
+		m.AgentRunCompletions,
+		m.AgentRunDuration,
+		m.AgentToolSteps,
+		m.AgentToolStepDuration,
+		m.AgentApprovalDecisions,
 	)
 
 	return m
@@ -206,6 +278,33 @@ func (m *Metrics) SetCircuitState(name string, state int) {
 	m.CircuitState.WithLabelValues(name).Set(float64(state))
 }
 
+// RecordAgentRunStarted records an Agent run creation event.
+func (m *Metrics) RecordAgentRunStarted(autoExecute bool) {
+	m.AgentRunsStarted.WithLabelValues(strconv.FormatBool(autoExecute)).Inc()
+}
+
+// RecordAgentRunFinished records an Agent run terminal event.
+func (m *Metrics) RecordAgentRunFinished(state agent.RunState, errorType string, duration time.Duration) {
+	duration = nonNegativeDuration(duration)
+	errorType = normalizedLabel(errorType, "none")
+	m.AgentRunCompletions.WithLabelValues(string(state), errorType).Inc()
+	m.AgentRunDuration.WithLabelValues(string(state), errorType).Observe(duration.Seconds())
+}
+
+// RecordAgentToolStep records a completed, failed, cancelled, or approval-waiting tool step.
+func (m *Metrics) RecordAgentToolStep(toolName string, state agent.RunState, duration time.Duration) {
+	duration = nonNegativeDuration(duration)
+	toolName = normalizedLabel(toolName, "unknown")
+	m.AgentToolSteps.WithLabelValues(toolName, string(state)).Inc()
+	m.AgentToolStepDuration.WithLabelValues(toolName, string(state)).Observe(duration.Seconds())
+}
+
+// RecordAgentApprovalDecision records a durable approval decision.
+func (m *Metrics) RecordAgentApprovalDecision(decision agent.ApprovalStatus, toolName string) {
+	toolName = normalizedLabel(toolName, "unknown")
+	m.AgentApprovalDecisions.WithLabelValues(string(decision), toolName).Inc()
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
 	statusCode int
@@ -242,4 +341,19 @@ func routeLabel(path string) string {
 	default:
 		return "/other"
 	}
+}
+
+func normalizedLabel(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func nonNegativeDuration(duration time.Duration) time.Duration {
+	if duration < 0 {
+		return 0
+	}
+	return duration
 }

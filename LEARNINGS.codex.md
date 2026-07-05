@@ -1,5 +1,15 @@
 # LEARNINGS.codex.md
 
+## 2026-07-05T16:52:28+08:00 - Module 3 Agent Observability and Alerts
+
+Perceive: Module 3 had durable Agent state, approval audit, distributed locks, and lifecycle governance, but operations could only inspect individual runs through the API. There were no Agent-specific Prometheus signals for dashboards or alerts.
+
+Reason: enterprise Agent orchestration needs low-cardinality event metrics, not per-run labels. Useful signals are run creation, terminal outcomes, normalized error types, tool-step states, approval decisions, and run/step duration histograms.
+
+Act: added Agent Prometheus metrics, wired Agent API lifecycle changes through an observer interface, recorded approval decisions, added alert rules for failures, lifecycle timeouts, and high p95 run duration, and documented the new observability surface.
+
+Refine: verified `gofmt`, `go vet ./...`, `go test ./...`, `docker compose config --quiet`, `promtool check rules`, and `git diff --check`.
+
 ## 2026-07-04T18:26:44+08:00 - Module 3 Agent Run Lifecycle Governance
 
 Perceive: Agent runs had durable state, approvals, Redis persistence, and distributed locks, but an operator still could not cancel a non-terminal run and stale pending approvals had no timeout closure.

@@ -32,3 +32,27 @@ groups:
           severity: critical
         annotations:
           summary: Circuit breaker is open
+
+      - alert: AgentRunFailures
+        expr: increase(ai_etl_agent_run_completions_total{state="failed"}[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Agent run failures exceeded 3 in 15m
+
+      - alert: AgentLifecycleTimeouts
+        expr: increase(ai_etl_agent_run_completions_total{error_type=~"run_timeout_exceeded|approval_timeout_exceeded"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Agent lifecycle timeout occurred
+
+      - alert: AgentRunHighLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(ai_etl_agent_run_duration_seconds_bucket[10m]))) > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Agent run p95 duration is above 60s

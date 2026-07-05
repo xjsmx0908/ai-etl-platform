@@ -187,7 +187,7 @@ func main() {
 	}
 	defer taskStatusStore.Close()
 
-	agentSvc, err := agentapi.NewService(cfg, qs, taskStatusStore)
+	agentSvc, err := agentapi.NewServiceWithObserver(cfg, qs, taskStatusStore, prom)
 	if err != nil {
 		slog.Error("failed to create agent api service", "error", err)
 		os.Exit(1)

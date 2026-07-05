@@ -1,5 +1,22 @@
 # Backlog
 
+## 2026-07-05 - Module 3 Agent Observability and Alerts
+
+Status: implemented
+
+Goal: make Agent orchestration visible through low-cardinality metrics and production alert rules.
+
+Plan:
+
+1. Add Agent run creation metrics with `auto_execute` label.
+2. Add terminal run completion and duration metrics with `state` and normalized `error_type` labels.
+3. Add tool-step count and duration metrics with `tool_name` and `state` labels.
+4. Add durable approval-decision metrics with `decision` and `tool_name` labels.
+5. Wire Agent API lifecycle mutations into a small observer interface instead of coupling Agent API directly to Prometheus.
+6. Emit events only when a run or step changes state, avoiding duplicate counts from reads or repeated requests.
+7. Add Prometheus alerts for Agent failures, lifecycle timeouts, and high p95 run duration.
+8. Cover metrics and Agent API observer behavior with tests.
+
 ## 2026-07-04 - Module 3 Agent Run Lifecycle Governance
 
 Status: implemented

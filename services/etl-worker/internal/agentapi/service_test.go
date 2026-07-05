@@ -33,6 +33,44 @@ func (f *fakeQueryService) Ask(_ context.Context, req query.Request, access quer
 	}, nil
 }
 
+type recordingObserver struct {
+	started   []bool
+	finished  []observedRun
+	steps     []observedStep
+	approvals []observedApproval
+}
+
+type observedRun struct {
+	state     agent.RunState
+	errorType string
+}
+
+type observedStep struct {
+	toolName string
+	state    agent.RunState
+}
+
+type observedApproval struct {
+	decision agent.ApprovalStatus
+	toolName string
+}
+
+func (o *recordingObserver) RecordAgentRunStarted(autoExecute bool) {
+	o.started = append(o.started, autoExecute)
+}
+
+func (o *recordingObserver) RecordAgentRunFinished(state agent.RunState, errorType string, _ time.Duration) {
+	o.finished = append(o.finished, observedRun{state: state, errorType: errorType})
+}
+
+func (o *recordingObserver) RecordAgentToolStep(toolName string, state agent.RunState, _ time.Duration) {
+	o.steps = append(o.steps, observedStep{toolName: toolName, state: state})
+}
+
+func (o *recordingObserver) RecordAgentApprovalDecision(decision agent.ApprovalStatus, toolName string) {
+	o.approvals = append(o.approvals, observedApproval{decision: decision, toolName: toolName})
+}
+
 func TestHandleRunsCreatesAndExecutesRAGRun(t *testing.T) {
 	qs := &fakeQueryService{}
 	store := agent.NewMemoryStore()
@@ -41,7 +79,8 @@ func TestHandleRunsCreatesAndExecutesRAGRun(t *testing.T) {
 		t.Fatalf("register rag tool: %v", err)
 	}
 	orchestrator := newTestOrchestrator(t, store, registry, RulePlanner{}, 4)
-	svc := newServiceWithComponents(orchestrator, store)
+	observer := &recordingObserver{}
+	svc := newServiceWithComponentsAndObserver(orchestrator, store, nil, observer)
 
 	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"公司的报销制度是什么"}`))
 	rr := httptest.NewRecorder()
@@ -71,6 +110,15 @@ func TestHandleRunsCreatesAndExecutesRAGRun(t *testing.T) {
 	}
 	if qs.lastReq.Question != "公司的报销制度是什么" || qs.lastReq.TopK != 5 {
 		t.Fatalf("unexpected query request: %+v", qs.lastReq)
+	}
+	if len(observer.started) != 1 || !observer.started[0] {
+		t.Fatalf("expected one auto-executed run start event, got %+v", observer.started)
+	}
+	if len(observer.finished) != 1 || observer.finished[0].state != agent.StateCompleted || observer.finished[0].errorType != "none" {
+		t.Fatalf("expected one completed run event, got %+v", observer.finished)
+	}
+	if len(observer.steps) != 1 || observer.steps[0].toolName != ragQueryToolName || observer.steps[0].state != agent.StateCompleted {
+		t.Fatalf("expected one completed rag tool step event, got %+v", observer.steps)
 	}
 
 	getReq := authenticatedRequest(http.MethodGet, "/v1/agent/runs/"+run.ID, nil)
@@ -199,7 +247,8 @@ func TestHandleRunRejectFailsPendingToolAndAuditsDecision(t *testing.T) {
 		t.Fatalf("register publish_report: %v", err)
 	}
 	orchestrator := newTestOrchestrator(t, store, registry, &approvalPlanner{}, 4)
-	svc := newServiceWithComponents(orchestrator, store)
+	observer := &recordingObserver{}
+	svc := newServiceWithComponentsAndObserver(orchestrator, store, nil, observer)
 
 	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"task":"发布报表"}`))
 	rr := httptest.NewRecorder()
@@ -217,6 +266,9 @@ func TestHandleRunRejectFailsPendingToolAndAuditsDecision(t *testing.T) {
 	}
 	if len(approvals) != 1 {
 		t.Fatalf("expected one approval, got %+v", approvals)
+	}
+	if len(observer.steps) != 1 || observer.steps[0].toolName != "publish_report" || observer.steps[0].state != agent.StatePendingApproval {
+		t.Fatalf("expected pending approval step event, got %+v", observer.steps)
 	}
 
 	otherTenantReq := authenticatedRequestAs(http.MethodGet, "/v1/agent/runs/"+run.ID+"/approvals", nil, "tenant-b", "user-b", "user", []string{"agent", "query"})
@@ -250,6 +302,15 @@ func TestHandleRunRejectFailsPendingToolAndAuditsDecision(t *testing.T) {
 	}
 	if decided.Status != agent.ApprovalRejected || decided.DecidedBy != "admin-a" || decided.Reason != "missing release window" {
 		t.Fatalf("expected rejected audit record, got %+v", decided)
+	}
+	if len(observer.approvals) != 1 || observer.approvals[0].decision != agent.ApprovalRejected || observer.approvals[0].toolName != "publish_report" {
+		t.Fatalf("expected rejected approval event, got %+v", observer.approvals)
+	}
+	if len(observer.steps) != 2 || observer.steps[1].toolName != "publish_report" || observer.steps[1].state != agent.StateFailed {
+		t.Fatalf("expected failed tool step event after rejection, got %+v", observer.steps)
+	}
+	if len(observer.finished) != 1 || observer.finished[0].state != agent.StateFailed || observer.finished[0].errorType != "approval_rejected" {
+		t.Fatalf("expected failed run event after rejection, got %+v", observer.finished)
 	}
 }
 
