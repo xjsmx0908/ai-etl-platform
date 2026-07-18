@@ -24,7 +24,7 @@
 python3 scripts/run-evals.py
 ```
 
-运行器默认创建唯一的 `ai-etl-eval-*` Compose 项目，并把宿主机端口交给 Docker 随机分配；报告会记录项目名和实际 Query API 地址。完成后只会执行该项目的 `docker compose down -v`，不会停止默认 `ai-etl-platform` 开发栈。需要保留隔离环境排查时使用 `--keep-services`，并按报告中的项目名手动清理。
+运行器默认创建唯一的 `ai-etl-eval-*` Compose 项目，并加载 `docker-compose.eval.yml`。除 Query API 的 Docker 随机宿主机端口外，其余服务只在隔离 Compose 网络内监听；报告会记录项目名和实际 Query API 地址。完成后只会执行该项目的 `docker compose down -v`，不会停止默认 `ai-etl-platform` 开发栈。需要保留隔离环境排查时使用 `--keep-services`，并按报告中的项目名手动清理。
 
 ## LLM-as-a-Judge
 

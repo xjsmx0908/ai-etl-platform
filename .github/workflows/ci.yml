@@ -120,6 +120,12 @@ jobs:
       - name: Validate docker-compose.yml
         run: docker compose config > /dev/null
 
+      - name: Validate isolated eval Compose overlay
+        run: |
+          COMPOSE_FILE=docker-compose.yml:docker-compose.eval.yml \
+          QUERY_API_HOST_PORT=0 \
+          docker compose config > /dev/null
+
   observability:
     name: Observability Config and Alert Tests
     runs-on: ubuntu-latest

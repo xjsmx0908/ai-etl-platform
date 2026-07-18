@@ -1,5 +1,15 @@
 # LEARNINGS.codex.md
 
+## 2026-07-18T11:48:41+08:00 - Isolated Eval Host-Port Boundary
+
+Perceive: the GitHub deterministic evaluation job failed before uploading any cases because Docker could not bind the Parser service host port. The local suite had passed, but the runner still published every service while it only needed host access to Query API.
+
+Reason: assigning random host ports to every internal dependency expands the collision surface and is weaker than avoiding those bindings altogether. An isolated test stack should expose only the explicit test boundary.
+
+Act: added `docker-compose.eval.yml`, which resets host ports for internal services and preserves only the Query API's Docker-assigned port. The evaluation runner now always loads the base and eval Compose files together; its unit test asserts the overlay contract, and CI validates the merged Compose configuration.
+
+Refine: the new focused test failed before the runner set `COMPOSE_FILE` and passed afterward. The original CI command completed locally with 47/47 passing cases, and the isolated project cleaned up without affecting the default stack.
+
 ## 2026-07-18T11:33:43+08:00 - Module 4 Release Verification
 
 Perceive: Module 4 combined query tracing, LLM dependency alerting, an enterprise notification adapter, deterministic evaluation, an optional Judge, and exact-candidate protection. Before publishing the accumulated work, the full integration needed a current verification run rather than relying on earlier focused checks.

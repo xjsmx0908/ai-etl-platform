@@ -32,27 +32,9 @@ from judge_eval import JudgeClient, JudgeConfig, JudgeError, JudgeInput
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GOLDEN_SET = ROOT / "docs" / "evals" / "golden-set.json"
 DEFAULT_REPORT_DIR = ROOT / "docs" / "evals" / "reports"
+EVAL_COMPOSE_FILE = ROOT / "docker-compose.eval.yml"
 NOT_FOUND_ANSWER = "未找到相关文档，无法回答该问题。"
 NEGATIVE_FALLBACK_MARKERS = (NOT_FOUND_ANSWER, "未在参考文档中直接定位锚点")
-ISOLATED_HOST_PORT_VARIABLES = (
-    "KAFKA_HOST_PORT",
-    "REDIS_HOST_PORT",
-    "QDRANT_HTTP_HOST_PORT",
-    "QDRANT_GRPC_HOST_PORT",
-    "ELASTICSEARCH_HOST_PORT",
-    "MINIO_API_HOST_PORT",
-    "MINIO_CONSOLE_HOST_PORT",
-    "JAEGER_UI_HOST_PORT",
-    "JAEGER_OTLP_GRPC_HOST_PORT",
-    "JAEGER_OTLP_HTTP_HOST_PORT",
-    "PROMETHEUS_HOST_PORT",
-    "ALERTMANAGER_HOST_PORT",
-    "GRAFANA_PORT",
-    "KAFKA_UI_HOST_PORT",
-    "PARSER_HOST_PORT",
-    "QUERY_API_HOST_PORT",
-    "RERANKER_HOST_PORT",
-)
 
 
 @dataclass
@@ -131,9 +113,10 @@ def compose_env(
             "REDIS_ADDR": "redis:6379",
             "REDIS_DB": "0",
             "COMPOSE_PROJECT_NAME": compose_project,
+            "COMPOSE_FILE": os.pathsep.join((str(ROOT / "docker-compose.yml"), str(EVAL_COMPOSE_FILE))),
+            "QUERY_API_HOST_PORT": "0",
         }
     )
-    env.update({name: "0" for name in ISOLATED_HOST_PORT_VARIABLES})
     return env
 
 

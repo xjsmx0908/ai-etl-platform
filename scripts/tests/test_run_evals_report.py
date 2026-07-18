@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import sys
 import tempfile
 import unittest
@@ -116,7 +117,16 @@ class JudgeReportTest(unittest.TestCase):
         )
 
         self.assertEqual(env["COMPOSE_PROJECT_NAME"], "ai-etl-eval-test")
-        self.assertTrue(all(env[name] == "0" for name in module.ISOLATED_HOST_PORT_VARIABLES))
+        self.assertEqual(
+            env["COMPOSE_FILE"],
+            os.pathsep.join(
+                (
+                    str(module.ROOT / "docker-compose.yml"),
+                    str(module.EVAL_COMPOSE_FILE),
+                )
+            ),
+        )
+        self.assertEqual(env["QUERY_API_HOST_PORT"], "0")
         self.assertEqual(module.api_base_from_compose_port("0.0.0.0:49152"), "http://127.0.0.1:49152")
         self.assertEqual(module.api_base_from_compose_port("[::]:49152"), "http://127.0.0.1:49152")
         self.assertEqual(module.resolve_compose_project("AI-ETL_EVAL-42"), "ai-etl_eval-42")

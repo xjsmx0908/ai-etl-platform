@@ -1,0 +1,25 @@
+services:
+  kafka:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  qdrant:
+    ports: !reset []
+  elasticsearch:
+    ports: !reset []
+  minio:
+    ports: !reset []
+  jaeger:
+    ports: !reset []
+  prometheus:
+    ports: !reset []
+  alertmanager:
+    ports: !reset []
+  grafana:
+    ports: !reset []
+  kafka-ui:
+    ports: !reset []
+  parser-service:
+    ports: !reset []
+  reranker-service:
+    ports: !reset []
