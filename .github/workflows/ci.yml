@@ -55,6 +55,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Run eval unit tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+
       - name: Run deterministic eval
         run: python3 scripts/run-evals.py --min-hit-rate 0.90 --max-wait 180
 
@@ -117,6 +120,52 @@ jobs:
       - name: Validate docker-compose.yml
         run: docker compose config > /dev/null
 
+  observability:
+    name: Observability Config and Alert Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test alert webhook service
+        working-directory: services/alert-webhook-service
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Test alert webhook secret permissions
+        run: |
+          docker build -t ai-etl-alert-webhook-test services/alert-webhook-service
+          sh services/alert-webhook-service/tests/test_entrypoint.sh ai-etl-alert-webhook-test
+
+      - name: Test Alertmanager secret permissions
+        run: |
+          docker build -t ai-etl-alertmanager-test infrastructure/alertmanager
+          sh infrastructure/alertmanager/test-entrypoint.sh ai-etl-alertmanager-test
+
+      - name: Validate Grafana dashboard JSON
+        run: python3 -m json.tool infrastructure/grafana/dashboards/ai-etl-platform.json > /dev/null
+
+      - name: Validate Prometheus config and alert rules
+        run: |
+          docker run --rm \
+            -v "$PWD/infrastructure:/work:ro" \
+            --entrypoint promtool \
+            prom/prometheus:latest \
+            check config /work/prometheus.yml
+          docker run --rm \
+            -v "$PWD/infrastructure:/work:ro" \
+            -w /work/tests \
+            --entrypoint promtool \
+            prom/prometheus:latest \
+            test rules alert-rules.test.yml
+
+      - name: Validate Alertmanager config
+        run: |
+          docker run --rm \
+            -v "$PWD/infrastructure/alertmanager:/work:ro" \
+            --entrypoint amtool \
+            prom/alertmanager:v0.33.1 \
+            check-config /work/alertmanager.yml
+
   trivy:
     name: Trivy Security Gate
     runs-on: ubuntu-latest
@@ -160,6 +209,7 @@ jobs:
       - python
       - reranker
       - compose
+      - observability
       - trivy
     steps:
       - name: Enforce all required jobs passed
@@ -169,6 +219,7 @@ jobs:
           echo "python=${{ needs.python.result }}"
           echo "reranker=${{ needs.reranker.result }}"
           echo "compose=${{ needs.compose.result }}"
+          echo "observability=${{ needs.observability.result }}"
           echo "trivy=${{ needs.trivy.result }}"
 
           [ "${{ needs.go.result }}" = "success" ] || exit 1
@@ -176,4 +227,5 @@ jobs:
           [ "${{ needs.python.result }}" = "success" ] || exit 1
           [ "${{ needs.reranker.result }}" = "success" ] || exit 1
           [ "${{ needs.compose.result }}" = "success" ] || exit 1
+          [ "${{ needs.observability.result }}" = "success" ] || exit 1
           [ "${{ needs.trivy.result }}" = "success" ] || exit 1

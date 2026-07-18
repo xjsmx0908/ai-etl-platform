@@ -1,5 +1,69 @@
 # Backlog
 
+## 2026-07-13 - Module 4 Engineering Learning Evaluation
+
+Status: implemented and executed
+
+Goal: provide a repeatable 100-case learning and regression evaluation without misrepresenting synthetic architecture cases as enterprise historical evidence.
+
+Plan:
+
+1. Maintain 100 deidentified synthetic cases across ETL, retrieval, Agent, and observability, including permission-refusal negatives.
+2. Validate the set for structure, reference answers, and high-confidence sensitive patterns.
+3. Run it in a unique Compose project with dynamic host ports so cleanup cannot affect the default development stack.
+4. Require retrieval, answer, and final assertions for positive and negative cases.
+5. Keep production acceptance separate: use the ignored, reviewer-approved private historical set before making user-quality or Judge claims.
+
+## 2026-07-13 - Module 4 LLM Alerting and Dashboard
+
+Status: implemented
+
+Goal: detect LLM dependency degradation and deliver actionable enterprise alerts without inventing streaming metrics for a non-streaming API.
+
+Plan:
+
+1. Add low-cardinality LLM request outcome, latency, and process-local consecutive failure metrics.
+2. Route LLM calls through the existing circuit breaker and classify bounded failure outcomes.
+3. Add Prometheus alerts for five consecutive failures, rolling error rate, and p95 latency.
+4. Add rule tests proving failure streak trigger and success reset behavior.
+5. Add Alertmanager grouping, critical routing, inhibition, and authenticated webhook delivery.
+6. Add a secret-backed WeCom/DingTalk adapter with DingTalk HMAC signing.
+7. Provision a Grafana overview dashboard for Query, LLM, circuit, and Agent signals.
+8. Add observability validation to required CI checks.
+9. Preserve non-root runtime identities when local Compose secret bind mounts retain host ownership.
+10. Validate private historical evaluation datasets for case count, reference answers, structural integrity, and high-confidence sensitive patterns before Judge execution.
+
+## 2026-07-13 - Module 4 Optional LLM-as-a-Judge
+
+Status: implemented
+
+Goal: add a structured, optional answer-quality judge without weakening deterministic CI gates.
+
+Plan:
+
+1. Define strict structured scores for faithfulness, correctness, relevance, overall pass, reasons, and unsupported claims.
+2. Add an OpenAI-compatible Judge client with bounded retries and response validation.
+3. Run Judge scoring while Query answers and retrieved contexts are still in memory.
+4. Add per-case Judge results, aggregate scores, thresholds, and errors to JSON/Markdown reports.
+5. Keep Judge disabled by default and preserve deterministic retrieval/answer assertions as required CI checks.
+6. Add a manual GitHub Actions workflow using `JUDGE_API_KEY` and report artifacts.
+7. Test schema requests, retries, invalid scores, mock HTTP compatibility, and report generation.
+
+## 2026-07-13 - Module 4 Query Trace Topology
+
+Status: implemented
+
+Goal: make a Query request traceable from the HTTP boundary through retrieval stages and final LLM generation.
+
+Plan:
+
+1. Continue incoming W3C `traceparent` headers and return `X-Trace-ID` to API callers.
+2. Propagate trace context to embedding, Qdrant, Elasticsearch, reranker, and LLM HTTP requests.
+3. Add Query, prompt construction, LLM generation, retrieval, cache, route, backend search, fusion, and rerank spans.
+4. Expose `X-Trace-ID` to browser clients through CORS.
+5. Add tests for HTTP trace propagation and retrieval-stage span topology.
+6. Verify focused packages and the full Go suite before completion.
+
 ## 2026-07-05 - Module 3 Agent Observability and Alerts
 
 Status: implemented

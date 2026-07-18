@@ -25,7 +25,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                    基础设施层                                 │
 │                                                             │
-│  Kafka │ Redis │ Qdrant │ MinIO │ Jaeger │ Prometheus      │
+│ Kafka │ Redis │ Qdrant │ MinIO │ Jaeger │ Prometheus │ Grafana │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -53,6 +53,8 @@ ai-etl-platform/
 │       ├── app/                 # FastAPI rerank API
 │       ├── Dockerfile           # CPU 模型服务镜像
 │       └── README.md
+│
+│   └── alert-webhook-service/   # Alertmanager 企业通知适配器
 │
 ├── infrastructure/              # 基础设施配置
 │   └── prometheus.yml
@@ -100,6 +102,8 @@ docker compose logs -f
 curl http://localhost:8080/healthz          # Query API
 curl http://localhost:8000/healthz          # Parser Service
 curl http://localhost:9090                  # Prometheus
+curl http://localhost:9093                  # Alertmanager
+curl http://localhost:3001                  # Grafana
 curl http://localhost:16686                 # Jaeger UI
 curl http://localhost:8090                  # Kafka UI
 ```
@@ -131,6 +135,14 @@ python3 scripts/run-evals.py
 ```
 
 该脚本会用 `docs/evals/golden-set.json` 做确定性 retrieval 回归评测，并输出 JSON/Markdown 报告。
+
+可选 LLM-as-a-Judge：
+
+```bash
+JUDGE_API_KEY=... JUDGE_MODEL=gpt-4o python3 scripts/run-evals.py --judge --judge-max-cases 10
+```
+
+Judge 评测输出 Faithfulness、Correctness、Relevance 和总体通过率；常规 CI 仍使用确定性评测，手动工作流位于 `.github/workflows/judge-eval.yml`。
 
 ### 7. 轻量压测
 
@@ -190,6 +202,8 @@ python -m app.main
 | Qdrant | 6333 | 向量数据库 |
 | MinIO | 9000/9001 | 对象存储（API/Console） |
 | Prometheus | 9090 | 指标监控 |
+| Alertmanager | 9093 | 告警聚合与路由（仅本机监听） |
+| Grafana | 3001 | 监控大屏（容器内 3000，仅本机监听） |
 | Jaeger | 16686 | 分布式追踪 |
 | Kafka UI | 8090 | Kafka 管理界面 |
 
@@ -277,6 +291,11 @@ MULTIPART_MAX_MEMORY_MB=4
 # Docker secrets 文件路径覆盖（可选）
 # JWT_SECRET_FILE_PATH=./secrets/dev/jwt_secret
 # PARSER_INTERNAL_TOKEN_FILE_PATH=./secrets/dev/parser_internal_token
+# ALERT_WEBHOOK_TOKEN_FILE_PATH=./secrets/dev/alert_webhook_token
+# WECOM_WEBHOOK_URL_FILE_PATH=./secrets/dev/wecom_webhook_url
+# DINGTALK_WEBHOOK_URL_FILE_PATH=./secrets/dev/dingtalk_webhook_url
+# DINGTALK_SECRET_FILE_PATH=./secrets/dev/dingtalk_secret
+# GRAFANA_ADMIN_PASSWORD_FILE_PATH=./secrets/dev/grafana_admin_password
 ```
 
 启用本地 CPU reranker：
@@ -297,9 +316,16 @@ docker compose --profile rerank up -d --build reranker-service query-api
 ## 📈 监控与可观测性
 
 - **Prometheus**: http://localhost:9090
+- **Alertmanager**: http://localhost:9093
+- **Grafana**: http://localhost:3001（预置 `AI ETL Platform Overview`）
 - **Jaeger UI**: http://localhost:16686
 - **Kafka UI**: http://localhost:8090
 - **MinIO Console**: http://localhost:9001
+- Query API 会继承 W3C `traceparent`，并通过响应头 `X-Trace-ID` 返回当前 TraceID。
+- Jaeger Query 链路包含 HTTP、Query、Embedding、Cache、Route、Qdrant/Elasticsearch、Fusion、Rerank、Prompt 与 LLM 阶段 Span。
+- Prometheus 暴露 LLM 请求结果、延迟和进程级连续失败次数；Query API 启动时会先暴露配置模型的连续失败值 `0`，连续 5 次失败、错误率和 p95 延迟由 Alertmanager 告警。
+- 企业微信/钉钉 webhook 放在 `secrets/dev/`，由内部 `alert-webhook-service` 转换消息并发送；不要把真实 webhook 提交到 Git。
+- Query API 当前返回完整 JSON，不是 SSE，因此当前不采集 Token/s。未来引入流式接口时，应在首 Token 时间和输出 Token 速率可被真实测量后再增加相应告警。
 
 ## 🔄 CI/CD
 

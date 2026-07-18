@@ -35,6 +35,8 @@ secrets/dev/*
 
 # Local eval artifacts
 docs/evals/reports/
+docs/evals/private/*
+!docs/evals/private/.gitkeep
 
 # Local learning plans
 plan/

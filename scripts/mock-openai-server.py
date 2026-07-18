@@ -59,7 +59,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path.endswith("/v1/chat/completions"):
             prompt = self._extract_user_prompt(body)
-            answer = self._mock_grounded_answer(prompt)
+            if self._is_judge_request(body):
+                answer = self._mock_judgement(prompt)
+            else:
+                answer = self._mock_grounded_answer(prompt)
             self._write_json(
                 200,
                 {
@@ -107,6 +110,43 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 return str(msg.get("content", ""))
         return json.dumps(body, ensure_ascii=False, sort_keys=True)
+
+    def _is_judge_request(self, body: dict[str, Any]) -> bool:
+        response_format = body.get("response_format")
+        if not isinstance(response_format, dict):
+            return False
+        schema = response_format.get("json_schema")
+        return isinstance(schema, dict) and schema.get("name") == "rag_judgement"
+
+    def _mock_judgement(self, prompt: str) -> str:
+        try:
+            payload = json.loads(prompt)
+        except json.JSONDecodeError:
+            payload = {}
+        answer = str(payload.get("system_answer") or "").strip()
+        contexts = payload.get("retrieved_contexts") or []
+        expect_hit = bool(payload.get("expect_hit", True))
+        refusal = any(
+            marker in answer
+            for marker in (
+                "未找到相关文档",
+                "无法回答",
+                "未在参考文档中直接定位锚点",
+            )
+        )
+        passed = bool(answer) and ((expect_hit and bool(contexts)) or (not expect_hit and refusal))
+        score = 5 if passed else 2
+        return json.dumps(
+            {
+                "faithfulness_score": score,
+                "correctness_score": score,
+                "relevance_score": score,
+                "overall_pass": passed,
+                "reason": "Deterministic mock judgement for protocol validation.",
+                "unsupported_claims": [],
+            },
+            ensure_ascii=False,
+        )
 
     def _parse_sources(self, prompt: str) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []

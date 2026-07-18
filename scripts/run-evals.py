@@ -26,12 +26,33 @@ from typing import Any, Dict, List, Sequence, Set, Tuple
 from urllib import error as urllib_error
 from urllib import request
 
+from judge_eval import JudgeClient, JudgeConfig, JudgeError, JudgeInput
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GOLDEN_SET = ROOT / "docs" / "evals" / "golden-set.json"
 DEFAULT_REPORT_DIR = ROOT / "docs" / "evals" / "reports"
 NOT_FOUND_ANSWER = "未找到相关文档，无法回答该问题。"
 NEGATIVE_FALLBACK_MARKERS = (NOT_FOUND_ANSWER, "未在参考文档中直接定位锚点")
+ISOLATED_HOST_PORT_VARIABLES = (
+    "KAFKA_HOST_PORT",
+    "REDIS_HOST_PORT",
+    "QDRANT_HTTP_HOST_PORT",
+    "QDRANT_GRPC_HOST_PORT",
+    "ELASTICSEARCH_HOST_PORT",
+    "MINIO_API_HOST_PORT",
+    "MINIO_CONSOLE_HOST_PORT",
+    "JAEGER_UI_HOST_PORT",
+    "JAEGER_OTLP_GRPC_HOST_PORT",
+    "JAEGER_OTLP_HTTP_HOST_PORT",
+    "PROMETHEUS_HOST_PORT",
+    "ALERTMANAGER_HOST_PORT",
+    "GRAFANA_PORT",
+    "KAFKA_UI_HOST_PORT",
+    "PARSER_HOST_PORT",
+    "QUERY_API_HOST_PORT",
+    "RERANKER_HOST_PORT",
+)
 
 
 @dataclass
@@ -51,6 +72,7 @@ class EvalCase:
     require_source_citation: bool = True
     answer_must_include: List[str] = field(default_factory=list)
     answer_must_not_include: List[str] = field(default_factory=list)
+    reference_answer: str = ""
 
 
 class EvalRunnerError(RuntimeError):
@@ -86,7 +108,13 @@ def run_cmd(
     return proc
 
 
-def compose_env(mock_port: int, embed_dim: int, tenant_id: str, jwt_secret: str) -> Dict[str, str]:
+def compose_env(
+    mock_port: int,
+    embed_dim: int,
+    tenant_id: str,
+    jwt_secret: str,
+    compose_project: str,
+) -> Dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
@@ -102,9 +130,27 @@ def compose_env(mock_port: int, embed_dim: int, tenant_id: str, jwt_secret: str)
             "KAFKA_TOPIC": env.get("KAFKA_TOPIC", "doc-processing"),
             "REDIS_ADDR": "redis:6379",
             "REDIS_DB": "0",
+            "COMPOSE_PROJECT_NAME": compose_project,
         }
     )
+    env.update({name: "0" for name in ISOLATED_HOST_PORT_VARIABLES})
     return env
+
+
+def resolve_compose_project(raw: str) -> str:
+    project = raw.strip().lower()
+    if not project:
+        project = f"ai-etl-eval-{int(time.time())}-{os.getpid()}"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
+        raise EvalRunnerError("--compose-project must use lowercase letters, digits, hyphens, or underscores")
+    return project
+
+
+def api_base_from_compose_port(raw: str) -> str:
+    match = re.search(r":(\d+)$", raw.strip())
+    if not match:
+        raise EvalRunnerError(f"could not parse query-api host port: {raw!r}")
+    return f"http://127.0.0.1:{match.group(1)}"
 
 
 def http_json(
@@ -594,6 +640,7 @@ def load_cases(path: Path) -> List[EvalCase]:
                 require_source_citation=bool(raw.get("require_source_citation", raw.get("expect_hit", True))),
                 answer_must_include=[str(v) for v in raw.get("answer_must_include", [])],
                 answer_must_not_include=[str(v) for v in raw.get("answer_must_not_include", [])],
+                reference_answer=str(raw.get("reference_answer", "")),
             )
         )
     if not out:
@@ -615,6 +662,8 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
         f"- Timestamp: {result['timestamp']}",
         f"- Tenant ID: {result.get('tenant_id', '')}",
         f"- Mock Port: {result.get('mock_port', '')}",
+        f"- Compose Project: {result.get('compose_project', '')}",
+        f"- Query API Base: {result.get('api_base', '')}",
         f"- Total cases: {result['summary']['total_cases']}",
         f"- Assertion passed: {result['summary']['assertion_passed_cases']}",
         f"- Assertion failed: {result['summary']['assertion_failed_cases']}",
@@ -634,15 +683,57 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
         f"- Recall@5: {result['summary']['recall_at_5']:.2%}",
         f"- Avg score: {result['summary']['avg_score']:.4f}",
         f"- Avg acceptable score: {result['summary']['avg_acceptable_score']:.4f}",
-        "",
-        "| Case | Expect Hit | Retrieval Pass | Answer Pass | Final Pass | Strict Rank | Max Rank | Final Reason |",
-        "|---|---:|---:|---:|---:|---:|---:|---|",
     ]
 
-    for item in result["cases"]:
-        lines.append(
-            f"| {item['case_id']} | {'Y' if item['expect_hit'] else 'N'} | {'Y' if item['retrieval_assertion_pass'] else 'N'} | {'Y' if item['answer_assertion_pass'] else 'N'} | {'Y' if item['assertion_pass'] else 'N'} | {item['strict_rank']} | {item['max_strict_rank']} | {item['assertion_reason']} |"
+    judge_enabled = bool(result["summary"].get("judge_enabled"))
+    if judge_enabled:
+        lines.extend(
+            [
+                f"- Judge model: {result['summary']['judge_model']}",
+                f"- Judge attempted: {result['summary']['judge_attempted_cases']}",
+                f"- Judge errors: {result['summary']['judge_error_cases']}",
+                f"- Judge pass rate: {result['summary']['judge_pass_rate']:.2%}",
+                f"- Judge avg faithfulness: {result['summary']['judge_avg_faithfulness']:.2f}/5",
+                f"- Judge avg correctness: {result['summary']['judge_avg_correctness']:.2f}/5",
+                f"- Judge avg relevance: {result['summary']['judge_avg_relevance']:.2f}/5",
+            ]
         )
+
+    lines.append("")
+    if judge_enabled:
+        lines.extend(
+            [
+                "| Case | Retrieval | Answer | Final | Rank | Judge | Faithfulness | Correctness | Relevance | Judge Error |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "| Case | Expect Hit | Retrieval Pass | Answer Pass | Final Pass | Strict Rank | Max Rank | Final Reason |",
+                "|---|---:|---:|---:|---:|---:|---:|---|",
+            ]
+        )
+
+    for item in result["cases"]:
+        if judge_enabled:
+            judgement = item.get("judge") or {}
+            judge_error = str(item.get("judge_error") or "").replace("|", "/")
+            lines.append(
+                f"| {item['case_id']} | {'Y' if item['retrieval_assertion_pass'] else 'N'} | "
+                f"{'Y' if item['answer_assertion_pass'] else 'N'} | {'Y' if item['assertion_pass'] else 'N'} | "
+                f"{item['strict_rank']} | {'Y' if judgement.get('overall_pass') else 'N'} | "
+                f"{judgement.get('faithfulness_score', '-')} | {judgement.get('correctness_score', '-')} | "
+                f"{judgement.get('relevance_score', '-')} | {judge_error or '-'} |"
+            )
+        else:
+            lines.append(
+                f"| {item['case_id']} | {'Y' if item['expect_hit'] else 'N'} | "
+                f"{'Y' if item['retrieval_assertion_pass'] else 'N'} | "
+                f"{'Y' if item['answer_assertion_pass'] else 'N'} | "
+                f"{'Y' if item['assertion_pass'] else 'N'} | {item['strict_rank']} | "
+                f"{item['max_strict_rank']} | {item['assertion_reason']} |"
+            )
 
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, md_path
@@ -669,13 +760,42 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--poll-interval", type=float, default=2.0)
     parser.add_argument("--required-consecutive-hits", type=int, default=2)
-    parser.add_argument("--api-base", default="http://127.0.0.1:8080")
+    parser.add_argument(
+        "--api-base",
+        default="",
+        help="optional Query API base URL override; defaults to the isolated Compose mapping",
+    )
+    parser.add_argument(
+        "--compose-project",
+        default="",
+        help="optional isolated Docker Compose project name",
+    )
     parser.add_argument("--min-hit-rate", type=float, default=0.9)
     parser.add_argument("--min-answer-pass-rate", type=float, default=1.0)
     parser.add_argument("--min-pass-rate", type=float, default=1.0)
     parser.add_argument("--disable-answer-assertions", action="store_true")
     parser.add_argument("--keep-services", action="store_true")
     parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
+    parser.add_argument("--judge", action="store_true", help="enable optional LLM-as-a-Judge scoring")
+    parser.add_argument(
+        "--judge-endpoint",
+        default=os.getenv("JUDGE_ENDPOINT", "https://api.openai.com/v1"),
+    )
+    parser.add_argument(
+        "--judge-api-key",
+        default=os.getenv("JUDGE_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+    )
+    parser.add_argument("--judge-model", default=os.getenv("JUDGE_MODEL", "gpt-4o-mini"))
+    parser.add_argument("--judge-timeout", type=float, default=30.0)
+    parser.add_argument("--judge-max-retries", type=int, default=2)
+    parser.add_argument(
+        "--judge-max-cases",
+        type=int,
+        default=0,
+        help="maximum cases sent to the judge; 0 evaluates all cases",
+    )
+    parser.add_argument("--judge-min-pass-rate", type=float, default=0.80)
+    parser.add_argument("--judge-min-faithfulness", type=float, default=4.0)
     args = parser.parse_args()
 
     golden_set_path = Path(args.golden_set)
@@ -684,18 +804,44 @@ def main() -> int:
         raise EvalRunnerError(f"golden set not found: {golden_set_path}")
 
     cases = load_cases(golden_set_path)
+    judge_client = None
+    if args.judge:
+        if args.judge_max_cases < 0:
+            raise EvalRunnerError("--judge-max-cases must be >= 0")
+        if args.judge_min_pass_rate < 0 or args.judge_min_pass_rate > 1:
+            raise EvalRunnerError("--judge-min-pass-rate must be in [0,1]")
+        if args.judge_min_faithfulness < 1 or args.judge_min_faithfulness > 5:
+            raise EvalRunnerError("--judge-min-faithfulness must be in [1,5]")
+        try:
+            judge_client = JudgeClient(
+                JudgeConfig(
+                    endpoint=args.judge_endpoint,
+                    api_key=args.judge_api_key,
+                    model=args.judge_model,
+                    timeout_seconds=args.judge_timeout,
+                    max_retries=args.judge_max_retries,
+                )
+            )
+        except JudgeError as exc:
+            raise EvalRunnerError(str(exc)) from exc
     tenant_id = args.tenant_id.strip() if args.tenant_id else ""
     if not tenant_id:
         tenant_id = f"tenant-eval-{int(time.time() * 1000)}-{os.getpid()}"
     resolved_mock_port = pick_mock_port(args.mock_port)
+    compose_project = resolve_compose_project(args.compose_project)
 
     mock_proc: subprocess.Popen[str] | None = None
     started_services = False
+    env: Dict[str, str] = {}
 
     def cleanup() -> None:
         stop_process(mock_proc)
         if started_services and not args.keep_services:
-            run_cmd(["docker", "compose", "down", "-v", "--remove-orphans"], check=False)
+            run_cmd(
+                ["docker", "compose", "down", "-v", "--remove-orphans"],
+                env=env,
+                check=False,
+            )
 
     try:
         print(f"[eval] starting mock model server on port {resolved_mock_port}")
@@ -703,14 +849,30 @@ def main() -> int:
         wait_health(f"http://127.0.0.1:{resolved_mock_port}/healthz", timeout_sec=30)
 
         print(f"[eval] tenant_id: {tenant_id}")
-        env = compose_env(resolved_mock_port, args.embed_dim, tenant_id, args.jwt_secret)
+        print(f"[eval] compose project: {compose_project}")
+        env = compose_env(
+            resolved_mock_port,
+            args.embed_dim,
+            tenant_id,
+            args.jwt_secret,
+            compose_project,
+        )
 
         print("[eval] starting docker compose stack")
         run_cmd(["docker", "compose", "up", "-d", "--build"], env=env, timeout_sec=900)
         started_services = True
 
+        api_base = args.api_base.strip().rstrip("/")
+        if not api_base:
+            port_result = run_cmd(
+                ["docker", "compose", "port", "query-api", "8080"],
+                env=env,
+                timeout_sec=30,
+            )
+            api_base = api_base_from_compose_port(port_result.stdout)
+
         print("[eval] waiting query-api healthz")
-        wait_health(f"{args.api_base}/healthz", timeout_sec=180)
+        wait_health(f"{api_base}/healthz", timeout_sec=180)
 
         print("[eval] ensuring kafka topic exists")
         run_cmd(
@@ -770,10 +932,16 @@ def main() -> int:
         positive_total = 0
         negative_total = 0
         recall_hits = {1: 0, 3: 0, 5: 0}
+        judge_attempted = 0
+        judge_passed = 0
+        judge_errors = 0
+        judge_faithfulness_scores: List[int] = []
+        judge_correctness_scores: List[int] = []
+        judge_relevance_scores: List[int] = []
 
         for idx, case in enumerate(cases, start=1):
             print(f"[eval] {idx}/{len(cases)} upload {case.case_id}")
-            doc_id = upload_case(args.api_base, upload_token, case)
+            doc_id = upload_case(api_base, upload_token, case)
             uploaded_doc_ids[case.case_id] = doc_id
 
         for idx, case in enumerate(cases, start=1):
@@ -792,7 +960,7 @@ def main() -> int:
                 query_tokens[query_permission] = token
             print(f"[eval] {idx}/{len(cases)} query {case.case_id}")
             details, payload = evaluate_case_assertions(
-                args.api_base,
+                api_base,
                 token,
                 case.query,
                 expected_doc_id,
@@ -811,6 +979,37 @@ def main() -> int:
                 acceptable_doc_ids,
                 enable_answer_assertions=not args.disable_answer_assertions,
             )
+            judge_details = None
+            judge_error = ""
+            judge_selected = judge_client is not None and (
+                args.judge_max_cases == 0 or judge_attempted < args.judge_max_cases
+            )
+            if judge_selected:
+                judge_attempted += 1
+                source_contexts = [
+                    str(source.get("content") or "")
+                    for source in (payload or {}).get("sources") or []
+                ]
+                try:
+                    judgement = judge_client.judge(
+                        JudgeInput(
+                            case_id=case.case_id,
+                            question=case.query,
+                            reference_answer=case.reference_answer or case.content,
+                            system_answer=str((payload or {}).get("answer") or ""),
+                            retrieved_contexts=source_contexts,
+                            expect_hit=case.expect_hit,
+                        )
+                    )
+                    judge_details = judgement.to_dict()
+                    judge_faithfulness_scores.append(judgement.faithfulness_score)
+                    judge_correctness_scores.append(judgement.correctness_score)
+                    judge_relevance_scores.append(judgement.relevance_score)
+                    if judgement.overall_pass:
+                        judge_passed += 1
+                except JudgeError as exc:
+                    judge_errors += 1
+                    judge_error = str(exc)
             retrieval_pass = bool(details["assertion_pass"])
             answer_pass = bool(answer_details["answer_assertion_pass"])
             final_pass = retrieval_pass and answer_pass
@@ -880,6 +1079,8 @@ def main() -> int:
                     "recall_at_3": details["recall_at_3"],
                     "recall_at_5": details["recall_at_5"],
                     "source_count": len((payload or {}).get("sources") or []),
+                    "judge": judge_details,
+                    "judge_error": judge_error,
                 }
             )
 
@@ -894,11 +1095,29 @@ def main() -> int:
         pass_rate = assertion_passed / total if total else 0.0
         avg_score = sum(scores) / len(scores) if scores else 0.0
         avg_acceptable_score = sum(acceptable_scores) / len(acceptable_scores) if acceptable_scores else 0.0
+        judge_pass_rate = judge_passed / judge_attempted if judge_attempted else 0.0
+        avg_judge_faithfulness = (
+            sum(judge_faithfulness_scores) / len(judge_faithfulness_scores)
+            if judge_faithfulness_scores
+            else 0.0
+        )
+        avg_judge_correctness = (
+            sum(judge_correctness_scores) / len(judge_correctness_scores)
+            if judge_correctness_scores
+            else 0.0
+        )
+        avg_judge_relevance = (
+            sum(judge_relevance_scores) / len(judge_relevance_scores)
+            if judge_relevance_scores
+            else 0.0
+        )
 
         result = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "tenant_id": tenant_id,
             "mock_port": resolved_mock_port,
+            "compose_project": compose_project,
+            "api_base": api_base,
             "summary": {
                 "total_cases": total,
                 "assertion_passed_cases": assertion_passed,
@@ -927,6 +1146,17 @@ def main() -> int:
                 "threshold_pass_rate": args.min_pass_rate,
                 "required_consecutive_hits": args.required_consecutive_hits,
                 "negative_max_wait_seconds": args.negative_max_wait,
+                "judge_enabled": args.judge,
+                "judge_model": args.judge_model if args.judge else "",
+                "judge_attempted_cases": judge_attempted,
+                "judge_passed_cases": judge_passed,
+                "judge_error_cases": judge_errors,
+                "judge_pass_rate": judge_pass_rate,
+                "judge_avg_faithfulness": avg_judge_faithfulness,
+                "judge_avg_correctness": avg_judge_correctness,
+                "judge_avg_relevance": avg_judge_relevance,
+                "judge_threshold_pass_rate": args.judge_min_pass_rate,
+                "judge_threshold_faithfulness": args.judge_min_faithfulness,
             },
             "cases": eval_items,
         }
@@ -953,8 +1183,25 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+        if args.judge and judge_errors > 0:
+            print(f"[eval] FAILED: judge_error_cases={judge_errors}", file=sys.stderr)
+            return 1
+        if args.judge and judge_pass_rate < args.judge_min_pass_rate:
+            print(
+                f"[eval] FAILED: judge_pass_rate={judge_pass_rate:.2%} "
+                f"< judge_min_pass_rate={args.judge_min_pass_rate:.2%}",
+                file=sys.stderr,
+            )
+            return 1
+        if args.judge and avg_judge_faithfulness < args.judge_min_faithfulness:
+            print(
+                f"[eval] FAILED: judge_avg_faithfulness={avg_judge_faithfulness:.2f} "
+                f"< judge_min_faithfulness={args.judge_min_faithfulness:.2f}",
+                file=sys.stderr,
+            )
+            return 1
 
-        print(
+        pass_message = (
             "[eval] PASS: "
             f"pass_rate={pass_rate:.2%}, "
             f"answer_pass_rate={answer_pass_rate:.2%}, "
@@ -963,6 +1210,12 @@ def main() -> int:
             f"recall@5={recall_at_5:.2%}, "
             f"avg_score={avg_score:.4f}"
         )
+        if args.judge:
+            pass_message += (
+                f", judge_pass_rate={judge_pass_rate:.2%}, "
+                f"judge_faithfulness={avg_judge_faithfulness:.2f}/5"
+            )
+        print(pass_message)
         return 0
 
     finally:

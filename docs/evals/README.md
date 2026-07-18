@@ -1,10 +1,10 @@
 # Evals
 
-本目录用于维护 AI-ETL 的可重复评测闭环（以 retrieval 为主，不使用 LLM-as-judge）。
+本目录用于维护 AI-ETL 的可重复评测闭环。确定性 retrieval/答案断言是 CI 硬门禁；LLM-as-a-Judge 是可选的离线质量评测，不替代确定性断言。
 
 ## 文件说明
 
-- `golden-set.json`: 黄金样本集（当前 46 条）。
+- `golden-set.json`: 黄金样本集（当前 47 条）。
   - 可选字段：`acceptable_doc_ids`，允许一个 query 命中多个等价文档（可写 case id 或 doc_id）。
   - 可选字段：`expect_hit`，默认 `true`；`false` 表示负样本（断言不应命中目标文档）。
   - 可选字段：`max_strict_rank`，要求严格命中的最小排名上界（如 `1`/`3`）。
@@ -12,6 +12,10 @@
   - 可选字段：`must_not_hit_doc_ids`，断言禁止命中的文档（可写 case id 或 doc_id）。
   - 可选字段：`require_source_citation`，答案中必须包含来源 `doc_id`（默认正样本 `true`）。
   - 可选字段：`answer_must_include` / `answer_must_not_include`，答案文本包含/禁止短语断言。
+  - 可选字段：`reference_answer`，作为 Judge 的标准答案；未提供时使用样本文档 `content` 作为参考材料。
+- `historical-golden-set.template.json`: 私有历史评测集的空模板。
+- `historical-data-intake.md`: 历史数据脱敏、审核、校验和受控运行流程。
+- `engineering-learning-golden-set.json`: 当前项目架构衍生的 100 条合成学习案例，不是企业历史数据。
 - `reports/`: 评测报告输出目录（已在 `.gitignore` 中忽略）。
 
 ## 运行方式
@@ -19,6 +23,56 @@
 ```bash
 python3 scripts/run-evals.py
 ```
+
+运行器默认创建唯一的 `ai-etl-eval-*` Compose 项目，并把宿主机端口交给 Docker 随机分配；报告会记录项目名和实际 Query API 地址。完成后只会执行该项目的 `docker compose down -v`，不会停止默认 `ai-etl-platform` 开发栈。需要保留隔离环境排查时使用 `--keep-services`，并按报告中的项目名手动清理。
+
+## LLM-as-a-Judge
+
+Judge 默认关闭。启用后，脚本会在 Query 响应仍在内存中时，将问题、标准答案或参考材料、系统答案和召回上下文发送给独立 Judge。Judge 使用严格 JSON Schema 返回：
+
+- `faithfulness_score`：答案声明是否被召回上下文支持，1–5 分。
+- `correctness_score`：答案是否符合标准答案或预期拒答行为，1–5 分。
+- `relevance_score`：答案是否直接回答问题，1–5 分。
+- `overall_pass`、理由和不受支持的声明列表。
+
+```bash
+JUDGE_API_KEY=... \
+JUDGE_MODEL=gpt-4o \
+python3 scripts/run-evals.py \
+  --judge \
+  --judge-max-cases 10 \
+  --judge-min-pass-rate 0.80 \
+  --judge-min-faithfulness 4.0
+```
+
+`JUDGE_ENDPOINT` 默认为 `https://api.openai.com/v1`，也可以指向支持 Chat Completions 与 `json_schema` Structured Outputs 的兼容服务。Judge 对 429、5xx 和网络错误进行有限重试；任何 Judge 请求错误都会写入报告并使本次 Judge 评测失败。
+
+常规 CI 仍只运行确定性评测。`.github/workflows/judge-eval.yml` 提供手动 Judge 工作流，需要仓库 Secret `JUDGE_API_KEY`，可用仓库变量 `JUDGE_ENDPOINT` 覆盖接口地址。评测报告可能包含 Judge 理由中的业务片段，必须按敏感测试数据管理。
+
+当前黄金集为 47 条工程样本。真实企业验收应通过 `--golden-set` 接入至少 100 条经过脱敏、带 `reference_answer` 的历史问题，而不是人工复制样本凑数。
+
+若目标是学习和回归而不是生产验收，可使用合成学习集：
+
+```bash
+python3 scripts/validate_eval_dataset.py \
+  --golden-set docs/evals/engineering-learning-golden-set.json
+
+python3 scripts/run-evals.py \
+  --golden-set docs/evals/engineering-learning-golden-set.json
+```
+
+该集合覆盖 ETL、检索、Agent、可观测性四个模块，各有 22 条可回答样本和 3 条权限拒答样本。它只验证项目中的工程概念、权限边界与回归能力，不能用于证明真实企业用户体验或业务检索效果。
+
+将真实数据放在被 Git 忽略的 `docs/evals/private/` 后，先运行严格校验：
+
+```bash
+python3 scripts/validate_eval_dataset.py \
+  --golden-set docs/evals/private/historical-golden-set.json
+```
+
+该校验默认要求至少 100 条 case、唯一 ID、必填字段和 `reference_answer`，并拒绝邮箱、手机号、身份证号、卡号、JWT、API key、企业 webhook URL 等高置信敏感模式。它不会回显匹配的原始文本；但自动扫描不能替代数据所有者审核。详细流程见 `historical-data-intake.md`。
+
+私有历史集和 Judge 报告不应交给公共 CI 或未获批准的外部模型端点。运行器的默认 Compose 项目隔离保护本机共享服务；真实生产数据仍应在受控 self-hosted runner 或独立评测主机中运行，并按敏感数据处理产物。
 
 Reranker 策略专项验证：
 

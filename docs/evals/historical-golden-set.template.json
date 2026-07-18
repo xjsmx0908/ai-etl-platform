@@ -1,0 +1,6 @@
+{
+  "version": "1.0",
+  "name": "private-historical-rag-evaluation-set",
+  "description": "Populate only in docs/evals/private/ with deidentified historical cases.",
+  "cases": []
+}

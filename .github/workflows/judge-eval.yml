@@ -1,0 +1,52 @@
+name: LLM Judge Eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      judge_model:
+        description: OpenAI-compatible judge model
+        required: true
+        default: gpt-4o
+        type: string
+      max_cases:
+        description: Maximum judged cases, 0 means all
+        required: true
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  judge:
+    name: Optional LLM-as-a-Judge Eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JUDGE_API_KEY: ${{ secrets.JUDGE_API_KEY }}
+      JUDGE_ENDPOINT: ${{ vars.JUDGE_ENDPOINT || 'https://api.openai.com/v1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require judge credentials
+        run: test -n "$JUDGE_API_KEY"
+
+      - name: Run deterministic and judge eval
+        run: |
+          python3 scripts/run-evals.py \
+            --judge \
+            --judge-model "${{ inputs.judge_model }}" \
+            --judge-max-cases "${{ inputs.max_cases }}" \
+            --min-hit-rate 0.90 \
+            --judge-min-pass-rate 0.80 \
+            --judge-min-faithfulness 4.0 \
+            --max-wait 180
+
+      - name: Upload evaluation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-eval-${{ github.run_id }}
+          path: docs/evals/reports/
+          if-no-files-found: warn
