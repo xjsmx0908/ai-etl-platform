@@ -20,3 +20,8 @@ This project supports Docker secrets with `*_FILE` variables.
 2. Replace values in `secrets/dev/*` with real local secrets.
 3. Override compose file paths in `.env` if needed, for example:
    `JWT_SECRET_FILE_PATH=./secrets/dev/jwt_secret`
+
+For enterprise alert delivery, set at least one of `wecom_webhook_url` or
+`dingtalk_webhook_url`. Keep `alert_webhook_token`, webhook URLs, DingTalk
+signing secret, and the Grafana admin password in `secrets/dev/` or an external
+secret manager.

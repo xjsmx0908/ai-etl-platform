@@ -12,7 +12,7 @@ services:
   kafka:
     image: bitnamilegacy/kafka:3.7.1
     ports:
-      - "9092:9092"
+      - "${KAFKA_HOST_PORT:-9092}:9092"
     environment:
       - KAFKA_CFG_NODE_ID=0
       - KAFKA_CFG_PROCESS_ROLES=controller,broker
@@ -33,7 +33,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
@@ -46,8 +46,8 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.14.1
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "${QDRANT_HTTP_HOST_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_HOST_PORT:-6334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -59,7 +59,7 @@ services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
     ports:
-      - "9200:9200"
+      - "${ELASTICSEARCH_HOST_PORT:-9200}:9200"
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -75,8 +75,8 @@ services:
   minio:
     image: minio/minio:latest
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -96,26 +96,89 @@ services:
   jaeger:
     image: jaegertracing/all-in-one:latest
     ports:
-      - "16686:16686"  # UI
-      - "4317:4317"    # OTLP gRPC
-      - "4318:4318"    # OTLP HTTP
+      - "${JAEGER_UI_HOST_PORT:-16686}:16686"  # UI
+      - "${JAEGER_OTLP_GRPC_HOST_PORT:-4317}:4317"  # OTLP gRPC
+      - "${JAEGER_OTLP_HTTP_HOST_PORT:-4318}:4318"  # OTLP HTTP
     environment:
       - COLLECTOR_OTLP_ENABLED=true
 
   prometheus:
     image: prom/prometheus:latest
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
     volumes:
       - ./infrastructure/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./infrastructure/rules:/etc/prometheus/rules:ro
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    build:
+      context: ./infrastructure/alertmanager
+      dockerfile: Dockerfile
+    image: ai-etl-platform-alertmanager
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_HOST_PORT:-9093}:9093"
+    volumes:
+      - ./infrastructure/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    secrets:
+      - alert_webhook_token
+    command:
+      - '--storage.path=/alertmanager'
+    depends_on:
+      alert-webhook-service:
+        condition: service_healthy
+    restart: unless-stopped
+
+  alert-webhook-service:
+    build:
+      context: ./services/alert-webhook-service
+      dockerfile: Dockerfile
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8092
+      - LOG_LEVEL=${ALERT_WEBHOOK_LOG_LEVEL:-INFO}
+      - ALERT_DELIVERY_TIMEOUT_SECONDS=${ALERT_DELIVERY_TIMEOUT_SECONDS:-5}
+      - ALERT_WEBHOOK_TOKEN_FILE=/run/secrets/alert_webhook_token
+      - WECOM_WEBHOOK_URL_FILE=/run/secrets/wecom_webhook_url
+      - DINGTALK_WEBHOOK_URL_FILE=/run/secrets/dingtalk_webhook_url
+      - DINGTALK_SECRET_FILE=/run/secrets/dingtalk_secret
+    secrets:
+      - alert_webhook_token
+      - wecom_webhook_url
+      - dingtalk_webhook_url
+      - dingtalk_secret
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+      - GF_PLUGINS_PREINSTALL_DISABLED=true
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./infrastructure/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    secrets:
+      - grafana_admin_password
+    depends_on:
+      - prometheus
+    restart: unless-stopped
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     ports:
-      - "8090:8080"
+      - "${KAFKA_UI_HOST_PORT:-8090}:8080"
     environment:
       - KAFKA_CLUSTERS_0_NAME=local
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
@@ -133,7 +196,7 @@ services:
       context: ./services/doc-parser-service
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${PARSER_HOST_PORT:-8000}:8000"
     volumes:
       - upload_data:/data:ro
     environment:
@@ -238,7 +301,7 @@ services:
       context: ./services/etl-worker
       dockerfile: Dockerfile.api
     ports:
-      - "8080:8080"
+      - "${QUERY_API_HOST_PORT:-8080}:8080"
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-staging}
       - HEALTH_PORT=8080
@@ -347,7 +410,7 @@ services:
       context: ./services/reranker-service
       dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:8091:8091"
+      - "127.0.0.1:${RERANKER_HOST_PORT:-8091}:8091"
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-staging}
       - LOG_LEVEL=${RERANKER_LOG_LEVEL:-INFO}
@@ -374,6 +437,7 @@ volumes:
   minio_data:
   upload_data:
   reranker_cache:
+  grafana_data:
 
 secrets:
   parser_internal_token:
@@ -394,3 +458,13 @@ secrets:
     file: ${S3_ACCESS_KEY_FILE_PATH:-./secrets/examples/s3_access_key}
   s3_secret_key:
     file: ${S3_SECRET_KEY_FILE_PATH:-./secrets/examples/s3_secret_key}
+  alert_webhook_token:
+    file: ${ALERT_WEBHOOK_TOKEN_FILE_PATH:-./secrets/examples/alert_webhook_token}
+  wecom_webhook_url:
+    file: ${WECOM_WEBHOOK_URL_FILE_PATH:-./secrets/examples/wecom_webhook_url}
+  dingtalk_webhook_url:
+    file: ${DINGTALK_WEBHOOK_URL_FILE_PATH:-./secrets/examples/dingtalk_webhook_url}
+  dingtalk_secret:
+    file: ${DINGTALK_SECRET_FILE_PATH:-./secrets/examples/dingtalk_secret}
+  grafana_admin_password:
+    file: ${GRAFANA_ADMIN_PASSWORD_FILE_PATH:-./secrets/examples/grafana_admin_password}

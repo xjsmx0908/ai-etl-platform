@@ -16,7 +16,8 @@ import (
 
 // Metrics holds all Prometheus metrics for the ETL pipeline.
 type Metrics struct {
-	mu sync.Mutex
+	mu                     sync.Mutex
+	llmConsecutiveFailures map[string]int
 
 	// HTTP metrics
 	HTTPRequestDuration *prometheus.HistogramVec
@@ -31,9 +32,12 @@ type Metrics struct {
 	DLQMessages     *prometheus.CounterVec
 
 	// Query metrics
-	QueryDuration  *prometheus.HistogramVec
-	QueryFailures  *prometheus.CounterVec
-	RetrievalCount *prometheus.HistogramVec
+	QueryDuration          *prometheus.HistogramVec
+	QueryFailures          *prometheus.CounterVec
+	RetrievalCount         *prometheus.HistogramVec
+	LLMRequests            *prometheus.CounterVec
+	LLMRequestDuration     *prometheus.HistogramVec
+	LLMConsecutiveFailures *prometheus.GaugeVec
 
 	// Circuit breaker
 	CircuitState *prometheus.GaugeVec
@@ -50,6 +54,7 @@ type Metrics struct {
 // New creates a new Metrics instance with all counters registered.
 func New(namespace string) *Metrics {
 	m := &Metrics{
+		llmConsecutiveFailures: make(map[string]int),
 		HTTPRequestDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: namespace,
@@ -154,6 +159,34 @@ func New(namespace string) *Metrics {
 			},
 			[]string{"tenant_id"},
 		),
+		LLMRequests: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "llm",
+				Name:      "requests_total",
+				Help:      "Total LLM requests by model and outcome",
+			},
+			[]string{"model", "outcome"},
+		),
+		LLMRequestDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Subsystem: "llm",
+				Name:      "request_duration_seconds",
+				Help:      "LLM request duration by model and outcome",
+				Buckets:   []float64{0.1, 0.5, 1, 2, 5, 10, 20, 30, 60},
+			},
+			[]string{"model", "outcome"},
+		),
+		LLMConsecutiveFailures: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: "llm",
+				Name:      "consecutive_failures",
+				Help:      "Consecutive completed LLM request failures per process",
+			},
+			[]string{"model"},
+		),
 		CircuitState: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
@@ -233,6 +266,9 @@ func New(namespace string) *Metrics {
 		m.QueryDuration,
 		m.QueryFailures,
 		m.RetrievalCount,
+		m.LLMRequests,
+		m.LLMRequestDuration,
+		m.LLMConsecutiveFailures,
 		m.CircuitState,
 		m.AgentRunsStarted,
 		m.AgentRunCompletions,
@@ -276,6 +312,37 @@ func (m *Metrics) HTTPMiddleware(next http.Handler) http.Handler {
 // SetCircuitState records circuit breaker state (0=closed, 1=open, 2=half-open).
 func (m *Metrics) SetCircuitState(name string, state int) {
 	m.CircuitState.WithLabelValues(name).Set(float64(state))
+}
+
+// InitializeLLMModel exposes a zero-value consecutive failure gauge for a configured model.
+func (m *Metrics) InitializeLLMModel(model string) {
+	model = normalizedLabel(model, "unknown")
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.llmConsecutiveFailures[model]; !exists {
+		m.llmConsecutiveFailures[model] = 0
+	}
+	m.LLMConsecutiveFailures.WithLabelValues(model).Set(float64(m.llmConsecutiveFailures[model]))
+}
+
+// RecordLLMRequest records one completed LLM request and its process-local failure streak.
+func (m *Metrics) RecordLLMRequest(model, outcome string, duration time.Duration) {
+	model = normalizedLabel(model, "unknown")
+	outcome = normalizedLabel(outcome, "unknown")
+	duration = nonNegativeDuration(duration)
+
+	m.LLMRequests.WithLabelValues(model, outcome).Inc()
+	m.LLMRequestDuration.WithLabelValues(model, outcome).Observe(duration.Seconds())
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if outcome == "success" {
+		m.llmConsecutiveFailures[model] = 0
+	} else {
+		m.llmConsecutiveFailures[model]++
+	}
+	m.LLMConsecutiveFailures.WithLabelValues(model).Set(float64(m.llmConsecutiveFailures[model]))
 }
 
 // RecordAgentRunStarted records an Agent run creation event.

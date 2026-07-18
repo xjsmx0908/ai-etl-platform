@@ -16,6 +16,7 @@ import (
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/model"
+	platformtracing "ai-etl-pipeline/internal/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -162,6 +163,7 @@ func (e *HTTPEmbedder) callOpenAIAPI(ctx context.Context, text string) ([]float6
 	if e.cfg.EmbedAPIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+e.cfg.EmbedAPIKey)
 	}
+	platformtracing.InjectHTTPHeaders(ctx, req)
 
 	resp, err := e.client.Do(req)
 	if err != nil {
@@ -213,6 +215,7 @@ func (e *HTTPEmbedder) callOllamaAPI(ctx context.Context, text string) ([]float6
 		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	platformtracing.InjectHTTPHeaders(ctx, req)
 
 	resp, err := e.client.Do(req)
 	if err != nil {

@@ -1,0 +1,41 @@
+rule_files:
+  - ../rules/etl-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: five consecutive LLM failures trigger a critical alert
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_llm_consecutive_failures{instance="query-api:8080",model="qwen2.5:7b"}'
+        values: '0 1 2 3 4 5'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: LLMConsecutiveFailures
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: LLMConsecutiveFailures
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              model: qwen2.5:7b
+            exp_annotations:
+              summary: LLM failed at least five consecutive completed requests
+
+  - name: a successful LLM request clears the consecutive failure alert
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_llm_consecutive_failures{instance="query-api:8080",model="qwen2.5:7b"}'
+        values: '5 0'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: LLMConsecutiveFailures
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              model: qwen2.5:7b
+            exp_annotations:
+              summary: LLM failed at least five consecutive completed requests
+      - eval_time: 1m
+        alertname: LLMConsecutiveFailures
+        exp_alerts: []

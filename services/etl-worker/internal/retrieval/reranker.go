@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+
+	"ai-etl-pipeline/internal/tracing"
 )
 
 // NoopReranker keeps the fused order and exists so the rerank stage can be
@@ -69,6 +71,7 @@ func (r *HTTPReranker) Rerank(ctx context.Context, query string, candidates []Ca
 	if r.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+r.apiKey)
 	}
+	tracing.InjectHTTPHeaders(ctx, req)
 
 	resp, err := r.client.Do(req)
 	if err != nil {

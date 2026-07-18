@@ -33,6 +33,36 @@ groups:
         annotations:
           summary: Circuit breaker is open
 
+      - alert: LLMConsecutiveFailures
+        expr: max by (model) (ai_etl_llm_consecutive_failures) >= 5
+        labels:
+          severity: critical
+        annotations:
+          summary: LLM failed at least five consecutive completed requests
+
+      - alert: LLMHighErrorRate
+        expr: |
+          (
+            sum by (model) (rate(ai_etl_llm_requests_total{outcome!="success"}[5m]))
+            /
+            clamp_min(sum by (model) (rate(ai_etl_llm_requests_total[5m])), 0.001)
+          ) > 0.20
+          and on (model)
+          sum by (model) (increase(ai_etl_llm_requests_total[5m])) >= 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: LLM error rate is above 20% with at least 10 requests in 5m
+
+      - alert: LLMHighLatency
+        expr: histogram_quantile(0.95, sum by (model, le) (rate(ai_etl_llm_request_duration_seconds_bucket[5m]))) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: LLM request p95 latency is above 10s
+
       - alert: AgentRunFailures
         expr: increase(ai_etl_agent_run_completions_total{state="failed"}[15m]) > 3
         for: 5m

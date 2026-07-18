@@ -23,6 +23,9 @@ func TestCORS_PreflightAllowedOrigin(t *testing.T) {
 	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
 		t.Fatalf("unexpected allow-origin header: %q", got)
 	}
+	if got := rr.Header().Get("Access-Control-Expose-Headers"); got != "X-Trace-ID" {
+		t.Fatalf("unexpected expose-headers value: %q", got)
+	}
 }
 
 func TestCORS_PreflightBlockedOrigin(t *testing.T) {

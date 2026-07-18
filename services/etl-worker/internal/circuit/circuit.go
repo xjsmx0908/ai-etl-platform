@@ -2,6 +2,7 @@
 package circuit
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -65,6 +66,11 @@ func (b *Breaker) Execute(fn func() (any, error)) (any, error) {
 // Stats returns breaker statistics.
 func (b *Breaker) Stats() (failures, successes int64) {
 	return b.failures.Load(), b.successes.Load()
+}
+
+// IsRejected reports whether the circuit breaker rejected execution before calling the dependency.
+func IsRejected(err error) bool {
+	return errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests)
 }
 
 func notifyState(name string, state gobreaker.State) {

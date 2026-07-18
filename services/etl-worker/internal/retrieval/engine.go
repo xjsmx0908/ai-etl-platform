@@ -14,6 +14,10 @@ import (
 
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/sparse"
+	platformtracing "ai-etl-pipeline/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Engine orchestrates embedding, cache lookup, routing, scatter-gather
@@ -28,6 +32,7 @@ type Engine struct {
 	timeout       time.Duration
 	candidateK    int
 	defaultTopK   int
+	tracer        trace.Tracer
 }
 
 // NewEngine wires the retrieval engine from environment-backed configuration.
@@ -91,11 +96,25 @@ func NewEngine(cfg config.Config) *Engine {
 		timeout:     timeout,
 		candidateK:  candidateK,
 		defaultTopK: defaultTopK,
+		tracer:      platformtracing.Tracer("retrieval"),
 	}
 }
 
 // Retrieve returns ranked document chunks for a user question.
-func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
+func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err error) {
+	tracer := e.tracer
+	if tracer == nil {
+		tracer = platformtracing.Tracer("retrieval")
+	}
+	ctx, span := tracer.Start(ctx, "RetrievalEngine.Retrieve")
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "retrieval failed")
+		}
+		span.End()
+	}()
+
 	start := time.Now()
 	if strings.TrimSpace(req.Question) == "" {
 		return Result{}, fmt.Errorf("question is required")
@@ -113,11 +132,22 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 	if minLimit := req.TopK * 3; candidateLimit < minLimit {
 		candidateLimit = minLimit
 	}
+	span.SetAttributes(
+		attribute.Int("retrieval.top_k", req.TopK),
+		attribute.Int("retrieval.candidate_limit", candidateLimit),
+		attribute.Int("retrieval.question_chars", len(req.Question)),
+	)
 
-	denseVector, err := e.embedQuestion(ctx, req.Question)
+	embedCtx, embedSpan := tracer.Start(ctx, "Retrieval.EmbedQuery")
+	denseVector, err := e.embedQuestion(embedCtx, req.Question)
 	if err != nil {
+		embedSpan.RecordError(err)
+		embedSpan.SetStatus(codes.Error, "query embedding failed")
+		embedSpan.End()
 		return Result{}, err
 	}
+	embedSpan.SetAttributes(attribute.Int("embedding.vector_dimension", len(denseVector)))
+	embedSpan.End()
 
 	cacheKey := CacheKey{
 		TenantID:           req.TenantID,
@@ -125,20 +155,40 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 		Question:           req.Question,
 		TopK:               req.TopK,
 	}
-	if sources, ok, err := e.cache.Lookup(ctx, cacheKey, denseVector); err != nil {
+	cacheCtx, cacheSpan := tracer.Start(ctx, "Retrieval.CacheLookup")
+	if sources, ok, err := e.cache.Lookup(cacheCtx, cacheKey, denseVector); err != nil {
+		cacheSpan.RecordError(err)
+		cacheSpan.SetStatus(codes.Error, "semantic cache lookup failed")
+		cacheSpan.End()
 		slog.Warn("retrieval cache lookup failed", "tenant_id", req.TenantID, "error", err)
 	} else if ok {
+		cacheSpan.SetAttributes(attribute.Bool("cache.hit", true), attribute.Int("cache.result_count", len(sources)))
+		cacheSpan.End()
+		span.SetAttributes(attribute.Bool("retrieval.cache_hit", true))
 		return Result{
 			Sources:  topCandidates(sources, req.TopK),
 			Route:    RouteQuery(req.Question, e.hasRetriever(SourceElasticsearch)),
 			CacheHit: true,
 			Duration: time.Since(start),
 		}, nil
+	} else {
+		cacheSpan.SetAttributes(attribute.Bool("cache.hit", false))
+		cacheSpan.End()
 	}
 
+	_, routeSpan := tracer.Start(ctx, "Retrieval.Route")
 	sparseVector := e.sparseEncoder.Encode(req.Question)
 	route := RouteQuery(req.Question, e.hasRetriever(SourceElasticsearch))
 	active := e.activeRetrievers(route)
+	routeSpan.SetAttributes(
+		attribute.String("retrieval.strategy", string(route.Strategy)),
+		attribute.Int("retrieval.backend_count", len(active)),
+	)
+	routeSpan.End()
+	span.SetAttributes(
+		attribute.String("retrieval.strategy", string(route.Strategy)),
+		attribute.Bool("retrieval.cache_hit", false),
+	)
 	if len(active) == 0 {
 		return Result{}, fmt.Errorf("no retrieval backends enabled")
 	}
@@ -157,7 +207,11 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 		wg.Add(1)
 		go func(r Retriever) {
 			defer wg.Done()
-			candidates, err := r.Search(searchCtx, SearchRequest{
+			backendCtx, backendSpan := tracer.Start(searchCtx, "Retrieval.BackendSearch",
+				trace.WithSpanKind(trace.SpanKindClient),
+				trace.WithAttributes(attribute.String("retrieval.backend", r.Name())),
+			)
+			candidates, err := r.Search(backendCtx, SearchRequest{
 				Question:           req.Question,
 				DenseVector:        denseVector,
 				SparseVector:       sparseVector,
@@ -166,6 +220,12 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 				AllowedPermissions: req.AllowedPermissions,
 				ExactSchemaFields:  e.cfg.RetrievalExactSchemaFields,
 			})
+			backendSpan.SetAttributes(attribute.Int("retrieval.candidate_count", len(candidates)))
+			if err != nil {
+				backendSpan.RecordError(err)
+				backendSpan.SetStatus(codes.Error, "retrieval backend failed")
+			}
+			backendSpan.End()
 			resultCh <- backendResult{name: r.Name(), candidates: candidates, err: err}
 		}(retriever)
 	}
@@ -187,7 +247,13 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 		return Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}, fmt.Errorf("all retrieval backends failed: %s", strings.Join(partialErrors, "; "))
 	}
 
+	_, fusionSpan := tracer.Start(ctx, "Retrieval.Fusion")
 	fused := Fuse(results, route, candidateLimit)
+	fusionSpan.SetAttributes(
+		attribute.Int("retrieval.backend_result_count", len(results)),
+		attribute.Int("retrieval.fused_candidate_count", len(fused)),
+	)
+	fusionSpan.End()
 	if len(fused) == 0 {
 		return Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}, nil
 	}
@@ -195,24 +261,44 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 	ranked := topCandidates(fused, req.TopK)
 	if e.rerankerConfigured() {
 		decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused)
+		span.SetAttributes(
+			attribute.Bool("retrieval.rerank_applied", decision.ShouldRerank),
+			attribute.String("retrieval.rerank_reason", decision.Reason),
+		)
 		rerankErr := ""
 		if decision.ShouldRerank {
 			rerankTopK := req.TopK
 			if decision.ProtectExactMatches {
 				rerankTopK = len(fused)
 			}
-			reranked, err := e.reranker.Rerank(ctx, req.Question, fused, rerankTopK)
+			rerankCtx, rerankSpan := tracer.Start(ctx, "Retrieval.Rerank",
+				trace.WithSpanKind(trace.SpanKindClient),
+				trace.WithAttributes(
+					attribute.Int("rerank.candidate_count", len(fused)),
+					attribute.Int("rerank.top_k", rerankTopK),
+					attribute.Bool("rerank.protect_exact_matches", decision.ProtectExactMatches),
+				),
+			)
+			reranked, err := e.reranker.Rerank(rerankCtx, req.Question, fused, rerankTopK)
 			if err != nil {
+				rerankSpan.RecordError(err)
+				rerankSpan.SetStatus(codes.Error, "reranker failed")
 				partialErrors = append(partialErrors, "reranker: "+err.Error())
 				rerankErr = err.Error()
 			} else {
+				rerankSpan.SetAttributes(attribute.Int("rerank.result_count", len(reranked)))
 				if decision.ProtectExactMatches {
 					ranked = protectExactMatches(reranked, fused, decision.Evidence, req.TopK)
 				} else {
 					ranked = topCandidates(reranked, req.TopK)
 				}
 			}
-		} else if decision.ProtectExactMatches {
+			rerankSpan.End()
+		}
+		if decision.ProtectExactMatches && (!decision.ShouldRerank || rerankErr != "") {
+			if rerankErr != "" {
+				decision.Reason = "reranker_failed_exact_candidate_pinned"
+			}
 			ranked = protectExactMatches(fused, fused, decision.Evidence, req.TopK)
 		}
 		e.logRerankDecision(req, route, decision, fused, ranked, rerankErr)
@@ -223,9 +309,18 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (Result, error) {
 		e.logRerankDecision(req, route, decision, fused, ranked, "")
 	}
 
-	if err := e.cache.Store(ctx, cacheKey, denseVector, ranked); err != nil {
+	cacheStoreCtx, cacheStoreSpan := tracer.Start(ctx, "Retrieval.CacheStore")
+	if err := e.cache.Store(cacheStoreCtx, cacheKey, denseVector, ranked); err != nil {
+		cacheStoreSpan.RecordError(err)
+		cacheStoreSpan.SetStatus(codes.Error, "semantic cache store failed")
 		slog.Warn("retrieval cache store failed", "tenant_id", req.TenantID, "error", err)
 	}
+	cacheStoreSpan.SetAttributes(attribute.Int("cache.result_count", len(ranked)))
+	cacheStoreSpan.End()
+	span.SetAttributes(
+		attribute.Int("retrieval.result_count", len(ranked)),
+		attribute.Int("retrieval.partial_error_count", len(partialErrors)),
+	)
 
 	return Result{
 		Sources:       ranked,
@@ -341,6 +436,7 @@ func (e *Engine) embedQuestion(ctx context.Context, question string) ([]float64,
 	if !ollamaNative && e.cfg.EmbedAPIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+e.cfg.EmbedAPIKey)
 	}
+	platformtracing.InjectHTTPHeaders(ctx, req)
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {

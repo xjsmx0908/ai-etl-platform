@@ -179,7 +179,7 @@ func main() {
 	defer idemStore.Close()
 
 	// Initialize services
-	qs := query.NewService(cfg)
+	qs := query.NewServiceWithObserver(cfg, prom)
 	taskStatusStore, err := newTaskStatusStore(cfg)
 	if err != nil {
 		slog.Error("failed to create task status store", "error", err)
@@ -220,6 +220,7 @@ func main() {
 	handler = middleware.CORS(cfg.CORSAllowedOrigins)(handler)
 	handler = middleware.Timeout(60 * time.Second)(handler)
 	handler = prom.HTTPMiddleware(handler)
+	handler = tracing.HTTPMiddleware("query-api.http")(handler)
 
 	// Mount v1 routes
 	mux.Handle("/", handler)

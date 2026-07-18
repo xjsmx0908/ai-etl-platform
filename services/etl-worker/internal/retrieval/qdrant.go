@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"ai-etl-pipeline/internal/tracing"
 )
 
 // QdrantRetriever performs Qdrant named-vector hybrid search.
@@ -96,6 +98,7 @@ func (r *QdrantRetriever) Search(ctx context.Context, req SearchRequest) ([]Cand
 	if r.apiKey != "" {
 		httpReq.Header.Set("api-key", r.apiKey)
 	}
+	tracing.InjectHTTPHeaders(ctx, httpReq)
 
 	resp, err := r.client.Do(httpReq)
 	if err != nil {

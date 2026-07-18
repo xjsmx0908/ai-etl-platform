@@ -76,6 +76,37 @@ func TestAgentMetricsRecordLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestLLMMetricsRecordOutcomeAndConsecutiveFailures(t *testing.T) {
+	m := New("test_ai_etl_llm")
+	m.InitializeLLMModel("test-model")
+
+	if got := gaugeValue(t, m.LLMConsecutiveFailures.WithLabelValues("test-model")); got != 0 {
+		t.Fatalf("expected initialized consecutive failure gauge 0, got %v", got)
+	}
+
+	m.RecordLLMRequest("test-model", "server_error", 250*time.Millisecond)
+	m.RecordLLMRequest("test-model", "server_error", 500*time.Millisecond)
+
+	if got := counterValue(t, m.LLMRequests.WithLabelValues("test-model", "server_error")); got != 2 {
+		t.Fatalf("expected two failed LLM requests, got %v", got)
+	}
+	if got := histogramCount(t, m.LLMRequestDuration.WithLabelValues("test-model", "server_error").(prometheus.Metric)); got != 2 {
+		t.Fatalf("expected two LLM duration samples, got %v", got)
+	}
+	if got := gaugeValue(t, m.LLMConsecutiveFailures.WithLabelValues("test-model")); got != 2 {
+		t.Fatalf("expected consecutive failure gauge 2, got %v", got)
+	}
+
+	m.RecordLLMRequest("test-model", "success", 100*time.Millisecond)
+
+	if got := counterValue(t, m.LLMRequests.WithLabelValues("test-model", "success")); got != 1 {
+		t.Fatalf("expected one successful LLM request, got %v", got)
+	}
+	if got := gaugeValue(t, m.LLMConsecutiveFailures.WithLabelValues("test-model")); got != 0 {
+		t.Fatalf("expected success to reset consecutive failures, got %v", got)
+	}
+}
+
 func TestHandlerForUsesProvidedGatherer(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New("test_ai_etl_handler")

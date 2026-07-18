@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"ai-etl-pipeline/internal/tracing"
 )
 
 // ElasticRetriever performs tenant- and permission-filtered BM25 retrieval.
@@ -98,6 +100,7 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 	if r.apiKey != "" {
 		httpReq.Header.Set("Authorization", "ApiKey "+r.apiKey)
 	}
+	tracing.InjectHTTPHeaders(ctx, httpReq)
 
 	resp, err := r.client.Do(httpReq)
 	if err != nil {

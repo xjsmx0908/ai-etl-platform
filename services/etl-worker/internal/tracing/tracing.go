@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -71,4 +73,35 @@ func Init(cfg Config) (func(), error) {
 // Tracer returns the global tracer for the given component.
 func Tracer(component string) trace.Tracer {
 	return otel.Tracer(component)
+}
+
+// HTTPMiddleware continues an incoming W3C trace or starts a new server trace.
+func HTTPMiddleware(component string) func(http.Handler) http.Handler {
+	tracer := Tracer(component)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+			ctx, span := tracer.Start(ctx, r.Method+" "+r.URL.Path,
+				trace.WithSpanKind(trace.SpanKindServer),
+				trace.WithAttributes(
+					attribute.String("http.request.method", r.Method),
+					attribute.String("url.path", r.URL.Path),
+				),
+			)
+			defer span.End()
+
+			if traceID := span.SpanContext().TraceID(); traceID.IsValid() {
+				w.Header().Set("X-Trace-ID", traceID.String())
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// InjectHTTPHeaders propagates the current W3C trace context to an HTTP request.
+func InjectHTTPHeaders(ctx context.Context, req *http.Request) {
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 }

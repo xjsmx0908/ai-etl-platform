@@ -36,7 +36,28 @@ type Service struct {
 	httpClient   *http.Client
 	breaker      *circuit.Breaker
 	tracer       trace.Tracer
+	llmObserver  LLMObserver
 }
+
+// LLMObserver receives low-cardinality LLM request outcomes for metrics adapters.
+type LLMObserver interface {
+	RecordLLMRequest(model, outcome string, duration time.Duration)
+}
+
+type llmModelInitializer interface {
+	InitializeLLMModel(model string)
+}
+
+const (
+	llmOutcomeSuccess         = "success"
+	llmOutcomeTimeout         = "timeout"
+	llmOutcomeRateLimited     = "rate_limited"
+	llmOutcomeClientError     = "client_error"
+	llmOutcomeServerError     = "server_error"
+	llmOutcomeInvalidResponse = "invalid_response"
+	llmOutcomeRequestError    = "request_error"
+	llmOutcomeCircuitOpen     = "circuit_open"
+)
 
 // Request represents a query request from the client.
 type Request struct {
@@ -81,7 +102,15 @@ var roleAllowedDocPermissions = map[string][]string{
 
 // NewService creates a Query Service with its own LLM configuration.
 func NewService(cfg config.Config) *Service {
-	return &Service{
+	return NewServiceWithObserver(cfg, nil)
+}
+
+// NewServiceWithObserver creates a Query Service and reports LLM calls to observer.
+func NewServiceWithObserver(cfg config.Config, observer LLMObserver) *Service {
+	if observer == nil {
+		observer = noopLLMObserver{}
+	}
+	service := &Service{
 		cfg:          cfg,
 		llmEndpoint:  normalizeLLMEndpoint(config.EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
 		llmAPIKey:    config.EnvSecret("LLM_API_KEY", ""),
@@ -91,7 +120,12 @@ func NewService(cfg config.Config) *Service {
 		httpClient:   &http.Client{Timeout: 30 * time.Second},
 		breaker:      circuit.New("llm-api", 5, 60*time.Second),
 		tracer:       tracing.Tracer("query"),
+		llmObserver:  observer,
 	}
+	if initializer, ok := observer.(llmModelInitializer); ok {
+		initializer.InitializeLLMModel(service.llmModel)
+	}
+	return service
 }
 
 // HandleQuery is the HTTP handler for POST /v1/query.
@@ -144,7 +178,16 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 // Ask executes the RAG query pipeline for an authenticated caller.
-func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (Response, error) {
+func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (response Response, err error) {
+	ctx, askSpan := s.tracer.Start(ctx, "QueryService.Ask")
+	defer func() {
+		if err != nil {
+			askSpan.RecordError(err)
+			askSpan.SetStatus(codes.Error, "query failed")
+		}
+		askSpan.End()
+	}()
+
 	if strings.TrimSpace(req.Question) == "" {
 		return Response{}, ErrQuestionRequired
 	}
@@ -264,7 +307,8 @@ func allowedDocumentPermissionsForRole(role string) []string {
 	return roleAllowedDocPermissions["readonly"]
 }
 
-func (s *Service) generateAnswer(ctx context.Context, question string, sources []SourceContext) (string, error) {
+func (s *Service) generateAnswer(ctx context.Context, question string, sources []SourceContext) (answer string, err error) {
+	_, promptSpan := s.tracer.Start(ctx, "Prompt.Build")
 	var contextBuilder bytes.Buffer
 	for i, src := range sources {
 		fmt.Fprintf(&contextBuilder, "[文档%d] (来源: %s)\n%s\n\n", i+1, src.DocID, src.Content)
@@ -288,23 +332,81 @@ func (s *Service) generateAnswer(ctx context.Context, question string, sources [
 		"max_tokens": s.llmMaxTokens,
 	}
 	data, _ := json.Marshal(reqBody)
+	promptSpan.SetAttributes(
+		attribute.Int("prompt.source_count", len(sources)),
+		attribute.Int("prompt.context_chars", contextBuilder.Len()),
+		attribute.Int("prompt.request_bytes", len(data)),
+	)
+	promptSpan.End()
+
+	ctx, llmSpan := s.tracer.Start(ctx, "LLM.ChatCompletion",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("gen_ai.request.model", s.llmModel),
+			attribute.Int("gen_ai.request.max_tokens", s.llmMaxTokens),
+		),
+	)
+	defer func() {
+		if err != nil {
+			llmSpan.RecordError(err)
+			llmSpan.SetStatus(codes.Error, "LLM generation failed")
+		}
+		llmSpan.End()
+	}()
+	llmStarted := time.Now()
+	llmOutcome := llmOutcomeSuccess
+	defer func() {
+		s.llmObserver.RecordLLMRequest(s.llmModel, llmOutcome, time.Since(llmStarted))
+	}()
+
+	result, err := s.breaker.Execute(func() (any, error) {
+		return s.callLLM(ctx, data)
+	})
+	if err != nil {
+		llmOutcome = classifyLLMOutcome(err)
+		return "", err
+	}
+
+	answer, ok := result.(string)
+	if !ok || strings.TrimSpace(answer) == "" {
+		llmOutcome = llmOutcomeInvalidResponse
+		return "", newLLMCallError(llmOutcomeInvalidResponse, errors.New("empty LLM response"))
+	}
+
+	llmSpan.SetAttributes(attribute.Int("gen_ai.response.chars", len(answer)))
+	return answer, nil
+}
+
+func (s *Service) callLLM(ctx context.Context, data []byte) (string, error) {
 
 	req, err := http.NewRequestWithContext(ctx, "POST", s.llmEndpoint, bytes.NewReader(data))
 	if err != nil {
-		return "", err
+		return "", newLLMCallError(llmOutcomeRequestError, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+s.llmAPIKey)
+	tracing.InjectHTTPHeaders(ctx, req)
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("LLM request failed: %w", err)
+		outcome := llmOutcomeRequestError
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			outcome = llmOutcomeTimeout
+		}
+		return "", newLLMCallError(outcome, fmt.Errorf("LLM request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("LLM API error %d: %s", resp.StatusCode, string(body))
+		outcome := llmOutcomeClientError
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			outcome = llmOutcomeRateLimited
+		case resp.StatusCode >= 500:
+			outcome = llmOutcomeServerError
+		}
+		return "", newLLMCallError(outcome, fmt.Errorf("LLM API error %d: %s", resp.StatusCode, string(body)))
 	}
 
 	var result struct {
@@ -315,14 +417,42 @@ func (s *Service) generateAnswer(ctx context.Context, question string, sources [
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode LLM response: %w", err)
+		return "", newLLMCallError(llmOutcomeInvalidResponse, fmt.Errorf("decode LLM response: %w", err))
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("empty LLM response")
+		return "", newLLMCallError(llmOutcomeInvalidResponse, errors.New("empty LLM response"))
 	}
 
 	return result.Choices[0].Message.Content, nil
 }
+
+type llmCallError struct {
+	outcome string
+	err     error
+}
+
+func newLLMCallError(outcome string, err error) *llmCallError {
+	return &llmCallError{outcome: outcome, err: err}
+}
+
+func (e *llmCallError) Error() string { return e.err.Error() }
+
+func (e *llmCallError) Unwrap() error { return e.err }
+
+func classifyLLMOutcome(err error) string {
+	if circuit.IsRejected(err) {
+		return llmOutcomeCircuitOpen
+	}
+	var callErr *llmCallError
+	if errors.As(err, &callErr) {
+		return callErr.outcome
+	}
+	return llmOutcomeRequestError
+}
+
+type noopLLMObserver struct{}
+
+func (noopLLMObserver) RecordLLMRequest(string, string, time.Duration) {}
 
 func sourceContextsFromCandidates(candidates []retrieval.Candidate) []SourceContext {
 	sources := make([]SourceContext, 0, len(candidates))

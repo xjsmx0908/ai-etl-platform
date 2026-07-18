@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -261,6 +262,42 @@ func TestEngineRerankPolicy_ProtectsSchemaMetadataEvidence(t *testing.T) {
 	}
 }
 
+func TestEngineRerankPolicy_PinsSchemaMetadataEvidenceWhenRerankerFails(t *testing.T) {
+	embedServer := newPolicyEvalEmbedServer(t)
+	defer embedServer.Close()
+
+	retrievers := map[string]Retriever{
+		SourceQdrant: staticPolicyEvalRetriever{
+			name: SourceQdrant,
+			candidates: []Candidate{
+				{ChunkID: "schema-distractor", DocID: "doc-reference-guide", Content: "客户参考号通用处理说明。", Rank: 1},
+				{ChunkID: "schema-exact-target", DocID: "doc-customer-reference", Content: "客户参考号当前处于已处理状态。", Metadata: map[string]string{"customer_ref": "x9k-77q-plum"}, Rank: 2},
+			},
+		},
+	}
+	req := Request{
+		Question:           "请解释客户参考号 x9k-77q-plum 的处理说明",
+		TopK:               1,
+		TenantID:           "tenant-policy-eval-reranker-failure",
+		AllowedPermissions: []string{"public"},
+	}
+	reranker := &failingPolicyEvalReranker{}
+	engine := newPolicyEvalEngine(embedServer.URL, embedServer.Client(), retrievers, reranker, true, config.RerankPolicyAuto)
+	result, err := engine.Retrieve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retrieve with failed reranker exact protection: %v", err)
+	}
+	if got := firstChunkID(result); got != "schema-exact-target" {
+		t.Fatalf("expected schema metadata exact target pinned after reranker failure, got %q", got)
+	}
+	if reranker.calls != 1 {
+		t.Fatalf("expected failed reranker called once, got %d calls", reranker.calls)
+	}
+	if len(result.PartialErrors) != 1 {
+		t.Fatalf("expected reranker partial error, got %+v", result.PartialErrors)
+	}
+}
+
 func TestEngineRerankPolicy_PinsSchemaMetadataEvidenceWithoutReranker(t *testing.T) {
 	embedServer := newPolicyEvalEmbedServer(t)
 	defer embedServer.Close()
@@ -324,6 +361,15 @@ func (r staticPolicyEvalRetriever) Search(context.Context, SearchRequest) ([]Can
 type scoringPolicyEvalReranker struct {
 	scores map[string]float64
 	calls  int
+}
+
+type failingPolicyEvalReranker struct {
+	calls int
+}
+
+func (r *failingPolicyEvalReranker) Rerank(_ context.Context, _ string, _ []Candidate, _ int) ([]Candidate, error) {
+	r.calls++
+	return nil, errors.New("reranker unavailable")
 }
 
 func (r *scoringPolicyEvalReranker) Rerank(_ context.Context, _ string, candidates []Candidate, topK int) ([]Candidate, error) {
