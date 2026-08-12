@@ -30,13 +30,38 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
+  # Evictable cache only (semantic retrieval cache). allkeys-lru is correct here:
+  # losing a cached result costs one extra retrieval, nothing more.
+  redis-cache:
     image: redis:7-alpine
     ports:
-      - "${REDIS_HOST_PORT:-6379}:6379"
+      - "${REDIS_CACHE_HOST_PORT:-6379}:6379"
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
-      - redis_data:/data
+      - redis_cache_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Durable state: Agent runs, approval audit, fencing tokens, idempotency keys,
+  # checkpoints, task status, ES retry queue.
+  # noeviction is mandatory — evicting a fencing token silently defeats the
+  # stale-write rejection in agent.Orchestrator, and evicting an approval record
+  # destroys a compliance artifact. AOF everysec bounds loss to ~1s on crash.
+  redis-state:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_STATE_HOST_PORT:-6380}:6379"
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - redis_state_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -234,9 +259,11 @@ services:
       - KAFKA_DLQ_TOPIC=${KAFKA_DLQ_TOPIC:-doc-processing-dlq}
       - STORE_ENDPOINT=http://qdrant:6333
       - STORE_COLLECTION=${STORE_COLLECTION:-documents}
-      - REDIS_ADDR=redis:6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      # Worker touches only durable state (checkpoint, task status, ES retry queue).
+      - REDIS_STATE_ADDR=redis-state:6379
+      - REDIS_STATE_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_STATE_PASSWORD_FILE=/run/secrets/redis_password
+      - REDIS_STATE_DB=${REDIS_STATE_DB:-0}
       - ES_ADDRESS=${ES_ADDRESS:-http://elasticsearch:9200}
       - ES_API_KEY=${ES_API_KEY:-}
       - ES_API_KEY_FILE=/run/secrets/es_api_key
@@ -278,7 +305,7 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-      redis:
+      redis-state:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -312,10 +339,15 @@ services:
       - HTTP_IDLE_TIMEOUT=${HTTP_IDLE_TIMEOUT:-120s}
       - HTTP_MAX_HEADER_BYTES=${HTTP_MAX_HEADER_BYTES:-1048576}
       - IDEMPOTENCY_TTL=${IDEMPOTENCY_TTL:-24h}
-      - REDIS_ADDR=redis:6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
-      - REDIS_DB=${REDIS_DB:-0}
+      # API uses both: evictable semantic cache and durable Agent/idempotency state.
+      - REDIS_CACHE_ADDR=redis-cache:6379
+      - REDIS_CACHE_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_CACHE_PASSWORD_FILE=/run/secrets/redis_password
+      - REDIS_CACHE_DB=${REDIS_CACHE_DB:-0}
+      - REDIS_STATE_ADDR=redis-state:6379
+      - REDIS_STATE_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_STATE_PASSWORD_FILE=/run/secrets/redis_password
+      - REDIS_STATE_DB=${REDIS_STATE_DB:-0}
       - JWT_SECRET=${JWT_SECRET:-}
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - KAFKA_BROKERS=kafka:9092
@@ -352,6 +384,10 @@ services:
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_API_KEY_FILE=/run/secrets/llm_api_key
       - LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
+      - LLM_PRICE_PROMPT_PER_1K=${LLM_PRICE_PROMPT_PER_1K:-0}
+      - LLM_PRICE_COMPLETION_PER_1K=${LLM_PRICE_COMPLETION_PER_1K:-0}
+      - PROMPT_DIR=/prompts
+      - PROMPT_VERSION=${PROMPT_VERSION:-v1}
       - AGENT_NODE_ID=${AGENT_NODE_ID:-agent-api-1}
       - AGENT_MAX_STEPS=${AGENT_MAX_STEPS:-8}
       - AGENT_LOCK_TTL=${AGENT_LOCK_TTL:-30s}
@@ -383,7 +419,9 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
-      redis:
+      redis-cache:
+        condition: service_healthy
+      redis-state:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -401,6 +439,9 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - upload_data:/data/uploads
+      # Versioned system prompts (PROMPT_DIR). Change PROMPT_VERSION to load a
+      # different file; keeps prompt history in git for eval A/B.
+      - ./prompts:/prompts:ro
 
   # Optional CPU Cross-Encoder Reranker
   reranker-service:
@@ -431,7 +472,8 @@ services:
 
 volumes:
   kafka_data:
-  redis_data:
+  redis_cache_data:
+  redis_state_data:
   qdrant_data:
   es_data:
   minio_data:

@@ -40,3 +40,12 @@ docs/evals/private/*
 
 # Local learning plans
 plan/
+
+# Unrelated agent/tool workspace artifacts (not part of this project)
+SOUL.md
+IDENTITY.md
+HEARTBEAT.md
+TOOLS.md
+USER.md
+openclaw-workspace-state.json
+state/

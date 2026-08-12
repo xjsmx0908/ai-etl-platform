@@ -4,6 +4,32 @@ from types import SimpleNamespace
 import pytest
 
 from app.routers import parse as parse_module
+from app.services.chunker import estimate_tokens
+
+
+def test_estimate_tokens_cjk_not_underestimated():
+    # The old `len // 4` counted Chinese at 4 chars/token (underestimating by
+    # 2-4x). A 100-char Chinese sentence should estimate around 100 tokens.
+    text = "知识库中的文档分为多个可见级别" * 8  # 80 chars
+    assert len(text) == 80
+    tokens = estimate_tokens(text)
+    assert tokens >= 80, f"expected CJK counted ~1:1, got {tokens} for 80 chars"
+    assert tokens < 160
+
+
+def test_estimate_tokens_mixed_cjk_latin():
+    # Latin still counts ~4 chars/token; CJK ~1:1. Mixing both must reflect it.
+    cjk = "文档解析支持三种格式"  # 10 CJK
+    latin = "pdf upload support format"  # 25 latin chars
+    tokens = estimate_tokens(cjk + latin)
+    # 10 CJK + ~6 latin tokens = ~16; allow slack but must be > pure-latin scaling
+    assert tokens >= 14
+    assert tokens <= 22, f"expected ~16, got {tokens}"
+
+
+def test_estimate_tokens_english_rule_of_thumb():
+    text = "this is a sample english document text"  # 37 chars
+    assert estimate_tokens(text) == 37 // 4
 
 
 class FakeUploadFile:

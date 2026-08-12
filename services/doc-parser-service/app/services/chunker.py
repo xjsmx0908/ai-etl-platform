@@ -189,8 +189,13 @@ def get_overlap(text: str, overlap_size: int) -> str:
 
 def estimate_tokens(text: str) -> int:
     """
-    Rough token count estimation
-    Rule of thumb: 1 token ≈ 4 characters for English
+    Rough token count estimation.
+
+    English: ~4 chars per token; CJK: ~1 char per token (often less, but 1 is a
+    safe over-estimate that keeps chunk sizes conservative for Chinese corpora).
+    The old flat `len(text) // 4` underestimated Chinese by 2-4x, which made the
+    parser over-pack chunks relative to the configured MAX_CHUNK_SIZE budget.
     """
-    # Simple heuristic: 1 token ≈ 4 chars
-    return len(text) // 4
+    cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
+    latin = len(text) - cjk
+    return (latin // 4) + cjk
