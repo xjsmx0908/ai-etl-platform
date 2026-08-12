@@ -388,7 +388,7 @@ P1 缺陷修复 (3-5d) ─────┤   （T-14 阶段 1 提到 P1，0.5d）
 | T-14 | Redis 状态/缓存分离（阶段 1） | P1 | 0.5d | **done** | 2026-08-08 | 见 ADR 0004；全量测试 + compose 校验通过 |
 | T-14b | 状态迁 PostgreSQL（阶段 2） | P3 | 3d | todo | | 与 T-15 合并 |
 | T-15 | 审批审计持久化 | P3 | 2d | todo | | 与 T-14b 合并 |
-| T-16 | 文档删除与重建索引 | P3 | 3d | **doing** | | DELETE API + Qdrant/ES/MinIO 级联删除完成；reindex.py 重建脚本待做 |
+| T-16 | 文档删除与重建索引 | P3 | 3d | **done** | 2026-08-10 | DELETE API + Qdrant/ES/MinIO 级联删除 + reindex.py 重建脚本 |
 | T-17 | 双写对账机制 | P3 | 2d | todo | | 与 T-16 合并 |
 | T-18 | 拆分 agent-api 服务 | P3 | 3d | todo | | 最低优先级 |
 | T-19 | 重写面试材料 | P4 | 2d | **done** | 2026-08-10 | 基于真实评测数据重写；含失败复盘；删除旧 mock 数字 |
