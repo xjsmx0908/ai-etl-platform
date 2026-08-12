@@ -160,6 +160,49 @@ func TestAsyncSink_RetryBackoffAndDeadLetter(t *testing.T) {
 	t.Fatal("expected message moved to dead-letter after max retries")
 }
 
+// The dead-letter hook must fire when a chunk is dropped, so callers can count
+// Qdrant/ES divergence in metrics and alert on it.
+func TestAsyncSink_DeadLetterHookFires(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodHead:
+			w.WriteHeader(http.StatusOK)
+		case http.MethodPut:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"temporary"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatalf("new indexer: %v", err)
+	}
+	queue := NewMemoryRetryQueue(100)
+	sink := NewAsyncSink(idx, queue, 20*time.Millisecond, 2, 10*time.Millisecond, 40*time.Millisecond, 0)
+	defer sink.Close()
+
+	var hookCalls int32
+	sink.SetDeadLetterHook(func() {
+		atomic.AddInt32(&hookCalls, 1)
+	})
+
+	if err := sink.Enqueue(context.Background(), model.Chunk{ChunkID: "doc-9_0001", DocID: "doc-9", Content: "x"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&hookCalls) > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("expected dead-letter hook to fire after max retries")
+}
+
 func TestIsRetryableError(t *testing.T) {
 	cases := []struct {
 		err  error

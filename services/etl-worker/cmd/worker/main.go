@@ -103,6 +103,11 @@ func main() {
 		slog.Error("failed to create full-text sink", "error", err)
 		os.Exit(1)
 	}
+	// Surface Qdrant/ES divergence: a chunk reaching ES dead-letter means the
+	// vector store has it but the full-text index never will.
+	fullTextSink.SetDeadLetterHook(func() {
+		prom.ESDeadLetter.WithLabelValues("es").Inc()
+	})
 	defer func() {
 		if fullTextSink != nil {
 			_ = fullTextSink.Close()
@@ -245,7 +250,7 @@ func newTaskSource(cfg config.Config, dlq model.DLQStore) (model.TaskSource, err
 	return kafka.NewSource(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, dlq)
 }
 
-func newFullTextSink(cfg config.Config) (model.FullTextSink, error) {
+func newFullTextSink(cfg config.Config) (*es.AsyncSink, error) {
 	indexer, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
 	if err != nil {
 		return nil, err

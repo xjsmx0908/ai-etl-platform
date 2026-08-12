@@ -389,7 +389,7 @@ P1 缺陷修复 (3-5d) ─────┤   （T-14 阶段 1 提到 P1，0.5d）
 | T-14b | 状态迁 PostgreSQL（阶段 2） | P3 | 3d | todo | | 与 T-15 合并 |
 | T-15 | 审批审计持久化 | P3 | 2d | todo | | 与 T-14b 合并 |
 | T-16 | 文档删除与重建索引 | P3 | 3d | **done** | 2026-08-10 | DELETE API + Qdrant/ES/MinIO 级联删除 + reindex.py 重建脚本 |
-| T-17 | 双写对账机制 | P3 | 2d | todo | | 与 T-16 合并 |
+| T-17 | 双写对账机制 | P3 | 2d | **doing** | | dead letter 指标 + 告警完成（可发现静默缺失）；主动对账任务（Qdrant/ES 比对重放）待做 |
 | T-18 | 拆分 agent-api 服务 | P3 | 3d | todo | | 最低优先级 |
 | T-19 | 重写面试材料 | P4 | 2d | **done** | 2026-08-10 | 基于真实评测数据重写；含失败复盘；删除旧 mock 数字 |
 | T-20 | 补充 ADR | P4 | 1d | **done** | 2026-08-10 | ADR 0005 检索配置决策（hybrid 保留 / rerank 关闭）基于实验数据 |

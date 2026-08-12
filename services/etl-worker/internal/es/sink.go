@@ -30,6 +30,16 @@ type AsyncSink struct {
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
+
+	// onDeadLetter is invoked (non-blocking) whenever a chunk moves to the
+	// dead-letter set, so callers can count it in metrics/alerting.
+	onDeadLetter func()
+}
+
+// SetDeadLetterHook registers a callback invoked when a chunk is dropped to
+// the ES dead-letter set. Used to surface Qdrant/ES divergence in metrics.
+func (s *AsyncSink) SetDeadLetterHook(fn func()) {
+	s.onDeadLetter = fn
 }
 
 // NewAsyncSink builds sink and starts replay worker.
@@ -236,6 +246,9 @@ func (s *AsyncSink) pushDeadLetter(ctx context.Context, msg RetryMessage) error 
 	}
 	slog.Warn("es message moved to dead-letter",
 		"chunk_id", msg.Chunk.ChunkID, "doc_id", msg.Chunk.DocID, "retry", msg.Retry)
+	if s.onDeadLetter != nil {
+		s.onDeadLetter()
+	}
 	return nil
 }
 

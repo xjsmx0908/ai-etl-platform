@@ -25,6 +25,18 @@ groups:
         annotations:
           summary: ETL tasks are landing in DLQ
 
+      - alert: ESDeadLetterNonZero
+        expr: increase(ai_etl_es_deadletter_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Chunks permanently failed ES indexing (Qdrant/ES divergence)
+          description: >-
+            Some chunks exist in the vector store but never reached the
+            full-text index. Query results may silently miss full-text hits.
+            Investigate ES connectivity and consider re-indexing affected docs.
+
       - alert: CircuitBreakerOpen
         expr: ai_etl_circuit_state == 1
         for: 5m

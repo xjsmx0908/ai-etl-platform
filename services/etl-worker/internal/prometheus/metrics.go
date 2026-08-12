@@ -47,6 +47,9 @@ type Metrics struct {
 	StoreDuration   *prometheus.HistogramVec
 	StoreFailures   *prometheus.CounterVec
 	DLQMessages     *prometheus.CounterVec
+	// ESDeadLetter counts chunks that permanently failed ES indexing. Non-zero
+	// means Qdrant and ES are silently diverging — alert on it.
+	ESDeadLetter *prometheus.CounterVec
 
 	// Query metrics
 	QueryDuration          *prometheus.HistogramVec
@@ -149,6 +152,15 @@ func New(namespace string) *Metrics {
 				Subsystem: "dlq",
 				Name:      "messages_total",
 				Help:      "Total messages sent to dead letter queue",
+			},
+			[]string{"reason"},
+		),
+		ESDeadLetter: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "es",
+				Name:      "deadletter_total",
+				Help:      "Chunks that permanently failed ES indexing (Qdrant/ES divergence)",
 			},
 			[]string{"reason"},
 		),
@@ -303,6 +315,7 @@ func New(namespace string) *Metrics {
 		m.StoreDuration,
 		m.StoreFailures,
 		m.DLQMessages,
+		m.ESDeadLetter,
 		m.QueryDuration,
 		m.QueryFailures,
 		m.RetrievalCount,
