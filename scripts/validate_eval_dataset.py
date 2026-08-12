@@ -13,6 +13,20 @@ from typing import Any, Iterable
 
 
 REQUIRED_FIELDS = ("id", "filename", "permission", "content", "query")
+
+# Max fraction of query content words that may appear verbatim in the target
+# content before the case is flagged as keyword-match instead of semantic.
+# Anchor-token datasets (e.g. "Find the source containing alpha001") score near
+# 1.0 and tell us nothing about semantic retrieval; well-written paraphrases
+# stay well below this. Real business terms (PDF, Word) are allowed to overlap.
+MAX_QUERY_CONTENT_OVERLAP = 0.55
+
+# Tokens too common to carry retrieval signal. Mostly Chinese particles and
+# light verbs; Latin words are handled by the term filter (len < 4 dropped).
+STOPWORDS = frozenset(
+    "的 了 是 和 与 或 吗 呢 吧 啊 在 有 能 会 要 把 被 对 从 到 于 而 也 都 这 那 什么 怎么 可以 这个 那个 一个 一下 一些 哪里 多少 系统 文件 文档 内容 上传 检索 查询 支持 使用 知道 看到 搜索 知识库 请问 我们 你们 他 她 它 我 你 得 很 太 比较 超过 是否 那个 因为 所以 然后 如果 可以 应该 需要 会 不会 能不能 是不是 有没有".split()
+)
+
 SENSITIVE_PATTERNS = (
     ("email address", re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)),
     ("China mobile number", re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")),
@@ -90,6 +104,17 @@ def validate_dataset(
             report.errors.append(f"{case_label}: reference_answer is required")
 
         validate_optional_types(case, case_label, report)
+
+        # Semantic-set guardrail: a query that mostly repeats the target
+        # document's words is a keyword-match test, not a semantic one. It
+        # would pass without any semantic understanding and inflate metrics.
+        overlap = query_content_overlap(case)
+        if overlap > MAX_QUERY_CONTENT_OVERLAP:
+            report.warnings.append(
+                f"{case_label}: query/content lexical overlap {overlap:.0%} "
+                f"(> {MAX_QUERY_CONTENT_OVERLAP:.0%}); likely keyword-match, not semantic"
+            )
+
         for field_name, value in text_values(case):
             for pattern_name, pattern in SENSITIVE_PATTERNS:
                 if pattern.search(value):
@@ -101,6 +126,39 @@ def validate_dataset(
                     break
 
     return report
+
+
+def tokenize(text: str) -> set[str]:
+    """Content words in text. Chinese is split per character (not a real
+    segmenter, good enough for overlap); Latin tokens must be >= 4 chars to be
+    considered signal (PDF -> pdf, but "view"/"the" drop out)."""
+    text = text.lower()
+    tokens: set[str] = set()
+    for ch in text:
+        if "一" <= ch <= "鿿" and ch not in STOPWORDS:
+            tokens.add(ch)
+    for match in re.findall(r"[a-z0-9]{4,}", text):
+        tokens.add(match)
+    return tokens
+
+
+def query_content_overlap(case: dict[str, Any]) -> float:
+    """Fraction of the query's content words that appear verbatim in content.
+
+    Returns 0.0 when either side has no content words.
+    """
+    query = case.get("query")
+    content = case.get("content")
+    if not isinstance(query, str) or not isinstance(content, str):
+        return 0.0
+    query_tokens = tokenize(query)
+    if not query_tokens:
+        return 0.0
+    content_tokens = tokenize(content)
+    if not content_tokens:
+        return 0.0
+    overlap = len(query_tokens & content_tokens) / len(query_tokens)
+    return overlap
 
 
 def validate_optional_types(case: dict[str, Any], case_label: str, report: DatasetReport) -> None:

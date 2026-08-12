@@ -56,8 +56,10 @@ export ENVIRONMENT=staging
 export WORKER_REPLICAS=1
 export API_REPLICAS=1
 export EMBED_DIMENSION
-export REDIS_ADDR=redis:6379
-export REDIS_DB=0
+export REDIS_CACHE_ADDR=redis-cache:6379
+export REDIS_CACHE_DB=0
+export REDIS_STATE_ADDR=redis-state:6379
+export REDIS_STATE_DB=0
 
 if [[ "${EXTERNAL_LLM_MODE}" != "1" ]]; then
   export EMBED_MODEL=smoke-embed

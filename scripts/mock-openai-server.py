@@ -15,8 +15,10 @@ from typing import Any
 class Handler(BaseHTTPRequestHandler):
     server: "MockServer"
     anchor_re = re.compile(r"alpha[0-9a-z-]*", re.IGNORECASE)
+    # Matches the query-api prompt's document envelope:
+    #   <document doc_id="...">\n<content>\n</document>
     source_re = re.compile(
-        r"\[文档\d+\]\s+\(来源:\s*([^)]+)\)\n(.*?)(?=\n\n\[文档\d+\]\s+\(来源:|\n\n用户问题：|$)",
+        r'<document doc_id="([^"]+)">\n(.*?)\n</document>',
         re.DOTALL,
     )
 

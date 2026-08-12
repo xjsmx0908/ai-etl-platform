@@ -1,7 +1,9 @@
 services:
   kafka:
     ports: !reset []
-  redis:
+  redis-cache:
+    ports: !reset []
+  redis-state:
     ports: !reset []
   qdrant:
     ports: !reset []

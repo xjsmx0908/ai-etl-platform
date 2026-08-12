@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
-"""Deterministic retrieval eval runner for AI-ETL pipeline.
+"""Retrieval eval runner for AI-ETL pipeline.
+
+Two model modes:
+
+- mock (default): a local hash-based OpenAI-compatible server. Deterministic and
+  free, suitable as a CI gate. It validates the integration path only — the
+  embeddings carry no semantic structure, so its retrieval metrics are NOT a
+  quality signal. See docs/adr/0002-deterministic-mock-models.md.
+- real (--real-models): live embedding and LLM endpoints. The only mode whose
+  Recall/MRR numbers describe actual retrieval quality.
 
 Flow:
-1) Start local mock OpenAI-compatible server.
+1) Start the mock model server (mock mode only).
 2) Start docker compose stack (staging mode, single worker/api).
 3) Upload golden documents through /v1/upload.
 4) Poll /v1/query and verify each query retrieves expected doc_id.
@@ -34,7 +43,28 @@ DEFAULT_GOLDEN_SET = ROOT / "docs" / "evals" / "golden-set.json"
 DEFAULT_REPORT_DIR = ROOT / "docs" / "evals" / "reports"
 EVAL_COMPOSE_FILE = ROOT / "docker-compose.eval.yml"
 NOT_FOUND_ANSWER = "未找到相关文档，无法回答该问题。"
-NEGATIVE_FALLBACK_MARKERS = (NOT_FOUND_ANSWER, "未在参考文档中直接定位锚点")
+
+# Refusal detection must not depend on any single model's phrasing.
+#
+# An earlier version also accepted "未在参考文档中直接定位锚点" — that string is the
+# *mock server's* wording, so the assertion silently encoded a mock implementation
+# detail and could never match a real model. Real models phrase refusals freely,
+# so match on refusal semantics instead: the canonical string the system prompt
+# asks for, plus common paraphrases.
+NEGATIVE_FALLBACK_MARKERS = (
+    NOT_FOUND_ANSWER,
+    "未找到相关文档",
+    "无法回答",
+    "没有相关文档",
+    "不包含",
+    "无法从参考文档",
+    "参考文档不足",
+    "未提供相关",
+)
+
+# Dataset tokens that express "cite the source" rather than a literal substring.
+# They are validated against the response's sources[].doc_id, not the answer text.
+CITATION_MARKER_TOKENS = frozenset({"来源:", "来源：", "来源"})
 
 
 @dataclass
@@ -90,9 +120,112 @@ def run_cmd(
     return proc
 
 
+@dataclass(frozen=True)
+class ModelProfile:
+    """Resolved model endpoints for one eval run.
+
+    mock mode  -> deterministic hash-based embeddings, integration-path validation only.
+    real mode  -> live embedding/LLM services, the only mode whose retrieval metrics
+                  say anything about quality.
+    """
+
+    mode: str  # "mock" | "real"
+    embed_endpoint: str
+    embed_model: str
+    embed_dim: int
+    embed_api_key: str
+    llm_endpoint: str
+    llm_model: str
+    llm_api_key: str
+    store_collection: str
+
+    @property
+    def is_real(self) -> bool:
+        return self.mode == "real"
+
+
+def read_secret_file(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def resolve_model_profile(args: argparse.Namespace, mock_port: int) -> ModelProfile:
+    """Build the model profile for this run.
+
+    Real mode reads endpoints from CLI flags, then environment, then .env-style
+    *_FILE_PATH secrets — matching the Go services' `KEY` > `KEY_FILE` precedence
+    so the eval stack and the app resolve credentials the same way.
+    """
+    if not args.real_models:
+        return ModelProfile(
+            mode="mock",
+            embed_endpoint=f"http://host.docker.internal:{mock_port}/v1/embeddings",
+            embed_model="eval-embed",
+            embed_dim=args.embed_dim,
+            embed_api_key="",
+            llm_endpoint=f"http://host.docker.internal:{mock_port}/v1/chat/completions",
+            llm_model="eval-chat",
+            llm_api_key="",
+            store_collection=args.store_collection or "documents",
+        )
+
+    embed_endpoint = (args.embed_endpoint or os.getenv("EMBED_ENDPOINT", "")).strip()
+    embed_model = (args.embed_model or os.getenv("EMBED_MODEL", "")).strip()
+    llm_endpoint = (args.llm_endpoint or os.getenv("LLM_ENDPOINT", "")).strip()
+    llm_model = (args.llm_model or os.getenv("LLM_MODEL", "")).strip()
+
+    embed_api_key = (
+        os.getenv("EMBED_API_KEY", "").strip()
+        or read_secret_file(os.getenv("EMBED_API_KEY_FILE_PATH", ""))
+    )
+    llm_api_key = (
+        os.getenv("LLM_API_KEY", "").strip()
+        or read_secret_file(os.getenv("LLM_API_KEY_FILE_PATH", ""))
+    )
+
+    missing = [
+        name
+        for name, value in (
+            ("EMBED_ENDPOINT/--embed-endpoint", embed_endpoint),
+            ("EMBED_MODEL/--embed-model", embed_model),
+            ("LLM_ENDPOINT/--llm-endpoint", llm_endpoint),
+            ("LLM_MODEL/--llm-model", llm_model),
+        )
+        if not value
+    ]
+    if missing:
+        raise EvalRunnerError(
+            "--real-models requires: " + ", ".join(missing) + "\n"
+            "Set them via flags or environment (a local .env is not auto-loaded by this script)."
+        )
+
+    # Qdrant collection dimension is immutable after creation. Mock runs use an
+    # 8-dim hash vector while real runs use the model's native dimension, so they
+    # must never share a collection.
+    collection = (args.store_collection or "").strip()
+    if not collection:
+        safe_model = re.sub(r"[^a-z0-9]+", "-", embed_model.lower()).strip("-")
+        collection = f"documents-real-{safe_model}-{args.embed_dim}"
+
+    return ModelProfile(
+        mode="real",
+        embed_endpoint=embed_endpoint,
+        embed_model=embed_model,
+        embed_dim=args.embed_dim,
+        embed_api_key=embed_api_key,
+        llm_endpoint=llm_endpoint,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        store_collection=collection,
+    )
+
+
 def compose_env(
-    mock_port: int,
-    embed_dim: int,
+    profile: ModelProfile,
     tenant_id: str,
     jwt_secret: str,
     compose_project: str,
@@ -103,21 +236,78 @@ def compose_env(
             "ENVIRONMENT": "staging",
             "WORKER_REPLICAS": "1",
             "API_REPLICAS": "1",
-            "EMBED_DIMENSION": str(embed_dim),
-            "EMBED_MODEL": "eval-embed",
-            "LLM_MODEL": "eval-chat",
-            "EMBED_ENDPOINT": f"http://host.docker.internal:{mock_port}/v1/embeddings",
-            "LLM_ENDPOINT": f"http://host.docker.internal:{mock_port}/v1/chat/completions",
+            "EMBED_DIMENSION": str(profile.embed_dim),
+            "EMBED_MODEL": profile.embed_model,
+            "LLM_MODEL": profile.llm_model,
+            "EMBED_ENDPOINT": profile.embed_endpoint,
+            "LLM_ENDPOINT": profile.llm_endpoint,
+            "EMBED_API_KEY": profile.embed_api_key,
+            "LLM_API_KEY": profile.llm_api_key,
+            "STORE_COLLECTION": profile.store_collection,
             "JWT_SECRET": jwt_secret,
             "KAFKA_TOPIC": env.get("KAFKA_TOPIC", "doc-processing"),
-            "REDIS_ADDR": "redis:6379",
-            "REDIS_DB": "0",
+            "REDIS_CACHE_ADDR": "redis-cache:6379",
+            "REDIS_CACHE_DB": "0",
+            "REDIS_STATE_ADDR": "redis-state:6379",
+            "REDIS_STATE_DB": "0",
             "COMPOSE_PROJECT_NAME": compose_project,
             "COMPOSE_FILE": os.pathsep.join((str(ROOT / "docker-compose.yml"), str(EVAL_COMPOSE_FILE))),
             "QUERY_API_HOST_PORT": "0",
         }
     )
+    # Secrets resolve as KEY > KEY_FILE in the Go services. Empty *_FILE paths
+    # would otherwise let a stale mounted secret override the profile above.
+    if profile.is_real:
+        env.pop("EMBED_API_KEY_FILE", None)
+        env.pop("LLM_API_KEY_FILE", None)
     return env
+
+
+def estimate_llm_cost(prompt_tokens: int, completion_tokens: int) -> float:
+    """Estimated LLM spend for a run from LLM_PRICE_* env vars (USD per 1K)."""
+    prompt_price = float(os.getenv("LLM_PRICE_PROMPT_PER_1K", "0") or 0)
+    completion_price = float(os.getenv("LLM_PRICE_COMPLETION_PER_1K", "0") or 0)
+    if prompt_price <= 0 and completion_price <= 0:
+        return 0.0
+    return prompt_tokens / 1000 * prompt_price + completion_tokens / 1000 * completion_price
+
+
+def wait_for_es_sync(
+    env: Dict[str, str],
+    expected_docs: int,
+    timeout_sec: int = 120,
+    poll_sec: int = 2,
+) -> None:
+    """Block until Elasticsearch has indexed all expected documents.
+
+    The worker writes to Qdrant synchronously but feeds ES through an async
+    retry queue. Exact-keyword queries route ES with 0.75 weight, so a document
+    that is present in Qdrant but not yet in ES scores 0 on the BM25 side and is
+    pushed out of the top-K by RRF fusion — the eval then reports a false
+    retrieval timeout. Polling ES's document count closes that race.
+    """
+    es_index = env.get("ES_INDEX", "documents_text")
+    deadline = time.time() + timeout_sec
+    last_count = -1
+    while time.time() < deadline:
+        proc = run_cmd(
+            ["docker", "compose", "exec", "-T", "elasticsearch", "curl", "-s",
+             f"http://localhost:9200/{es_index}/_count"],
+            env=env, check=False, timeout_sec=15,
+        )
+        try:
+            last_count = int(json.loads(proc.stdout).get("count", 0))
+        except Exception:
+            last_count = -1
+        if last_count >= expected_docs:
+            print(f"[eval] es sync ready: {last_count}/{expected_docs}")
+            return
+        time.sleep(poll_sec)
+    raise EvalRunnerError(
+        f"ES did not finish indexing after {timeout_sec}s: {last_count}/{expected_docs}. "
+        "Check etl-worker logs; exact-keyword cases would be falsely reported as "
+        "retrieval timeouts otherwise."
+    )
 
 
 def resolve_compose_project(raw: str) -> str:
@@ -221,6 +411,32 @@ def stop_process(proc: subprocess.Popen[str] | None) -> None:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
+
+
+def remove_project_images(compose_project: str) -> None:
+    """Delete images built for this eval project.
+
+    Each isolated run builds its own tagged images (etl-worker, query-api,
+    parser-service, alert-webhook-service). `compose down` does not remove them,
+    so repeated runs accumulate gigabytes of dead tags.
+    """
+    project = compose_project.strip()
+    if not project:
+        return
+    listed = run_cmd(
+        ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
+        check=False,
+        timeout_sec=30,
+    )
+    tags = [
+        line.strip()
+        for line in listed.stdout.splitlines()
+        if line.strip().startswith(f"{project}-")
+    ]
+    if not tags:
+        return
+    run_cmd(["docker", "rmi", *tags], check=False, timeout_sec=120)
+    print(f"[eval] removed {len(tags)} eval image(s) for project {project}")
 
 
 def generate_token(jwt_secret: str, tenant_id: str, permission: str = "user") -> str:
@@ -505,6 +721,10 @@ def evaluate_case_assertions(
         "recall_at_3": recall_hits[3],
         "recall_at_5": recall_hits[5],
     }
+    # Token usage from the final successful response, so reports can price a run.
+    usage = (last_payload or {}).get("token_usage") or {}
+    details["prompt_tokens"] = int(usage.get("prompt_tokens", 0) or 0)
+    details["completion_tokens"] = int(usage.get("completion_tokens", 0) or 0)
     return details, last_payload
 
 
@@ -573,7 +793,23 @@ def evaluate_answer_assertions(
 
     for token in case.answer_must_include:
         normalized = token.strip()
-        if normalized and normalized.lower() not in answer_lower:
+        if not normalized:
+            continue
+        # "来源:" in a dataset means "the answer must cite its source". Asserting it
+        # as a literal encodes the mock server's output template ("来源: <doc_id>");
+        # a real model writes 「根据文档1」or「参考 case-031」— semantically correct,
+        # literally absent. Check the citation structurally instead.
+        if normalized in CITATION_MARKER_TOKENS:
+            if not source_citation_ok:
+                return {
+                    "answer_assertion_pass": False,
+                    "answer_assertion_reason": "missing_source_citation",
+                    "answer_len": len(answer),
+                    "answer_source_citation_ok": source_citation_ok,
+                    "answer_cited_doc_ids": cited,
+                }
+            continue
+        if normalized.lower() not in answer_lower:
             return {
                 "answer_assertion_pass": False,
                 "answer_assertion_reason": f"answer_missing_phrase:{normalized}",
@@ -639,34 +875,57 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
 
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    lines = [
-        "# RAG Eval Report",
-        "",
-        f"- Timestamp: {result['timestamp']}",
-        f"- Tenant ID: {result.get('tenant_id', '')}",
-        f"- Mock Port: {result.get('mock_port', '')}",
-        f"- Compose Project: {result.get('compose_project', '')}",
-        f"- Query API Base: {result.get('api_base', '')}",
-        f"- Total cases: {result['summary']['total_cases']}",
-        f"- Assertion passed: {result['summary']['assertion_passed_cases']}",
-        f"- Assertion failed: {result['summary']['assertion_failed_cases']}",
-        f"- Positive cases: {result['summary']['positive_cases']}",
-        f"- Positive retrieval passed: {result['summary']['positive_passed_cases']}",
-        f"- Positive final passed: {result['summary']['positive_final_passed_cases']}",
-        f"- Negative cases: {result['summary']['negative_cases']}",
-        f"- Negative retrieval passed: {result['summary']['negative_passed_cases']}",
-        f"- Negative final passed: {result['summary']['negative_final_passed_cases']}",
-        f"- Retrieval pass rate: {result['summary']['retrieval_pass_rate']:.2%}",
-        f"- Answer pass rate: {result['summary']['answer_pass_rate']:.2%}",
-        f"- Pass rate: {result['summary']['pass_rate']:.2%}",
-        f"- Hit rate: {result['summary']['hit_rate']:.2%}",
-        f"- Acceptable hit rate: {result['summary']['acceptable_hit_rate']:.2%}",
-        f"- Recall@1: {result['summary']['recall_at_1']:.2%}",
-        f"- Recall@3: {result['summary']['recall_at_3']:.2%}",
-        f"- Recall@5: {result['summary']['recall_at_5']:.2%}",
-        f"- Avg score: {result['summary']['avg_score']:.4f}",
-        f"- Avg acceptable score: {result['summary']['avg_acceptable_score']:.4f}",
-    ]
+    mode = str(result.get("model_mode", "mock"))
+    models = result.get("models", {})
+
+    lines = ["# RAG Eval Report", ""]
+
+    if mode == "real":
+        lines.append("**Model mode: REAL** — metrics below reflect actual retrieval quality.")
+    else:
+        lines.append(
+            "**Model mode: MOCK — integration-path validation only, NOT a quality signal.** "
+            "Embeddings are hash-derived and carry no semantic structure, so Recall/hit-rate "
+            "here measure whether the pipeline is wired correctly, not whether retrieval is good. "
+            "Use `--real-models` for quality claims."
+        )
+    lines.append("")
+
+    lines.extend(
+        [
+            f"- Timestamp: {result['timestamp']}",
+            f"- Tenant ID: {result.get('tenant_id', '')}",
+            f"- Model Mode: {mode}",
+            f"- Embed Model: {models.get('embed_model', '')} (dim={models.get('embed_dimension', '')})",
+            f"- LLM Model: {models.get('llm_model', '')}",
+            f"- Store Collection: {models.get('store_collection', '')}",
+            f"- Mock Port: {result.get('mock_port', '')}",
+            f"- Compose Project: {result.get('compose_project', '')}",
+            f"- Query API Base: {result.get('api_base', '')}",
+            f"- Total cases: {result['summary']['total_cases']}",
+            f"- Assertion passed: {result['summary']['assertion_passed_cases']}",
+            f"- Assertion failed: {result['summary']['assertion_failed_cases']}",
+            f"- Positive cases: {result['summary']['positive_cases']}",
+            f"- Positive retrieval passed: {result['summary']['positive_passed_cases']}",
+            f"- Positive final passed: {result['summary']['positive_final_passed_cases']}",
+            f"- Negative cases: {result['summary']['negative_cases']}",
+            f"- Negative retrieval passed: {result['summary']['negative_passed_cases']}",
+            f"- Negative final passed: {result['summary']['negative_final_passed_cases']}",
+            f"- Retrieval pass rate: {result['summary']['retrieval_pass_rate']:.2%}",
+            f"- Answer pass rate: {result['summary']['answer_pass_rate']:.2%}",
+            f"- Pass rate: {result['summary']['pass_rate']:.2%}",
+            f"- Hit rate: {result['summary']['hit_rate']:.2%}",
+            f"- Acceptable hit rate: {result['summary']['acceptable_hit_rate']:.2%}",
+            f"- Recall@1: {result['summary']['recall_at_1']:.2%}",
+            f"- Recall@3: {result['summary']['recall_at_3']:.2%}",
+            f"- Recall@5: {result['summary']['recall_at_5']:.2%}",
+            f"- Avg score: {result['summary']['avg_score']:.4f}",
+            f"- Avg acceptable score: {result['summary']['avg_acceptable_score']:.4f}",
+            f"- Total tokens: {result['summary'].get('total_tokens', 0)}",
+            f"- Avg tokens/query: {result['summary'].get('avg_tokens_per_query', 0):.0f}",
+            f"- Est cost USD: {result['summary'].get('estimated_cost_usd', 0):.4f}",
+        ]
+    )
 
     judge_enabled = bool(result["summary"].get("judge_enabled"))
     if judge_enabled:
@@ -738,6 +997,30 @@ def main() -> int:
     parser.add_argument("--jwt-secret", default="change-me-in-production-please-use-32-plus-chars")
     parser.add_argument("--mock-port", type=int, default=18080)
     parser.add_argument("--embed-dim", type=int, default=768)
+    parser.add_argument(
+        "--real-models",
+        action="store_true",
+        help="use live embedding/LLM endpoints instead of the deterministic mock server; "
+        "required for any run whose metrics are treated as a quality signal",
+    )
+    parser.add_argument(
+        "--embed-endpoint",
+        default="",
+        help="real mode only; defaults to $EMBED_ENDPOINT",
+    )
+    parser.add_argument("--embed-model", default="", help="real mode only; defaults to $EMBED_MODEL")
+    parser.add_argument(
+        "--llm-endpoint",
+        default="",
+        help="real mode only; defaults to $LLM_ENDPOINT",
+    )
+    parser.add_argument("--llm-model", default="", help="real mode only; defaults to $LLM_MODEL")
+    parser.add_argument(
+        "--store-collection",
+        default="",
+        help="Qdrant collection override; real mode auto-derives a per-model name because "
+        "collection dimension is immutable and differs from the mock's",
+    )
     parser.add_argument("--max-wait", type=int, default=180)
     parser.add_argument("--negative-max-wait", type=int, default=30)
     parser.add_argument("--top-k", type=int, default=5)
@@ -812,6 +1095,7 @@ def main() -> int:
         tenant_id = f"tenant-eval-{int(time.time() * 1000)}-{os.getpid()}"
     resolved_mock_port = pick_mock_port(args.mock_port)
     compose_project = resolve_compose_project(args.compose_project)
+    profile = resolve_model_profile(args, resolved_mock_port)
 
     mock_proc: subprocess.Popen[str] | None = None
     started_services = False
@@ -825,17 +1109,26 @@ def main() -> int:
                 env=env,
                 check=False,
             )
+            # `compose down` removes containers but leaves the images this
+            # project built. Each run adds ~1GB of tagged images otherwise.
+            remove_project_images(compose_project)
 
     try:
-        print(f"[eval] starting mock model server on port {resolved_mock_port}")
-        mock_proc = start_mock_server(resolved_mock_port, args.embed_dim)
-        wait_health(f"http://127.0.0.1:{resolved_mock_port}/healthz", timeout_sec=30)
+        if profile.is_real:
+            print(f"[eval] model mode: REAL")
+            print(f"[eval]   embed: {profile.embed_model} @ {profile.embed_endpoint} (dim={profile.embed_dim})")
+            print(f"[eval]   llm:   {profile.llm_model} @ {profile.llm_endpoint}")
+            print(f"[eval]   collection: {profile.store_collection}")
+        else:
+            print("[eval] model mode: MOCK (integration-path validation, not a quality signal)")
+            print(f"[eval] starting mock model server on port {resolved_mock_port}")
+            mock_proc = start_mock_server(resolved_mock_port, args.embed_dim)
+            wait_health(f"http://127.0.0.1:{resolved_mock_port}/healthz", timeout_sec=30)
 
         print(f"[eval] tenant_id: {tenant_id}")
         print(f"[eval] compose project: {compose_project}")
         env = compose_env(
-            resolved_mock_port,
-            args.embed_dim,
+            profile,
             tenant_id,
             args.jwt_secret,
             compose_project,
@@ -904,6 +1197,9 @@ def main() -> int:
         uploaded_doc_ids: Dict[str, str] = {}
         scores: List[float] = []
         acceptable_scores: List[float] = []
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        query_token_counts: List[int] = []
         positive_passed = 0
         negative_passed = 0
         positive_retrieval_passed = 0
@@ -926,6 +1222,14 @@ def main() -> int:
             print(f"[eval] {idx}/{len(cases)} upload {case.case_id}")
             doc_id = upload_case(api_base, upload_token, case)
             uploaded_doc_ids[case.case_id] = doc_id
+
+        # Wait for the async full-text sink to finish indexing before querying.
+        # Exact-keyword queries route ES with 0.75 weight; if ES has not caught
+        # up, a document that is present in Qdrant scores 0 on the BM25 side and
+        # gets pushed out of the top-K by the RRF fusion — the eval then reports
+        # a false retrieval timeout. The documents are always uploaded and stored;
+        # the race is purely the eval's, not the pipeline's.
+        wait_for_es_sync(env, len(uploaded_doc_ids), timeout_sec=120, poll_sec=2)
 
         for idx, case in enumerate(cases, start=1):
             expected_doc_id = uploaded_doc_ids[case.case_id]
@@ -1029,6 +1333,14 @@ def main() -> int:
             if final_pass:
                 assertion_passed += 1
 
+            # Accumulate token usage for cost reporting in the summary.
+            prompt_tokens = int(details.get("prompt_tokens", 0) or 0)
+            completion_tokens = int(details.get("completion_tokens", 0) or 0)
+            total_prompt_tokens += prompt_tokens
+            total_completion_tokens += completion_tokens
+            if prompt_tokens or completion_tokens:
+                query_token_counts.append(prompt_tokens + completion_tokens)
+
             eval_items.append(
                 {
                     "case_id": case.case_id,
@@ -1037,6 +1349,8 @@ def main() -> int:
                     "expected_doc_id": expected_doc_id,
                     "acceptable_doc_ids": acceptable_doc_ids,
                     "forbidden_doc_ids": forbidden_doc_ids,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
                     "hit": details["hit"],
                     "score": float(details["score"]),
                     "strict_rank": details["strict_rank"],
@@ -1098,9 +1412,18 @@ def main() -> int:
         result = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "tenant_id": tenant_id,
-            "mock_port": resolved_mock_port,
+            "mock_port": resolved_mock_port if not profile.is_real else "",
             "compose_project": compose_project,
             "api_base": api_base,
+            "model_mode": profile.mode,
+            "models": {
+                "embed_model": profile.embed_model,
+                "embed_endpoint": profile.embed_endpoint,
+                "embed_dimension": profile.embed_dim,
+                "llm_model": profile.llm_model,
+                "llm_endpoint": profile.llm_endpoint,
+                "store_collection": profile.store_collection,
+            },
             "summary": {
                 "total_cases": total,
                 "assertion_passed_cases": assertion_passed,
@@ -1124,6 +1447,17 @@ def main() -> int:
                 "recall_at_5": recall_at_5,
                 "avg_score": avg_score,
                 "avg_acceptable_score": avg_acceptable_score,
+                "total_tokens": total_prompt_tokens + total_completion_tokens,
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "avg_tokens_per_query": (
+                    (sum(query_token_counts) / len(query_token_counts))
+                    if query_token_counts
+                    else 0.0
+                ),
+                "estimated_cost_usd": estimate_llm_cost(
+                    total_prompt_tokens, total_completion_tokens
+                ),
                 "threshold_hit_rate": args.min_hit_rate,
                 "threshold_answer_pass_rate": args.min_answer_pass_rate,
                 "threshold_pass_rate": args.min_pass_rate,
