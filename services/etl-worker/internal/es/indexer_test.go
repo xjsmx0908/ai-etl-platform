@@ -37,6 +37,52 @@ func TestMapChunkToESDoc_NormalizesPermissionAndCreatedAt(t *testing.T) {
 	}
 }
 
+// DeleteByDocID must POST a delete-by-query with a doc_id term filter.
+func TestHTTPIndexer_DeleteByDocID(t *testing.T) {
+	var got map[string]interface{}
+	var path, rawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		rawQuery = r.URL.RawQuery
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatalf("new indexer: %v", err)
+	}
+	defer idx.Close()
+
+	if err := idx.DeleteByDocID(context.Background(), "doc-7"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if path != "/documents_text/_delete_by_query" {
+		t.Fatalf("unexpected path: %s", path)
+	}
+	if rawQuery != "refresh=true" {
+		t.Fatalf("expected refresh=true, got %q", rawQuery)
+	}
+	query := got["query"].(map[string]interface{})
+	term := query["term"].(map[string]interface{})
+	if term["doc_id"] != "doc-7" {
+		t.Fatalf("unexpected delete query: %v", got)
+	}
+}
+
+func TestHTTPIndexer_DeleteByDocIDRequiresID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	idx, _ := NewHTTPIndexer(srv.URL, "", "documents_text")
+	defer idx.Close()
+	if err := idx.DeleteByDocID(context.Background(), ""); err == nil {
+		t.Fatal("expected error for empty doc_id")
+	}
+}
+
 func TestHTTPIndexer_IndexChunk(t *testing.T) {
 	var gotMethod string
 	var gotPath string

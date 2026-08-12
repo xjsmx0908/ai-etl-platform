@@ -93,6 +93,23 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// DeleteByPrefix removes every object whose key starts with prefix. Used for
+// document deletion, where the object key is tenant/{docID}{ext} and only the
+// doc_id is known at delete time.
+func (c *Client) DeleteByPrefix(ctx context.Context, prefix string) error {
+	objects := c.client.ListObjects(ctx, c.bucket, minio.ListObjectsOptions{Prefix: prefix})
+	var deleteErr error
+	for obj := range objects {
+		if obj.Err != nil {
+			return fmt.Errorf("list objects for prefix %s: %w", prefix, obj.Err)
+		}
+		if err := c.client.RemoveObject(ctx, c.bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
+			deleteErr = fmt.Errorf("delete %s: %w", obj.Key, err)
+		}
+	}
+	return deleteErr
+}
+
 // Exists checks if a file exists.
 func (c *Client) Exists(ctx context.Context, key string) (bool, error) {
 	_, err := c.client.StatObject(ctx, c.bucket, key, minio.GetObjectOptions{})

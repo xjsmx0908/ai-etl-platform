@@ -123,6 +123,45 @@ func TestNormalizeChunkPermission(t *testing.T) {
 	}
 }
 
+// DeleteByDocID must POST a filter matching the doc_id payload.
+func TestQdrantDeleteByDocID(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/collections/docs/points/delete" {
+			_ = json.NewDecoder(r.Body).Decode(&got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	qs, _ := NewQdrantStorer(srv.URL, "", "docs", 4)
+	defer qs.Close()
+
+	if err := qs.DeleteByDocID(context.Background(), "doc-1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	filter := got["filter"].(map[string]interface{})
+	must := filter["must"].([]interface{})
+	cond := must[0].(map[string]interface{})
+	if cond["key"] != "doc_id" || cond["match"].(map[string]interface{})["value"] != "doc-1" {
+		t.Fatalf("unexpected delete filter: %v", got)
+	}
+}
+
+func TestQdrantDeleteByDocIDRequiresID(t *testing.T) {
+	qs, _ := NewQdrantStorer(httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).URL, "", "docs", 4)
+	defer qs.Close()
+	if err := qs.DeleteByDocID(context.Background(), "  "); err == nil {
+		t.Fatal("expected error for empty doc_id")
+	}
+}
+
 // ensureCollection must create the collection when it does not exist.
 func TestQdrantEnsureCollectionCreates(t *testing.T) {
 	var createCalled bool

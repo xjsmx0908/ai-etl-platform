@@ -23,6 +23,7 @@ import (
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/idempotency"
 	"ai-etl-pipeline/internal/kafka"
 	"ai-etl-pipeline/internal/metrics"
@@ -31,6 +32,7 @@ import (
 	"ai-etl-pipeline/internal/prometheus"
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/s3"
+	"ai-etl-pipeline/internal/store"
 	"ai-etl-pipeline/internal/taskstatus"
 	"ai-etl-pipeline/internal/tracing"
 )
@@ -65,6 +67,12 @@ type uploadProducer interface {
 
 type uploadObjectStore interface {
 	Upload(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
+}
+
+// documentObjectStore is the object-store surface document deletion needs: wipe
+// every object under tenant/{docID}* (the extension is not known at delete time).
+type documentObjectStore interface {
+	DeleteByPrefix(ctx context.Context, prefix string) error
 }
 
 type uploadAcceptedResponse struct {
@@ -216,6 +224,7 @@ func main() {
 	})))
 	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
+	apiV1.Handle("/v1/documents/", requireScopes("upload")(http.HandlerFunc(handleDeleteDocument(cfg, s3Client))))
 
 	// Apply middleware chain: version → JWT auth → rate limit → route scope checks → CORS → timeout.
 	// Wrapper execution is outside-in, so compose in reverse.
@@ -289,6 +298,72 @@ func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
 		return taskstatus.NewMemoryStore(), nil
 	}
 	return taskstatus.NewRedisStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.TaskStatusTTL)
+}
+
+// handleDeleteDocument deletes a document and everything derived from it:
+// Qdrant points, ES documents, and MinIO objects under tenant/{docID}*. Required
+// for data-deletion rights and for re-indexing after an embedding model change.
+func handleDeleteDocument(cfg config.Config, s3Client documentObjectStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		docID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/documents/"), "/")
+		if docID == "" {
+			http.Error(w, "doc_id is required", http.StatusBadRequest)
+			return
+		}
+		tenantID := auth.GetTenantID(r.Context())
+		if tenantID == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := r.Context()
+		var errs []string
+
+		qs, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension)
+		if err != nil {
+			errs = append(errs, "qdrant init: "+err.Error())
+		} else {
+			if err := qs.DeleteByDocID(ctx, docID); err != nil {
+				errs = append(errs, "qdrant: "+err.Error())
+			}
+			_ = qs.Close()
+		}
+
+		idx, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+		if err != nil {
+			errs = append(errs, "es init: "+err.Error())
+		} else {
+			if err := idx.DeleteByDocID(ctx, docID); err != nil {
+				errs = append(errs, "es: "+err.Error())
+			}
+			_ = idx.Close()
+		}
+
+		if s3Client != nil {
+			if err := s3Client.DeleteByPrefix(ctx, tenantID+"/"+docID); err != nil {
+				errs = append(errs, "s3: "+err.Error())
+			}
+		}
+
+		if len(errs) > 0 {
+			slog.Error("document delete partial failure", "doc_id", docID, "tenant_id", tenantID, "errors", errs)
+			http.Error(w, `{"error":"partial delete failure","details":`+mustJSON(errs)+`}`, http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func mustJSON(v interface{}) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
 }
 
 func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {

@@ -155,6 +155,43 @@ func (q *QdrantStorer) Exists(ctx context.Context, chunkID string) (bool, error)
 	return false, fmt.Errorf("qdrant exists check: status %d", resp.StatusCode)
 }
 
+// DeleteByDocID deletes every point belonging to a document (matched on the
+// doc_id payload). Used by document deletion and re-index flows.
+func (q *QdrantStorer) DeleteByDocID(ctx context.Context, docID string) error {
+	if strings.TrimSpace(docID) == "" {
+		return fmt.Errorf("doc_id is required")
+	}
+	body := map[string]interface{}{
+		"filter": map[string]interface{}{
+			"must": []map[string]interface{}{
+				{"key": "doc_id", "match": map[string]string{"value": docID}},
+			},
+		},
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal delete filter: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/collections/%s/points/delete", q.endpoint, q.collection)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	q.setHeaders(req)
+
+	resp, err := q.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("qdrant delete request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("qdrant delete error %d: %s", resp.StatusCode, string(respBody))
+}
+
 // Close releases HTTP client resources.
 func (q *QdrantStorer) Close() error {
 	q.client.CloseIdleConnections()

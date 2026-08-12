@@ -289,6 +289,7 @@ python -m app.main
 - ✅ Redis 语义缓存（tenant + permission scope 隔离）
 - ✅ RAG 查询（向量检索 + LLM）
 - ✅ MinIO 文件上传
+- ✅ 文档删除（`DELETE /v1/documents/{doc_id}`，级联清理 Qdrant 向量、ES 文档、MinIO 对象）
 - ✅ API 版本控制
 - ✅ CORS 支持
 

@@ -61,6 +61,41 @@ func (i *HTTPIndexer) Close() error {
 	return nil
 }
 
+// DeleteByDocID removes all documents belonging to a doc_id via delete-by-query.
+// Needed for document deletion and re-index flows.
+func (i *HTTPIndexer) DeleteByDocID(ctx context.Context, docID string) error {
+	if strings.TrimSpace(docID) == "" {
+		return fmt.Errorf("doc_id is required")
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"query": map[string]interface{}{
+			"term": map[string]string{"doc_id": docID},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal es delete query: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/%s/_delete_by_query?refresh=true", i.address, pathEscape(i.index))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create es delete request: %w", err)
+	}
+	i.setHeaders(req)
+
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("es delete request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("es delete failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+}
+
 // IndexChunk indexes (or upserts) one chunk into Elasticsearch.
 func (i *HTTPIndexer) IndexChunk(ctx context.Context, chunk model.Chunk) error {
 	if strings.TrimSpace(chunk.ChunkID) == "" {
