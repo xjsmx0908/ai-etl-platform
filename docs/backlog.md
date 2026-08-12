@@ -1,5 +1,19 @@
 # Backlog
 
+## 2026-08-08 - AI Engineer Roadmap
+
+Status: planned
+
+Goal: 把项目从「带 RAG 外壳的分布式后端」改造成「能量化讲清 AI 质量的 AI 应用工程项目」。
+
+完整计划、优先级、跟进表见 `docs/ai-engineer-roadmap.md`。摘要：
+
+1. P0 建立可信评测基线：当前 100% 的评测结果基于 8 维哈希 mock embedding 与锚点式 golden set，不构成质量证据。需支持真实模型、重建语义数据集、产出对照实验、补 token/成本可观测。
+2. P1 修确定性缺陷：中文 token 估算偏差 2-4 倍、topK 无上限、主查询链路缺 prompt injection 防护、默认模型过旧、仓库残留文件。
+3. P2 补 AI 侧短板：SSE 流式 + TTFT、演示前端、prompt 版本管理、Agent 评测与 native tool calling。
+4. P3 架构改进：Redis 单实例混装 durable 状态与 LRU 缓存（正确性问题，阶段 1 提到 P1）、审批审计 24h TTL 后消失、无文档删除与重建索引、双写无对账、query-api 单体承载查询与 Agent 编排。
+5. P4 面试叙事：基于真实数据重写讲解材料，补选型 ADR。
+
 ## 2026-07-13 - Module 4 Engineering Learning Evaluation
 
 Status: implemented and executed

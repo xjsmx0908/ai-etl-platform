@@ -25,7 +25,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                    基础设施层                                 │
 │                                                             │
-│ Kafka │ Redis │ Qdrant │ MinIO │ Jaeger │ Prometheus │ Grafana │
+│ Kafka │ Redis(Cache+State) │ Qdrant │ MinIO │ Jaeger │ Prometheus │ Grafana │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -134,7 +134,30 @@ bash scripts/e2e-smoke.sh
 python3 scripts/run-evals.py
 ```
 
-该脚本会用 `docs/evals/golden-set.json` 做确定性 retrieval 回归评测，并输出 JSON/Markdown 报告。
+该脚本默认用 mock 模型跑确定性回归，输出 JSON/Markdown 报告。
+
+**两种模型模式，指标含义不同：**
+
+| 模式 | 命令 | 指标含义 |
+| --- | --- | --- |
+| mock（默认） | `python3 scripts/run-evals.py` | **仅验证链路接通**。embedding 由 hash 派生、无语义结构，Recall/hit rate 不能作为检索质量证据。适合做 CI 门禁：确定性、免费、快。 |
+| real | `python3 scripts/run-evals.py --real-models` | **唯一能说明检索质量的模式**。使用真实 embedding 与 LLM 端点。 |
+
+真实模式从 CLI 参数、环境变量、`*_FILE_PATH` secrets 依次解析配置（与 Go 服务的 `KEY` > `KEY_FILE` 优先级一致）：
+
+```bash
+export EMBED_ENDPOINT=http://host.docker.internal:11434/api/embeddings
+export EMBED_MODEL=nomic-embed-text
+export LLM_ENDPOINT=https://your-provider/v1
+export LLM_API_KEY_FILE_PATH=./secrets/dev/llm_api_key
+export LLM_MODEL=your-model
+
+python3 scripts/run-evals.py --real-models --embed-dim 768
+```
+
+真实模式会自动派生独立的 Qdrant collection（如 `documents-real-nomic-embed-text-768`）。这是必须的：collection 的向量维度创建后不可修改，mock 用 8 维而真实模型用原生维度，共用会直接冲突。
+
+报告头部会标注 `Model mode`，mock 报告显式声明「NOT a quality signal」，避免数字被误读为质量结论。
 
 可选 LLM-as-a-Judge：
 
@@ -153,6 +176,31 @@ python3 scripts/load-test.py --requests 40 --concurrency 5
 该脚本用于快速观察 `/v1/query` 的延迟、错误率和命中率。
 
 ## 🔧 开发指南
+
+### 前端演示（web/）
+
+```bash
+cd web
+cp .env.local.example .env.local   # 配置 API 地址与 JWT
+npm install
+npm run dev                        # http://localhost:3000
+```
+
+JWT 生成（演示用，需 Go 环境或参考 `scripts/run-evals.py` 的生成逻辑）：
+
+```bash
+# 用 etl-worker 的 auth 包生成一个 user 角色 token（JWT_SECRET 需与 query-api 一致）
+cd services/etl-worker
+cat > tmp_gen_token.go <<'EOF'
+package main
+import ("fmt"; "os"; "ai-etl-pipeline/internal/auth")
+func main() { t, _ := auth.GenerateTestTokenWithPermission(os.Args[1], "demo-tenant", "demo-user", "user", []string{"query"}); fmt.Print(t) }
+EOF
+docker run --rm -v "$PWD":/src -w /src golang:1.24.13 go run tmp_gen_token.go <JWT_SECRET>
+rm tmp_gen_token.go
+```
+
+前端通过 SSE（`Accept: text/event-stream`）流式渲染回答与引用，非流式 JSON 接口不受影响。
 
 ### Go 服务开发
 
@@ -198,7 +246,8 @@ python -m app.main
 | Parser Service | 8000 | 文档解析服务 |
 | Reranker Service | 8091 | 可选 Cross-Encoder 重排服务（`rerank` profile） |
 | Kafka | 9092 | 消息队列 |
-| Redis | 6379 | 缓存 + Checkpoint |
+| Redis Cache | 6379 | 语义检索缓存（`allkeys-lru`，可淘汰） |
+| Redis State | 6380 | Agent run / 审批审计 / fencing token / 幂等 / Checkpoint（`noeviction` + AOF） |
 | Qdrant | 6333 | 向量数据库 |
 | MinIO | 9000/9001 | 对象存储（API/Console） |
 | Prometheus | 9090 | 指标监控 |
@@ -256,6 +305,12 @@ KAFKA_BROKERS=kafka:9092
 KAFKA_TOPIC=doc-processing
 KAFKA_GROUP_ID=etl-pipeline
 
+# Redis（缓存与状态分离，见下方说明）
+REDIS_CACHE_ADDR=redis-cache:6379
+REDIS_CACHE_DB=0
+REDIS_STATE_ADDR=redis-state:6379
+REDIS_STATE_DB=0
+
 # Embedding
 EMBED_ENDPOINT=http://host.docker.internal:11434/api/embeddings
 EMBED_MODEL=nomic-embed-text
@@ -264,6 +319,12 @@ EMBED_DIMENSION=768
 # LLM
 LLM_ENDPOINT=http://host.docker.internal:11434/v1
 LLM_MODEL=qwen2.5:7b
+
+# 模型选型（能力/延迟/成本三角，按场景取不同的模型）：
+#   - 在线回答（RAG 生成）：要求低延迟与稳定输出，默认 deepseek-v4-flash 这类轻量模型
+#   - Agent planner：需要工具调用与多步推理，可用更高档模型（AGENT_PLANNER_MODEL）
+#   - LLM-as-a-Judge：离线评测，对质量敏感，可选最强模型（JUDGE_MODEL）
+# 不是「一个模型打天下」；每个角色独立配置，默认值仅作 fallback，生产用环境变量覆盖。
 
 # Retrieval Gateway
 RETRIEVAL_TIMEOUT=300ms
@@ -313,6 +374,19 @@ docker compose --profile rerank up -d --build reranker-service query-api
 
 敏感配置读取优先级：`KEY` > `KEY_FILE` > 默认值。`docker-compose.yml` 已为 `query-api`、`etl-worker`、`parser-service` 挂载 secrets，默认占位文件在 `secrets/examples/`，建议复制到 `secrets/dev/` 后替换为真实值。
 
+### Redis 缓存与状态分离
+
+平台使用两个 Redis 实例，职责不可混用：
+
+| 实例 | 淘汰策略 | 存放内容 | 丢数据的后果 |
+| --- | --- | --- | --- |
+| `redis-cache` | `allkeys-lru` | 语义检索缓存 | 多做一次检索，无正确性影响 |
+| `redis-state` | `noeviction` + AOF | Agent run 状态、审批审计、fencing token、幂等键、Checkpoint、任务状态、ES 重试队列 | **破坏正确性** |
+
+分离的原因是正确性而非容量：`allkeys-lru` 会淘汰任意 key。若 fencing token 被淘汰后重置，`agent.Orchestrator` 依赖的 `lease.FencingToken > run.FencingToken` 判断将无法再拒绝陈旧写入，durable run 的并发安全保证失效；审批记录被淘汰则直接销毁合规凭证。因此状态实例必须 `noeviction`——宁可写入失败并显式报错，也不能静默丢状态。
+
+配置优先级：`REDIS_CACHE_*` / `REDIS_STATE_*` > `REDIS_*`（共享回退，便于本地单实例调试）。生产环境启动校验会拒绝两者指向同一实例与 DB。
+
 ## 📈 监控与可观测性
 
 - **Prometheus**: http://localhost:9090
@@ -324,8 +398,9 @@ docker compose --profile rerank up -d --build reranker-service query-api
 - Query API 会继承 W3C `traceparent`，并通过响应头 `X-Trace-ID` 返回当前 TraceID。
 - Jaeger Query 链路包含 HTTP、Query、Embedding、Cache、Route、Qdrant/Elasticsearch、Fusion、Rerank、Prompt 与 LLM 阶段 Span。
 - Prometheus 暴露 LLM 请求结果、延迟和进程级连续失败次数；Query API 启动时会先暴露配置模型的连续失败值 `0`，连续 5 次失败、错误率和 p95 延迟由 Alertmanager 告警。
+- 每次成功的 LLM 调用会记录 token 消耗（`ai_etl_llm_tokens_total{model,kind}`）。配置 `LLM_PRICE_PROMPT_PER_1K` / `LLM_PRICE_COMPLETION_PER_1K` 后，还会累计估算成本（`ai_etl_llm_cost_usd_total{model}`）；未配置价格时成本指标保持 0，避免误报。
 - 企业微信/钉钉 webhook 放在 `secrets/dev/`，由内部 `alert-webhook-service` 转换消息并发送；不要把真实 webhook 提交到 Git。
-- Query API 当前返回完整 JSON，不是 SSE，因此当前不采集 Token/s。未来引入流式接口时，应在首 Token 时间和输出 Token 速率可被真实测量后再增加相应告警。
+- Query API 的 `/v1/query` 支持 SSE 流式输出（客户端发送 `Accept: text/event-stream` 即触发）。事件流：先发 `sources` 事件（引用可即时渲染），再逐段发 `delta` 事件，最后 `done` 事件携带 token 用量。流式调用会记录首 Token 时间（TTFT）到 trace span，为未来 TTFT 告警提供数据基础。非流式调用（默认）行为不变。
 
 ## 🔄 CI/CD
 
