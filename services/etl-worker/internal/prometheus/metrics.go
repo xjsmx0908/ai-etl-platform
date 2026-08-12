@@ -3,6 +3,7 @@ package prometheus
 
 import (
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,22 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// Per-1k-token USD prices used to estimate LLM cost. Zero when unset, which
+// keeps the cost metric at zero rather than misreporting.
+var (
+	llmPromptPricePer1K     = envFloat("LLM_PRICE_PROMPT_PER_1K", 0)
+	llmCompletionPricePer1K = envFloat("LLM_PRICE_COMPLETION_PER_1K", 0)
+)
+
+func envFloat(key string, defaultVal float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return defaultVal
+}
 
 // Metrics holds all Prometheus metrics for the ETL pipeline.
 type Metrics struct {
@@ -38,6 +55,11 @@ type Metrics struct {
 	LLMRequests            *prometheus.CounterVec
 	LLMRequestDuration     *prometheus.HistogramVec
 	LLMConsecutiveFailures *prometheus.GaugeVec
+	// LLMTokens counts consumed prompt/completion tokens by model.
+	LLMTokens *prometheus.CounterVec
+	// LLMCostUSD accumulates estimated spend by model, from configured per-1k
+	// prices. Zero when prices are not configured.
+	LLMCostUSD *prometheus.CounterVec
 
 	// Circuit breaker
 	CircuitState *prometheus.GaugeVec
@@ -187,6 +209,24 @@ func New(namespace string) *Metrics {
 			},
 			[]string{"model"},
 		),
+		LLMTokens: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "llm",
+				Name:      "tokens_total",
+				Help:      "LLM tokens consumed by model and kind (prompt/completion)",
+			},
+			[]string{"model", "kind"},
+		),
+		LLMCostUSD: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "llm",
+				Name:      "cost_usd_total",
+				Help:      "Estimated LLM spend in USD by model; zero when prices unset",
+			},
+			[]string{"model"},
+		),
 		CircuitState: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
@@ -269,6 +309,8 @@ func New(namespace string) *Metrics {
 		m.LLMRequests,
 		m.LLMRequestDuration,
 		m.LLMConsecutiveFailures,
+		m.LLMTokens,
+		m.LLMCostUSD,
 		m.CircuitState,
 		m.AgentRunsStarted,
 		m.AgentRunCompletions,
@@ -343,6 +385,26 @@ func (m *Metrics) RecordLLMRequest(model, outcome string, duration time.Duration
 		m.llmConsecutiveFailures[model]++
 	}
 	m.LLMConsecutiveFailures.WithLabelValues(model).Set(float64(m.llmConsecutiveFailures[model]))
+}
+
+// RecordLLMTokens records prompt/completion token consumption and estimated cost.
+// Cost uses configured per-1k prices (LLM_PRICE_PROMPT_PER_1K /
+// LLM_PRICE_COMPLETION_PER_1K, USD); both zero means cost stays zero.
+func (m *Metrics) RecordLLMTokens(model string, promptTokens, completionTokens int64) {
+	model = normalizedLabel(model, "unknown")
+	if promptTokens > 0 {
+		m.LLMTokens.WithLabelValues(model, "prompt").Add(float64(promptTokens))
+	}
+	if completionTokens > 0 {
+		m.LLMTokens.WithLabelValues(model, "completion").Add(float64(completionTokens))
+	}
+	if promptTokens > 0 || completionTokens > 0 {
+		cost := float64(promptTokens)/1000*llmPromptPricePer1K +
+			float64(completionTokens)/1000*llmCompletionPricePer1K
+		if cost > 0 {
+			m.LLMCostUSD.WithLabelValues(model).Add(cost)
+		}
+	}
 }
 
 // RecordAgentRunStarted records an Agent run creation event.

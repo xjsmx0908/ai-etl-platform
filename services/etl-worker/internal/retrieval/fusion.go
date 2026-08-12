@@ -44,6 +44,11 @@ func Fuse(results map[string][]Candidate, route Route, limit int) []Candidate {
 			current, ok := byChunk[key]
 			if !ok {
 				c := candidate
+				// Capture the backend's raw score before RRF overwrites it.
+				if c.Relevance == 0 {
+					c.Relevance = candidate.Score
+					c.RelevanceSource = source
+				}
 				c.Score = fusionScore
 				c.Rank = rank
 				if c.Source == "" {
@@ -57,6 +62,13 @@ func Fuse(results map[string][]Candidate, route Route, limit int) []Candidate {
 			}
 
 			current.Score += fusionScore
+			// Prefer Qdrant's cosine score as the relevance signal: it is a
+			// bounded similarity measure, while BM25 is unbounded and corpus-
+			// dependent, so the two cannot share a threshold.
+			if source == SourceQdrant && current.RelevanceSource != SourceQdrant {
+				current.Relevance = candidate.Score
+				current.RelevanceSource = source
+			}
 			current.sourceSet[source] = struct{}{}
 			if current.Content == "" {
 				current.Content = candidate.Content

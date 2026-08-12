@@ -107,6 +107,35 @@ func TestLLMMetricsRecordOutcomeAndConsecutiveFailures(t *testing.T) {
 	}
 }
 
+func TestLLMTokenMetricsRecordUsageAndCost(t *testing.T) {
+	// Prices are read from env at package init; control them for this test.
+	// Zero prices keep cost at zero.
+	m := New("test_ai_etl_tokens")
+
+	m.RecordLLMTokens("tok-model", 1000, 2000)
+
+	if got := counterValue(t, m.LLMTokens.WithLabelValues("tok-model", "prompt")); got != 1000 {
+		t.Fatalf("expected 1000 prompt tokens, got %v", got)
+	}
+	if got := counterValue(t, m.LLMTokens.WithLabelValues("tok-model", "completion")); got != 2000 {
+		t.Fatalf("expected 2000 completion tokens, got %v", got)
+	}
+	// Cost stays zero without configured prices.
+	if got := counterValue(t, m.LLMCostUSD.WithLabelValues("tok-model")); got != 0 {
+		t.Fatalf("expected zero cost without prices, got %v", got)
+	}
+}
+
+func TestLLMTokenMetricsSkipZeroUsage(t *testing.T) {
+	m := New("test_ai_etl_tokens_zero")
+
+	m.RecordLLMTokens("tok-zero", 0, 0)
+
+	if got := counterValue(t, m.LLMTokens.WithLabelValues("tok-zero", "prompt")); got != 0 {
+		t.Fatalf("expected no prompt metric for zero usage, got %v", got)
+	}
+}
+
 func TestHandlerForUsesProvidedGatherer(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New("test_ai_etl_handler")

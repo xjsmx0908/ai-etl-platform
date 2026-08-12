@@ -169,7 +169,7 @@ func main() {
 	if cfg.IsDev() {
 		idemStore = idempotency.NewMemoryStore(cfg.IdempotencyTTL)
 	} else {
-		redisStore, err := idempotency.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.IdempotencyTTL)
+		redisStore, err := idempotency.NewRedisStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.IdempotencyTTL)
 		if err != nil {
 			slog.Error("failed to create idempotency store", "error", err)
 			os.Exit(1)
@@ -207,7 +207,13 @@ func main() {
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
 	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg.MaxUploadSize, cfg.MultipartMaxMemoryBytes, producer, s3Client, idemStore, taskStatusStore))))
-	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(qs.HandleQuery)))
+	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+			qs.HandleQueryStreaming(w, r)
+			return
+		}
+		qs.HandleQuery(w, r)
+	})))
 	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
 
@@ -282,7 +288,7 @@ func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
 	if cfg.ResolvedTaskStatusStore() == config.TaskStatusStoreMemory {
 		return taskstatus.NewMemoryStore(), nil
 	}
-	return taskstatus.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.TaskStatusTTL)
+	return taskstatus.NewRedisStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.TaskStatusTTL)
 }
 
 func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {

@@ -54,14 +54,26 @@ type SearchRequest struct {
 
 // Candidate is one retrieved chunk candidate from one or more backends.
 type Candidate struct {
-	ChunkID  string            `json:"chunk_id"`
-	DocID    string            `json:"doc_id"`
-	Content  string            `json:"content"`
-	Score    float64           `json:"score"`
-	TenantID string            `json:"tenant_id,omitempty"`
-	Source   string            `json:"source,omitempty"`
-	Rank     int               `json:"rank,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	ChunkID string `json:"chunk_id"`
+	DocID   string `json:"doc_id"`
+	Content string `json:"content"`
+	// Score carries the backend's raw relevance score before fusion, and the
+	// RRF fusion score afterwards. Fusion is rank-based, so the post-fusion
+	// value says nothing about semantic relevance — use Relevance for that.
+	Score float64 `json:"score"`
+	// Relevance preserves the backend's raw similarity score (Qdrant cosine,
+	// Elasticsearch BM25) across fusion and reranking. RRF overwrites Score
+	// with 1/(k+rank), which is identical for every rank-1 candidate whether
+	// or not the document is actually relevant — so relevance gating needs
+	// this field, not Score.
+	Relevance float64 `json:"relevance,omitempty"`
+	// RelevanceSource records which backend produced Relevance, since cosine
+	// and BM25 are not comparable scales.
+	RelevanceSource string            `json:"relevance_source,omitempty"`
+	TenantID        string            `json:"tenant_id,omitempty"`
+	Source          string            `json:"source,omitempty"`
+	Rank            int               `json:"rank,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
 // Result is the output consumed by the RAG answer-generation layer.

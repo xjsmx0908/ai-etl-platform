@@ -56,11 +56,26 @@ type chatCompletionRequest struct {
 	Temperature    float64           `json:"temperature"`
 	MaxTokens      int               `json:"max_tokens,omitempty"`
 	ResponseFormat map[string]string `json:"response_format,omitempty"`
+	// Tools enables native function calling. Models that do not support it
+	// ignore the field and answer in the JSON text format instead.
+	Tools []plannerTool `json:"tools,omitempty"`
 }
 
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// ToolCalls is populated in assistant messages when native function calling
+	// is used; the planner translates them into validated tool decisions.
+	ToolCalls []toolCall `json:"tool_calls,omitempty"`
+}
+
+type toolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 type chatCompletionResponse struct {
@@ -145,6 +160,7 @@ func (p *LLMPlanner) Plan(ctx context.Context, run agent.Run) (agent.PlanDecisio
 		ResponseFormat: map[string]string{
 			"type": "json_object",
 		},
+		Tools: p.toolList,
 		Messages: []chatMessage{
 			{Role: "system", Content: p.systemPrompt()},
 			{Role: "user", Content: p.userPrompt(run)},
@@ -183,11 +199,49 @@ func (p *LLMPlanner) Plan(ctx context.Context, run agent.Run) (agent.PlanDecisio
 	if len(chatResp.Choices) == 0 {
 		return agent.PlanDecision{}, fmt.Errorf("agent planner returned no choices")
 	}
-	content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+	message := chatResp.Choices[0].Message
+
+	// Native function calling takes precedence: the model selected a tool and
+	// supplied structured arguments directly. Falls back to the JSON-text
+	// protocol when the model ignored the tools field (content only).
+	if len(message.ToolCalls) > 0 {
+		return p.decideFromToolCalls(message.ToolCalls)
+	}
+
+	content := strings.TrimSpace(message.Content)
 	if content == "" {
 		return agent.PlanDecision{}, fmt.Errorf("agent planner returned empty content")
 	}
 	return p.validateDecision([]byte(content))
+}
+
+// decideFromToolCalls converts native tool_calls into a validated decision.
+// Multiple tool calls collapse to the first valid one — this planner schedules
+// one tool per step.
+func (p *LLMPlanner) decideFromToolCalls(calls []toolCall) (agent.PlanDecision, error) {
+	for _, call := range calls {
+		toolName := strings.ToLower(strings.TrimSpace(call.Function.Name))
+		if toolName == "" {
+			continue
+		}
+		_, ok := p.tools[toolName]
+		if !ok {
+			return agent.PlanDecision{}, fmt.Errorf("agent planner selected unregistered tool %q", call.Function.Name)
+		}
+		args := json.RawMessage(strings.TrimSpace(call.Function.Arguments))
+		if len(args) == 0 || string(args) == "" {
+			args = json.RawMessage(`{}`)
+		}
+		if _, err := agent.ValidateArguments(p.tools[toolName].Parameters, args); err != nil {
+			return agent.PlanDecision{}, fmt.Errorf("agent planner arguments for tool %q are invalid: %w", toolName, err)
+		}
+		return agent.PlanDecision{
+			Type:      agent.DecisionToolCall,
+			ToolName:  toolName,
+			Arguments: append(json.RawMessage(nil), args...),
+		}, nil
+	}
+	return agent.PlanDecision{}, fmt.Errorf("agent planner returned tool_calls with no valid tool name")
 }
 
 func (p *LLMPlanner) validateDecision(raw []byte) (agent.PlanDecision, error) {

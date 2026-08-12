@@ -216,14 +216,14 @@ func newCheckpoint(cfg config.Config) (model.CheckpointStore, error) {
 	if cfg.IsDev() {
 		return checkpoint.NewMemoryStore(), nil
 	}
-	return checkpoint.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+	return checkpoint.NewRedisStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB)
 }
 
 func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
 	if cfg.ResolvedTaskStatusStore() == config.TaskStatusStoreMemory {
 		return taskstatus.NewMemoryStore(), nil
 	}
-	return taskstatus.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.TaskStatusTTL)
+	return taskstatus.NewRedisStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.TaskStatusTTL)
 }
 
 func newDLQ(cfg config.Config) (model.DLQStore, error) {
@@ -252,9 +252,9 @@ func newFullTextSink(cfg config.Config) (model.FullTextSink, error) {
 	}
 
 	queue, err := es.NewRedisRetryQueue(
-		cfg.RedisAddr,
-		cfg.RedisPassword,
-		cfg.RedisDB,
+		cfg.RedisStateAddr,
+		cfg.RedisStatePassword,
+		cfg.RedisStateDB,
 		cfg.ESQueueKey,
 		cfg.ESDeadLetterKey,
 		cfg.ESReplayPeriod,

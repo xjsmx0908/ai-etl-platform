@@ -2,6 +2,56 @@ package retrieval
 
 import "testing"
 
+// RRF overwrites Score with 1/(k+rank), which is identical for every rank-1
+// candidate regardless of actual relevance. Relevance gating therefore depends on
+// the raw backend score surviving fusion.
+func TestFuse_PreservesRawRelevanceScore(t *testing.T) {
+	route := Route{Strategy: StrategySemantic, QdrantWeight: 1, ElasticWeight: 0}
+	results := map[string][]Candidate{
+		SourceQdrant: {
+			{ChunkID: "c1", DocID: "d1", Score: 0.87, Source: SourceQdrant, Rank: 1},
+		},
+	}
+
+	got := Fuse(results, route, 10)
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(got))
+	}
+	if got[0].Relevance != 0.87 {
+		t.Errorf("raw cosine score lost in fusion: got %v, want 0.87", got[0].Relevance)
+	}
+	if got[0].RelevanceSource != SourceQdrant {
+		t.Errorf("expected relevance source qdrant, got %q", got[0].RelevanceSource)
+	}
+	if got[0].Score == 0.87 {
+		t.Error("Score should hold the RRF fusion value, not the raw score")
+	}
+}
+
+// Cosine and BM25 are different scales; the gate only understands cosine, so a
+// multi-backend hit must expose Qdrant's score rather than whichever arrived first.
+func TestFuse_PrefersQdrantRelevanceOnCrossSourceHit(t *testing.T) {
+	route := Route{Strategy: StrategyHybrid, QdrantWeight: 0.5, ElasticWeight: 0.5}
+	results := map[string][]Candidate{
+		SourceElasticsearch: {
+			{ChunkID: "c1", DocID: "d1", Score: 14.2, Source: SourceElasticsearch, Rank: 1},
+		},
+		SourceQdrant: {
+			{ChunkID: "c1", DocID: "d1", Score: 0.73, Source: SourceQdrant, Rank: 1},
+		},
+	}
+
+	got := Fuse(results, route, 10)
+
+	if len(got) != 1 {
+		t.Fatalf("expected merged candidate, got %d", len(got))
+	}
+	if got[0].RelevanceSource != SourceQdrant || got[0].Relevance != 0.73 {
+		t.Errorf("expected qdrant cosine 0.73, got %v from %q", got[0].Relevance, got[0].RelevanceSource)
+	}
+}
+
 func TestFuse_DeduplicatesAndWeightsByRoute(t *testing.T) {
 	route := Route{
 		Strategy:      StrategyExactKeyword,

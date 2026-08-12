@@ -53,6 +53,58 @@ func TestLLMPlannerPlansToolCall(t *testing.T) {
 	}
 }
 
+// Native function calling: the model returns tool_calls instead of a JSON-text
+// decision, and the planner must translate them into a validated decision.
+func TestLLMPlannerNativeToolCall(t *testing.T) {
+	var reqHasTools bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode planner request: %v", err)
+		}
+		reqHasTools = len(req.Tools) > 0
+		resp := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"rag_query","arguments":"{\"question\":\"报销制度\",\"top_k\":3}"}}]}}]}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	planner := newTestLLMPlanner(t, server.URL, "")
+	decision, err := planner.Plan(context.Background(), agent.Run{Task: "报销制度", State: agent.StateRunning})
+	if err != nil {
+		t.Fatalf("plan native tool call: %v", err)
+	}
+	if !reqHasTools {
+		t.Fatal("expected tools field in planner request for native function calling")
+	}
+	if decision.Type != agent.DecisionToolCall || decision.ToolName != ragQueryToolName {
+		t.Fatalf("unexpected decision: %+v", decision)
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(decision.Arguments, &args); err != nil {
+		t.Fatalf("decode decision args: %v", err)
+	}
+	if args["question"] != "报销制度" {
+		t.Fatalf("unexpected args: %+v", args)
+	}
+}
+
+// Native tool calling with an unregistered tool must be rejected.
+func TestLLMPlannerRejectsNativeUnregisteredTool(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"not_a_tool","arguments":"{}"}}]}}]}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	planner := newTestLLMPlanner(t, server.URL, "")
+	_, err := planner.Plan(context.Background(), agent.Run{Task: "t", State: agent.StateRunning})
+	if err == nil {
+		t.Fatal("expected error for unregistered native tool")
+	}
+}
+
 func TestLLMPlannerPlansFinalFromObservation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writePlannerResponse(t, w, `{"type":"final","thought":"observation answered","final":"报销需要发票和经理审批。"}`)

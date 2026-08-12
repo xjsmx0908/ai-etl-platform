@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -130,7 +131,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AgentPlannerEndpoint != "https://api.openai.com/v1/chat/completions" {
 		t.Errorf("expected default AgentPlannerEndpoint, got %s", cfg.AgentPlannerEndpoint)
 	}
-	if cfg.AgentPlannerModel != "gpt-4o-mini" {
+	if cfg.AgentPlannerModel != "deepseek-v4-flash" {
 		t.Errorf("expected default AgentPlannerModel, got %s", cfg.AgentPlannerModel)
 	}
 	if cfg.AgentPlannerTimeout != 30*time.Second {
@@ -601,7 +602,9 @@ func TestValidate_ProductionAgentPlanner(t *testing.T) {
 	cfg.EmbedAPIKey = "embed-key"
 	cfg.KafkaBrokers = "kafka:9092"
 	cfg.StoreEndpoint = "http://qdrant:6333"
-	cfg.RedisAddr = "redis:6379"
+	cfg.RedisAddr = "redis-cache:6379"
+	cfg.RedisCacheAddr = "redis-cache:6379"
+	cfg.RedisStateAddr = "redis-state:6379"
 	cfg.JWTSecret = "12345678901234567890123456789012"
 	cfg.S3AccessKey = "prod-access"
 	cfg.S3SecretKey = "prod-secret"
@@ -663,7 +666,9 @@ func TestValidateAPI_ProductionWeakJWTRejected(t *testing.T) {
 	cfg.EmbedAPIKey = "sk-test"
 	cfg.KafkaBrokers = "kafka.internal:9092"
 	cfg.StoreEndpoint = "http://qdrant.internal:6333"
-	cfg.RedisAddr = "redis.internal:6379"
+	cfg.RedisAddr = "redis-cache.internal:6379"
+	cfg.RedisCacheAddr = "redis-cache.internal:6379"
+	cfg.RedisStateAddr = "redis-state.internal:6379"
 	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
 	cfg.JWTSecret = "change-me-in-production"
 	cfg.S3AccessKey = "prod-access"
@@ -680,7 +685,9 @@ func TestValidateAPI_ProductionDefaultS3Rejected(t *testing.T) {
 	cfg.EmbedAPIKey = "sk-test"
 	cfg.KafkaBrokers = "kafka.internal:9092"
 	cfg.StoreEndpoint = "http://qdrant.internal:6333"
-	cfg.RedisAddr = "redis.internal:6379"
+	cfg.RedisAddr = "redis-cache.internal:6379"
+	cfg.RedisCacheAddr = "redis-cache.internal:6379"
+	cfg.RedisStateAddr = "redis-state.internal:6379"
 	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
 	cfg.JWTSecret = "12345678901234567890123456789012"
 	cfg.S3AccessKey = "minioadmin"
@@ -697,7 +704,9 @@ func TestValidateAPI_ProductionStrongSecretsPass(t *testing.T) {
 	cfg.EmbedAPIKey = "sk-test"
 	cfg.KafkaBrokers = "kafka.internal:9092"
 	cfg.StoreEndpoint = "http://qdrant.internal:6333"
-	cfg.RedisAddr = "redis.internal:6379"
+	cfg.RedisAddr = "redis-cache.internal:6379"
+	cfg.RedisCacheAddr = "redis-cache.internal:6379"
+	cfg.RedisStateAddr = "redis-state.internal:6379"
 	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
 	cfg.JWTSecret = "12345678901234567890123456789012"
 	cfg.S3AccessKey = "prod-access"
@@ -715,7 +724,9 @@ func TestValidateAPI_ProductionWildcardCORSRejected(t *testing.T) {
 	cfg.EmbedAPIKey = "sk-test"
 	cfg.KafkaBrokers = "kafka.internal:9092"
 	cfg.StoreEndpoint = "http://qdrant.internal:6333"
-	cfg.RedisAddr = "redis.internal:6379"
+	cfg.RedisAddr = "redis-cache.internal:6379"
+	cfg.RedisCacheAddr = "redis-cache.internal:6379"
+	cfg.RedisStateAddr = "redis-state.internal:6379"
 	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
 	cfg.JWTSecret = "12345678901234567890123456789012"
 	cfg.S3AccessKey = "prod-access"
@@ -724,6 +735,103 @@ func TestValidateAPI_ProductionWildcardCORSRejected(t *testing.T) {
 
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Fatal("expected wildcard CORS to be rejected in production")
+	}
+}
+
+func TestLoad_RedisCacheStateFallbackToShared(t *testing.T) {
+	t.Setenv("REDIS_ADDR", "shared-redis:6379")
+	t.Setenv("REDIS_PASSWORD", "shared-pass")
+	t.Setenv("REDIS_DB", "3")
+
+	cfg := Load()
+
+	if cfg.RedisCacheAddr != "shared-redis:6379" {
+		t.Errorf("cache addr should fall back to REDIS_ADDR, got %q", cfg.RedisCacheAddr)
+	}
+	if cfg.RedisStateAddr != "shared-redis:6379" {
+		t.Errorf("state addr should fall back to REDIS_ADDR, got %q", cfg.RedisStateAddr)
+	}
+	if cfg.RedisCachePassword != "shared-pass" || cfg.RedisStatePassword != "shared-pass" {
+		t.Errorf("passwords should fall back to REDIS_PASSWORD, got cache=%q state=%q",
+			cfg.RedisCachePassword, cfg.RedisStatePassword)
+	}
+	if cfg.RedisCacheDB != 3 || cfg.RedisStateDB != 3 {
+		t.Errorf("DBs should fall back to REDIS_DB, got cache=%d state=%d", cfg.RedisCacheDB, cfg.RedisStateDB)
+	}
+}
+
+func TestLoad_RedisCacheStateOverrideShared(t *testing.T) {
+	t.Setenv("REDIS_ADDR", "shared-redis:6379")
+	t.Setenv("REDIS_DB", "0")
+	t.Setenv("REDIS_CACHE_ADDR", "cache-redis:6379")
+	t.Setenv("REDIS_CACHE_DB", "1")
+	t.Setenv("REDIS_STATE_ADDR", "state-redis:6379")
+	t.Setenv("REDIS_STATE_DB", "2")
+
+	cfg := Load()
+
+	if cfg.RedisCacheAddr != "cache-redis:6379" || cfg.RedisCacheDB != 1 {
+		t.Errorf("cache override failed: addr=%q db=%d", cfg.RedisCacheAddr, cfg.RedisCacheDB)
+	}
+	if cfg.RedisStateAddr != "state-redis:6379" || cfg.RedisStateDB != 2 {
+		t.Errorf("state override failed: addr=%q db=%d", cfg.RedisStateAddr, cfg.RedisStateDB)
+	}
+}
+
+// Durable Agent state must never share an instance with the evictable cache:
+// an allkeys-lru policy can drop fencing tokens and approval audit records.
+func TestValidate_ProductionRejectsSharedRedisForStateAndCache(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka-prod:9092"
+	cfg.StoreEndpoint = "http://qdrant-prod:6333"
+	cfg.RedisAddr = "redis-prod:6379"
+	cfg.RedisCacheAddr = "redis-prod:6379"
+	cfg.RedisCacheDB = 0
+	cfg.RedisStateAddr = "redis-prod:6379"
+	cfg.RedisStateDB = 0
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when state and cache share the same Redis instance and DB")
+	}
+	if !strings.Contains(err.Error(), "REDIS_STATE_ADDR/DB must not equal REDIS_CACHE_ADDR/DB") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ProductionAcceptsSeparateRedisInstances(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka-prod:9092"
+	cfg.StoreEndpoint = "http://qdrant-prod:6333"
+	cfg.RedisAddr = "redis-cache-prod:6379"
+	cfg.RedisCacheAddr = "redis-cache-prod:6379"
+	cfg.RedisStateAddr = "redis-state-prod:6379"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("separate cache/state instances should pass validation, got: %v", err)
+	}
+}
+
+func TestValidate_ProductionRequiresConfiguredStateAddr(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka-prod:9092"
+	cfg.StoreEndpoint = "http://qdrant-prod:6333"
+	cfg.RedisAddr = "redis-cache-prod:6379"
+	cfg.RedisCacheAddr = "redis-cache-prod:6379"
+	cfg.RedisStateAddr = "localhost:6379"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for default REDIS_STATE_ADDR in production")
+	}
+	if !strings.Contains(err.Error(), "REDIS_STATE_ADDR must be configured in production") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

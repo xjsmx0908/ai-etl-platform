@@ -92,13 +92,19 @@ type Config struct {
 	RetrievalEnableRerank      bool
 	RetrievalRerankPolicy      string
 	RetrievalExactSchemaFields []string
-	RerankEndpoint             string
-	RerankAPIKey               string
-	RerankModel                string
-	SemanticCacheEnabled       bool
-	SemanticCacheTTL           time.Duration
-	SemanticCacheThreshold     float64
-	SemanticCacheMaxEntries    int
+	// RetrievalMinRelevance gates answer generation on raw backend similarity.
+	// Permission filtering can remove the target document while still returning
+	// unrelated same-tenant chunks; without this gate the LLM answers from them.
+	// 0 disables the gate. Only Qdrant cosine scores are compared against it —
+	// BM25 is unbounded and corpus-dependent, so it shares no threshold.
+	RetrievalMinRelevance   float64
+	RerankEndpoint          string
+	RerankAPIKey            string
+	RerankModel             string
+	SemanticCacheEnabled    bool
+	SemanticCacheTTL        time.Duration
+	SemanticCacheThreshold  float64
+	SemanticCacheMaxEntries int
 
 	// Agent Orchestrator (Module 3)
 	AgentNodeID           string
@@ -120,10 +126,24 @@ type Config struct {
 	KafkaGroupID  string
 	KafkaDLQTopic string
 
-	// Redis (Checkpoint)
+	// Redis (shared default; used as fallback for cache/state below)
 	RedisAddr     string
 	RedisPassword string
 	RedisDB       int
+
+	// Redis Cache instance holds only evictable data (semantic retrieval cache).
+	// Safe to run with allkeys-lru.
+	RedisCacheAddr     string
+	RedisCachePassword string
+	RedisCacheDB       int
+
+	// Redis State instance holds durable data: Agent runs, approval audit,
+	// fencing tokens, idempotency keys, checkpoints, task status, and the ES
+	// retry queue. Must run with noeviction; eviction here is a correctness bug,
+	// not a capacity issue (a dropped fencing token defeats stale-write rejection).
+	RedisStateAddr     string
+	RedisStatePassword string
+	RedisStateDB       int
 
 	// Server
 	HealthPort            int
@@ -150,6 +170,12 @@ type Config struct {
 
 	// Runtime
 	Environment string // "dev" | "staging" | "production"
+
+	// Prompt versioning: system prompt is loaded from {PromptDir}/rag_answer/{PromptVersion}.md.
+	// Empty PromptDir keeps the built-in v1 prompt. Bumping PromptVersion lets prompt changes
+	// be tracked and A/B'd through the eval.
+	PromptDir     string
+	PromptVersion string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -219,6 +245,7 @@ func Load() Config {
 		RetrievalEnableRerank:      EnvBool("RETRIEVAL_ENABLE_RERANK", false),
 		RetrievalRerankPolicy:      strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
 		RetrievalExactSchemaFields: EnvCSV("RETRIEVAL_EXACT_SCHEMA_FIELDS", DefaultRetrievalExactSchemaFields),
+		RetrievalMinRelevance:      EnvFloat("RETRIEVAL_MIN_RELEVANCE", 0),
 		RerankEndpoint:             EnvStr("RERANK_ENDPOINT", ""),
 		RerankAPIKey:               EnvSecret("RERANK_API_KEY", ""),
 		RerankModel:                EnvStr("RERANK_MODEL", "bge-reranker-base"),
@@ -237,7 +264,7 @@ func Load() Config {
 		AgentPlannerType:      strings.ToLower(strings.TrimSpace(EnvStr("AGENT_PLANNER_TYPE", AgentPlannerAuto))),
 		AgentPlannerEndpoint:  EnvStr("AGENT_PLANNER_ENDPOINT", EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
 		AgentPlannerAPIKey:    EnvSecret("AGENT_PLANNER_API_KEY", EnvSecret("LLM_API_KEY", "")),
-		AgentPlannerModel:     EnvStr("AGENT_PLANNER_MODEL", EnvStr("LLM_MODEL", "gpt-4o-mini")),
+		AgentPlannerModel:     EnvStr("AGENT_PLANNER_MODEL", EnvStr("LLM_MODEL", "deepseek-v4-flash")),
 		AgentPlannerTimeout:   EnvDuration("AGENT_PLANNER_TIMEOUT", 30*time.Second),
 		AgentPlannerMaxTokens: EnvInt("AGENT_PLANNER_MAX_TOKENS", 512),
 
@@ -247,10 +274,19 @@ func Load() Config {
 		KafkaGroupID:  EnvStr("KAFKA_GROUP_ID", "etl-pipeline"),
 		KafkaDLQTopic: EnvStr("KAFKA_DLQ_TOPIC", "doc-processing-dlq"),
 
-		// Redis
+		// Redis: REDIS_* is the shared default; REDIS_CACHE_*/REDIS_STATE_*
+		// override it so evictable cache and durable state can be separated.
 		RedisAddr:     EnvStr("REDIS_ADDR", "localhost:6379"),
 		RedisPassword: EnvSecret("REDIS_PASSWORD", ""),
 		RedisDB:       EnvInt("REDIS_DB", 0),
+
+		RedisCacheAddr:     EnvStr("REDIS_CACHE_ADDR", EnvStr("REDIS_ADDR", "localhost:6379")),
+		RedisCachePassword: EnvSecret("REDIS_CACHE_PASSWORD", EnvSecret("REDIS_PASSWORD", "")),
+		RedisCacheDB:       EnvInt("REDIS_CACHE_DB", EnvInt("REDIS_DB", 0)),
+
+		RedisStateAddr:     EnvStr("REDIS_STATE_ADDR", EnvStr("REDIS_ADDR", "localhost:6379")),
+		RedisStatePassword: EnvSecret("REDIS_STATE_PASSWORD", EnvSecret("REDIS_PASSWORD", "")),
+		RedisStateDB:       EnvInt("REDIS_STATE_DB", EnvInt("REDIS_DB", 0)),
 
 		// Server
 		HealthPort:            EnvInt("HEALTH_PORT", 8080),
@@ -277,6 +313,10 @@ func Load() Config {
 
 		// Runtime
 		Environment: environment,
+
+		// Prompt versioning (optional; empty PromptDir keeps built-in v1)
+		PromptDir:     EnvStr("PROMPT_DIR", ""),
+		PromptVersion: EnvStr("PROMPT_VERSION", "v1"),
 	}
 }
 
@@ -294,6 +334,18 @@ func (c Config) Validate() error {
 		}
 		if c.RedisAddr == "localhost:6379" {
 			return fmt.Errorf("REDIS_ADDR must be configured in production")
+		}
+		if c.RedisStateAddr == "localhost:6379" {
+			return fmt.Errorf("REDIS_STATE_ADDR must be configured in production")
+		}
+		if c.RedisCacheAddr == "localhost:6379" {
+			return fmt.Errorf("REDIS_CACHE_ADDR must be configured in production")
+		}
+		// Durable state must not share an instance with the evictable cache:
+		// an LRU eviction policy can drop Agent runs, approval audit records,
+		// and fencing tokens.
+		if c.RedisStateAddr == c.RedisCacheAddr && c.RedisStateDB == c.RedisCacheDB {
+			return fmt.Errorf("REDIS_STATE_ADDR/DB must not equal REDIS_CACHE_ADDR/DB in production: durable Agent state cannot share an evictable cache instance")
 		}
 	}
 	if c.MaxWorkers < 1 || c.MaxWorkers > 100 {
@@ -334,6 +386,9 @@ func (c Config) Validate() error {
 	}
 	if c.RetrievalCandidateK < 1 || c.RetrievalCandidateK > 500 {
 		return fmt.Errorf("RETRIEVAL_CANDIDATE_K must be between 1 and 500, got %d", c.RetrievalCandidateK)
+	}
+	if c.RetrievalMinRelevance < 0 || c.RetrievalMinRelevance > 1 {
+		return fmt.Errorf("RETRIEVAL_MIN_RELEVANCE must be between 0 and 1, got %v", c.RetrievalMinRelevance)
 	}
 	if c.RetrievalFinalTopK < 1 || c.RetrievalFinalTopK > 100 {
 		return fmt.Errorf("RETRIEVAL_FINAL_TOP_K must be between 1 and 100, got %d", c.RetrievalFinalTopK)

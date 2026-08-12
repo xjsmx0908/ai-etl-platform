@@ -61,9 +61,9 @@ func NewEngine(cfg config.Config) *Engine {
 	var cache SourceCache = NoopCache{}
 	if cfg.SemanticCacheEnabled {
 		redisCache, err := NewRedisSemanticCache(
-			cfg.RedisAddr,
-			cfg.RedisPassword,
-			cfg.RedisDB,
+			cfg.RedisCacheAddr,
+			cfg.RedisCachePassword,
+			cfg.RedisCacheDB,
 			cfg.SemanticCacheTTL,
 			cfg.SemanticCacheThreshold,
 			cfg.SemanticCacheMaxEntries,

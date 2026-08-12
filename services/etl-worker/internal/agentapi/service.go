@@ -89,14 +89,14 @@ func NewServiceWithObserver(cfg config.Config, qs QueryService, taskStatusStore 
 		approvalStore = agent.NewMemoryApprovalStore()
 		lockManager = agent.NewMemoryLockManager()
 	} else {
-		redisStore, err := agent.NewRedisStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.AgentRunTTL)
+		redisStore, err := agent.NewRedisStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.AgentRunTTL)
 		if err != nil {
 			return nil, err
 		}
 		store = redisStore
 		closers = append(closers, redisStore)
 
-		redisApprovalStore, err := agent.NewRedisApprovalStore(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.AgentRunTTL)
+		redisApprovalStore, err := agent.NewRedisApprovalStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.AgentRunTTL)
 		if err != nil {
 			_ = redisStore.Close()
 			return nil, err
@@ -104,7 +104,7 @@ func NewServiceWithObserver(cfg config.Config, qs QueryService, taskStatusStore 
 		approvalStore = redisApprovalStore
 		closers = append(closers, redisApprovalStore)
 
-		redisLockManager, err := agent.NewRedisLockManager(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, cfg.AgentRunTTL)
+		redisLockManager, err := agent.NewRedisLockManager(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.AgentRunTTL)
 		if err != nil {
 			closeAll(closers)
 			return nil, err
