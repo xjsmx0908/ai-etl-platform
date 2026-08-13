@@ -158,7 +158,24 @@ func NewLLMPlanner(opts LLMPlannerOptions) (*LLMPlanner, error) {
 }
 
 // Plan returns a validated tool call or final answer from the LLM planner.
+// Plan returns a validated tool call or final answer, retrying once when the
+// model returns empty or truncated JSON (a transient LLM glitch).
 func (p *LLMPlanner) Plan(ctx context.Context, run agent.Run) (agent.PlanDecision, error) {
+	decision, err := p.planOnce(ctx, run)
+	if err != nil && retryablePlannerError(err) {
+		return p.planOnce(ctx, run)
+	}
+	return decision, err
+}
+
+// retryablePlannerError reports whether a planner error is a transient LLM
+// output problem worth one retry, as opposed to a real validation failure.
+func retryablePlannerError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "empty content") || strings.Contains(msg, "invalid JSON decision")
+}
+
+func (p *LLMPlanner) planOnce(ctx context.Context, run agent.Run) (agent.PlanDecision, error) {
 	body, err := json.Marshal(chatCompletionRequest{
 		Model:       p.model,
 		Temperature: 0,
@@ -299,6 +316,9 @@ func (p *LLMPlanner) systemPrompt() string {
 		`{"type":"final","thought":"why","final":"answer"}. ` +
 		"Only call registered tools. Tool arguments must match the provided JSON schema. " +
 		"If a tool observation already answers the task, return final. " +
+		"If the latest tool result contains no useful answer (e.g. \"未找到相关文档\" or an error), " +
+		"return final stating the knowledge base could not answer — do not repeat the same or " +
+		"a similar tool call more than once. " +
 		"Registered tools JSON: " + string(tools)
 }
 
