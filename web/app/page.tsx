@@ -11,6 +11,7 @@ type RetrievalInfo = {
   backends: string[];
   candidate_count: number;
   duration_ms: number;
+  max_relevance?: number;
 };
 type TokenUsage = { prompt_tokens: number; completion_tokens: number; estimated_cost_usd?: number };
 type AnswerMeta = {
@@ -460,6 +461,7 @@ function QaWorkspace({ onQueryDone }: { onQueryDone: (tu: TokenUsage | undefined
                 <Row label="语义缓存" value={meta.retrieval ? (meta.retrieval.cache_hit ? "命中" : "未命中") : "—"} highlight={meta.retrieval?.cache_hit} />
                 <Row label="检索后端" value={meta.retrieval?.backends.join(" + ") || "—"} />
                 <Row label="候选数" value={meta.retrieval ? String(meta.retrieval.candidate_count) : "—"} />
+                <Row label="证据置信度" value={confidenceLabel(meta.retrieval?.max_relevance)} highlight={isHighConfidence(meta.retrieval?.max_relevance)} />
                 <Row label="检索耗时" value={meta.retrieval ? `${meta.retrieval.duration_ms}ms` : "—"} />
               </dl>
             </div>
@@ -962,6 +964,19 @@ function DataPanel() {
       </div>
     </div>
   );
+}
+
+// Evidence confidence from the top Qdrant cosine score. Observational, not a
+// gate: the current embedding's distributions overlap too heavily for a hard
+// threshold (see ADR 0006).
+function confidenceLabel(maxRelevance?: number): string {
+  if (maxRelevance === undefined) return "—";
+  if (maxRelevance > 0.7) return `高 (${maxRelevance.toFixed(3)})`;
+  if (maxRelevance > 0.55) return `中 (${maxRelevance.toFixed(3)})`;
+  return `低 (${maxRelevance.toFixed(3)})`;
+}
+function isHighConfidence(maxRelevance?: number): boolean {
+  return (maxRelevance ?? 0) > 0.7;
 }
 
 function Row({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {

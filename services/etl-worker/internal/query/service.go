@@ -101,7 +101,12 @@ type RetrievalInfo struct {
 	Backends       []string `json:"backends"`
 	CandidateCount int      `json:"candidate_count"`
 	DurationMs     int64    `json:"duration_ms"`
-	PartialErrors  []string `json:"partial_errors,omitempty"`
+	// MaxRelevance is the highest Qdrant cosine score among returned candidates.
+	// Exposed for observability: a hard threshold is not reliable with the current
+	// embedding (distributions overlap heavily — see ADR 0006), so the demo shows
+	// this as evidence confidence instead of silently gating on it.
+	MaxRelevance  float64  `json:"max_relevance,omitempty"`
+	PartialErrors []string `json:"partial_errors,omitempty"`
 }
 
 // TokenUsage carries provider-reported token consumption for one answer.
@@ -917,12 +922,19 @@ func retrievalInfoFromResult(r retrieval.Result, candidateCount int) *RetrievalI
 	if r.Route.UseElastic {
 		backends = append(backends, "elasticsearch")
 	}
+	var maxRelevance float64
+	for _, c := range r.Sources {
+		if c.RelevanceSource == retrieval.SourceQdrant && c.Relevance > maxRelevance {
+			maxRelevance = c.Relevance
+		}
+	}
 	return &RetrievalInfo{
 		Strategy:       string(r.Route.Strategy),
 		CacheHit:       r.CacheHit,
 		Backends:       backends,
 		CandidateCount: candidateCount,
 		DurationMs:     r.Duration.Milliseconds(),
+		MaxRelevance:   maxRelevance,
 		PartialErrors:  r.PartialErrors,
 	}
 }

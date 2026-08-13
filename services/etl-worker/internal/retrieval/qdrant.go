@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"ai-etl-pipeline/internal/tracing"
@@ -48,83 +49,35 @@ func (r *QdrantRetriever) Search(ctx context.Context, req SearchRequest) ([]Cand
 	if len(allowed) == 0 {
 		allowed = []string{"public"}
 	}
+	filter := map[string]interface{}{
+		"must": []map[string]interface{}{
+			{"key": "tenant_id", "match": map[string]string{"value": req.TenantID}},
+			{"key": "permission", "match": map[string]interface{}{"any": allowed}},
+		},
+	}
 
+	// Main query: dense + sparse prefetch fused by RRF. Scores here are
+	// rank-based fusion scores (1/(k+rank)), which carry no similarity signal.
 	query := map[string]interface{}{
 		"prefetch": []map[string]interface{}{
+			{"query": req.DenseVector, "using": "dense", "limit": limit},
 			{
-				"query": req.DenseVector,
-				"using": "dense",
-				"limit": limit,
-			},
-			{
-				"query": map[string]interface{}{
-					"indices": req.SparseVector.Indices,
-					"values":  req.SparseVector.Values,
-				},
-				"using": "sparse",
-				"limit": limit,
+				"query": map[string]interface{}{"indices": req.SparseVector.Indices, "values": req.SparseVector.Values},
+				"using": "sparse", "limit": limit,
 			},
 		},
 		"query":        map[string]string{"fusion": "rrf"},
 		"limit":        limit,
 		"with_payload": true,
-		"filter": map[string]interface{}{
-			"must": []map[string]interface{}{
-				{
-					"key":   "tenant_id",
-					"match": map[string]string{"value": req.TenantID},
-				},
-				{
-					"key": "permission",
-					"match": map[string]interface{}{
-						"any": allowed,
-					},
-				},
-			},
-		},
+		"filter":       filter,
 	}
-
-	data, err := json.Marshal(query)
-	if err != nil {
-		return nil, fmt.Errorf("marshal qdrant query: %w", err)
-	}
-	url := fmt.Sprintf("%s/collections/%s/points/query", r.endpoint, r.collection)
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	points, err := r.postQuery(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if r.apiKey != "" {
-		httpReq.Header.Set("api-key", r.apiKey)
-	}
-	tracing.InjectHTTPHeaders(ctx, httpReq)
 
-	resp, err := r.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("qdrant query failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("qdrant query error %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Result struct {
-			Points []struct {
-				Score   float64                `json:"score"`
-				Payload map[string]interface{} `json:"payload"`
-			} `json:"points"`
-		} `json:"result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode qdrant response: %w", err)
-	}
-
-	candidates := make([]Candidate, 0, len(result.Result.Points))
-	for i, p := range result.Result.Points {
+	candidates := make([]Candidate, 0, len(points))
+	for i, p := range points {
 		c := Candidate{
 			Score:  p.Score,
 			Source: SourceQdrant,
@@ -145,5 +98,88 @@ func (r *QdrantRetriever) Search(ctx context.Context, req SearchRequest) ([]Cand
 		c.Metadata = exactMetadataFromPayload(p.Payload, req.ExactSchemaFields)
 		candidates = append(candidates, c)
 	}
+
+	// Attach the raw dense cosine score for relevance observability. This is a
+	// second, dense-only query because RRF fusion discards the original
+	// similarity; without it Candidate.Relevance would hold a rank score.
+	denseScores, err := r.denseCosineScores(ctx, req, limit, filter)
+	if err != nil {
+		slog.Warn("qdrant dense score query failed", "error", err)
+		return candidates, nil
+	}
+	for i := range candidates {
+		if s, ok := denseScores[candidates[i].ChunkID]; ok {
+			candidates[i].Relevance = s
+			candidates[i].RelevanceSource = SourceQdrant
+		}
+	}
 	return candidates, nil
+}
+
+// qdrantPoint is a single point returned by /points/query.
+type qdrantPoint struct {
+	Score   float64                `json:"score"`
+	Payload map[string]interface{} `json:"payload"`
+}
+
+// postQuery sends a Qdrant /points/query body and returns the points.
+func (r *QdrantRetriever) postQuery(ctx context.Context, body map[string]interface{}) ([]qdrantPoint, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal qdrant query: %w", err)
+	}
+	url := fmt.Sprintf("%s/collections/%s/points/query", r.endpoint, r.collection)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if r.apiKey != "" {
+		req.Header.Set("api-key", r.apiKey)
+	}
+	tracing.InjectHTTPHeaders(ctx, req)
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("qdrant query failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("qdrant query error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Result struct {
+			Points []qdrantPoint `json:"points"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode qdrant response: %w", err)
+	}
+	return result.Result.Points, nil
+}
+
+// denseCosineScores returns chunk_id -> raw dense cosine from a dense-only query.
+func (r *QdrantRetriever) denseCosineScores(ctx context.Context, req SearchRequest, limit int, filter map[string]interface{}) (map[string]float64, error) {
+	body := map[string]interface{}{
+		"query":        req.DenseVector,
+		"using":        "dense",
+		"limit":        limit,
+		"with_payload": []string{"chunk_id"},
+		"filter":       filter,
+	}
+	points, err := r.postQuery(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]float64, len(points))
+	for _, p := range points {
+		if cid, ok := p.Payload["chunk_id"].(string); ok {
+			out[cid] = p.Score
+		}
+	}
+	return out, nil
 }

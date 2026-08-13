@@ -74,21 +74,25 @@ func TestHandleQuery_UsesTenantAndPermissionFromJWTContext(t *testing.T) {
 	var permissionAny []string
 	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
+		// Only the main RRF query carries a filter; the dense-score follow-up
+		// does too, but we only assert on the first (prefetch) one.
 		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
-			filter, _ := body["filter"].(map[string]interface{})
-			mustList, _ := filter["must"].([]interface{})
-			for _, item := range mustList {
-				cond, _ := item.(map[string]interface{})
-				key, _ := cond["key"].(string)
-				match, _ := cond["match"].(map[string]interface{})
-				switch key {
-				case "tenant_id":
-					filterTenant, _ = match["value"].(string)
-				case "permission":
-					anyList, _ := match["any"].([]interface{})
-					for _, v := range anyList {
-						if s, ok := v.(string); ok {
-							permissionAny = append(permissionAny, s)
+			if _, isMain := body["prefetch"]; isMain {
+				filter, _ := body["filter"].(map[string]interface{})
+				mustList, _ := filter["must"].([]interface{})
+				for _, item := range mustList {
+					cond, _ := item.(map[string]interface{})
+					key, _ := cond["key"].(string)
+					match, _ := cond["match"].(map[string]interface{})
+					switch key {
+					case "tenant_id":
+						filterTenant, _ = match["value"].(string)
+					case "permission":
+						anyList, _ := match["any"].([]interface{})
+						for _, v := range anyList {
+							if s, ok := v.(string); ok {
+								permissionAny = append(permissionAny, s)
+							}
 						}
 					}
 				}
