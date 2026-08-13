@@ -77,6 +77,13 @@ type documentObjectStore interface {
 	DeleteByPrefix(ctx context.Context, prefix string) error
 }
 
+// uploadDeleteObjectStore is what the upload handler needs: write a new object
+// and, for doc_id upsert, wipe the old document's objects first.
+type uploadDeleteObjectStore interface {
+	documentObjectStore
+	Upload(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
+}
+
 type uploadAcceptedResponse struct {
 	TaskID    string `json:"task_id"`
 	DocID     string `json:"doc_id"`
@@ -216,7 +223,7 @@ func main() {
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg.MaxUploadSize, cfg.MultipartMaxMemoryBytes, producer, s3Client, idemStore, taskStatusStore))))
+	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg, producer, s3Client, idemStore, taskStatusStore))))
 	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			qs.HandleQueryStreaming(w, r)
@@ -304,9 +311,42 @@ func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
 	return taskstatus.NewRedisStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.TaskStatusTTL)
 }
 
-// handleDeleteDocument deletes a document and everything derived from it:
-// Qdrant points, ES documents, and MinIO objects under tenant/{docID}*. Required
-// for data-deletion rights and for re-indexing after an embedding model change.
+// cascadeDeleteDoc removes a document and everything derived from it: Qdrant
+// points, ES documents, and MinIO objects under tenant/{docID}*. Used by both
+// the DELETE API and by upload-upsert (a re-upload with the same doc_id replaces
+// the old document). Returns a list of errors (empty means success).
+func cascadeDeleteDoc(ctx context.Context, cfg config.Config, s3Client documentObjectStore, tenantID, docID string) []string {
+	var errs []string
+
+	qs, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension)
+	if err != nil {
+		errs = append(errs, "qdrant init: "+err.Error())
+	} else {
+		if err := qs.DeleteByDocID(ctx, docID); err != nil {
+			errs = append(errs, "qdrant: "+err.Error())
+		}
+		_ = qs.Close()
+	}
+
+	idx, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+	if err != nil {
+		errs = append(errs, "es init: "+err.Error())
+	} else {
+		if err := idx.DeleteByDocID(ctx, docID); err != nil {
+			errs = append(errs, "es: "+err.Error())
+		}
+		_ = idx.Close()
+	}
+
+	if s3Client != nil {
+		if err := s3Client.DeleteByPrefix(ctx, tenantID+"/"+docID); err != nil {
+			errs = append(errs, "s3: "+err.Error())
+		}
+	}
+	return errs
+}
+
+// handleDeleteDocument deletes a document and everything derived from it.
 func handleDeleteDocument(cfg config.Config, s3Client documentObjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -324,35 +364,7 @@ func handleDeleteDocument(cfg config.Config, s3Client documentObjectStore) http.
 			return
 		}
 
-		ctx := r.Context()
-		var errs []string
-
-		qs, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension)
-		if err != nil {
-			errs = append(errs, "qdrant init: "+err.Error())
-		} else {
-			if err := qs.DeleteByDocID(ctx, docID); err != nil {
-				errs = append(errs, "qdrant: "+err.Error())
-			}
-			_ = qs.Close()
-		}
-
-		idx, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
-		if err != nil {
-			errs = append(errs, "es init: "+err.Error())
-		} else {
-			if err := idx.DeleteByDocID(ctx, docID); err != nil {
-				errs = append(errs, "es: "+err.Error())
-			}
-			_ = idx.Close()
-		}
-
-		if s3Client != nil {
-			if err := s3Client.DeleteByPrefix(ctx, tenantID+"/"+docID); err != nil {
-				errs = append(errs, "s3: "+err.Error())
-			}
-		}
-
+		errs := cascadeDeleteDoc(r.Context(), cfg, s3Client, tenantID, docID)
 		if len(errs) > 0 {
 			slog.Error("document delete partial failure", "doc_id", docID, "tenant_id", tenantID, "errors", errs)
 			http.Error(w, `{"error":"partial delete failure","details":`+mustJSON(errs)+`}`, http.StatusInternalServerError)
@@ -368,6 +380,21 @@ func mustJSON(v interface{}) string {
 		return "[]"
 	}
 	return string(data)
+}
+
+// validDocID restricts doc_id to safe characters so it cannot break the MinIO
+// object key (tenant/{docID}{ext}) or URL paths.
+func validDocID(docID string) bool {
+	if docID == "" {
+		return false
+	}
+	for _, c := range docID {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // serviceCheck describes one dependency to probe for system health.
@@ -505,7 +532,7 @@ func handleTaskStatus(taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 	}
 }
 
-func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {
+func handleUpload(cfg config.Config, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		w = rec
@@ -530,10 +557,10 @@ func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadP
 		}
 
 		// Enforce upload body size limit.
-		r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+		r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxUploadSize)
 
 		// Parse multipart form
-		if err := r.ParseMultipartForm(multipartMaxMemoryBytes); err != nil {
+		if err := r.ParseMultipartForm(cfg.MultipartMaxMemoryBytes); err != nil {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
 				http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
@@ -551,7 +578,7 @@ func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadP
 		}
 		defer file.Close()
 
-		if header.Size <= 0 || header.Size > maxUploadSize {
+		if header.Size <= 0 || header.Size > cfg.MaxUploadSize {
 			http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -625,8 +652,23 @@ func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadP
 		}
 
 		now := time.Now()
-		docID := fmt.Sprintf("doc-%d", now.UnixNano())
+		docID := strings.TrimSpace(r.FormValue("doc_id"))
+		userSuppliedDocID := docID != ""
+		if docID == "" {
+			docID = fmt.Sprintf("doc-%d", now.UnixNano())
+		} else if !validDocID(docID) {
+			http.Error(w, "invalid doc_id (allowed: letters, digits, . _ -)", http.StatusBadRequest)
+			return
+		}
 		objectKey := fmt.Sprintf("%s/%s%s", tenantID, docID, ext)
+
+		// Upsert semantics: a user-supplied doc_id replaces the previous version,
+		// so wipe the old document's vectors, full-text docs, and objects first.
+		if userSuppliedDocID {
+			if errs := cascadeDeleteDoc(r.Context(), cfg, s3Client, tenantID, docID); len(errs) > 0 {
+				slog.Warn("upload upsert pre-delete partial failure", "doc_id", docID, "tenant_id", tenantID, "errors", errs)
+			}
+		}
 
 		// Upload to S3 while computing SHA-256.
 		hasher := sha256.New()
