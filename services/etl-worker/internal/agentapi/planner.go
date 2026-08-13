@@ -36,10 +36,15 @@ type LLMPlanner struct {
 	toolList  []plannerTool
 }
 
+// plannerTool is the OpenAI function-calling shape the provider expects:
+// {"type":"function","function":{"name":...,"description":...,"parameters":...}}.
 type plannerTool struct {
-	Name        string           `json:"name"`
-	Description string           `json:"description"`
-	Parameters  agent.JSONSchema `json:"parameters"`
+	Type     string `json:"type"`
+	Function struct {
+		Name        string           `json:"name"`
+		Description string           `json:"description"`
+		Parameters  agent.JSONSchema `json:"parameters"`
+	} `json:"function"`
 }
 
 type plannerDecisionPayload struct {
@@ -130,11 +135,12 @@ func NewLLMPlanner(opts LLMPlannerOptions) (*LLMPlanner, error) {
 		}
 		tool.Name = name
 		tools[name] = tool
-		toolList = append(toolList, plannerTool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			Parameters:  tool.Parameters,
-		})
+		var pt plannerTool
+		pt.Type = "function"
+		pt.Function.Name = tool.Name
+		pt.Function.Description = tool.Description
+		pt.Function.Parameters = tool.Parameters
+		toolList = append(toolList, pt)
 	}
 	if len(tools) == 0 {
 		return nil, fmt.Errorf("agent planner requires at least one registered tool")
