@@ -61,6 +61,9 @@ type Config struct {
 	// Parser Service
 	ParserEndpoint      string
 	ParserInternalToken string
+	// WorkerHealthURL is the ETL worker's health endpoint, used by the system
+	// health aggregation endpoint.
+	WorkerHealthURL string
 
 	// Store (Qdrant)
 	StoreEndpoint   string
@@ -214,6 +217,7 @@ func Load() Config {
 		// Parser Service
 		ParserEndpoint:      EnvStr("PARSER_ENDPOINT", "http://parser-service:8000"),
 		ParserInternalToken: EnvSecret("PARSER_INTERNAL_TOKEN", ""),
+		WorkerHealthURL:     EnvStr("WORKER_HEALTH_URL", "http://etl-worker:8081"),
 
 		// Store (Qdrant)
 		StoreEndpoint:   EnvStr("STORE_ENDPOINT", "http://localhost:6333"),

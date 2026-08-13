@@ -161,7 +161,7 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 		cacheSpan.SetStatus(codes.Error, "semantic cache lookup failed")
 		cacheSpan.End()
 		slog.Warn("retrieval cache lookup failed", "tenant_id", req.TenantID, "error", err)
-	} else if ok {
+	} else if ok && len(sources) > 0 {
 		cacheSpan.SetAttributes(attribute.Bool("cache.hit", true), attribute.Int("cache.result_count", len(sources)))
 		cacheSpan.End()
 		span.SetAttributes(attribute.Bool("retrieval.cache_hit", true))
@@ -310,10 +310,15 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 	}
 
 	cacheStoreCtx, cacheStoreSpan := tracer.Start(ctx, "Retrieval.CacheStore")
-	if err := e.cache.Store(cacheStoreCtx, cacheKey, denseVector, ranked); err != nil {
-		cacheStoreSpan.RecordError(err)
-		cacheStoreSpan.SetStatus(codes.Error, "semantic cache store failed")
-		slog.Warn("retrieval cache store failed", "tenant_id", req.TenantID, "error", err)
+	// Never cache an empty result set: a cached empty hit would make every
+	// subsequent identical question answer with "no relevant documents", even
+	// after the corpus grows. A no-result answer is cheap to recompute anyway.
+	if len(ranked) > 0 {
+		if err := e.cache.Store(cacheStoreCtx, cacheKey, denseVector, ranked); err != nil {
+			cacheStoreSpan.RecordError(err)
+			cacheStoreSpan.SetStatus(codes.Error, "semantic cache store failed")
+			slog.Warn("retrieval cache store failed", "tenant_id", req.TenantID, "error", err)
+		}
 	}
 	cacheStoreSpan.SetAttributes(attribute.Int("cache.result_count", len(ranked)))
 	cacheStoreSpan.End()
