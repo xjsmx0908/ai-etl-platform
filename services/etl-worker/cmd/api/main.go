@@ -228,6 +228,7 @@ func main() {
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
 	apiV1.Handle("/v1/documents/", requireScopes("upload")(http.HandlerFunc(handleDeleteDocument(cfg, s3Client))))
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
+	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
 
 	// Apply middleware chain: version → JWT auth → rate limit → route scope checks → CORS → timeout.
 	// Wrapper execution is outside-in, so compose in reverse.
@@ -469,6 +470,39 @@ func probeTCP(ctx context.Context, addr string) string {
 	}
 	_ = conn.Close()
 	return "up"
+}
+
+// handleTaskStatus returns the async processing status for a document, so the
+// demo can show the upload → parse → embed → store pipeline live.
+func handleTaskStatus(taskStatusStore model.TaskStatusStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		docID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/tasks/"), "/")
+		if docID == "" {
+			http.Error(w, "doc_id is required", http.StatusBadRequest)
+			return
+		}
+		tenantID := auth.GetTenantID(r.Context())
+		if tenantID == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		status, ok, err := taskStatusStore.Load(r.Context(), tenantID, docID)
+		if err != nil {
+			slog.Error("task status load failed", "doc_id", docID, "error", err)
+			http.Error(w, `{"error":"status lookup failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
+	}
 }
 
 func handleUpload(maxUploadSize, multipartMaxMemoryBytes int64, producer uploadProducer, s3Client uploadObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {
