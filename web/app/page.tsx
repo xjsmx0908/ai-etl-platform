@@ -929,8 +929,9 @@ function DataPanel() {
             const active =
               (step.key === "queued" && currentStep === "queued") ||
               (step.key === "parsing" && currentStep === "processing") ||
-              (step.key === "embedding" && currentStep === "processing") ||
-              (step.key === "completed" && currentStep === "completed");
+              (step.key === "embedding" && currentStep === "processing");
+            // A finished run shows every step as done (green); the final
+            // "入库" step must not stay blue once the status is completed.
             const done = currentStep === "completed" || (currentStep === "processing" && i < 2) || (currentStep === "failed" && i < 2);
             return (
               <div key={step.key} className="flex flex-1 items-center gap-2">
