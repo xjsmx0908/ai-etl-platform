@@ -1,18 +1,19 @@
 import { NextRequest } from "next/server";
 
-// Forward /api/query to the backend, streaming the SSE response through so the
-// browser only talks to this origin. The backend lives at BACKEND_URL (set in
-// compose); the query-api streaming endpoint needs Accept: text/event-stream.
+// Forward /api/query to the backend so the browser only talks to this origin.
+// The client's Accept header is passed through: text/event-stream gets SSE,
+// otherwise the backend returns JSON.
 export async function POST(req: NextRequest) {
   const backend = process.env.BACKEND_URL || "http://query-api:8080";
   const body = await req.text();
   const authorization = req.headers.get("authorization") || "";
+  const accept = req.headers.get("accept") || "application/json";
 
   const upstream = await fetch(`${backend}/v1/query`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Accept: "text/event-stream",
+      Accept: accept,
       ...(authorization ? { Authorization: authorization } : {}),
     },
     body,
@@ -21,11 +22,12 @@ export async function POST(req: NextRequest) {
   });
 
   const passthroughHeaders: Record<string, string> = {
-    "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
   };
-  if (!upstream.ok) {
+  if (accept.includes("text/event-stream")) {
+    passthroughHeaders["Content-Type"] = "text/event-stream";
+    passthroughHeaders["Connection"] = "keep-alive";
+  } else {
     passthroughHeaders["Content-Type"] = "application/json";
   }
   return new Response(upstream.body, {

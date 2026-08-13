@@ -42,6 +42,11 @@ type Service struct {
 	llmObserver   LLMObserver
 	systemPrompt  string
 	promptVersion string
+
+	// Per-1k-token USD prices for cost estimation (LLM_PRICE_*). Zero means no
+	// cost is reported.
+	promptPricePer1K     float64
+	completionPricePer1K float64
 }
 
 // LLMObserver receives low-cardinality LLM request outcomes for metrics adapters.
@@ -84,12 +89,26 @@ type Response struct {
 	// PromptVersion identifies which system prompt produced this answer, so
 	// prompt changes can be tracked and A/B'd in the eval.
 	PromptVersion string `json:"prompt_version,omitempty"`
+	// Retrieval exposes how this answer was retrieved, for the demo UI and
+	// observability: routing strategy, cache hit, candidate counts.
+	Retrieval *RetrievalInfo `json:"retrieval,omitempty"`
+}
+
+// RetrievalInfo summarizes the retrieval stage of a query.
+type RetrievalInfo struct {
+	Strategy       string   `json:"strategy"`
+	CacheHit       bool     `json:"cache_hit"`
+	Backends       []string `json:"backends"`
+	CandidateCount int      `json:"candidate_count"`
+	DurationMs     int64    `json:"duration_ms"`
+	PartialErrors  []string `json:"partial_errors,omitempty"`
 }
 
 // TokenUsage carries provider-reported token consumption for one answer.
 type TokenUsage struct {
-	PromptTokens     int64 `json:"prompt_tokens"`
-	CompletionTokens int64 `json:"completion_tokens"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	EstimatedCostUSD float64 `json:"estimated_cost_usd,omitempty"`
 }
 
 // SourceContext represents a retrieved document chunk with its relevance score.
@@ -162,6 +181,9 @@ func NewServiceWithObserver(cfg config.Config, observer LLMObserver) *Service {
 		llmObserver:   observer,
 		systemPrompt:  prompt,
 		promptVersion: promptVersion,
+
+		promptPricePer1K:     config.EnvFloat("LLM_PRICE_PROMPT_PER_1K", 0),
+		completionPricePer1K: config.EnvFloat("LLM_PRICE_COMPLETION_PER_1K", 0),
 	}
 	if initializer, ok := observer.(llmModelInitializer); ok {
 		initializer.InitializeLLMModel(service.llmModel)
@@ -333,6 +355,9 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 			Answer:   NoEvidenceAnswer,
 			Sources:  []SourceContext{},
 			Duration: time.Since(start).String(),
+			// Retrieval info is included so the demo can show WHY it refused
+			// (retrieval ran, but no sufficiently relevant evidence came back).
+			Retrieval: retrievalInfoFromResult(retrievalResult, 0),
 		}, nil
 	}
 
@@ -355,9 +380,10 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	if strings.Contains(answer, NoEvidenceAnswer) {
 		span.SetAttributes(attribute.Bool("llm.refused_for_lack_of_evidence", true))
 		return Response{
-			Answer:   NoEvidenceAnswer,
-			Sources:  []SourceContext{},
-			Duration: time.Since(start).String(),
+			Answer:    NoEvidenceAnswer,
+			Sources:   []SourceContext{},
+			Duration:  time.Since(start).String(),
+			Retrieval: retrievalInfoFromResult(retrievalResult, len(candidates)),
 		}, nil
 	}
 
@@ -366,6 +392,7 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		tokenUsage = &TokenUsage{
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,
+			EstimatedCostUSD: estimateLLMCost(usage, s.promptPricePer1K, s.completionPricePer1K),
 		}
 	}
 
@@ -375,6 +402,7 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		Duration:      time.Since(start).String(),
 		TokenUsage:    tokenUsage,
 		PromptVersion: s.promptVersion,
+		Retrieval:     retrievalInfoFromResult(retrievalResult, len(candidates)),
 	}
 
 	slog.Info("query completed",
@@ -451,10 +479,15 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "event: sources\ndata: %s\n\n", sourcesPayload)
 	flusher.Flush()
 
-	// No evidence: send a refusal delta then done.
+	// No evidence: send a refusal delta then done (with retrieval info so the
+	// demo can show retrieval ran but no supporting evidence came back).
 	if len(sources) == 0 {
 		fmt.Fprintf(w, "event: delta\ndata: {\"text\":%q}\n\n", NoEvidenceAnswer)
-		donePayload, _ := json.Marshal(map[string]interface{}{"duration": time.Since(start).String()})
+		donePayload, _ := json.Marshal(map[string]interface{}{
+			"duration":       time.Since(start).String(),
+			"prompt_version": s.promptVersion,
+			"retrieval":      retrievalInfoFromResult(retrievalResult, 0),
+		})
 		fmt.Fprintf(w, "event: done\ndata: %s\n\n", donePayload)
 		flusher.Flush()
 		return
@@ -490,10 +523,16 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	}
 
 	done := map[string]interface{}{
-		"duration": time.Since(start).String(),
+		"duration":       time.Since(start).String(),
+		"prompt_version": s.promptVersion,
+		"retrieval":      retrievalInfoFromResult(retrievalResult, len(candidates)),
 	}
 	if stats.PromptTokens > 0 || stats.CompletionTokens > 0 {
-		done["token_usage"] = TokenUsage{PromptTokens: stats.PromptTokens, CompletionTokens: stats.CompletionTokens}
+		done["token_usage"] = TokenUsage{
+			PromptTokens:     stats.PromptTokens,
+			CompletionTokens: stats.CompletionTokens,
+			EstimatedCostUSD: estimateLLMCost(llmCallResult{PromptTokens: stats.PromptTokens, CompletionTokens: stats.CompletionTokens}, s.promptPricePer1K, s.completionPricePer1K),
+		}
 	}
 	donePayload, _ := json.Marshal(done)
 	fmt.Fprintf(w, "event: done\ndata: %s\n\n", donePayload)
@@ -860,6 +899,32 @@ func gateByRelevance(candidates []retrieval.Candidate, minRelevance float64) ([]
 		kept = append(kept, c)
 	}
 	return kept, len(candidates) - len(kept)
+}
+
+func estimateLLMCost(usage llmCallResult, promptPrice, completionPrice float64) float64 {
+	if promptPrice <= 0 && completionPrice <= 0 {
+		return 0
+	}
+	return float64(usage.PromptTokens)/1000*promptPrice +
+		float64(usage.CompletionTokens)/1000*completionPrice
+}
+
+func retrievalInfoFromResult(r retrieval.Result, candidateCount int) *RetrievalInfo {
+	backends := make([]string, 0, 2)
+	if r.Route.UseQdrant {
+		backends = append(backends, "qdrant")
+	}
+	if r.Route.UseElastic {
+		backends = append(backends, "elasticsearch")
+	}
+	return &RetrievalInfo{
+		Strategy:       string(r.Route.Strategy),
+		CacheHit:       r.CacheHit,
+		Backends:       backends,
+		CandidateCount: candidateCount,
+		DurationMs:     r.Duration.Milliseconds(),
+		PartialErrors:  r.PartialErrors,
+	}
 }
 
 func sourceContextsFromCandidates(candidates []retrieval.Candidate) []SourceContext {
