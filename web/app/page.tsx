@@ -9,7 +9,9 @@ type Source = {
   score: number;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8080";
+// Requests go through the Next.js rewrite proxy at /api/*, so the browser only
+// talks to this origin (no CORS, SSE passes through the standalone server).
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
 const JWT = process.env.NEXT_PUBLIC_JWT || "";
 
 export default function Home() {

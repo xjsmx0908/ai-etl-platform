@@ -79,7 +79,16 @@ func APIVersion(version string) func(http.Handler) http.Handler {
 // Timeout returns a middleware that adds request timeout.
 func Timeout(timeout time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return http.TimeoutHandler(next, timeout, `{"error":"timeout"}`)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// http.TimeoutHandler buffers the response and drops http.Flusher,
+			// which breaks SSE. Streams are excluded; they carry their own
+			// context timeout via the upstream LLM call.
+			if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.TimeoutHandler(next, timeout, `{"error":"timeout"}`).ServeHTTP(w, r)
+		})
 	}
 }
 

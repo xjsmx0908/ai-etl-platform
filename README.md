@@ -179,12 +179,31 @@ python3 scripts/load-test.py --requests 40 --concurrency 5
 
 ### 前端演示（web/）
 
+本地开发：
+
 ```bash
 cd web
 cp .env.local.example .env.local   # 配置 API 地址与 JWT
 npm install
 npm run dev                        # http://localhost:3000
 ```
+
+一键部署（作为 compose 服务，面试 demo 用）：
+
+```bash
+# 1. 设 JWT_SECRET 并生成 demo JWT（见下）
+# 2. 启动整套 + 前端
+docker compose up -d --build
+# 3. 上传种子数据（语义集 44 篇文档）
+python3 scripts/seed-demo-data.py --token <demo_jwt>
+```
+
+前端在 `WEB_HOST_PORT`（默认 3100，3000 被其他项目占用时用 3100）。浏览器只访问前端端口，
+`/api/*` 由 Next route handler 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。面试官
+访问 `http://<服务器IP>:3100` 即可操作，无需登录。
+
+JWT 生成：`docker compose up` 后，用 etl-worker 的 auth 包生成 user 角色 token
+（scope `query,upload`），写入 `.env` 的 `WEB_JWT`，重建 web。
 
 JWT 生成（演示用，需 Go 环境或参考 `scripts/run-evals.py` 的生成逻辑）：
 

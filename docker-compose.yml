@@ -443,6 +443,24 @@ services:
       # different file; keeps prompt history in git for eval A/B.
       - ./prompts:/prompts:ro
 
+  # Interview demo frontend (Next.js standalone). NEXT_PUBLIC_* are inlined at
+  # build time; pass WEB_API_BASE / WEB_JWT to override.
+  web:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_BASE: /api
+        NEXT_PUBLIC_JWT: ${WEB_JWT:-}
+    environment:
+      # Backend for the rewrite proxy (compose-internal hostname).
+      BACKEND_URL: http://query-api:8080
+    ports:
+      - "${WEB_HOST_PORT:-3100}:3000"
+    depends_on:
+      query-api:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Optional CPU Cross-Encoder Reranker
   reranker-service:
     profiles:

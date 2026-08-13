@@ -464,6 +464,12 @@ func (r *statusRecorder) Write(data []byte) (int, error) {
 	return r.ResponseWriter.Write(data)
 }
 
+// Unwrap lets http.ResponseController reach the underlying ResponseWriter, so
+// SSE handlers can still obtain an http.Flusher through this middleware.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func routeLabel(path string) string {
 	switch {
 	case path == "/healthz":

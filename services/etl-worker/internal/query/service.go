@@ -444,11 +444,7 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
+	flusher := http.NewResponseController(w)
 
 	// Sources event first, so the client can render citations immediately.
 	sourcesPayload, _ := json.Marshal(map[string]interface{}{"sources": sources})
@@ -507,8 +503,8 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 func writeSSEError(w http.ResponseWriter, message string) {
 	payload, _ := json.Marshal(map[string]string{"error": message})
 	fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		slog.Debug("sse flush failed", "error", err)
 	}
 }
 
