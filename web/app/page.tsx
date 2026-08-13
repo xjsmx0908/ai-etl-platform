@@ -23,7 +23,12 @@ type HealthService = { status: string; latency_ms: number };
 type SessionStats = { queries: number; tokens: number; cost: number; cacheHits: number };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api";
-const JWT = process.env.NEXT_PUBLIC_JWT || "";
+const JWT_USER = process.env.NEXT_PUBLIC_JWT || "";
+const JWT_ADMIN = process.env.NEXT_PUBLIC_JWT_ADMIN || "";
+
+// Permission demo: confidential documents are invisible to the user role.
+const PERMISSION_DEMO_Q = "机密内容是不是只有项目成员才能看？";
+const ROLE_LABELS = { user: "普通用户", admin: "管理员" } as const;
 
 // Verified to retrieve the seeded corpus (real-model eval hits).
 const SUGGESTIONS = [
@@ -168,7 +173,11 @@ function QaWorkspace({ onQueryDone }: { onQueryDone: (tu: TokenUsage | undefined
   const [status, setStatus] = useState<"idle" | "streaming" | "done" | "error">("idle");
   const [error, setError] = useState("");
   const [refusalDemo, setRefusalDemo] = useState(false);
+  const [permissionDemo, setPermissionDemo] = useState(false);
+  const [role, setRole] = useState<"user" | "admin">("user");
   const abortRef = useRef<AbortController | null>(null);
+  const jwtRef = useRef<string>(JWT_USER);
+  jwtRef.current = role === "admin" ? JWT_ADMIN : JWT_USER;
 
   const stream = useCallback(async (q: string) => {
     abortRef.current?.abort();
@@ -180,13 +189,14 @@ function QaWorkspace({ onQueryDone }: { onQueryDone: (tu: TokenUsage | undefined
     setStatus("streaming");
     setError("");
     setRefusalDemo(false);
+    setPermissionDemo(false);
     try {
       const resp = await fetch(`${API_BASE}/query`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
-          ...(JWT ? { Authorization: `Bearer ${JWT}` } : {}),
+          ...(jwtRef.current ? { Authorization: `Bearer ${jwtRef.current}` } : {}),
         },
         body: JSON.stringify({ question: q, top_k: 5 }),
         signal: controller.signal,
@@ -259,10 +269,11 @@ function QaWorkspace({ onQueryDone }: { onQueryDone: (tu: TokenUsage | undefined
     setStatus("streaming");
     setError("");
     setRefusalDemo(false);
+    setPermissionDemo(false);
     try {
       const resp = await fetch(`${API_BASE}/query`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(JWT ? { Authorization: `Bearer ${JWT}` } : {}) },
+        headers: { "Content-Type": "application/json", ...(jwtRef.current ? { Authorization: `Bearer ${jwtRef.current}` } : {}) },
         body: JSON.stringify({ question: q, top_k: 5 }),
       });
       if (!resp.ok) throw new Error(`请求失败: ${resp.status}`);
@@ -293,6 +304,11 @@ function QaWorkspace({ onQueryDone }: { onQueryDone: (tu: TokenUsage | undefined
     if (status === "streaming") return;
     setRefusalDemo(true);
     void askJSON(REFUSAL_DEMO);
+  };
+  const onPermissionDemo = () => {
+    if (status === "streaming") return;
+    setPermissionDemo(true);
+    void askJSON(PERMISSION_DEMO_Q);
   };
   useEffect(() => {
     return () => abortRef.current?.abort();
@@ -347,6 +363,31 @@ function QaWorkspace({ onQueryDone }: { onQueryDone: (tu: TokenUsage | undefined
         >
           拒答演示
         </button>
+        <button
+          type="button"
+          onClick={onPermissionDemo}
+          disabled={status === "streaming"}
+          className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          title="演示权限隔离：机密文档只对管理员可见"
+        >
+          权限演示
+        </button>
+        <div className="flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-1 py-1">
+          {(["user", "admin"] as const).map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setRole(r)}
+              className={
+                role === r
+                  ? "rounded px-3 py-1.5 text-xs font-medium bg-blue-600 text-white"
+                  : "rounded px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+              }
+            >
+              {ROLE_LABELS[r]}
+            </button>
+          ))}
+        </div>
       </form>
 
       {(status === "streaming" || status === "done" || status === "error") && (
@@ -355,10 +396,26 @@ function QaWorkspace({ onQueryDone }: { onQueryDone: (tu: TokenUsage | undefined
             <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-2 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-500">回答</h2>
-                {refusalDemo && (
-                  <span className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700">幻觉防护演示</span>
-                )}
+                <span className="flex items-center gap-2">
+                  {permissionDemo && (
+                    <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
+                      权限演示 · {ROLE_LABELS[role]}
+                    </span>
+                  )}
+                  {refusalDemo && (
+                    <span className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700">幻觉防护演示</span>
+                  )}
+                </span>
               </div>
+              {permissionDemo && sources.length === 0 && role === "user" && (
+                <div className="mb-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
+                  <p className="font-medium">普通用户看不到这份机密文档。</p>
+                  <p className="mt-1 text-xs text-blue-600">
+                    权限在检索源头过滤（Qdrant/ES filter），机密文档不会进入候选。切换到「管理员」再点一次
+                    权限演示，可以看到同一问题返回机密来源。
+                  </p>
+                </div>
+              )}
               {isRefusal ? (
                 <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
                   <p className="font-medium">未找到相关文档，无法回答该问题。</p>
@@ -432,7 +489,7 @@ function ObservePanel({ stats }: { stats: SessionStats }) {
     const load = async () => {
       try {
         const resp = await fetch(`${API_BASE}/system/health`, {
-          headers: JWT ? { Authorization: `Bearer ${JWT}` } : {},
+          headers: JWT_USER ? { Authorization: `Bearer ${JWT_USER}` } : {},
         });
         if (!resp.ok) return;
         const d = await resp.json();
@@ -609,7 +666,7 @@ function AgentPanel() {
     try {
       const resp = await fetch(`${API_BASE}/agent/runs`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(JWT ? { Authorization: `Bearer ${JWT}` } : {}) },
+        headers: { "Content-Type": "application/json", ...(JWT_USER ? { Authorization: `Bearer ${JWT_USER}` } : {}) },
         body: JSON.stringify({ task: t, auto_execute: true }),
       });
       if (!resp.ok) throw new Error(`请求失败: ${resp.status}`);
@@ -754,6 +811,7 @@ const PIPELINE_STEPS = [
 function DataPanel() {
   const [file, setFile] = useState<File | null>(null);
   const [permission, setPermission] = useState("internal");
+  const [docId, setDocId] = useState("");
   const [status, setStatus] = useState<"idle" | "uploading" | "polling" | "done" | "error">("idle");
   const [uploadResult, setUploadResult] = useState<{ doc_id?: string; task_id?: string } | null>(null);
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
@@ -783,12 +841,12 @@ function DataPanel() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("doc_id", `demo-${Date.now()}`);
+      fd.append("doc_id", docId.trim() || `demo-${Date.now()}`);
       fd.append("tenant_id", "demo");
       fd.append("permission", permission);
       const resp = await fetch(`${API_BASE}/upload`, {
         method: "POST",
-        headers: JWT ? { Authorization: `Bearer ${JWT}` } : {},
+        headers: JWT_USER ? { Authorization: `Bearer ${JWT_USER}` } : {},
         body: fd,
       });
       const d = await resp.json();
@@ -806,7 +864,7 @@ function DataPanel() {
     pollRef.current = setInterval(async () => {
       try {
         const resp = await fetch(`${API_BASE}/tasks/${docId}`, {
-          headers: JWT ? { Authorization: `Bearer ${JWT}` } : {},
+          headers: JWT_USER ? { Authorization: `Bearer ${JWT_USER}` } : {},
         });
         if (!resp.ok) return;
         const d = (await resp.json()) as TaskStatus;
@@ -834,6 +892,13 @@ function DataPanel() {
             accept=".txt,.md,.pdf,.docx"
             onChange={(e) => setFile(e.target.files?.[0] || null)}
             className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
+          />
+          <input
+            value={docId}
+            onChange={(e) => setDocId(e.target.value)}
+            placeholder="doc_id（留空自动生成）"
+            className="w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            title="指定 doc_id 并重复上传同一 doc_id 可演示文档更新（旧版本被替换）"
           />
           <select
             value={permission}

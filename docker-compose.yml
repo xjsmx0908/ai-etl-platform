@@ -452,6 +452,7 @@ services:
       args:
         NEXT_PUBLIC_API_BASE: /api
         NEXT_PUBLIC_JWT: ${WEB_JWT:-}
+        NEXT_PUBLIC_JWT_ADMIN: ${WEB_JWT_ADMIN:-}
     environment:
       # Backend for the rewrite proxy (compose-internal hostname).
       BACKEND_URL: http://query-api:8080
