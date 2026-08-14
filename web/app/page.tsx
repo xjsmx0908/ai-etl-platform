@@ -801,7 +801,9 @@ type TaskStatus = {
   task_id: string;
   doc_id: string;
   status: string; // queued | processing | completed | failed
-  stage?: string;
+  stage?: string; // parsing | embedding | completed
+  chunks_done?: number;
+  total_chunks?: number;
   error?: string;
   file_path?: string;
 };
@@ -884,8 +886,26 @@ function DataPanel() {
     }, 2000);
   };
 
-  const currentStep = taskStatus ? taskStatus.status : status === "uploading" ? "queued" : "";
-  const failed = taskStatus?.status === "failed";
+  const backendStatus = taskStatus?.status || "";
+  const stage = taskStatus?.stage || (status === "uploading" || status === "polling" ? "parsing" : "");
+  const isCompleted = backendStatus === "completed";
+  const isFailed = backendStatus === "failed";
+  const prog =
+    taskStatus && (taskStatus.total_chunks ?? 0) > 0
+      ? `${taskStatus.chunks_done ?? 0}/${taskStatus.total_chunks}`
+      : "";
+
+  const stepState = (key: string): "active" | "done" | "idle" | "failed" => {
+    if (isCompleted) return "done";
+    if (isFailed) return "failed";
+    if (!backendStatus) return key === "queued" ? "active" : "idle";
+    if (backendStatus === "processing") {
+      if (key === "queued") return "done";
+      if (key === "parsing") return stage === "parsing" ? "active" : "done";
+      if (key === "embedding") return stage === "embedding" ? "active" : "idle";
+    }
+    return "idle";
+  };
 
   return (
     <div className="space-y-6">
@@ -929,17 +949,22 @@ function DataPanel() {
 
         <div className="mt-5 flex items-center gap-2">
           {PIPELINE_STEPS.map((step, i) => {
-            const active =
-              (step.key === "queued" && currentStep === "queued") ||
-              (step.key === "parsing" && currentStep === "processing") ||
-              (step.key === "embedding" && currentStep === "processing");
-            // A finished run shows every step as done (green); the final
-            // "入库" step must not stay blue once the status is completed.
-            const done = currentStep === "completed" || (currentStep === "processing" && i < 2) || (currentStep === "failed" && i < 2);
+            const state = stepState(step.key);
+            const cls =
+              state === "active"
+                ? "border-blue-500 bg-blue-50 text-blue-700"
+                : state === "done"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : state === "failed"
+                    ? "border-red-200 bg-red-50 text-red-700"
+                    : "border-slate-200 bg-white text-slate-500";
             return (
               <div key={step.key} className="flex flex-1 items-center gap-2">
-                <div className={`flex-1 rounded-lg border px-3 py-2 text-center text-xs ${active ? "border-blue-500 bg-blue-50 text-blue-700" : done ? "border-emerald-200 bg-emerald-50 text-emerald-700" : failed ? "border-red-200 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-500"}`}>
+                <div className={`flex-1 rounded-lg border px-3 py-2 text-center text-xs ${cls}`}>
                   {step.label}
+                  {step.key === "embedding" && prog && state === "active" && (
+                    <span className="ml-1 font-semibold">({prog})</span>
+                  )}
                 </div>
                 {i < PIPELINE_STEPS.length - 1 && <span className="text-slate-300">→</span>}
               </div>
@@ -951,6 +976,7 @@ function DataPanel() {
           <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
             <span className="font-medium text-slate-700">状态：{taskStatus.status}</span>
             {taskStatus.stage && <span className="ml-2">阶段：{taskStatus.stage}</span>}
+            {prog && <span className="ml-2 font-medium text-blue-700">chunk {prog}</span>}
             {taskStatus.error && <span className="ml-2 text-red-600">{taskStatus.error}</span>}
           </div>
         )}

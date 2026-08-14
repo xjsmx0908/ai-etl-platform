@@ -87,6 +87,8 @@ type TaskStatus struct {
 	TenantID    string            `json:"tenant_id"`
 	Status      TaskStatusState   `json:"status"`
 	Stage       string            `json:"stage,omitempty"`
+	ChunksDone  int               `json:"chunks_done,omitempty"`
+	TotalChunks int               `json:"total_chunks,omitempty"`
 	Error       string            `json:"error,omitempty"`
 	FilePath    string            `json:"file_path,omitempty"`
 	FileHash    string            `json:"file_hash,omitempty"`

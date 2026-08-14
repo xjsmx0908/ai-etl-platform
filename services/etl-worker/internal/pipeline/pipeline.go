@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -186,23 +188,31 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 }
 
 func (p *Pipeline) saveTaskStatus(ctx context.Context, task model.Task, state model.TaskStatusState, stage string, message string) {
+	p.saveTaskStatusProgress(ctx, task, state, stage, message, 0, 0)
+}
+
+// saveTaskStatusProgress persists task status with chunk progress so the
+// frontend can render "embedding 12/37" instead of a static "processing".
+func (p *Pipeline) saveTaskStatusProgress(ctx context.Context, task model.Task, state model.TaskStatusState, stage string, message string, done, total int) {
 	if p.taskStatus == nil {
 		return
 	}
 	now := time.Now().UTC()
 	status := model.TaskStatus{
-		TaskID:     task.DocID,
-		DocID:      task.DocID,
-		TenantID:   task.TenantID,
-		Status:     state,
-		Stage:      stage,
-		Error:      message,
-		FilePath:   task.FilePath,
-		FileHash:   task.FileHash,
-		Permission: task.Permission,
-		Metadata:   task.Metadata,
-		CreatedAt:  task.CreatedAt,
-		UpdatedAt:  now,
+		TaskID:      task.DocID,
+		DocID:       task.DocID,
+		TenantID:    task.TenantID,
+		Status:      state,
+		Stage:       stage,
+		ChunksDone:  done,
+		TotalChunks: total,
+		Error:       message,
+		FilePath:    task.FilePath,
+		FileHash:    task.FileHash,
+		Permission:  task.Permission,
+		Metadata:    task.Metadata,
+		CreatedAt:   task.CreatedAt,
+		UpdatedAt:   now,
 	}
 	if state == model.TaskStatusCompleted || state == model.TaskStatusFailed {
 		status.CompletedAt = now
@@ -231,32 +241,81 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 			"last_chunk_id", resumeCheckpoint.LastChunkID)
 	}
 
-	// Parse via the parser service, which handles real document extraction
-	// (PDF/DOCX) and OCR for scanned files. Materialize the object to a local
-	// temp file first, because the service needs a filesystem path.
-	localPath := task.FilePath
-	cleanup := func() {}
-	if !pathExists(localPath) {
-		path, _, c, err := p.parser.MaterializeObject(taskCtx, task.FilePath)
-		if err != nil {
-			return fmt.Errorf("materialize object: %w", err)
-		}
-		localPath = path
-		cleanup = c
-	}
-	defer cleanup()
+	p.saveTaskStatusProgress(taskCtx, task, model.TaskStatusProcessing, "parsing", "", 0, 0)
 
-	localTask := task
-	localTask.FilePath = localPath
-	chunks, err := p.parserClient.ParseFile(taskCtx, localTask)
-	if err != nil {
-		return fmt.Errorf("parser service: %w", err)
+	// Plain-text files keep the deterministic local scanner (identical chunk
+	// semantics to the golden-set eval). Binary documents (PDF/DOCX, including
+	// scanned PDFs) go to the parser service, which does real extraction and OCR.
+	ext := strings.ToLower(filepath.Ext(task.FilePath))
+	needsParserService := ext == ".pdf" || ext == ".docx" || ext == ".doc"
+
+	// Stream parse with safe error propagation via channel. Both sources (the
+	// local scanner and the parser-service response) feed the same channel, so
+	// the batch consumption below is shared.
+	chunkCh := make(chan model.Chunk, 20)
+	parseErrCh := make(chan error, 1)
+	totalCh := make(chan int, 1) // known chunk total for the parser-service path
+	go func() {
+		if !needsParserService {
+			parseErrCh <- p.parser.ParseStream(taskCtx, task, chunkCh)
+			return
+		}
+		// The parser-service path owns chunkCh and must close it on every exit
+		// (success or error); the text path above already closes it via
+		// ParseStream's deferred close. Without this the consumer's
+		// `range chunkCh` never terminates and the task hangs in "processing".
+		defer close(chunkCh)
+		// Materialize the object to a local temp file; the parser service needs
+		// a filesystem path. ParseFile has a generous timeout for OCR.
+		localPath := task.FilePath
+		cleanup := func() {}
+		if !pathExists(localPath) {
+			path, _, c, err := p.parser.MaterializeObject(taskCtx, task.FilePath)
+			if err != nil {
+				totalCh <- 0
+				parseErrCh <- fmt.Errorf("materialize object: %w", err)
+				return
+			}
+			localPath = path
+			cleanup = c
+		}
+		defer cleanup()
+
+		localTask := task
+		localTask.FilePath = localPath
+		chunks, err := p.parserClient.ParseFile(taskCtx, localTask)
+		if err != nil {
+			totalCh <- 0
+			parseErrCh <- fmt.Errorf("parser service: %w", err)
+			return
+		}
+		totalCh <- len(chunks)
+		for _, chunk := range chunks {
+			select {
+			case chunkCh <- chunk:
+			case <-taskCtx.Done():
+				parseErrCh <- taskCtx.Err()
+				return
+			}
+		}
+		parseErrCh <- nil
+	}()
+
+	// The parser-service path reports a known total before chunks flow; the
+	// text path streams chunks without a known count.
+	var totalChunks int
+	if needsParserService {
+		select {
+		case totalChunks = <-totalCh:
+		case <-taskCtx.Done():
+			return taskCtx.Err()
+		}
 	}
 
 	// Batch embed + store (independent allocation per batch to avoid slice reuse)
 	total := 0
 	batch := make([]model.Chunk, 0, p.cfg.BatchSize)
-	for _, chunk := range chunks {
+	for chunk := range chunkCh {
 		select {
 		case <-taskCtx.Done():
 			return taskCtx.Err()
@@ -279,6 +338,7 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 			if err := p.processBatch(taskCtx, batch, task.DocID, &total); err != nil {
 				return err
 			}
+			p.saveTaskStatusProgress(taskCtx, task, model.TaskStatusProcessing, "embedding", "", total, totalChunks)
 			batch = make([]model.Chunk, 0, p.cfg.BatchSize)
 		}
 	}
@@ -287,6 +347,13 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 		if err := p.processBatch(taskCtx, batch, task.DocID, &total); err != nil {
 			return err
 		}
+		p.saveTaskStatusProgress(taskCtx, task, model.TaskStatusProcessing, "embedding", "", total, totalChunks)
+	}
+
+	// The producer closed the channel, so parsing finished; surface its error
+	// (e.g. materialize or parser-service failures) instead of swallowing it.
+	if err := <-parseErrCh; err != nil {
+		return err
 	}
 
 	slog.Info("document processed", "doc_id", task.DocID, "chunks", total)

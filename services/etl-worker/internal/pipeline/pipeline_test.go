@@ -210,10 +210,10 @@ func TestHandleTask_CommitsOffsetOnlyAfterDLQSuccess(t *testing.T) {
 	if nacked != 0 {
 		t.Fatalf("expected nack not called on DLQ success, got %d", nacked)
 	}
-	if len(statuses.statuses) != 2 {
+	if len(statuses.statuses) < 2 {
 		t.Fatalf("expected processing and failed statuses, got %+v", statuses.statuses)
 	}
-	if statuses.statuses[0].Status != model.TaskStatusProcessing || statuses.statuses[1].Status != model.TaskStatusFailed {
+	if statuses.statuses[0].Status != model.TaskStatusProcessing || statuses.statuses[len(statuses.statuses)-1].Status != model.TaskStatusFailed {
 		t.Fatalf("unexpected status sequence: %+v", statuses.statuses)
 	}
 }
@@ -246,8 +246,14 @@ func TestHandleTask_DoesNotCommitWhenDLQFails(t *testing.T) {
 	if nacked != 1 {
 		t.Fatalf("expected nack when DLQ push fails, got %d", nacked)
 	}
-	if len(statuses.statuses) != 1 || statuses.statuses[0].Status != model.TaskStatusProcessing {
-		t.Fatalf("expected only processing status when DLQ push fails, got %+v", statuses.statuses)
+	if len(statuses.statuses) < 1 || statuses.statuses[0].Status != model.TaskStatusProcessing {
+		t.Fatalf("expected processing status when DLQ push fails, got %+v", statuses.statuses)
+	}
+	// DLQ failure means no terminal "failed" status is written (message nacked).
+	for _, s := range statuses.statuses {
+		if s.Status == model.TaskStatusFailed {
+			t.Fatalf("unexpected failed status when DLQ push fails: %+v", statuses.statuses)
+		}
 	}
 }
 
@@ -287,11 +293,21 @@ func TestHandleTask_RecordsCompletedStatus(t *testing.T) {
 	if acked != 1 {
 		t.Fatalf("expected ack, got %d", acked)
 	}
-	if len(statuses.statuses) != 2 {
+	if len(statuses.statuses) < 2 {
 		t.Fatalf("expected processing and completed statuses, got %+v", statuses.statuses)
 	}
-	if statuses.statuses[0].Status != model.TaskStatusProcessing || statuses.statuses[1].Status != model.TaskStatusCompleted {
+	if statuses.statuses[0].Status != model.TaskStatusProcessing || statuses.statuses[len(statuses.statuses)-1].Status != model.TaskStatusCompleted {
 		t.Fatalf("unexpected status sequence: %+v", statuses.statuses)
+	}
+	// The pipeline emits a granular embedding stage carrying chunk progress.
+	foundProgress := false
+	for _, s := range statuses.statuses {
+		if s.Stage == "embedding" && s.ChunksDone == 1 {
+			foundProgress = true
+		}
+	}
+	if !foundProgress {
+		t.Fatalf("expected an embedding stage with ChunksDone=1, got %+v", statuses.statuses)
 	}
 }
 
@@ -395,6 +411,59 @@ func TestProcessTask_ResumesFromCheckpointAndSkipsStoredChunks(t *testing.T) {
 	}
 	if len(storer.existsCalls) != 3 {
 		t.Fatalf("expected 3 exists checks during resume, got %d", len(storer.existsCalls))
+	}
+}
+
+// The parser-service (binary) path must complete: the producer owns chunkCh
+// and must close it after pushing all chunks, or the consumer's `range chunkCh`
+// never terminates and processTask hangs in "processing" forever (regression:
+// a PDF/DOCX task previously deadlocked here). Uses context.Background() so a
+// timeout cannot mask the hang — go test -timeout would report it as FAIL.
+func TestProcessTask_BinaryParserServicePathCompletes(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.PipelineTimeout = 5 * time.Second
+	cfg.StageTimeout = 5 * time.Second
+	cfg.ParserEndpoint = mockParserServer(t, "doc-bin", []map[string]interface{}{
+		{"chunk_id": "doc-bin_0000", "doc_id": "doc-bin", "tenant_id": "tenant-a", "content": "first chunk", "index": 0},
+		{"chunk_id": "doc-bin_0001", "doc_id": "doc-bin", "tenant_id": "tenant-a", "content": "second chunk", "index": 1},
+	})
+
+	// A real temp file with a binary extension so pathExists() short-circuits
+	// the S3 materialization step and we exercise the parser-service path.
+	tmp, err := os.CreateTemp(t.TempDir(), "doc-*.pdf")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+
+	storer := &captureStorer{}
+	statuses := &taskStatusStub{}
+	p := New(cfg, vectorEmbedder{}, storer, metrics.NewCollector(10), &noopCheckpoint{}, &dlqStub{}).WithTaskStatusStore(statuses)
+
+	err = p.processTask(context.Background(), model.Task{
+		DocID:      "doc-bin",
+		TenantID:   "tenant-a",
+		FilePath:   tmp.Name(),
+		Permission: "internal",
+	})
+	if err != nil {
+		t.Fatalf("processTask returned error: %v", err)
+	}
+	if len(storer.chunks) != 2 {
+		t.Fatalf("expected 2 chunks stored, got %d", len(storer.chunks))
+	}
+	// The parser-service path must report a known total so the frontend can
+	// render "embedding done/total".
+	foundTotal := false
+	for _, s := range statuses.statuses {
+		if s.Stage == "embedding" && s.TotalChunks == 2 {
+			foundTotal = true
+		}
+	}
+	if !foundTotal {
+		t.Fatalf("expected an embedding stage with TotalChunks=2, got %+v", statuses.statuses)
 	}
 }
 
