@@ -461,6 +461,11 @@ services:
       BACKEND_URL: http://query-api:8080
     ports:
       - "${WEB_HOST_PORT:-3100}:3000"
+    volumes:
+      # Latest retrieval-quality eval summary served statically at /evals/latest.json.
+      # Mounting docs/evals/reports over the baked copy lets re-running the eval
+      # update the 检索质量 tab without rebuilding the web image.
+      - ./docs/evals/reports:/app/public/evals:ro
     depends_on:
       query-api:
         condition: service_healthy

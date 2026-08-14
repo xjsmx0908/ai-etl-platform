@@ -18,5 +18,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+# Public static assets (fallback copy of the eval summary served at /evals/...).
+COPY --from=builder /app/public ./public
 EXPOSE 3000
 CMD ["node", "server.js"]
