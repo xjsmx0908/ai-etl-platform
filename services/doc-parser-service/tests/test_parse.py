@@ -9,9 +9,9 @@ from app.services.chunker import estimate_tokens
 
 def test_estimate_tokens_cjk_not_underestimated():
     # The old `len // 4` counted Chinese at 4 chars/token (underestimating by
-    # 2-4x). A 100-char Chinese sentence should estimate around 100 tokens.
-    text = "知识库中的文档分为多个可见级别" * 8  # 80 chars
-    assert len(text) == 80
+    # 2-4x). A Chinese sentence should estimate ~1 token per char.
+    text = "知识库中的文档分为多个可见级别" * 8  # 15 chars x 8 = 120 chars
+    assert len(text) == 120
     tokens = estimate_tokens(text)
     assert tokens >= 80, f"expected CJK counted ~1:1, got {tokens} for 80 chars"
     assert tokens < 160

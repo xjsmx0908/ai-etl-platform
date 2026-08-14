@@ -13,6 +13,9 @@ def clear_settings_cache():
 def test_require_internal_token_dev_without_token_allows_request(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.delenv("INTERNAL_API_TOKEN", raising=False)
+    # In deployed environments INTERNAL_API_TOKEN_FILE may be set; clear it too
+    # so "no token configured" is actually exercised.
+    monkeypatch.delenv("INTERNAL_API_TOKEN_FILE", raising=False)
     clear_settings_cache()
 
     require_internal_token("")
