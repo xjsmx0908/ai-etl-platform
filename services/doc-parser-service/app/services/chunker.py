@@ -100,9 +100,45 @@ def chunk_text(
                 split_oversized_chunk(chunk_text, doc_id, tenant_id, chunk_idx,
                                      permission, file_hash, metadata, max_size, overlap)
             )
-    
-    logger.info(f"Chunked document {doc_id}: {len(chunks)} chunks created")
-    return chunks
+
+    # Drop low-value chunks (signature pages, tables of contents, near-empty
+    # table fragments) that would otherwise pollute retrieval — a long document
+    # can otherwise be dominated by these noise chunks instead of its real body.
+    kept = [c for c in chunks if not is_noise_chunk(c["content"])]
+    dropped = len(chunks) - len(kept)
+    if dropped:
+        logger.info(f"Chunked document {doc_id}: dropped {dropped}/{len(chunks)} noise chunks")
+    return kept
+
+
+SIGNATURE_KEYWORDS = ("拟制", "审核", "批准", "会签")
+TOC_PATTERNS = ("目次", "目 次", "目 录", "目录")
+
+
+def is_noise_chunk(content: str) -> bool:
+    """True for chunks with little retrieval value. Conservative by design:
+    real document body is never dropped; only signature pages, tables of
+    contents, and near-empty table fragments."""
+    text = content.strip()
+    if not text:
+        return True
+
+    # Table of contents pages ("目 次", "目 录") list headings + page numbers.
+    if any(k in text for k in TOC_PATTERNS):
+        return True
+
+    # Signature / approval pages are short, table-like form text.
+    if any(k in text for k in SIGNATURE_KEYWORDS):
+        meaningful = re.sub(r"[\s|\|+\-—＿_.,:：;；/()（）]", "", text)
+        if len(meaningful) < 60:
+            return True
+
+    # Extremely low information density: mostly table lines / whitespace.
+    meaningful = re.sub(r"[\s|\|+\-—＿_.,:：;；/()（）0-9]", "", text)
+    if len(meaningful) / max(len(text), 1) < 0.3:
+        return True
+
+    return False
 
 
 def is_heading(line: str) -> bool:
