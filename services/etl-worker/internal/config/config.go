@@ -54,6 +54,7 @@ type Config struct {
 	EmbedModel      string
 	EmbedDimension  int
 	EmbedMaxRetries int
+	EmbedTimeout    time.Duration
 	EmbedBackoff    time.Duration
 	EmbedMaxBackoff time.Duration
 	EmbedRateLimit  float64 // requests per second
@@ -210,6 +211,7 @@ func Load() Config {
 		EmbedModel:      EnvStr("EMBED_MODEL", "text-embedding-ada-002"),
 		EmbedDimension:  EnvInt("EMBED_DIMENSION", 1536),
 		EmbedMaxRetries: EnvInt("EMBED_MAX_RETRIES", 5),
+		EmbedTimeout:    EnvDuration("EMBED_TIMEOUT", 30*time.Second),
 		EmbedBackoff:    EnvDuration("EMBED_BACKOFF", 500*time.Millisecond),
 		EmbedMaxBackoff: EnvDuration("EMBED_MAX_BACKOFF", 30*time.Second),
 		EmbedRateLimit:  EnvFloat("EMBED_RATE_LIMIT", 50.0),

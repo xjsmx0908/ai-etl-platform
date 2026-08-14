@@ -46,7 +46,7 @@ func NewHTTPEmbedder(cfg config.Config) (*HTTPEmbedder, error) {
 	}
 
 	client := &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   cfg.EmbedTimeout,
 		Transport: transport,
 	}
 
