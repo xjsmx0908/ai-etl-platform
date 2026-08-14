@@ -202,6 +202,13 @@ func (p *Parser) openPath(ctx context.Context, path string, size int64) (io.Read
 	}
 }
 
+// MaterializeObject downloads an object key to a local temp file and returns
+// its path plus a cleanup func. Used when the parser service needs a local path
+// (PDF/DOCX/OCR require the python service, not the local text scanner).
+func (p *Parser) MaterializeObject(ctx context.Context, key string) (string, int64, func(), error) {
+	return p.materializeObject(ctx, key)
+}
+
 func (p *Parser) materializeObject(ctx context.Context, key string) (string, int64, func(), error) {
 	client, err := p.getObjectStoreClient()
 	if err != nil {

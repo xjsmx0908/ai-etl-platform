@@ -27,7 +27,9 @@ func NewClient(endpoint string) *Client {
 	return &Client{
 		endpoint: endpoint,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second, // Parsing can be slow
+			// Scanned PDFs go through OCR, which can take minutes for a large
+			// document; a short timeout would make every such task retry-fail.
+			Timeout: 600 * time.Second,
 		},
 	}
 }

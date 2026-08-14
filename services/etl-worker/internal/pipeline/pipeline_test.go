@@ -2,7 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +15,23 @@ import (
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/model"
 )
+
+// mockParserServer returns a fake parser-service URL that yields the given
+// chunks, so pipeline tests no longer depend on the local text scanner.
+func mockParserServer(t *testing.T, docID string, chunks []map[string]interface{}) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"doc_id":       docID,
+			"chunks":       chunks,
+			"total_chunks": len(chunks),
+			"status":       "success",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
 
 type noopEmbedder struct{}
 
@@ -236,6 +256,9 @@ func TestHandleTask_RecordsCompletedStatus(t *testing.T) {
 	cfg.Environment = "dev"
 	cfg.MaxChunkSize = 512
 	cfg.ReadBufferSize = 4096
+	cfg.ParserEndpoint = mockParserServer(t, "doc-ok", []map[string]interface{}{
+		{"chunk_id": "doc-ok_0000", "doc_id": "doc-ok", "tenant_id": "tenant-a", "content": "# Done\n" + strings.Repeat("a", 140), "index": 0},
+	})
 
 	tmp, err := os.CreateTemp(t.TempDir(), "complete-*.md")
 	if err != nil {
@@ -314,6 +337,11 @@ func TestProcessTask_ResumesFromCheckpointAndSkipsStoredChunks(t *testing.T) {
 	cfg.Environment = "dev"
 	cfg.MaxChunkSize = 512
 	cfg.ReadBufferSize = 4096
+	cfg.ParserEndpoint = mockParserServer(t, "doc-resume", []map[string]interface{}{
+		{"chunk_id": "doc-resume_0000", "doc_id": "doc-resume", "tenant_id": "tenant-a", "content": "first", "index": 0},
+		{"chunk_id": "doc-resume_0001", "doc_id": "doc-resume", "tenant_id": "tenant-a", "content": "second", "index": 1},
+		{"chunk_id": "doc-resume_0002", "doc_id": "doc-resume", "tenant_id": "tenant-a", "content": "third", "index": 2},
+	})
 
 	tmp, err := os.CreateTemp(t.TempDir(), "resume-*.md")
 	if err != nil {

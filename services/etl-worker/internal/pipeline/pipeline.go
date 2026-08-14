@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ import (
 type Pipeline struct {
 	cfg           config.Config
 	parser        *parser.Parser
+	parserClient  *parser.Client
 	embedder      model.Embedder
 	storer        model.Storer
 	fullTextSink  model.FullTextSink
@@ -54,6 +56,7 @@ func NewWithSinks(cfg config.Config, emb model.Embedder, st model.Storer, ft mod
 	return &Pipeline{
 		cfg:           cfg,
 		parser:        parser.New(cfg, m),
+		parserClient:  parser.NewClient(cfg.ParserEndpoint),
 		embedder:      emb,
 		storer:        st,
 		fullTextSink:  ft,
@@ -228,18 +231,32 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 			"last_chunk_id", resumeCheckpoint.LastChunkID)
 	}
 
-	// Streaming parse with safe error propagation via channel
-	chunkCh := make(chan model.Chunk, 20)
-	parseErrCh := make(chan error, 1)
-	go func() {
-		parseErrCh <- p.parser.ParseStream(taskCtx, task, chunkCh)
-	}()
+	// Parse via the parser service, which handles real document extraction
+	// (PDF/DOCX) and OCR for scanned files. Materialize the object to a local
+	// temp file first, because the service needs a filesystem path.
+	localPath := task.FilePath
+	cleanup := func() {}
+	if !pathExists(localPath) {
+		path, _, c, err := p.parser.MaterializeObject(taskCtx, task.FilePath)
+		if err != nil {
+			return fmt.Errorf("materialize object: %w", err)
+		}
+		localPath = path
+		cleanup = c
+	}
+	defer cleanup()
 
-	// Batch consumption (independent allocation per batch to avoid slice reuse)
+	localTask := task
+	localTask.FilePath = localPath
+	chunks, err := p.parserClient.ParseFile(taskCtx, localTask)
+	if err != nil {
+		return fmt.Errorf("parser service: %w", err)
+	}
+
+	// Batch embed + store (independent allocation per batch to avoid slice reuse)
 	total := 0
 	batch := make([]model.Chunk, 0, p.cfg.BatchSize)
-
-	for chunk := range chunkCh {
+	for _, chunk := range chunks {
 		select {
 		case <-taskCtx.Done():
 			return taskCtx.Err()
@@ -272,13 +289,15 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 		}
 	}
 
-	// Read parse error safely
-	if err := <-parseErrCh; err != nil {
-		return fmt.Errorf("parse: %w", err)
-	}
-
 	slog.Info("document processed", "doc_id", task.DocID, "chunks", total)
 	return nil
+}
+
+func pathExists(path string) bool {
+	if _, err := os.Stat(path); err == nil {
+		return true
+	}
+	return false
 }
 
 // processBatch: concurrent Embed + sequential Store

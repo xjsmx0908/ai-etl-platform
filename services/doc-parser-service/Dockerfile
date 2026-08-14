@@ -19,6 +19,11 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # --- 阶段 2: 运行 ---
 FROM python:3.11-slim
 
+# OpenCV (OCR via rapidocr) runtime dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # 复制安装的依赖
