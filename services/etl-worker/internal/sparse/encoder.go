@@ -4,6 +4,7 @@ package sparse
 import (
 	"hash/fnv"
 	"math"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -57,10 +58,11 @@ func (e *Encoder) Encode(text string) model.SparseVector {
 		tf[t]++
 	}
 
-	// Calculate BM25 scores and map to sparse dimensions
+	// Calculate BM25 scores and map to sparse dimensions.
+	// Different terms can hash to the same index (FNV-32a mod MaxDim); Qdrant
+	// rejects duplicate sparse indices with 422, so colliding scores are merged.
 	dl := float64(len(tokens))
-	indices := make([]uint32, 0, len(tf))
-	values := make([]float32, 0, len(tf))
+	scores := make(map[uint32]float32, len(tf))
 
 	for term, freq := range tf {
 		if freq < e.params.MinTF {
@@ -78,8 +80,19 @@ func (e *Encoder) Encode(text string) model.SparseVector {
 		}
 
 		idx := e.termToIndex(term)
+		scores[idx] += float32(score)
+	}
+
+	// Deterministic ordering: sorted indices with their merged scores.
+	indices := make([]uint32, 0, len(scores))
+	for idx := range scores {
 		indices = append(indices, idx)
-		values = append(values, float32(score))
+	}
+	sort.Slice(indices, func(i, j int) bool { return indices[i] < indices[j] })
+
+	values := make([]float32, len(indices))
+	for i, idx := range indices {
+		values[i] = scores[idx]
 	}
 
 	return model.SparseVector{

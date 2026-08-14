@@ -108,6 +108,33 @@ func TestEncode_DifferentTextsProduceDifferentVectors(t *testing.T) {
 	}
 }
 
+// Distinct terms that hash to the same sparse index (e.g. "0x5d" and "100"
+// both map to index 12 under FNV-32a mod MaxDim) must not produce duplicate
+// indices — Qdrant rejects those with HTTP 422 "indices: must be unique".
+func TestEncode_HashCollisionMergesIndices(t *testing.T) {
+	enc := NewEncoder(DefaultParams())
+	sv := enc.Encode("0x5d and 100 are different terms")
+
+	if sv.IsEmpty() {
+		t.Fatal("expected non-empty sparse vector")
+	}
+
+	seen := make(map[uint32]bool, len(sv.Indices))
+	for _, idx := range sv.Indices {
+		if seen[idx] {
+			t.Fatalf("duplicate sparse index %d emitted for colliding terms", idx)
+		}
+		seen[idx] = true
+	}
+
+	// Sorted indices make vectors deterministic.
+	for i := 1; i < len(sv.Indices); i++ {
+		if sv.Indices[i] <= sv.Indices[i-1] {
+			t.Fatalf("indices not strictly sorted: %v", sv.Indices)
+		}
+	}
+}
+
 func TestL2Norm(t *testing.T) {
 	enc := NewEncoder(DefaultParams())
 	sv := enc.Encode("vector normalization test example")
