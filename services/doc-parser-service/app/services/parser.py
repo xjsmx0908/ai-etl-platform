@@ -4,7 +4,7 @@ from pathlib import Path
 from loguru import logger
 from typing import Tuple
 
-from app.services.parsers import pdf, docx, text
+from app.services.parsers import pdf, docx, text, image
 
 
 # File extension to parser mapping
@@ -19,6 +19,11 @@ PARSER_MAP = {
     '.log': text.parse_text,
     '.rtf': text.parse_text,
     '.odt': text.parse_text,
+    '.png': image.parse_image,
+    '.jpg': image.parse_image,
+    '.jpeg': image.parse_image,
+    '.webp': image.parse_image,
+    '.bmp': image.parse_image,
 }
 
 

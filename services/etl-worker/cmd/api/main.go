@@ -55,6 +55,11 @@ var allowedUploadExtensions = map[string]struct{}{
 	".log":      {},
 	".rtf":      {},
 	".odt":      {},
+	".png":      {},
+	".jpg":      {},
+	".jpeg":     {},
+	".webp":     {},
+	".bmp":      {},
 }
 
 var allowedPermissionLevels = map[string]struct{}{

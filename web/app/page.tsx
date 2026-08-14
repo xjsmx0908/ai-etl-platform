@@ -914,7 +914,7 @@ function DataPanel() {
         <div className="flex flex-wrap items-center gap-3">
           <input
             type="file"
-            accept=".txt,.md,.pdf,.docx"
+            accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp,.bmp"
             onChange={(e) => setFile(e.target.files?.[0] || null)}
             className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
           />

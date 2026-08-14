@@ -247,7 +247,8 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 	// semantics to the golden-set eval). Binary documents (PDF/DOCX, including
 	// scanned PDFs) go to the parser service, which does real extraction and OCR.
 	ext := strings.ToLower(filepath.Ext(task.FilePath))
-	needsParserService := ext == ".pdf" || ext == ".docx" || ext == ".doc"
+	needsParserService := ext == ".pdf" || ext == ".docx" || ext == ".doc" ||
+		ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp"
 
 	// Stream parse with safe error propagation via channel. Both sources (the
 	// local scanner and the parser-service response) feed the same channel, so
