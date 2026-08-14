@@ -25,3 +25,5 @@ services:
     ports: !reset []
   reranker-service:
     ports: !reset []
+  web:
+    ports: !reset []

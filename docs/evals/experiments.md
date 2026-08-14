@@ -42,6 +42,30 @@
 
 ---
 
+## E3: Embedding 模型对比（nomic-embed-text vs bge-m3）
+
+### 配置
+- 对照 A：nomic-embed-text（768d，137M）
+- 对照 B：bge-m3（1024d，中文优化）
+- 同一语义集 44 例，同一 LLM（deepseek-v4-flash），topK 5
+
+### 结果
+
+| 指标 | nomic | **bge-m3** |
+| --- | --- | --- |
+| Recall@1 | 19.4% | **71.1%** |
+| Recall@3 | 47.2% | **92.1%** |
+| Recall@5 | 63.9% | **94.7%** |
+| pass_rate | 69.0% | **93.2%** |
+
+### 结论
+1. **embedding 选型是检索质量的压倒性因素**。bge-m3（中文优化）把 Recall@1 从 19.4% 提到 71.1%，
+   远超此前所有策略调优（rerank、权重）。
+2. 这直接解决了长文档检索问题：nomic 下「软件环境」问题被签署页噪音干扰拒答，bge-m3 正确召回正文。
+3. **当前 demo 与生产默认使用 bge-m3**（collection `documents-v2`）。
+
+---
+
 ## E2: Rerank 对中文语义检索的影响
 
 ### 配置

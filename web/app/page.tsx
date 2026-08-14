@@ -40,7 +40,9 @@ const SUGGESTIONS = [
   "上传文档时可以附加业务标签吗？",
   "批量导入既有资料有办法吗？",
 ];
-const REFUSAL_DEMO = "系统支持语音转文字功能吗？";
+// A question genuinely outside the corpus — with bge-m3 the previous demo
+// question started matching a document, so this one has no answer at all.
+const REFUSAL_DEMO = "公司今年年会定在什么时候？";
 const STRATEGY_LABELS: Record<string, string> = {
   exact_keyword: "精确关键词",
   semantic: "语义检索",
@@ -53,12 +55,13 @@ const TAB_QUALITY = "quality";
 const TAB_AGENT = "agent";
 const TAB_DATA = "data";
 
-// Static quality data (source: docs/evals/reports, real-model evaluation).
+// Static quality data (source: docs/evals/reports, real-model evaluation with
+// bge-m3 embeddings).
 const QUALITY_DATA = {
   recall: [
-    { k: 1, label: "Recall@1", value: 19, note: "目标文档排第 1 的比例" },
-    { k: 3, label: "Recall@3", value: 32, note: "目标在前 3 名" },
-    { k: 5, label: "Recall@5", value: 64, note: "目标在前 5 名（可找到）" },
+    { k: 1, label: "Recall@1", value: 71, note: "目标文档排第 1 的比例" },
+    { k: 3, label: "Recall@3", value: 92, note: "目标在前 3 名" },
+    { k: 5, label: "Recall@5", value: 95, note: "目标在前 5 名（可找到）" },
   ],
   noiseFloor: 4.26,
   experiments: [
@@ -592,10 +595,10 @@ function QualityPanel() {
             </div>
           ))}
           <div className="ml-4 max-w-[260px] text-xs text-slate-500">
-            <p className="font-medium text-slate-600">为什么 Recall@1 只有 19%？</p>
+            <p className="font-medium text-slate-600">embedding 选型是检索质量的压倒性因素</p>
             <p className="mt-1">
-              锚点数据集把 Recall 虚高到 86%（测的是关键词匹配）；换真实语义集后，目标文档进入前 5 名
-              的比例是 64%——这是系统真实水平，也指向改进方向（中文 embedding、query 改写）。
+              同一数据集下，从 nomic-embed-text 换到 bge-m3（中文优化），Recall@1 从 19% 升到
+              71%。embedding 的语义分辨率决定了检索上限，策略调优只能微调。
             </p>
           </div>
         </div>
