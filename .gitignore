@@ -38,6 +38,9 @@ docs/evals/reports/
 docs/evals/private/*
 !docs/evals/private/.gitkeep
 
+# Manual/test upload artifacts
+test_docs/
+
 # Local learning plans
 plan/
 
