@@ -480,7 +480,7 @@ func main() {
             f"TENANT_ID_VALUE={tenant_id}",
             "-e",
             f"PERMISSION_VALUE={permission}",
-            "golang:1.24",
+            "golang:1.25",
             "sh",
             "-c",
             f"go run /workspace/services/etl-worker/{go_file.name} \"$JWT_SECRET_VALUE\" \"$TENANT_ID_VALUE\" \"$PERMISSION_VALUE\"",

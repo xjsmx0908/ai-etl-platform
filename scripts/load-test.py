@@ -168,7 +168,7 @@ func main() {
                 f"JWT_SECRET_VALUE={jwt_secret}",
                 "-e",
                 f"TENANT_ID_VALUE={tenant_id}",
-                "golang:1.24",
+                "golang:1.25",
                 "sh",
                 "-c",
                 f"go run /workspace/services/etl-worker/{go_file.name} \"$JWT_SECRET_VALUE\" \"$TENANT_ID_VALUE\"",
