@@ -41,6 +41,10 @@ func (NoopCache) Store(context.Context, CacheKey, []float64, []Candidate) error 
 	return nil
 }
 
+func (NoopCache) Flush(context.Context) error {
+	return nil
+}
+
 func (NoopCache) Close() error {
 	return nil
 }
@@ -144,6 +148,26 @@ func (c *RedisSemanticCache) Store(ctx context.Context, key CacheKey, vector []f
 	pipe.Expire(ctx, indexKey, c.ttl)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("redis semantic cache store: %w", err)
+	}
+	return nil
+}
+
+// Flush removes every cached entry. Safe on document writes/deletes: the cache
+// is disposable (a miss only triggers one re-retrieval), and keeping sources
+// that reference a replaced or deleted document would be a correctness bug.
+func (c *RedisSemanticCache) Flush(ctx context.Context) error {
+	iter := c.client.Scan(ctx, 0, c.prefix+":*", 200).Iterator()
+	keys := make([]string, 0, 64)
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("redis semantic cache scan: %w", err)
+	}
+	if len(keys) > 0 {
+		if err := c.client.Del(ctx, keys...).Err(); err != nil {
+			return fmt.Errorf("redis semantic cache flush: %w", err)
+		}
 	}
 	return nil
 }

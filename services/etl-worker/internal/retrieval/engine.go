@@ -100,6 +100,12 @@ func NewEngine(cfg config.Config) *Engine {
 	}
 }
 
+// InvalidateCache drops cached retrieval results. Called by the query API after
+// a document write or delete so stale answers are not served from cache.
+func (e *Engine) InvalidateCache(ctx context.Context) error {
+	return e.cache.Flush(ctx)
+}
+
 // Retrieve returns ranked document chunks for a user question.
 func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err error) {
 	tracer := e.tracer

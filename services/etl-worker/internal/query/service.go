@@ -236,6 +236,12 @@ func builtinSystemPromptV1() string {
 }
 
 // HandleQuery is the HTTP handler for POST /v1/query.
+// InvalidateSemanticCache drops cached retrieval results so a document write or
+// delete cannot leave stale answers behind. Used by the upload/delete handlers.
+func (s *Service) InvalidateSemanticCache(ctx context.Context) error {
+	return s.retriever.InvalidateCache(ctx)
+}
+
 func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

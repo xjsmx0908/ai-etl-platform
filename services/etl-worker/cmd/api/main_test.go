@@ -13,6 +13,7 @@ import (
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/idempotency"
 	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/query"
 )
 
 func TestValidateUploadExtension(t *testing.T) {
@@ -149,6 +150,13 @@ func testUploadConfig() config.Config {
 	return config.Config{MaxUploadSize: 1 << 20, MultipartMaxMemoryBytes: 64 << 10}
 }
 
+// testQueryService returns a query service for handler tests. Its retrieval
+// cache falls back to NoopCache when no Redis is reachable, so the upload/delete
+// handlers' cache-invalidation call is a safe no-op in unit tests.
+func testQueryService() *query.Service {
+	return query.NewService(testUploadConfig())
+}
+
 type noopIdempotencyStore struct{}
 
 func (noopIdempotencyStore) Reserve(context.Context, string, string, string) (idempotency.ReserveResult, error) {
@@ -182,7 +190,7 @@ func TestHandleUploadRequiresTenantContext(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/upload", nil)
 	rr := httptest.NewRecorder()
 
-	handler := handleUpload(testUploadConfig(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil)
+	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != 401 {
@@ -213,7 +221,7 @@ func TestHandleUploadRecordsQueuedTaskStatus(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
 	rr := httptest.NewRecorder()
 
-	handler := handleUpload(testUploadConfig(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, statusStore)
+	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, statusStore)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusAccepted {
@@ -250,7 +258,7 @@ func TestHandleUploadRejectsOversizedMultipartBody(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
 
 	rr := httptest.NewRecorder()
-	handler := handleUpload(config.Config{MaxUploadSize: 1024, MultipartMaxMemoryBytes: 512}, noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil)
+	handler := handleUpload(config.Config{MaxUploadSize: 1024, MultipartMaxMemoryBytes: 512}, testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != 413 {

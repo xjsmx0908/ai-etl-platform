@@ -101,5 +101,8 @@ type Reranker interface {
 type SourceCache interface {
 	Lookup(ctx context.Context, key CacheKey, vector []float64) ([]Candidate, bool, error)
 	Store(ctx context.Context, key CacheKey, vector []float64, sources []Candidate) error
+	// Flush drops all cached entries. Called after document writes/deletes so
+	// stale answers never outlive the knowledge they were grounded in.
+	Flush(ctx context.Context) error
 	Close() error
 }

@@ -228,7 +228,7 @@ func main() {
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg, producer, s3Client, idemStore, taskStatusStore))))
+	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg, qs, producer, s3Client, idemStore, taskStatusStore))))
 	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			qs.HandleQueryStreaming(w, r)
@@ -238,7 +238,7 @@ func main() {
 	})))
 	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
-	apiV1.Handle("/v1/documents/", requireScopes("upload")(http.HandlerFunc(handleDeleteDocument(cfg, s3Client))))
+	apiV1.Handle("/v1/documents/", requireScopes("upload")(http.HandlerFunc(handleDeleteDocument(cfg, qs, s3Client))))
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
 
@@ -352,7 +352,7 @@ func cascadeDeleteDoc(ctx context.Context, cfg config.Config, s3Client documentO
 }
 
 // handleDeleteDocument deletes a document and everything derived from it.
-func handleDeleteDocument(cfg config.Config, s3Client documentObjectStore) http.HandlerFunc {
+func handleDeleteDocument(cfg config.Config, qs *query.Service, s3Client documentObjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -374,6 +374,10 @@ func handleDeleteDocument(cfg config.Config, s3Client documentObjectStore) http.
 			slog.Error("document delete partial failure", "doc_id", docID, "tenant_id", tenantID, "errors", errs)
 			http.Error(w, `{"error":"partial delete failure","details":`+mustJSON(errs)+`}`, http.StatusInternalServerError)
 			return
+		}
+		// Dropping a document may invalidate answers grounded in it.
+		if err := qs.InvalidateSemanticCache(r.Context()); err != nil {
+			slog.Warn("semantic cache flush failed after delete", "doc_id", docID, "error", err)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -537,7 +541,7 @@ func handleTaskStatus(taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 	}
 }
 
-func handleUpload(cfg config.Config, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {
+func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		w = rec
@@ -740,6 +744,12 @@ func handleUpload(cfg config.Config, producer uploadProducer, s3Client uploadDel
 			}
 			http.Error(w, "enqueue failed", http.StatusInternalServerError)
 			return
+		}
+
+		// A write (new or replaced document) can change which sources match a
+		// query, so cached answers must not outlive the documents they cite.
+		if err := qs.InvalidateSemanticCache(r.Context()); err != nil {
+			slog.Warn("semantic cache flush failed after upload", "doc_id", task.DocID, "error", err)
 		}
 
 		resp := uploadAcceptedResponse{
