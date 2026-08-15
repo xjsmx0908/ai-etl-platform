@@ -108,17 +108,39 @@ func TestUpdate_EmptyPatchReturnsCurrent(t *testing.T) {
 		t.Fatalf("new pool: %v", err)
 	}
 	defer mock.Close()
+	uuidID := "11111111-1111-1111-1111-111111111111"
 	mock.ExpectQuery("SELECT " + userCols).
-		WithArgs("u-1").
+		WithArgs(uuidID).
 		WillReturnRows(userRow())
 
 	s := New(mock)
-	got, err := s.Update(context.Background(), "u-1", UserPatch{})
+	got, err := s.Update(context.Background(), uuidID, UserPatch{})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if got.ID != "u-1" {
 		t.Fatalf("expected unchanged user, got %+v", got)
+	}
+}
+
+func TestGetByID_NonUUIDReturnsNotFound(t *testing.T) {
+	// Offline/test tokens carry a non-UUID UserID; this must return not-found
+	// without querying the DB (which would fail casting to the uuid column).
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer mock.Close()
+	s := New(mock)
+	_, found, err := s.GetByID(context.Background(), "e2e-user")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if found {
+		t.Fatal("expected not found for non-UUID id")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected no DB call for non-UUID id: %v", err)
 	}
 }
 

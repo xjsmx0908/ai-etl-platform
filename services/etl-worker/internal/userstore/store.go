@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -98,8 +99,13 @@ func (s *PgStore) GetByUsername(ctx context.Context, username string) (User, boo
 	return scanUser(row)
 }
 
-// GetByID looks up a user by primary key.
+// GetByID looks up a user by primary key. A non-UUID id (e.g. an offline
+// test/eval token whose UserID is a plain label) returns not-found instead of
+// hitting the DB, where casting the value to the uuid column would error.
 func (s *PgStore) GetByID(ctx context.Context, id string) (User, bool, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return User{}, false, nil
+	}
 	row := s.q.QueryRow(ctx,
 		"SELECT "+userColumns+" FROM users WHERE id=$1", id)
 	return scanUser(row)
