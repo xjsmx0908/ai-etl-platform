@@ -1,12 +1,13 @@
 import { NextRequest } from "next/server";
 
 // Forward /api/query to the backend so the browser only talks to this origin.
-// The client's Accept header is passed through: text/event-stream gets SSE,
-// otherwise the backend returns JSON.
+// Auth is read server-side from the HttpOnly `ai_etl_token` cookie, never from
+// a client header. The client's Accept header is passed through:
+// text/event-stream gets SSE, otherwise the backend returns JSON.
 export async function POST(req: NextRequest) {
   const backend = process.env.BACKEND_URL || "http://query-api:8080";
   const body = await req.text();
-  const authorization = req.headers.get("authorization") || "";
+  const token = req.cookies.get("ai_etl_token")?.value || "";
   const accept = req.headers.get("accept") || "application/json";
 
   const upstream = await fetch(`${backend}/v1/query`, {
@@ -14,7 +15,7 @@ export async function POST(req: NextRequest) {
     headers: {
       "Content-Type": "application/json",
       Accept: accept,
-      ...(authorization ? { Authorization: authorization } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body,
     // Do not buffer: keep the SSE stream flowing token by token.
