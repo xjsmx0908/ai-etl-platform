@@ -278,6 +278,7 @@ func main() {
 	apiV1.Handle("/v1/users", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUsers(userStore))))
 	apiV1.Handle("/v1/users/", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUser(userStore))))
 	apiV1.Handle("/v1/tenants", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleTenants(userStore))))
+	apiV1.Handle("/v1/audit", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleAuditList(auditStore))))
 
 	// Apply middleware chain: version → JWT auth → rate limit → route scope checks → CORS → timeout.
 	// Wrapper execution is outside-in, so compose in reverse.
