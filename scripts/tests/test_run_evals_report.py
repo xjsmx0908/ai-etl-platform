@@ -281,7 +281,10 @@ class JudgeReportTest(unittest.TestCase):
 
         self.assertEqual(calls["n"], 3)
 
-    def test_wait_for_es_sync_raises_after_timeout(self):
+    def test_wait_for_es_sync_warns_and_continues_after_timeout(self):
+        # ES sync lag must NOT fail the eval: wait_for_es_sync warns and returns
+        # normally when the count never reaches the target, so a slow ES sink
+        # does not turn a retrieval regression into an infra false-fail.
         module = self._load_module("run_evals_es_timeout")
 
         def fake_run(cmd, env, check, timeout_sec):
@@ -290,8 +293,7 @@ class JudgeReportTest(unittest.TestCase):
         original = module.run_cmd
         module.run_cmd = fake_run
         try:
-            with self.assertRaisesRegex(module.EvalRunnerError, "did not finish indexing"):
-                module.wait_for_es_sync({"ES_INDEX": "documents_text"}, 47, timeout_sec=1, poll_sec=0)
+            module.wait_for_es_sync({"ES_INDEX": "documents_text"}, 47, timeout_sec=1, poll_sec=0)
         finally:
             module.run_cmd = original
 
