@@ -118,7 +118,7 @@ TOKEN="$(
   docker run --rm \
     -v "${ROOT_DIR}:/workspace" \
     -w /workspace/services/etl-worker \
-    golang:1.24 \
+    golang:1.25 \
     sh -c "go run /workspace/services/etl-worker/tmp_real_rag_gen_token.go \"${JWT_SECRET}\" \"${TENANT_ID}\""
 )"
 
