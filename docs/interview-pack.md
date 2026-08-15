@@ -3,6 +3,12 @@
 > 本材料基于 `docs/evals/real-baseline-findings.md`、`docs/evals/experiments.md` 的真实数据。
 > 所有数字均为真实模型（nomic-embed-text 768d + deepseek-v4-flash）在语义数据集上的实测。
 
+> **数字口径（2026-08-14）**：检索质量的当前数字以最近一次真实评测为准
+> （`docs/evals/reports/eval-20260814-102122.json`，bge-m3）：**Recall@1 55%、@3 68%、@5 71%、pass_rate 64%**。
+> 历史早期测量（nomic→bge-m3 的 19%→71%/95%）是当时的记录；绝对值随系统演进
+> （加噪声过滤、OCR、切块改动）而变化，但「embedding 选型是检索质量的决定性因素」的结论不变。
+> 页面「检索质量」Tab 的数字实时来自 `latest.json`，以页面显示为准。
+
 ## 1. 项目一句话
 
 一个面向企业文档的 AI ETL/RAG 平台：Kafka 异步处理文档 → Parser 解析切块 → Embedding 向量化 → Qdrant/ES 混合检索 → LLM 生成回答。区别于普通 RAG demo 的是——我用一套**可复现的评测体系**量化了检索质量，用它发现了多个真实缺陷（幻觉拒答、ES 时序误报、英文 reranker 对中文负优化），并逐一用数据支撑的方式修复。
@@ -13,7 +19,7 @@
 2. 可靠性：成功才 Ack、失败重试、DLQ 先写后 Ack、Redis checkpoint、熔断器
 3. 分布式正确性：fencing token 锁、乐观版本号、幂等键、审批补偿
 4. 评测双模式：mock（CI 门禁）+ 真实模型（质量度量），报告标注模式
-5. **核心发现**：锚点集的 100% 是假象；真实评测发现 nomic-embed-text 下 Recall@1 仅 19%，换 bge-m3 后提升到 71%
+5. **核心发现**：锚点集的 100% 是假象；真实评测发现 nomic-embed-text 下 Recall@1 仅 19%，换 bge-m3 后大幅提升（最近一次真实评测 Recall@1 55%、@5 71%）
 6. 缺陷修复：无证据拒答（负样本 0→6/6）、断言去 mock 化、ES 时序误报
 7. 实验决策：hybrid 保留（ES 净增益 +7 例）、**英文 reranker 对中文有害应关闭**
 8. 方法论：抖动基线（4.26% 显著性下限）保证实验差异不是噪声
@@ -37,7 +43,7 @@
 - **mock 模式**（CI 门禁）：确定性、免费，验证链路接通
 - **真实模式**：真实 embedding + LLM，唯一能说明质量的模式
 
-**关键教训：mock 的 100% 是假象。** 锚点数据集每条 query 内嵌 `alpha001` 这类 token，路由器判定为精确匹配，语义检索路径从未执行。换真实模型 + 语义数据集后，Recall@1 从 86% 掉到 **19%**——评测保真度决定一切后续优化的可信度。随后我用同样数据集对比 embedding 选型：**nomic-embed-text → bge-m3 后，Recall@1 从 19% 提到 71%，Recall@5 到 95%**——embedding 的语义分辨率是检索质量的决定性因素。
+**关键教训：mock 的 100% 是假象。** 锚点数据集每条 query 内嵌 `alpha001` 这类 token，路由器判定为精确匹配，语义检索路径从未执行。换真实模型 + 语义数据集后，Recall@1 从 86% 掉到 **19%**——评测保真度决定一切后续优化的可信度。随后我用同样数据集对比 embedding 选型：**nomic-embed-text → bge-m3 后，Recall@1 从 19% 大幅提升（最近一次真实评测 55%、@5 71%）**——embedding 的语义分辨率是检索质量的决定性因素。
 
 ### 5:00-7:00 用评测发现并修复缺陷
 
@@ -58,7 +64,7 @@
 
 补充了 SSE 流式、演示前端、prompt 版本管理、Agent native tool calling、token/成本观测。测试规模：19 个 Go 包 + 25 项 Python 单测。
 
-**结果不是「100%」**，而是：语义集（bge-m3）Recall@1 71%、@5 95%、负样本 6/6、pass_rate 93%。这是一条完整的质量改进路径：评测先暴露 nomic 的 19%，embedding 选型把它提升到 71%。
+**结果不是「100%」**，而是：语义集（bge-m3，2026-08-14 评测）Recall@1 55%、@3 68%、@5 71%、pass_rate 64%，负样本拒答正确。这是一条完整的质量改进路径：评测先暴露 nomic 的 19%，embedding 选型大幅提升它。
 
 ## 4. 失败复盘（面试官最爱问）
 
@@ -78,11 +84,11 @@ F-01 的幻觉 bug 在 mock 下永远显示通过，因为 mock 服务器遇到�
 
 ### 你的检索质量怎么量化的？
 
-双模式评测：CI 用 mock（确定性门禁），质量用真实模型 + 语义数据集（Recall/MRR）。语义集 42 例，query 口语化改写不直接复用文档词，测语义理解而非关键词匹配。`validate_eval_dataset.py` 会拦截 query-content 重叠过高的「伪语义」用例。
+双模式评测：CI 用 mock（确定性门禁），质量用真实模型 + 语义数据集（Recall/MRR）。语义集 44 例，query 口语化改写不直接复用文档词，测语义理解而非关键词匹配。`validate_eval_dataset.py` 会拦截 query-content 重叠过高的「伪语义」用例。
 
-### 你的 Recall@1 怎么从 19% 提到 71% 的？
+### 你的 Recall@1 怎么从 19% 大幅提升的？
 
-先评测暴露问题：nomic-embed-text（137M）对中文口语 query 理解有限，语义集 Recall@1 只有 19%。然后用同一数据集对比 embedding 选型，**换 bge-m3（中文优化，1024 维）后 Recall@1 到 71%、@5 到 95%**。这说明 embedding 的语义分辨率是检索质量的压倒性因素——策略调优（rerank、权重）只是微调，embedding 选型决定上限。
+先评测暴露问题：nomic-embed-text（137M）对中文口语 query 理解有限，语义集 Recall@1 只有 19%。然后用同一数据集对比 embedding 选型，**换 bge-m3（中文优化，1024 维）后大幅提升（最近一次真实评测 Recall@1 55%、@5 71%）**。这说明 embedding 的语义分辨率是检索质量的压倒性因素——策略调优（rerank、权重）只是微调，embedding 选型决定上限。
 
 ### 你怎么判断一个实验改动是有效的？
 
@@ -124,7 +130,7 @@ flowchart LR
 
 | 维度 | 数字 | 说明 |
 | --- | --- | --- |
-| 语义集 Recall@1 / @5 | 71% / 95% | bge-m3，真实模型 |
+| 语义集 Recall@1 / @5 | 55% / 71% | bge-m3，真实模型，2026-08-14 评测 |
 | 负样本拒答 | 6/6 | 修复后 |
 | 抖动基线 | 4.26% | pass_rate 自然波动 |
 | ES 关 vs 开 | 52% vs 69% | hybrid 保留 |
