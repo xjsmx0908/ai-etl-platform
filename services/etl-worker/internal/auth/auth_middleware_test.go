@@ -90,6 +90,20 @@ func TestMiddleware_RejectsRevokedToken(t *testing.T) {
 	}
 }
 
+func TestMiddleware_AllowsUserAbsentFromDB(t *testing.T) {
+	// Offline/test tokens (e.g. eval) carry a UserID with no DB row. The JWT
+	// signature still protects them; revocation applies to login-issued tokens.
+	lookup := &fakeUserLookup{users: map[string]userstore.User{}}
+	v := NewVerifierWithStore("test-secret", lookup)
+	token, _, err := IssueToken("test-secret", "offline-user", "tester", "user", "default", 0)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if code := middlewareRequest(t, v, token); code != http.StatusOK {
+		t.Fatalf("expected 200 for offline user, got %d", code)
+	}
+}
+
 func TestMiddleware_RejectsInactiveUser(t *testing.T) {
 	lookup := &fakeUserLookup{users: map[string]userstore.User{
 		"u-1": {ID: "u-1", Username: "alice", Role: "user", TenantID: "acme", Active: false, TokenVersion: 0},

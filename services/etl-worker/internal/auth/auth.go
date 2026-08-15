@@ -107,15 +107,19 @@ func (v *Verifier) Middleware(requiredScopes ...string) func(http.Handler) http.
 				}
 			}
 
-			// Token-version revalidation: if the user's version moved past the one
-			// baked into this token (password reset), the token is revoked.
+			// Token-version revalidation: for users present in the DB, if their
+			// token_version moved past the one baked into this token (password
+			// reset) or they were deactivated, the token is revoked. Users
+			// absent from the DB (e.g. offline test/eval tokens) are allowed —
+			// the JWT signature still protects them; revocation applies to the
+			// login-issued tokens that carry a real user.
 			if v.users != nil {
 				user, found, err := v.users.GetByID(r.Context(), claims.UserID)
 				if err != nil {
 					http.Error(w, `{"error":"unauthorized","message":"user lookup failed"}`, http.StatusUnauthorized)
 					return
 				}
-				if !found || !user.Active || user.TokenVersion != claims.TokenVersion {
+				if found && (!user.Active || user.TokenVersion != claims.TokenVersion) {
 					http.Error(w, `{"error":"unauthorized","message":"token revoked"}`, http.StatusUnauthorized)
 					return
 				}
