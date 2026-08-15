@@ -4,13 +4,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
-# NEXT_PUBLIC_* must be present at build time (inlined into the client bundle).
+# NEXT_PUBLIC_API_BASE is inlined at build time; auth is via login + HttpOnly
+# cookie (no JWT is baked in).
 ARG NEXT_PUBLIC_API_BASE=http://localhost:8080
-ARG NEXT_PUBLIC_JWT=
-ARG NEXT_PUBLIC_JWT_ADMIN=
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
-ENV NEXT_PUBLIC_JWT=$NEXT_PUBLIC_JWT
-ENV NEXT_PUBLIC_JWT_ADMIN=$NEXT_PUBLIC_JWT_ADMIN
 RUN npm run build
 
 FROM node:18-alpine
