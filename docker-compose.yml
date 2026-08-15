@@ -30,6 +30,24 @@ services:
       timeout: 5s
       retries: 5
 
+  # One-shot: ensure the Kafka topics exist before the worker consumes. Without
+  # this a fresh Kafka volume only auto-creates doc-processing on first produce;
+  # the DLQ topic may be missing, so a failed task's DLQ push hits "Unknown
+  # Topic Or Partition" and the message is redelivered forever.
+  kafka-init:
+    image: bitnamilegacy/kafka:3.7.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+        --topic doc-processing --partitions 6 --replication-factor 1 &&
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+        --topic doc-processing-dlq --partitions 3 --replication-factor 1
+    restart: "no"
+
   # Evictable cache only (semantic retrieval cache). allkeys-lru is correct here:
   # losing a cached result costs one extra retrieval, nothing more.
   redis-cache:
@@ -306,6 +324,8 @@ services:
       - s3_access_key
       - s3_secret_key
     depends_on:
+      kafka-init:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
       redis-state:
