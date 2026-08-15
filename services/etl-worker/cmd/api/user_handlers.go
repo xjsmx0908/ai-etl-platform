@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,17 @@ import (
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/userstore"
 )
+
+// requireTenantUser verifies the target user exists in the caller's tenant. The
+// bool is false when the user is missing or belongs to another tenant — both map
+// to 404 so cross-tenant existence does not leak.
+func requireTenantUser(ctx context.Context, users userstore.Store, id, tenantID string) (userstore.User, bool) {
+	u, found, err := users.GetByID(ctx, id)
+	if err != nil || !found || u.TenantID != tenantID {
+		return userstore.User{}, false
+	}
+	return u, true
+}
 
 const defaultPageSize = 20
 
@@ -128,8 +140,11 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request, users userstore.St
 		writeError(w, http.StatusBadRequest, "role must be admin, user, or readonly")
 		return
 	}
-	if req.TenantID == "" {
-		writeError(w, http.StatusBadRequest, "tenant_id is required")
+	// Tenant-scoped: an admin may only create users in their own tenant. The
+	// caller's tenant comes from the JWT, never from the request body.
+	callerTenant := auth.GetTenantID(r.Context())
+	if callerTenant == "" {
+		writeError(w, http.StatusBadRequest, "tenant is required")
 		return
 	}
 	active := true
@@ -146,7 +161,7 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request, users userstore.St
 		Username:     req.Username,
 		PasswordHash: hash,
 		Role:         req.Role,
-		TenantID:     req.TenantID,
+		TenantID:     callerTenant,
 		Active:       active,
 	}
 	if err := users.Create(r.Context(), u); err != nil {
@@ -210,6 +225,13 @@ func handleUpdateUser(w http.ResponseWriter, r *http.Request, users userstore.St
 		writeError(w, http.StatusBadRequest, "role must be admin, user, or readonly")
 		return
 	}
+	// Tenant-scoped: an admin may only mutate users in their own tenant. Any
+	// tenant change in the request body is ignored.
+	callerTenant := auth.GetTenantID(r.Context())
+	if _, ok := requireTenantUser(r.Context(), users, id, callerTenant); !ok {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
 	u, err := users.Update(r.Context(), id, userstore.UserPatch{
 		Role:     req.Role,
 		TenantID: req.TenantID,
@@ -231,6 +253,10 @@ func handleDeleteUser(w http.ResponseWriter, r *http.Request, users userstore.St
 		writeError(w, http.StatusBadRequest, "cannot delete your own account")
 		return
 	}
+	if _, ok := requireTenantUser(r.Context(), users, id, auth.GetTenantID(r.Context())); !ok {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
 	if err := users.Delete(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete user")
 		return
@@ -246,6 +272,10 @@ func handleSetPassword(w http.ResponseWriter, r *http.Request, users userstore.S
 	}
 	if req.Password == "" {
 		writeError(w, http.StatusBadRequest, "password is required")
+		return
+	}
+	if _, ok := requireTenantUser(r.Context(), users, id, auth.GetTenantID(r.Context())); !ok {
+		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)

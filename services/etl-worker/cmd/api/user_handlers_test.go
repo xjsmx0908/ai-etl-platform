@@ -39,9 +39,10 @@ func TestHandleCreateUser_Success(t *testing.T) {
 	store := newFakeUserStore()
 	handler := handleUsers(store)
 
+	// Tenant comes from the caller's JWT, not the request body.
 	rec := doRequest(handler, http.MethodPost, "/v1/users", createUserRequest{
-		Username: "bob", Password: "pw-123", Role: "user", TenantID: "acme", Active: boolPtr(true),
-	}, ctxWithTenant("default"))
+		Username: "bob", Password: "pw-123", Role: "user", Active: boolPtr(true),
+	}, ctxWithTenant("acme"))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -62,6 +63,40 @@ func TestHandleCreateUser_Success(t *testing.T) {
 	}
 	if u.PasswordHash == "pw-123" || u.PasswordHash == "" {
 		t.Fatal("password must be stored as a hash, not plaintext")
+	}
+}
+
+func TestHandleUpdateUser_CrossTenantNotFound(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "bob", "pw", "user", "acme", true)
+	bob, found, _ := store.GetByUsername(context.Background(), "bob")
+	if !found {
+		t.Fatal("bob not seeded")
+	}
+	handler := handleUser(store)
+
+	// Caller belongs to tenant "other"; bob lives in "acme" → 404.
+	rec := doRequest(handler, http.MethodPut, "/v1/users/"+bob.ID, updateUserRequest{Active: boolPtr(false)}, ctxWithTenant("other"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant update, got %d", rec.Code)
+	}
+}
+
+func TestHandleDeleteUser_CrossTenantNotFound(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "bob", "pw", "user", "acme", true)
+	bob, found, _ := store.GetByUsername(context.Background(), "bob")
+	if !found {
+		t.Fatal("bob not seeded")
+	}
+	handler := handleUser(store)
+
+	rec := doRequest(handler, http.MethodDelete, "/v1/users/"+bob.ID, nil, ctxWithTenant("other"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for cross-tenant delete, got %d", rec.Code)
+	}
+	if _, found, _ := store.GetByUsername(context.Background(), "bob"); !found {
+		t.Fatal("bob must survive a cross-tenant delete attempt")
 	}
 }
 
