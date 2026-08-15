@@ -44,6 +44,24 @@ export type DocumentsResponse = {
   offset: number;
 };
 
+export type AuditEntry = {
+  actor_user_id: string;
+  actor_role: string;
+  action: string;
+  resource_type?: string;
+  resource_id?: string;
+  result: string; // success | failure
+  detail?: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AuditListResponse = {
+  items: AuditEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 export type Tenant = {
   id: string;
   name: string;

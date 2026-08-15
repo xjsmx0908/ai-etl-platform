@@ -1,6 +1,8 @@
 import type {
   AgentRun,
   AnswerMeta,
+  AuditEntry,
+  AuditListResponse,
   Document,
   DocumentsResponse,
   Health,
@@ -164,6 +166,23 @@ export async function setUserPassword(id: string, password: string): Promise<voi
   });
 }
 
+// ── Audit (admin only) ───────────────────────────────────────────────────
+
+export type ListAuditParams = {
+  limit?: number;
+  offset?: number;
+  action?: string;
+};
+
+export async function listAudit(params: ListAuditParams = {}): Promise<AuditListResponse> {
+  const sp = new URLSearchParams();
+  if (params.limit != null) sp.set("limit", String(params.limit));
+  if (params.offset != null) sp.set("offset", String(params.offset));
+  if (params.action) sp.set("action", params.action);
+  const qs = sp.toString();
+  return request<AuditListResponse>(`/audit${qs ? `?${qs}` : ""}`);
+}
+
 // ── System / Agent / Query ───────────────────────────────────────────────
 
 export async function getHealth(): Promise<Health> {
@@ -269,6 +288,7 @@ export const apiClient = {
   updateUser,
   deleteUser,
   setUserPassword,
+  listAudit,
   getHealth,
   createAgentRun,
   querySSE,

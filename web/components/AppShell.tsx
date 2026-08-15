@@ -13,7 +13,10 @@ const NAV_ITEMS = [
   { href: "/agent", label: "Agent 编排" },
 ];
 
-const ADMIN_ITEM = { href: "/users", label: "用户管理" };
+const ADMIN_ITEMS = [
+  { href: "/users", label: "用户管理" },
+  { href: "/audit", label: "审计日志" },
+];
 
 const ROLE_LABELS: Record<string, string> = {
   admin: "管理员",
@@ -25,7 +28,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, isAdmin, logout } = useAuth();
 
-  const items = isAdmin ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS;
+  const items = isAdmin ? [...NAV_ITEMS, ...ADMIN_ITEMS] : NAV_ITEMS;
 
   return (
     <div className="flex min-h-screen bg-slate-50">
