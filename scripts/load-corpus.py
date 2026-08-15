@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Seed the demo knowledge base from the semantic golden set.
+"""Load a corpus from a JSON eval set into the knowledge base via the upload API.
 
-Uploads each case in docs/evals/semantic-golden-set.json as a document so the
-interview demo has searchable content immediately. Uses the demo tenant.
+Each case in the source file (default: the semantic golden set) is uploaded as a
+document so a fresh environment has searchable content without manual uploads.
+Authenticates via /v1/auth/login (username+password) or accepts a pre-issued
+token.
 
 Usage:
-  python3 scripts/seed-demo-data.py --api-base http://localhost:8080 --token <jwt>
+  python3 scripts/load-corpus.py --api-base http://localhost:8080 \
+      --username admin --password <pw>
+  python3 scripts/load-corpus.py --api-base http://localhost:8080 --token <jwt>
+  python3 scripts/load-corpus.py --source ./my-corpus.json --tenant-id acme \
+      --username alice --password <pw>
 """
 
 from __future__ import annotations
@@ -18,11 +24,20 @@ from urllib import error as urllib_error
 from urllib import request
 
 ROOT = Path(__file__).resolve().parent.parent
-GOLDEN_SET = ROOT / "docs" / "evals" / "semantic-golden-set.json"
+DEFAULT_SOURCE = ROOT / "docs" / "evals" / "semantic-golden-set.json"
+
+
+def login(api_base: str, username: str, password: str) -> tuple[str, str]:
+    body = json.dumps({"username": username, "password": password}).encode()
+    req = request.Request(f"{api_base}/v1/auth/login", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    with request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    return data["token"], data["user"]["tenant_id"]
 
 
 def multipart_body(filename: str, content: str, doc_id: str, tenant_id: str, permission: str) -> bytes:
-    boundary = "----seed-boundary"
+    boundary = "----load-corpus-boundary"
     parts = []
     for name, value in (("doc_id", doc_id), ("tenant_id", tenant_id), ("permission", permission)):
         parts.append(
@@ -38,16 +53,31 @@ def multipart_body(filename: str, content: str, doc_id: str, tenant_id: str, per
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Seed demo knowledge base from semantic golden set")
+    parser = argparse.ArgumentParser(description="Load a corpus into the knowledge base")
     parser.add_argument("--api-base", default="http://localhost:8080")
-    parser.add_argument("--token", required=True, help="JWT with upload scope")
-    parser.add_argument("--tenant-id", default="demo")
+    auth = parser.add_mutually_exclusive_group(required=True)
+    auth.add_argument("--token", help="JWT with upload scope (skips login)")
+    auth.add_argument("--username", help="login username (with --password)")
+    parser.add_argument("--password", default="")
+    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    parser.add_argument("--tenant-id", help="upload tenant; defaults to the login user's tenant")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    cases = json.loads(GOLDEN_SET.read_text(encoding="utf-8"))["cases"]
     base = args.api_base.rstrip("/")
 
+    token = args.token
+    tenant_id = args.tenant_id
+    if token is None:
+        if not args.username or not args.password:
+            print("--username/--password are required when --token is not given", file=sys.stderr)
+            return 2
+        token, logged_in_tenant = login(base, args.username, args.password)
+        tenant_id = tenant_id or logged_in_tenant
+        print(f"[load] logged in as {args.username} (tenant {tenant_id})")
+    tenant_id = tenant_id or "default"
+
+    cases = json.loads(args.source.read_text(encoding="utf-8"))["cases"]
     ok, failed = 0, 0
     for case in cases:
         doc_id = case["id"]
@@ -55,15 +85,15 @@ def main() -> int:
             f"{doc_id}.txt",
             case["content"],
             doc_id,
-            args.tenant_id,
+            tenant_id,
             case.get("permission", "internal"),
         )
         req = request.Request(f"{base}/v1/upload", data=body, method="POST")
-        req.add_header("Authorization", f"Bearer {args.token}")
-        req.add_header("Content-Type", "multipart/form-data; boundary=----seed-boundary")
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Content-Type", "multipart/form-data; boundary=----load-corpus-boundary")
         try:
             if args.dry_run:
-                print(f"[seed] dry-run: {doc_id}")
+                print(f"[load] dry-run: {doc_id}")
                 ok += 1
                 continue
             with request.urlopen(req, timeout=60) as resp:
@@ -71,12 +101,12 @@ def main() -> int:
                     ok += 1
                 else:
                     failed += 1
-                    print(f"[seed] {doc_id} returned {resp.status}")
+                    print(f"[load] {doc_id} returned {resp.status}")
         except urllib_error.HTTPError as e:
             failed += 1
-            print(f"[seed] {doc_id} failed: {e.code} {e.read().decode()[:120]}")
+            print(f"[load] {doc_id} failed: {e.code} {e.read().decode()[:120]}")
 
-    print(f"\n[seed] uploaded {ok}, failed {failed} ({len(cases)} total)")
+    print(f"\n[load] uploaded {ok}, failed {failed} ({len(cases)} total)")
     return 0 if failed == 0 else 1
 
 

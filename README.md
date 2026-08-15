@@ -177,49 +177,35 @@ python3 scripts/load-test.py --requests 40 --concurrency 5
 
 ## 🔧 开发指南
 
-### 前端演示（web/）
+### 前端产品（web/）
 
 本地开发：
 
 ```bash
 cd web
-cp .env.local.example .env.local   # 配置 API 地址与 JWT
+cp .env.local.example .env.local   # 配置 NEXT_PUBLIC_API_BASE
 npm install
 npm run dev                        # http://localhost:3000
 ```
 
-一键部署（作为 compose 服务，面试 demo 用）：
+认证：登录页（`/login`）调 `POST /v1/auth/login`，token 存 HttpOnly cookie；`app/api/*`
+route handler 从 cookie 读 token 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。
+首启 bootstrap admin 由后端 `BOOTSTRAP_ADMIN_*` 创建；admin 登录后在「用户管理」创建用户。
+
+部署（compose 服务）：
 
 ```bash
-# 1. 设 JWT_SECRET 并生成 demo JWT（见下）
+# 1. 在 .env 设 BOOTSTRAP_ADMIN_USERNAME/PASSWORD/TENANT（首启自动建初始 admin）
 # 2. 启动整套 + 前端
 docker compose up -d --build
-# 3. 上传种子数据（语义集 44 篇文档）
-python3 scripts/seed-demo-data.py --token <demo_jwt>
+# 3. 灌入语义集语料（44 篇文档，经登录鉴权）
+python3 scripts/load-corpus.py --api-base http://localhost:8080 --username admin --password <pw>
 ```
 
 前端在 `WEB_HOST_PORT`（默认 3100，3000 被其他项目占用时用 3100）。浏览器只访问前端端口，
-`/api/*` 由 Next route handler 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。面试官
-访问 `http://<服务器IP>:3100` 即可操作，无需登录。
-
-JWT 生成：`docker compose up` 后，用 etl-worker 的 auth 包生成 user 角色 token
-（scope `query,upload`），写入 `.env` 的 `WEB_JWT`，重建 web。
-
-JWT 生成（演示用，需 Go 环境或参考 `scripts/run-evals.py` 的生成逻辑）：
-
-```bash
-# 用 etl-worker 的 auth 包生成一个 user 角色 token（JWT_SECRET 需与 query-api 一致）
-cd services/etl-worker
-cat > tmp_gen_token.go <<'EOF'
-package main
-import ("fmt"; "os"; "ai-etl-pipeline/internal/auth")
-func main() { t, _ := auth.GenerateTestTokenWithPermission(os.Args[1], "demo-tenant", "demo-user", "user", []string{"query"}); fmt.Print(t) }
-EOF
-docker run --rm -v "$PWD":/src -w /src golang:1.24.13 go run tmp_gen_token.go <JWT_SECRET>
-rm tmp_gen_token.go
-```
-
-前端通过 SSE（`Accept: text/event-stream`）流式渲染回答与引用，非流式 JSON 接口不受影响。
+`/api/*` 由 Next route handler 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。
+功能：问答（SSE 流式 + 引用展开）、文档管理（列表/搜索/删除）、用户管理（admin）、
+数据接入、系统可观测、检索质量、Agent 编排。
 
 ### Go 服务开发
 

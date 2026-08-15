@@ -1,5 +1,27 @@
 # Backlog
 
+## 2026-08-15 - 企业级改造 Phase 1（已交付）
+
+Status: implemented
+
+把「面试 demo 属性」的平台产品化为企业级项目：真实登录认证、用户/租户/文档注册表（PostgreSQL）、文档管理 API、前端产品 UI。核心内容：
+
+1. **PostgreSQL 注册表**：`tenants`/`users`/`documents` 表 + `internal/migrations`（embedded SQL 自动迁移）；upload/worker 写穿文档状态，删除级联写透。跨租户删除 bug 修复（Qdrant/ES 删除按 tenant 过滤）。
+2. **真实认证**：`POST /v1/auth/login`（bcrypt → JWT），`BOOTSTRAP_ADMIN_*` 首启建初始 admin；admin 经 `/v1/users`、`/v1/tenants` 管理用户/租户。
+3. **文档管理 API**：`GET /v1/documents`（分页/权限矩阵过滤/搜索）、`GET|DELETE /v1/documents/{id}`（租户隔离 404）。
+4. **前端产品化**：登录页 + HttpOnly cookie 鉴权 + 侧边栏产品 UI（问答/文档管理/用户管理/数据接入/可观测/检索质量/Agent）。
+5. **demo 资产清理**：面试文档归档至 `docs/archive/`，demo 脚本归档至 `scripts/archive/`，`seed-demo-data.py` → `load-corpus.py`（经登录灌语料）。
+
+## 2026-08-15 - 企业级改造 Phase 2（规划中）
+
+Status: planned
+
+1. **审计日志**：`audit_logs` 表 + `agentapi.Observer` sink + 登录/摄入/删除审计。
+2. **token 撤销**：`users.token_version` 列，登录/重置密码使旧 token 失效。
+3. **租户内 admin 隔离**：admin 仅管理本租户用户（现为全局 admin）。
+4. **文档搜索/详情深化**：全文/元数据检索、chunk 级详情。
+5. **前端硬化**：HttpOnly cookie 复核、`/v1/query` retrieval 元数据进文档详情。
+
 ## 2026-08-08 - AI Engineer Roadmap
 
 Status: planned

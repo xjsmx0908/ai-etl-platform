@@ -1,6 +1,7 @@
 # Security Notes
 
-This project is upgraded only as far as needed for an AI application engineer portfolio.
+This document records the security posture of the platform: what is hardened and
+what is deliberately deferred. It is not an exhaustive threat model.
 
 ## What is hardened
 

@@ -5,7 +5,7 @@ Accepted
 
 ## Context
 
-This project is used as a learning and portfolio project for an AI application engineer role. The goal is to demonstrate production-oriented engineering habits without turning the system into a heavy enterprise platform.
+The platform favors production-oriented engineering habits (measurability, minimal observability, evaluation-first) over heavyweight enterprise machinery. The evaluation-first decision below is what makes retrieval quality quantifiable rather than asserted.
 
 ## Decision
 

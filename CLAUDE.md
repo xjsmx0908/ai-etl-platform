@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-企业级 AI 知识流水线平台（AI ETL/RAG）：上传文档 → Kafka 异步处理 → 解析切块 → 向量化 → Qdrant/ES 混合检索 → LLM 生成回答。三个核心工程关注点：**可靠性**（消息不丢）、**权限隔离**（检索源头过滤，机密不进候选）、**可量化检索质量**（双模式评测 + 对照实验）。仓库同时含一个面向面试 demo 的 Next.js 前端（`web/`）。
+企业级 AI 知识流水线平台（AI ETL/RAG）：上传文档 → Kafka 异步处理 → 解析切块 → 向量化 → Qdrant/ES 混合检索 → LLM 生成回答。三个核心工程关注点：**可靠性**（消息不丢）、**权限隔离**（检索源头过滤，机密不进候选）、**可量化检索质量**（双模式评测 + 对照实验）。web 前端（`web/`）为企业级产品 UI：登录认证（HttpOnly cookie）、文档管理、用户/租户管理（admin）。用户、租户、文档元数据注册表存 PostgreSQL；检索与文件仍用 Qdrant/ES/MinIO。
 
 ## 常用命令
 
@@ -40,6 +40,11 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python -m app.main            # http://localhost:8000/docs
 pytest -q
+
+# 可选服务（compose `rerank` profile 起 reranker；alert-webhook 为 Alertmanager 企业通知适配器，unittest）
+cd services/reranker-service
+pip install -r requirements-test.txt
+RERANKER_BACKEND=lexical RERANKER_LOAD_ON_STARTUP=false pytest -q   # 免下载模型的轻量测试
 ```
 
 ### 评测（scripts/run-evals.py）——双模式，指标含义不同
@@ -54,18 +59,26 @@ python3 scripts/run-evals.py --real-models   # 真实 embedding+LLM，唯一能�
 - 配置解析优先级与 Go 服务一致：CLI 参数 > 环境变量 > `*_FILE_PATH` secrets。
 - 可选 `--judge`（LLM-as-a-Judge）输出 Faithfulness/Correctness/Relevance。
 
-### 全链路冒烟 / demo 数据
+### 冒烟 / 语料加载 / 线上回归（scripts/）
 
 ```bash
-bash scripts/e2e-smoke.sh                          # 起本地 compose 全链路 mock 冒烟
-python3 scripts/seed-demo-data.py --token <demo_jwt>   # 灌 demo 种子数据（语义集 44 篇）
+bash scripts/e2e-smoke.sh                              # 起本地 compose 全链路 mock 冒烟
+python3 scripts/load-corpus.py --api-base http://localhost:8080 \
+    --username admin --password <pw>                   # 经登录灌语义集 44 篇（或用 --token）
+python3 scripts/test-production-regressions.py --api-base http://localhost:8080 \
+    --token <user_jwt> --admin-token <admin_jwt>       # 线上回归：真实 bge-m3 hit rate + 权限隔离 0 泄漏 + 同 doc_id 更新一致性 + 对抗/边缘输入
+python3 scripts/run-agent-evals.py --api-base http://localhost:8080   # Agent API 成功率评测（需 AGENT_PLANNER_TYPE=llm）
+python3 scripts/reindex.py --api-base ... --s3-* --s3-bucket documents   # embedding 换模型后从 MinIO 重建（先删旧向量）
+scripts/backfill-qdrant-permission.sh               # Qdrant 缺失 permission 批量回填（默认 dry-run，--apply 生效）
 ```
+
+登录：`POST /v1/auth/login`（username+password → JWT）。首启 `BOOTSTRAP_ADMIN_USERNAME/PASSWORD/TENANT` 自动创建初始 admin；admin 再经 `/v1/users`、`/v1/tenants` 管理用户/租户。
 
 ### 前端 (web/)
 
 ```bash
 cd web
-cp .env.local.example .env.local   # 配 NEXT_PUBLIC_API_BASE 与 NEXT_PUBLIC_JWT
+cp .env.local.example .env.local   # 配 NEXT_PUBLIC_API_BASE 与后端地址（登录后 cookie 鉴权）
 npm install && npm run dev         # http://localhost:3000（compose 内为 WEB_HOST_PORT=3100）
 ```
 
@@ -111,6 +124,14 @@ upload(/v1/upload → MinIO 落盘 + Kafka 投递)
 
 配置优先级 `REDIS_CACHE_*` / `REDIS_STATE_*` > `REDIS_*`（共享回退）；生产启动校验拒绝两者指向同一实例/DB。
 
+### PostgreSQL 注册表 + 认证（internal/db + internal/migrations + internal/userstore + internal/docstore）
+
+关系存储：`tenants`、`users`（bcrypt 密码哈希，role=admin/user/readonly）、`documents`（每租户每 doc_id 一行，含 permission/status/stage/metadata，写穿自 upload 与 worker）。`internal/migrations` 用 `//go:embed` 内嵌 SQL，启动自动迁移（api fail-fast、worker warn-only）。API：
+- `POST /v1/auth/login`（免鉴权，bcrypt 校验 → JWT，`auth.IssueToken` 复用现有 Claims/HS256）
+- `/v1/users*`、`/v1/tenants`（admin scope）：用户/租户管理，密码与角色分离修改
+- `GET /v1/documents`、`GET/DELETE /v1/documents/{id}`：注册表列表（角色→权限矩阵过滤）与详情/删除
+首启 `BOOTSTRAP_ADMIN_*` 建初始 admin。跨租户删除已修复：Qdrant/ES 删除都带 `tenant_id` 过滤（`DeleteByDocIDAndTenant`），不再按 doc_id 裸删。
+
 ### Agent orchestrator（internal/agent + internal/agentapi）
 
 `/v1/agent/runs` API 背后的有状态编排核心：durable run/step 记录、fencing token + 乐观版本号防陈旧写入、高危险工具挂起审批 + 审计、失败工具补偿 handler、Redis 分布式锁、OpenAI 兼容 LLM planner + 确定性 Rule planner（开发/测试用）。设计见 `docs/agent-orchestrator-design.md`。
@@ -127,7 +148,7 @@ upload(/v1/upload → MinIO 落盘 + Kafka 投递)
 
 ### 前端（web/，Next.js 14）
 
-面试 demo 工作台：问答（SSE 流式渲染 + 引用展开）、数据接入（上传/同 doc_id 重传即替换）、检索质量、系统可观测、Agent 编排。`app/api/*` route handler 代理到 query-api `/v1/*`，SSE 透传无跨域。demo JWT 由 etl-worker 的 `internal/auth` 生成（scope `query,upload`）。演示脚本与注意事项见 `docs/demo-runbook.md`。
+企业级产品 UI：问答（SSE 流式渲染 + 引用展开）、文档管理（列表/搜索/权限过滤/删除）、用户管理（admin 建用户/改角色/重置密码）、数据接入（上传/同 doc_id 重传即替换）、检索质量、系统可观测、Agent 编排。认证：`/login` → `/api/auth/login` 转发 `/v1/auth/login`，token 存 HttpOnly cookie（`ai_etl_token`）；`app/api/*` route handler 从 cookie 读 token 代理到 query-api `/v1/*`，SSE 透传无跨域。用户/租户/文档元数据经 PG 注册表（`internal/userstore`/`internal/docstore`）。前端本地开发用 `.env.local`（`NEXT_PUBLIC_API_BASE`）配 `BACKEND_URL`。
 
 ## 约定
 
@@ -135,5 +156,5 @@ upload(/v1/upload → MinIO 落盘 + Kafka 投递)
 - **Secrets**：绝不提交真实凭据。模板在 `secrets/examples/`，本地真实值放 `secrets/dev/`（git-ignored）。webhook/密码等真实文件只在 `secrets/dev/`。
 - **提交**：Conventional Commits（`feat:`/`fix:`/`chore:`），聚焦、描述用户可见或运维影响。分支保护要求 1 个 approval + CI 通过。
 - **代码风格**：Go 用 gofmt、包名短小写、测试 `_test.go` 与源码同包；Python PEP8 + Pydantic typed models。
-- **文档语言**：README/docs/demo 均为中文；接口拒答用固定句「未找到相关文档，无法回答该问题。」。改动涉及检索/agent 行为时，更新 `docs/demo-runbook.md` 与评测口径保持一致。
-- **测试**：行为变更必须带测试。Go 用确定性 mock fixture（`make test` 已含 race）；Python 用 pytest；全链路仅用 `scripts/e2e-smoke.sh`。CI 门禁：gofmt、go vet、go test、pytest、`docker compose config`、Trivy CRITICAL。
+- **文档语言**：README/docs 均为中文；接口拒答用固定句「未找到相关文档，无法回答该问题。」。改动涉及检索/agent 行为时，与评测口径保持一致。
+- **测试**：行为变更必须带测试。Go 用确定性 mock fixture（`make test` 已含 race）；Python 用 pytest（doc-parser + reranker，后者用 lexical backend）；全链路仅用 `scripts/e2e-smoke.sh`。CI 门禁：gofmt、go vet、go test、pytest、确定性评测 `run-evals.py --min-hit-rate 0.90`、`docker compose config`、promtool/amtool 配置校验、Trivy CRITICAL。

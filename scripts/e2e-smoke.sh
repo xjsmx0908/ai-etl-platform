@@ -140,7 +140,7 @@ TOKEN="$(
 docker run --rm \
   -v "${ROOT_DIR}:/workspace" \
   -w /workspace/services/etl-worker \
-  golang:1.24 \
+  golang:1.25 \
   sh -c "go run /workspace/services/etl-worker/tmp_e2e_gen_token.go \"${JWT_SECRET}\" \"${TENANT_ID}\""
 )"
 
@@ -208,3 +208,60 @@ if [[ "${success}" != "1" ]]; then
 fi
 
 echo "[e2e] PASS: upload -> kafka -> parse/embed/store -> query"
+
+# ---------------------------------------------------------------
+# Enterprise flow: real login → document registry → delete → 404
+# ---------------------------------------------------------------
+ADMIN_USER="${BOOTSTRAP_ADMIN_USERNAME:-admin}"
+ADMIN_PASS="${BOOTSTRAP_ADMIN_PASSWORD:-admin}"
+
+echo "[e2e] logging in as ${ADMIN_USER}"
+LOGIN_STATUS="$(
+  curl -sS -o "${TMP_DIR}/login.json" -w "%{http_code}" \
+    -X POST "http://127.0.0.1:8080/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}"
+)"
+if [[ "${LOGIN_STATUS}" != "200" ]]; then
+  echo "[e2e] login failed, status=${LOGIN_STATUS}" >&2
+  cat "${TMP_DIR}/login.json" >&2 || true
+  exit 1
+fi
+ADMIN_TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["token"])' "${TMP_DIR}/login.json")"
+
+echo "[e2e] listing document registry (write-through)"
+LIST_STATUS="$(
+  curl -sS -o "${TMP_DIR}/list.json" -w "%{http_code}" \
+    "http://127.0.0.1:8080/v1/documents?limit=50" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}"
+)"
+if [[ "${LIST_STATUS}" != "200" ]]; then
+  echo "[e2e] document list failed, status=${LIST_STATUS}" >&2
+  cat "${TMP_DIR}/list.json" >&2 || true
+  exit 1
+fi
+DOC_ID="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); items=d.get("items") or []; print(items[0]["doc_id"] if items else "")' "${TMP_DIR}/list.json")"
+if [[ -z "${DOC_ID}" ]]; then
+  echo "[e2e] registry empty; expected the uploaded document" >&2
+  cat "${TMP_DIR}/list.json" >&2 || true
+  exit 1
+fi
+
+echo "[e2e] deleting document ${DOC_ID} via registry API"
+DELETE_STATUS="$(
+  curl -sS -o /dev/null -w "%{http_code}" \
+    -X DELETE "http://127.0.0.1:8080/v1/documents/${DOC_ID}" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}"
+)"
+if [[ "${DELETE_STATUS}" != "204" ]]; then
+  echo "[e2e] document delete failed, status=${DELETE_STATUS}" >&2
+  exit 1
+fi
+
+GET_STATUS="$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/v1/documents/${DOC_ID}" -H "Authorization: Bearer ${ADMIN_TOKEN}")"
+if [[ "${GET_STATUS}" != "404" ]]; then
+  echo "[e2e] expected 404 after delete, got ${GET_STATUS}" >&2
+  exit 1
+fi
+
+echo "[e2e] PASS: login -> registry list -> delete -> 404"
