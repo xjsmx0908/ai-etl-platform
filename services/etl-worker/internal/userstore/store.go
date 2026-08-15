@@ -31,7 +31,8 @@ const (
 )
 
 // User is one row of the users table. PasswordHash is the bcrypt hash, never a
-// plaintext password.
+// plaintext password. TokenVersion is bumped on password reset to invalidate
+// previously-issued JWTs.
 type User struct {
 	ID           string
 	Username     string
@@ -39,6 +40,7 @@ type User struct {
 	Role         string
 	TenantID     string
 	Active       bool
+	TokenVersion int
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -87,7 +89,7 @@ func New(q db.Querier) *PgStore {
 
 var _ Store = (*PgStore)(nil)
 
-const userColumns = "id, username, password_hash, role, tenant_id, active, created_at, updated_at"
+const userColumns = "id, username, password_hash, role, tenant_id, active, token_version, created_at, updated_at"
 
 // GetByUsername looks up a user by case-insensitive username.
 func (s *PgStore) GetByUsername(ctx context.Context, username string) (User, bool, error) {
@@ -106,7 +108,7 @@ func (s *PgStore) GetByID(ctx context.Context, id string) (User, bool, error) {
 func scanUser(row pgx.Row) (User, bool, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TenantID,
-		&u.Active, &u.CreatedAt, &u.UpdatedAt)
+		&u.Active, &u.TokenVersion, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -130,7 +132,7 @@ func (s *PgStore) List(ctx context.Context, tenantID string, limit, offset int) 
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TenantID,
-			&u.Active, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&u.Active, &u.TokenVersion, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, 0, fmt.Errorf("scan user row: %w", err)
 		}
 		users = append(users, u)
@@ -208,10 +210,11 @@ func (s *PgStore) Update(ctx context.Context, id string, patch UserPatch) (User,
 	return u, nil
 }
 
-// SetPasswordHash updates only the bcrypt hash for a user.
+// SetPasswordHash updates the bcrypt hash and bumps token_version so all
+// previously-issued JWTs for the user are rejected on their next use.
 func (s *PgStore) SetPasswordHash(ctx context.Context, id, hash string) error {
 	_, err := s.q.Exec(ctx,
-		"UPDATE users SET password_hash=$2, updated_at=now() WHERE id=$1", id, hash)
+		"UPDATE users SET password_hash=$2, token_version=token_version+1, updated_at=now() WHERE id=$1", id, hash)
 	if err != nil {
 		return fmt.Errorf("set password hash: %w", err)
 	}

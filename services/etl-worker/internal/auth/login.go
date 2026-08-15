@@ -34,14 +34,17 @@ func ScopesForRole(role string) []string {
 
 // IssueToken signs a JWT for a verified user using the existing Claims shape and
 // HS256, so the token is byte-compatible with everything already consuming it.
-// It returns the token and its expiry.
-func IssueToken(secret, userID, username, role, tenantID string) (string, time.Time, error) {
+// It returns the token and its expiry. tokenVersion is the user's current
+// users.token_version; the middleware re-validates it so password resets revoke
+// outstanding tokens.
+func IssueToken(secret, userID, username, role, tenantID string, tokenVersion int) (string, time.Time, error) {
 	expiresAt := time.Now().Add(tokenLifetime)
 	claims := Claims{
-		TenantID:   tenantID,
-		UserID:     userID,
-		Permission: role,
-		Scopes:     ScopesForRole(role),
+		TenantID:     tenantID,
+		UserID:       userID,
+		Permission:   role,
+		Scopes:       ScopesForRole(role),
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

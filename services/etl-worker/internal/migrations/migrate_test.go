@@ -28,9 +28,10 @@ func TestApplyAll_Unapplied(t *testing.T) {
 			WithArgs(name).
 			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
 		mock.ExpectBegin()
-		// The whole body executes as one statement; match a distinctive substring.
-		mock.ExpectExec(`CREATE TABLE`).
-			WillReturnResult(pgxmock.NewResult("CREATE", 0))
+		// The whole body executes as one statement; bodies vary (CREATE TABLE,
+		// ALTER TABLE, ...) so match any non-empty statement.
+		mock.ExpectExec(`.+`).
+			WillReturnResult(pgxmock.NewResult("EXEC", 0))
 		mock.ExpectExec("INSERT INTO schema_migrations").
 			WithArgs(name).
 			WillReturnResult(pgxmock.NewResult("INSERT", 1))

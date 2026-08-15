@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"ai-etl-pipeline/internal/userstore"
 )
 
 // Claims holds JWT token claims for the ETL pipeline.
@@ -17,6 +19,9 @@ type Claims struct {
 	UserID     string   `json:"user_id"`
 	Permission string   `json:"permission"` // "admin" | "user" | "readonly"
 	Scopes     []string `json:"scopes"`     // ["upload", "query", "admin"]
+	// TokenVersion is the user's users.token_version at issuance. The middleware
+	// re-validates it against the DB so a password reset revokes old tokens.
+	TokenVersion int `json:"token_version,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -34,14 +39,24 @@ const (
 	CtxScopes ContextKey = "scopes"
 )
 
-// Verifier validates JWT tokens.
+// Verifier validates JWT tokens. When a user store is wired in, the middleware
+// also re-validates the token's user_version against the DB so password resets
+// revoke outstanding tokens.
 type Verifier struct {
 	secret []byte
+	users  userstore.Store
 }
 
-// NewVerifier creates a JWT verifier with the given secret key.
+// NewVerifier creates a JWT verifier with the given secret key. Token-version
+// revocation is disabled (nil user store).
 func NewVerifier(secret string) *Verifier {
 	return &Verifier{secret: []byte(secret)}
+}
+
+// NewVerifierWithStore creates a JWT verifier that additionally re-validates
+// each token's token_version claim against the user store.
+func NewVerifierWithStore(secret string, users userstore.Store) *Verifier {
+	return &Verifier{secret: []byte(secret), users: users}
 }
 
 // Verify extracts and validates JWT from Authorization header.
@@ -88,6 +103,20 @@ func (v *Verifier) Middleware(requiredScopes ...string) func(http.Handler) http.
 			for _, req := range requiredScopes {
 				if !hasScope(claims.Scopes, req) {
 					http.Error(w, `{"error":"forbidden","message":"missing scope: `+req+`"}`, http.StatusForbidden)
+					return
+				}
+			}
+
+			// Token-version revalidation: if the user's version moved past the one
+			// baked into this token (password reset), the token is revoked.
+			if v.users != nil {
+				user, found, err := v.users.GetByID(r.Context(), claims.UserID)
+				if err != nil {
+					http.Error(w, `{"error":"unauthorized","message":"user lookup failed"}`, http.StatusUnauthorized)
+					return
+				}
+				if !found || !user.Active || user.TokenVersion != claims.TokenVersion {
+					http.Error(w, `{"error":"unauthorized","message":"token revoked"}`, http.StatusUnauthorized)
 					return
 				}
 			}

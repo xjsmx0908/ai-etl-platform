@@ -33,7 +33,7 @@ func TestScopesForRole(t *testing.T) {
 
 func TestIssueToken_RoundTripAndClaims(t *testing.T) {
 	secret := "test-secret-0123456789abcdef"
-	token, exp, err := IssueToken(secret, "u-1", "alice", "admin", "acme")
+	token, exp, err := IssueToken(secret, "u-1", "alice", "admin", "acme", 0)
 	if err != nil {
 		t.Fatalf("IssueToken: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestIssueToken_TokenFormatCompatibleWithTestToken(t *testing.T) {
 	// The login-issued token must be parseable the same way as the existing
 	// test token path, so nothing downstream changes.
 	secret := "shared-secret"
-	tok, _, err := IssueToken(secret, "u-2", "bob", "user", "default")
+	tok, _, err := IssueToken(secret, "u-2", "bob", "user", "default", 0)
 	if err != nil {
 		t.Fatalf("IssueToken: %v", err)
 	}

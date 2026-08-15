@@ -164,9 +164,6 @@ func main() {
 	prom := prometheus.New("ai_etl")
 	circuit.SetStateObserver(prom.SetCircuitState)
 
-	// Initialize auth
-	verifier := auth.NewVerifier(cfg.JWTSecret)
-
 	// Initialize PostgreSQL (users/tenants/document registry) and provision the
 	// initial admin on first start. The API owns the registry, so failure here
 	// is fatal.
@@ -183,6 +180,10 @@ func main() {
 	}
 	docStore := docstore.New(pgPool)
 	auditStore := audit.New(pgPool)
+
+	// Initialize auth. The verifier re-validates each token's token_version
+	// against the user store so password resets revoke outstanding tokens.
+	verifier := auth.NewVerifierWithStore(cfg.JWTSecret, userStore)
 
 	// Opt-in one-shot backfill of the registry from existing Qdrant vectors
 	// (legacy data present before PostgreSQL was introduced).

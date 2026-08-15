@@ -97,7 +97,7 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store) h
 			return
 		}
 
-		token, expiresAt, err := auth.IssueToken(cfg.JWTSecret, user.ID, user.Username, user.Role, user.TenantID)
+		token, expiresAt, err := auth.IssueToken(cfg.JWTSecret, user.ID, user.Username, user.Role, user.TenantID, user.TokenVersion)
 		if err != nil {
 			slog.Error("token issuance failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
