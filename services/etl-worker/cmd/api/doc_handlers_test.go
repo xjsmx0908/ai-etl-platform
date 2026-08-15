@@ -81,7 +81,7 @@ func TestHandleDocuments_RequestedPermissionIntersectsRole(t *testing.T) {
 func TestHandleDocument_GetRoleFiltered(t *testing.T) {
 	store := newFakeDocStore()
 	seedDoc(store, "acme", "doc-1", "internal")
-	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store)
+	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store, nil)
 
 	rec := doRequest(handler, http.MethodGet, "/v1/documents/doc-1", nil, ctxWithRole("acme", "user", "query"))
 	if rec.Code != http.StatusOK {
@@ -103,7 +103,7 @@ func TestHandleDocument_GetRoleFiltered(t *testing.T) {
 func TestHandleDocument_CrossTenantGet404(t *testing.T) {
 	store := newFakeDocStore()
 	seedDoc(store, "other", "doc-1", "public")
-	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store)
+	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store, nil)
 
 	rec := doRequest(handler, http.MethodGet, "/v1/documents/doc-1", nil, ctxWithRole("acme", "admin", "query"))
 	if rec.Code != http.StatusNotFound {
@@ -114,7 +114,7 @@ func TestHandleDocument_CrossTenantGet404(t *testing.T) {
 func TestHandleDocument_DeleteRequiresUploadScope(t *testing.T) {
 	store := newFakeDocStore()
 	seedDoc(store, "acme", "doc-1", "internal")
-	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store)
+	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store, nil)
 
 	// query scope alone cannot delete.
 	rec := doRequest(handler, http.MethodDelete, "/v1/documents/doc-1", nil, ctxWithRole("acme", "user", "query"))
@@ -154,7 +154,7 @@ func testDeleteConfig(t *testing.T) config.Config {
 func TestHandleDocument_DeleteSuccessRemovesRegistry(t *testing.T) {
 	store := newFakeDocStore()
 	seedDoc(store, "acme", "doc-1", "internal")
-	handler := handleDocument(testDeleteConfig(t), testQueryService(), noopObjectStore{}, store)
+	handler := handleDocument(testDeleteConfig(t), testQueryService(), noopObjectStore{}, store, nil)
 
 	rec := doRequest(handler, http.MethodDelete, "/v1/documents/doc-1", nil, ctxWithRole("acme", "user", "query", "upload"))
 	if rec.Code != http.StatusNoContent {
@@ -168,7 +168,7 @@ func TestHandleDocument_DeleteSuccessRemovesRegistry(t *testing.T) {
 func TestHandleDocument_DeleteCrossTenant404(t *testing.T) {
 	store := newFakeDocStore()
 	seedDoc(store, "other", "doc-1", "public")
-	handler := handleDocument(testDeleteConfig(t), testQueryService(), noopObjectStore{}, store)
+	handler := handleDocument(testDeleteConfig(t), testQueryService(), noopObjectStore{}, store, nil)
 
 	rec := doRequest(handler, http.MethodDelete, "/v1/documents/doc-1", nil, ctxWithRole("acme", "admin", "query", "upload"))
 	if rec.Code != http.StatusNotFound {

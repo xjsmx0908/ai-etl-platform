@@ -41,7 +41,7 @@ func doLogin(handler http.HandlerFunc, username, password string) *httptest.Resp
 func TestHandleLogin_Success(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "s3cret-pw", "admin", "acme", true)
-	handler := handleLogin(testAuthConfig(), store)
+	handler := handleLogin(testAuthConfig(), store, nil)
 
 	rec := doLogin(handler, "alice", "s3cret-pw")
 	if rec.Code != http.StatusOK {
@@ -74,7 +74,7 @@ func TestHandleLogin_Success(t *testing.T) {
 func TestHandleLogin_BadPassword(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "s3cret-pw", "user", "acme", true)
-	rec := doLogin(handleLogin(testAuthConfig(), store), "alice", "wrong-pw")
+	rec := doLogin(handleLogin(testAuthConfig(), store, nil), "alice", "wrong-pw")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -82,7 +82,7 @@ func TestHandleLogin_BadPassword(t *testing.T) {
 
 func TestHandleLogin_UnknownUser(t *testing.T) {
 	store := newFakeUserStore()
-	rec := doLogin(handleLogin(testAuthConfig(), store), "nobody", "whatever")
+	rec := doLogin(handleLogin(testAuthConfig(), store, nil), "nobody", "whatever")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for unknown user, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -91,7 +91,7 @@ func TestHandleLogin_UnknownUser(t *testing.T) {
 func TestHandleLogin_InactiveUser(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "s3cret-pw", "user", "acme", false)
-	rec := doLogin(handleLogin(testAuthConfig(), store), "alice", "s3cret-pw")
+	rec := doLogin(handleLogin(testAuthConfig(), store, nil), "alice", "s3cret-pw")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for inactive user, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -99,7 +99,7 @@ func TestHandleLogin_InactiveUser(t *testing.T) {
 
 func TestHandleLogin_MissingFields(t *testing.T) {
 	store := newFakeUserStore()
-	handler := handleLogin(testAuthConfig(), store)
+	handler := handleLogin(testAuthConfig(), store, nil)
 
 	rec := doLogin(handler, "", "")
 	if rec.Code != http.StatusBadRequest {

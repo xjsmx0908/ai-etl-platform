@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"ai-etl-pipeline/internal/audit"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/db"
@@ -46,8 +47,8 @@ func openPostgres(ctx context.Context, cfg config.Config) (*db.Pool, error) {
 // handleLogin authenticates username + bcrypt password and returns a JWT. It is
 // registered on the outer mux (before the JWT middleware chain) so it can be
 // reached without a token. Unknown usernames pay a dummy bcrypt compare to blunt
-// enumeration.
-func handleLogin(cfg config.Config, users userstore.Store) http.HandlerFunc {
+// enumeration. Every attempt (success or failure) is written to the audit log.
+func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -71,14 +72,27 @@ func handleLogin(cfg config.Config, users userstore.Store) http.HandlerFunc {
 		}
 		if !found {
 			auth.VerifyPassword("", req.Password) // constant-time dummy compare
+			recordAudit(r.Context(), audits, audit.Entry{
+				Action: "login", Result: audit.ResultFailure,
+				Detail: map[string]any{"username": req.Username, "reason": "invalid_credentials"},
+			})
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
 		if !auth.VerifyPassword(user.PasswordHash, req.Password) {
+			recordAudit(r.Context(), audits, audit.Entry{
+				TenantID: user.TenantID, Action: "login", Result: audit.ResultFailure,
+				Detail: map[string]any{"username": user.Username, "reason": "invalid_credentials"},
+			})
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
 		if !user.Active {
+			recordAudit(r.Context(), audits, audit.Entry{
+				TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,
+				Action: "login", Result: audit.ResultFailure,
+				Detail: map[string]any{"username": user.Username, "reason": "inactive"},
+			})
 			writeError(w, http.StatusForbidden, "user is inactive")
 			return
 		}
@@ -89,6 +103,11 @@ func handleLogin(cfg config.Config, users userstore.Store) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+		recordAudit(r.Context(), audits, audit.Entry{
+			TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,
+			Action: "login", Result: audit.ResultSuccess,
+			Detail: map[string]any{"username": user.Username},
+		})
 		writeJSON(w, http.StatusOK, loginResponse{
 			Token:     token,
 			ExpiresAt: expiresAt.UTC(),

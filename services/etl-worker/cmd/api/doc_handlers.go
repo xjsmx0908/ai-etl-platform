@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-etl-pipeline/internal/audit"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
@@ -136,7 +137,7 @@ func handleDocuments(docs docstore.Store) http.HandlerFunc {
 // handleDocument serves /v1/documents/{doc_id}: GET detail (role-filtered),
 // DELETE (requires upload scope). Both are tenant-scoped: a document in another
 // tenant 404s instead of leaking existence.
-func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjectStore, docs docstore.Store) http.HandlerFunc {
+func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjectStore, docs docstore.Store, audits audit.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		docID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/documents/"), "/")
 		if docID == "" {
@@ -175,6 +176,12 @@ func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjec
 				return
 			}
 			deleteDocument(w, r, cfg, qs, s3Client, docs, tenantID, docID)
+			recordAudit(r.Context(), audits, audit.Entry{
+				TenantID: tenantID, ActorUserID: auth.GetUserID(r.Context()),
+				ActorRole: auth.GetPermission(r.Context()),
+				Action:    "delete", ResourceType: "document", ResourceID: docID,
+				Result: audit.ResultSuccess,
+			})
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}

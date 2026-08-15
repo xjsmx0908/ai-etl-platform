@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/agentapi"
+	"ai-etl-pipeline/internal/audit"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
@@ -181,6 +182,7 @@ func main() {
 		os.Exit(1)
 	}
 	docStore := docstore.New(pgPool)
+	auditStore := audit.New(pgPool)
 
 	// Opt-in one-shot backfill of the registry from existing Qdrant vectors
 	// (legacy data present before PostgreSQL was introduced).
@@ -253,11 +255,11 @@ func main() {
 	// Login is unauthenticated. Registering on the outer mux (longest-prefix
 	// match beats "/") lets it bypass the JWT middleware chain.
 	mux.Handle("/v1/auth/login", middleware.CORS(cfg.CORSAllowedOrigins)(
-		middleware.Timeout(60*time.Second)(http.HandlerFunc(handleLogin(cfg, userStore)))))
+		middleware.Timeout(60*time.Second)(http.HandlerFunc(handleLogin(cfg, userStore, auditStore)))))
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore))))
+	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, auditStore))))
 	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			qs.HandleQueryStreaming(w, r)
@@ -270,7 +272,7 @@ func main() {
 	// Document registry: list/detail open to any authenticated role (filtered by
 	// the role→permission matrix); DELETE checks upload scope in-handler.
 	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore)))
-	apiV1.Handle("/v1/documents/", http.HandlerFunc(handleDocument(cfg, qs, s3Client, docStore)))
+	apiV1.Handle("/v1/documents/", http.HandlerFunc(handleDocument(cfg, qs, s3Client, docStore, auditStore)))
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
 	apiV1.Handle("/v1/users", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUsers(userStore))))
@@ -540,7 +542,7 @@ func handleTaskStatus(taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 	}
 }
 
-func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore, docStore docstore.Store) http.HandlerFunc {
+func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore, docStore docstore.Store, audits audit.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		w = rec
@@ -768,6 +770,16 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 				slog.Warn("document registry upsert failed", "tenant_id", task.TenantID, "doc_id", task.DocID, "error", err)
 			}
 		}
+
+		recordAudit(r.Context(), audits, audit.Entry{
+			TenantID: task.TenantID, ActorUserID: auth.GetUserID(r.Context()),
+			ActorRole: auth.GetPermission(r.Context()),
+			Action:    "upload", ResourceType: "document", ResourceID: task.DocID,
+			Result: audit.ResultSuccess,
+			Detail: map[string]any{
+				"file_name": header.Filename, "size": header.Size, "permission": task.Permission,
+			},
+		})
 
 		// A write (new or replaced document) can change which sources match a
 		// query, so cached answers must not outlive the documents they cite.

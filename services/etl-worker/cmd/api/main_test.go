@@ -190,7 +190,7 @@ func TestHandleUploadRequiresTenantContext(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/upload", nil)
 	rr := httptest.NewRecorder()
 
-	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil, nil)
+	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil, nil, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != 401 {
@@ -221,7 +221,7 @@ func TestHandleUploadRecordsQueuedTaskStatus(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
 	rr := httptest.NewRecorder()
 
-	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, statusStore, nil)
+	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, statusStore, nil, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusAccepted {
@@ -258,7 +258,7 @@ func TestHandleUploadRejectsOversizedMultipartBody(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
 
 	rr := httptest.NewRecorder()
-	handler := handleUpload(config.Config{MaxUploadSize: 1024, MultipartMaxMemoryBytes: 512}, testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil, nil)
+	handler := handleUpload(config.Config{MaxUploadSize: 1024, MultipartMaxMemoryBytes: 512}, testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil, nil, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != 413 {
