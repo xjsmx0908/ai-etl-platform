@@ -25,6 +25,7 @@ import (
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/idempotency"
 	"ai-etl-pipeline/internal/kafka"
@@ -37,6 +38,7 @@ import (
 	"ai-etl-pipeline/internal/store"
 	"ai-etl-pipeline/internal/taskstatus"
 	"ai-etl-pipeline/internal/tracing"
+	"ai-etl-pipeline/internal/userstore"
 )
 
 var (
@@ -164,6 +166,28 @@ func main() {
 	// Initialize auth
 	verifier := auth.NewVerifier(cfg.JWTSecret)
 
+	// Initialize PostgreSQL (users/tenants/document registry) and provision the
+	// initial admin on first start. The API owns the registry, so failure here
+	// is fatal.
+	pgPool, err := openPostgres(context.Background(), cfg)
+	if err != nil {
+		slog.Error("failed to initialize postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pgPool.Close()
+	userStore := userstore.New(pgPool)
+	if err := bootstrapAdmin(context.Background(), cfg, userStore); err != nil {
+		slog.Error("failed to bootstrap admin", "error", err)
+		os.Exit(1)
+	}
+	docStore := docstore.New(pgPool)
+
+	// Opt-in one-shot backfill of the registry from existing Qdrant vectors
+	// (legacy data present before PostgreSQL was introduced).
+	if cfg.ReconcileDocsOnStartup {
+		reconcileDocuments(context.Background(), cfg, docStore)
+	}
+
 	// Initialize MinIO/S3 for file storage
 	s3Client, err := s3.New(s3.Config{
 		Endpoint:   cfg.S3Endpoint,
@@ -226,9 +250,14 @@ func main() {
 	mux.Handle("/metrics", prom.Handler())
 	mux.HandleFunc("/version", handleVersion)
 
+	// Login is unauthenticated. Registering on the outer mux (longest-prefix
+	// match beats "/") lets it bypass the JWT middleware chain.
+	mux.Handle("/v1/auth/login", middleware.CORS(cfg.CORSAllowedOrigins)(
+		middleware.Timeout(60*time.Second)(http.HandlerFunc(handleLogin(cfg, userStore)))))
+
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg, qs, producer, s3Client, idemStore, taskStatusStore))))
+	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore))))
 	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			qs.HandleQueryStreaming(w, r)
@@ -238,9 +267,15 @@ func main() {
 	})))
 	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
-	apiV1.Handle("/v1/documents/", requireScopes("upload")(http.HandlerFunc(handleDeleteDocument(cfg, qs, s3Client))))
+	// Document registry: list/detail open to any authenticated role (filtered by
+	// the role→permission matrix); DELETE checks upload scope in-handler.
+	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore)))
+	apiV1.Handle("/v1/documents/", http.HandlerFunc(handleDocument(cfg, qs, s3Client, docStore)))
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
+	apiV1.Handle("/v1/users", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUsers(userStore))))
+	apiV1.Handle("/v1/users/", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUser(userStore))))
+	apiV1.Handle("/v1/tenants", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleTenants(userStore))))
 
 	// Apply middleware chain: version → JWT auth → rate limit → route scope checks → CORS → timeout.
 	// Wrapper execution is outside-in, so compose in reverse.
@@ -320,6 +355,9 @@ func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
 // points, ES documents, and MinIO objects under tenant/{docID}*. Used by both
 // the DELETE API and by upload-upsert (a re-upload with the same doc_id replaces
 // the old document). Returns a list of errors (empty means success).
+//
+// All backends are scoped to tenantID: deleting by doc_id alone would let one
+// tenant wipe another tenant's vectors/full-text when doc_ids collide.
 func cascadeDeleteDoc(ctx context.Context, cfg config.Config, s3Client documentObjectStore, tenantID, docID string) []string {
 	var errs []string
 
@@ -327,7 +365,7 @@ func cascadeDeleteDoc(ctx context.Context, cfg config.Config, s3Client documentO
 	if err != nil {
 		errs = append(errs, "qdrant init: "+err.Error())
 	} else {
-		if err := qs.DeleteByDocID(ctx, docID); err != nil {
+		if err := qs.DeleteByDocIDAndTenant(ctx, tenantID, docID); err != nil {
 			errs = append(errs, "qdrant: "+err.Error())
 		}
 		_ = qs.Close()
@@ -337,7 +375,7 @@ func cascadeDeleteDoc(ctx context.Context, cfg config.Config, s3Client documentO
 	if err != nil {
 		errs = append(errs, "es init: "+err.Error())
 	} else {
-		if err := idx.DeleteByDocID(ctx, docID); err != nil {
+		if err := idx.DeleteByDocIDAndTenant(ctx, tenantID, docID); err != nil {
 			errs = append(errs, "es: "+err.Error())
 		}
 		_ = idx.Close()
@@ -352,45 +390,6 @@ func cascadeDeleteDoc(ctx context.Context, cfg config.Config, s3Client documentO
 }
 
 // handleDeleteDocument deletes a document and everything derived from it.
-func handleDeleteDocument(cfg config.Config, qs *query.Service, s3Client documentObjectStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		docID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/documents/"), "/")
-		if docID == "" {
-			http.Error(w, "doc_id is required", http.StatusBadRequest)
-			return
-		}
-		tenantID := auth.GetTenantID(r.Context())
-		if tenantID == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		errs := cascadeDeleteDoc(r.Context(), cfg, s3Client, tenantID, docID)
-		if len(errs) > 0 {
-			slog.Error("document delete partial failure", "doc_id", docID, "tenant_id", tenantID, "errors", errs)
-			http.Error(w, `{"error":"partial delete failure","details":`+mustJSON(errs)+`}`, http.StatusInternalServerError)
-			return
-		}
-		// Dropping a document may invalidate answers grounded in it.
-		if err := qs.InvalidateSemanticCache(r.Context()); err != nil {
-			slog.Warn("semantic cache flush failed after delete", "doc_id", docID, "error", err)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-func mustJSON(v interface{}) string {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return "[]"
-	}
-	return string(data)
-}
-
 // validDocID restricts doc_id to safe characters so it cannot break the MinIO
 // object key (tenant/{docID}{ext}) or URL paths.
 func validDocID(docID string) bool {
@@ -541,7 +540,7 @@ func handleTaskStatus(taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 	}
 }
 
-func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore) http.HandlerFunc {
+func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore, docStore docstore.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		w = rec
@@ -744,6 +743,30 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			}
 			http.Error(w, "enqueue failed", http.StatusInternalServerError)
 			return
+		}
+
+		// Registry write-through: a queued row so the document appears in the
+		// inventory immediately. Failure is non-fatal for the upload path — the
+		// message is still durable — but is logged for reconciliation.
+		if docStore != nil {
+			if err := docStore.Upsert(r.Context(), docstore.Document{
+				TenantID:    task.TenantID,
+				DocID:       task.DocID,
+				FileName:    header.Filename,
+				ObjectKey:   task.FilePath,
+				FileHash:    task.FileHash,
+				FileSize:    header.Size,
+				ContentType: header.Header.Get("Content-Type"),
+				Permission:  task.Permission,
+				Status:      docstore.StatusQueued,
+				Stage:       "queued",
+				Metadata:    task.Metadata,
+				UploadedBy:  auth.GetUserID(r.Context()),
+				CreatedAt:   task.CreatedAt,
+				UpdatedAt:   now,
+			}); err != nil {
+				slog.Warn("document registry upsert failed", "tenant_id", task.TenantID, "doc_id", task.DocID, "error", err)
+			}
 		}
 
 		// A write (new or replaced document) can change which sources match a

@@ -152,6 +152,55 @@ func TestQdrantDeleteByDocID(t *testing.T) {
 	}
 }
 
+// DeleteByDocIDAndTenant must scope the delete filter to the tenant so a
+// colliding doc_id in another tenant cannot be wiped (cross-tenant bug fix).
+func TestQdrantDeleteByDocIDAndTenant(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/collections/docs/points/delete" {
+			_ = json.NewDecoder(r.Body).Decode(&got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	qs, _ := NewQdrantStorer(srv.URL, "", "docs", 4)
+	defer qs.Close()
+
+	if err := qs.DeleteByDocIDAndTenant(context.Background(), "tenant-a", "doc-1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	filter := got["filter"].(map[string]interface{})
+	must := filter["must"].([]interface{})
+	seen := map[string]string{}
+	for _, m := range must {
+		cond := m.(map[string]interface{})
+		seen[cond["key"].(string)] = cond["match"].(map[string]interface{})["value"].(string)
+	}
+	if seen["tenant_id"] != "tenant-a" || seen["doc_id"] != "doc-1" {
+		t.Fatalf("expected tenant+doc scoped delete filter, got %v", got)
+	}
+	if _, hasTenant := seen["tenant_id"]; !hasTenant {
+		t.Fatal("delete filter must include tenant_id")
+	}
+}
+
+func TestQdrantDeleteByDocIDAndTenantRequiresTenant(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	qs, _ := NewQdrantStorer(srv.URL, "", "docs", 4)
+	defer qs.Close()
+	if err := qs.DeleteByDocIDAndTenant(context.Background(), "", "doc-1"); err == nil {
+		t.Fatal("expected error for empty tenant_id")
+	}
+}
+
 func TestQdrantDeleteByDocIDRequiresID(t *testing.T) {
 	qs, _ := NewQdrantStorer(httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

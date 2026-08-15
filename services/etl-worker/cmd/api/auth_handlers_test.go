@@ -1,0 +1,156 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"ai-etl-pipeline/internal/auth"
+	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/userstore"
+)
+
+func testAuthConfig() config.Config {
+	return config.Config{JWTSecret: "test-secret-0123456789abcdef"}
+}
+
+func seedUser(t *testing.T, store *fakeUserStore, username, password, role, tenant string, active bool) {
+	t.Helper()
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	u := &userstore.User{Username: username, PasswordHash: hash, Role: role, TenantID: tenant, Active: active}
+	if err := store.Create(context.Background(), u); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+}
+
+func doLogin(handler http.HandlerFunc, username, password string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(loginRequest{Username: username, Password: password})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	return rec
+}
+
+func TestHandleLogin_Success(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", "admin", "acme", true)
+	handler := handleLogin(testAuthConfig(), store)
+
+	rec := doLogin(handler, "alice", "s3cret-pw")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp loginResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Token == "" {
+		t.Fatal("expected a token")
+	}
+	if resp.User.Username != "alice" || resp.User.Role != "admin" || resp.User.TenantID != "acme" {
+		t.Fatalf("unexpected login user: %+v", resp.User)
+	}
+
+	// The issued token must verify with the API's verifier.
+	v := auth.NewVerifier(testAuthConfig().JWTSecret)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+resp.Token)
+	claims, err := v.Verify(req)
+	if err != nil {
+		t.Fatalf("verify issued token: %v", err)
+	}
+	if claims.TenantID != "acme" || claims.UserID != resp.User.ID {
+		t.Fatalf("unexpected claims: %+v", claims)
+	}
+}
+
+func TestHandleLogin_BadPassword(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", "user", "acme", true)
+	rec := doLogin(handleLogin(testAuthConfig(), store), "alice", "wrong-pw")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleLogin_UnknownUser(t *testing.T) {
+	store := newFakeUserStore()
+	rec := doLogin(handleLogin(testAuthConfig(), store), "nobody", "whatever")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unknown user, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleLogin_InactiveUser(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", "user", "acme", false)
+	rec := doLogin(handleLogin(testAuthConfig(), store), "alice", "s3cret-pw")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for inactive user, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleLogin_MissingFields(t *testing.T) {
+	store := newFakeUserStore()
+	handler := handleLogin(testAuthConfig(), store)
+
+	rec := doLogin(handler, "", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty fields, got %d", rec.Code)
+	}
+}
+
+func TestBootstrapAdmin_SeedsOnEmptyDB(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := testAuthConfig()
+	cfg.BootstrapAdminUsername = "root"
+	cfg.BootstrapAdminPassword = "root-password"
+	cfg.BootstrapAdminTenant = "default"
+
+	if err := bootstrapAdmin(context.Background(), cfg, store); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	u, found, err := store.GetByUsername(context.Background(), "root")
+	if err != nil || !found {
+		t.Fatalf("expected seeded admin, found=%v err=%v", found, err)
+	}
+	if u.Role != userstore.RoleAdmin || u.TenantID != "default" {
+		t.Fatalf("unexpected admin: %+v", u)
+	}
+	if !auth.VerifyPassword(u.PasswordHash, "root-password") {
+		t.Fatal("seeded admin password must verify")
+	}
+}
+
+func TestBootstrapAdmin_NoopWhenUsersExist(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "existing", "pw", "user", "acme", true)
+	cfg := testAuthConfig()
+	cfg.BootstrapAdminUsername = "root"
+	cfg.BootstrapAdminPassword = "root-password"
+
+	if err := bootstrapAdmin(context.Background(), cfg, store); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if _, found, _ := store.GetByUsername(context.Background(), "root"); found {
+		t.Fatal("bootstrap must not create a second admin when users exist")
+	}
+}
+
+func TestBootstrapAdmin_EmptyPasswordFailsOutsideDev(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := testAuthConfig()
+	cfg.Environment = "production" // not dev
+	cfg.BootstrapAdminPassword = ""
+
+	if err := bootstrapAdmin(context.Background(), cfg, store); err == nil {
+		t.Fatal("expected production bootstrap without password to fail")
+	}
+}

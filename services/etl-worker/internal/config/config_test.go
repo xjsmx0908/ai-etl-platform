@@ -140,6 +140,21 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AgentPlannerMaxTokens != 512 {
 		t.Errorf("expected AgentPlannerMaxTokens=512, got %d", cfg.AgentPlannerMaxTokens)
 	}
+	if cfg.PGDSN != "" {
+		t.Errorf("expected PGDSN empty default, got %s", cfg.PGDSN)
+	}
+	if cfg.BootstrapAdminUsername != "admin" {
+		t.Errorf("expected BootstrapAdminUsername=admin, got %s", cfg.BootstrapAdminUsername)
+	}
+	if cfg.BootstrapAdminPassword != "" {
+		t.Errorf("expected BootstrapAdminPassword empty default, got %s", cfg.BootstrapAdminPassword)
+	}
+	if cfg.BootstrapAdminTenant != "default" {
+		t.Errorf("expected BootstrapAdminTenant=default, got %s", cfg.BootstrapAdminTenant)
+	}
+	if cfg.ReconcileDocsOnStartup {
+		t.Error("expected ReconcileDocsOnStartup=false default")
+	}
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
@@ -184,6 +199,11 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("AGENT_PLANNER_MAX_TOKENS", "768")
 	os.Setenv("TASK_STATUS_STORE", "redis")
 	os.Setenv("TASK_STATUS_TTL", "48h")
+	os.Setenv("PG_DSN", "postgres://app:secret@pg:5432/ai_etl")
+	os.Setenv("BOOTSTRAP_ADMIN_USERNAME", "root")
+	os.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "s3cr3t-password")
+	os.Setenv("BOOTSTRAP_ADMIN_TENANT", "acme")
+	os.Setenv("RECONCILE_DOCS_ON_STARTUP", "true")
 	defer func() {
 		os.Unsetenv("PIPELINE_MAX_WORKERS")
 		os.Unsetenv("ENVIRONMENT")
@@ -226,6 +246,11 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("AGENT_PLANNER_MAX_TOKENS")
 		os.Unsetenv("TASK_STATUS_STORE")
 		os.Unsetenv("TASK_STATUS_TTL")
+		os.Unsetenv("PG_DSN")
+		os.Unsetenv("BOOTSTRAP_ADMIN_USERNAME")
+		os.Unsetenv("BOOTSTRAP_ADMIN_PASSWORD")
+		os.Unsetenv("BOOTSTRAP_ADMIN_TENANT")
+		os.Unsetenv("RECONCILE_DOCS_ON_STARTUP")
 	}()
 
 	cfg := Load()
@@ -358,6 +383,21 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.ResolvedTaskStatusStore() != TaskStatusStoreRedis {
 		t.Errorf("expected resolved task status store redis, got %s", cfg.ResolvedTaskStatusStore())
+	}
+	if cfg.PGDSN != "postgres://app:secret@pg:5432/ai_etl" {
+		t.Errorf("expected PGDSN override, got %s", cfg.PGDSN)
+	}
+	if cfg.BootstrapAdminUsername != "root" {
+		t.Errorf("expected BootstrapAdminUsername=root, got %s", cfg.BootstrapAdminUsername)
+	}
+	if cfg.BootstrapAdminPassword != "s3cr3t-password" {
+		t.Errorf("expected BootstrapAdminPassword override, got %s", cfg.BootstrapAdminPassword)
+	}
+	if cfg.BootstrapAdminTenant != "acme" {
+		t.Errorf("expected BootstrapAdminTenant=acme, got %s", cfg.BootstrapAdminTenant)
+	}
+	if !cfg.ReconcileDocsOnStartup {
+		t.Error("expected ReconcileDocsOnStartup=true")
 	}
 }
 
@@ -611,6 +651,8 @@ func TestValidate_ProductionAgentPlanner(t *testing.T) {
 	cfg.CORSAllowedOrigins = []string{"https://console.example.com"}
 	cfg.AgentPlannerType = AgentPlannerAuto
 	cfg.AgentPlannerEndpoint = "http://planner:8080/v1/chat/completions"
+	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
+	cfg.BootstrapAdminPassword = "initial-admin-password"
 
 	if err := cfg.ValidateAPI(); err != nil {
 		t.Fatalf("expected production auto planner to resolve to llm, got %v", err)
@@ -673,6 +715,8 @@ func TestValidateAPI_ProductionWeakJWTRejected(t *testing.T) {
 	cfg.JWTSecret = "change-me-in-production"
 	cfg.S3AccessKey = "prod-access"
 	cfg.S3SecretKey = "prod-secret"
+	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
+	cfg.BootstrapAdminPassword = "initial-admin-password"
 
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Fatal("expected weak JWT secret to be rejected in production")
@@ -692,6 +736,8 @@ func TestValidateAPI_ProductionDefaultS3Rejected(t *testing.T) {
 	cfg.JWTSecret = "12345678901234567890123456789012"
 	cfg.S3AccessKey = "minioadmin"
 	cfg.S3SecretKey = "minioadmin"
+	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
+	cfg.BootstrapAdminPassword = "initial-admin-password"
 
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Fatal("expected default S3 credentials to be rejected in production")
@@ -712,9 +758,63 @@ func TestValidateAPI_ProductionStrongSecretsPass(t *testing.T) {
 	cfg.S3AccessKey = "prod-access"
 	cfg.S3SecretKey = "prod-secret"
 	cfg.CORSAllowedOrigins = []string{"https://console.example.com"}
+	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
+	cfg.BootstrapAdminPassword = "initial-admin-password"
 
 	if err := cfg.ValidateAPI(); err != nil {
 		t.Fatalf("expected strong production config to pass, got: %v", err)
+	}
+}
+
+func TestValidateAPI_ProductionMissingPGDSN(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka.internal:9092"
+	cfg.StoreEndpoint = "http://qdrant.internal:6333"
+	cfg.RedisAddr = "redis-cache.internal:6379"
+	cfg.RedisCacheAddr = "redis-cache.internal:6379"
+	cfg.RedisStateAddr = "redis-state.internal:6379"
+	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
+	cfg.JWTSecret = "12345678901234567890123456789012"
+	cfg.S3AccessKey = "prod-access"
+	cfg.S3SecretKey = "prod-secret"
+	cfg.CORSAllowedOrigins = []string{"https://console.example.com"}
+	cfg.BootstrapAdminPassword = "initial-admin-password"
+	// PGDSN left empty.
+
+	err := cfg.ValidateAPI()
+	if err == nil {
+		t.Fatal("expected missing PG_DSN to be rejected in production")
+	}
+	if !strings.Contains(err.Error(), "PG_DSN") {
+		t.Errorf("expected error to mention PG_DSN, got: %v", err)
+	}
+}
+
+func TestValidateAPI_ProductionWeakBootstrapPassword(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka.internal:9092"
+	cfg.StoreEndpoint = "http://qdrant.internal:6333"
+	cfg.RedisAddr = "redis-cache.internal:6379"
+	cfg.RedisCacheAddr = "redis-cache.internal:6379"
+	cfg.RedisStateAddr = "redis-state.internal:6379"
+	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
+	cfg.JWTSecret = "12345678901234567890123456789012"
+	cfg.S3AccessKey = "prod-access"
+	cfg.S3SecretKey = "prod-secret"
+	cfg.CORSAllowedOrigins = []string{"https://console.example.com"}
+	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
+	cfg.BootstrapAdminPassword = "short"
+
+	err := cfg.ValidateAPI()
+	if err == nil {
+		t.Fatal("expected weak bootstrap password to be rejected in production")
+	}
+	if !strings.Contains(err.Error(), "BOOTSTRAP_ADMIN_PASSWORD") {
+		t.Errorf("expected error to mention BOOTSTRAP_ADMIN_PASSWORD, got: %v", err)
 	}
 }
 
@@ -732,6 +832,8 @@ func TestValidateAPI_ProductionWildcardCORSRejected(t *testing.T) {
 	cfg.S3AccessKey = "prod-access"
 	cfg.S3SecretKey = "prod-secret"
 	cfg.CORSAllowedOrigins = []string{"*"}
+	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
+	cfg.BootstrapAdminPassword = "initial-admin-password"
 
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Fatal("expected wildcard CORS to be rejected in production")

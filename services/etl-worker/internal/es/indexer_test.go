@@ -71,6 +71,40 @@ func TestHTTPIndexer_DeleteByDocID(t *testing.T) {
 	}
 }
 
+// DeleteByDocIDAndTenant must scope the delete-by-query to tenant_id AND doc_id
+// (cross-tenant bug fix).
+func TestHTTPIndexer_DeleteByDocIDAndTenant(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatalf("new indexer: %v", err)
+	}
+	defer idx.Close()
+
+	if err := idx.DeleteByDocIDAndTenant(context.Background(), "tenant-a", "doc-7"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	query := got["query"].(map[string]interface{})
+	boolQ := query["bool"].(map[string]interface{})
+	must := boolQ["must"].([]interface{})
+	seen := map[string]string{}
+	for _, m := range must {
+		term := m.(map[string]interface{})["term"].(map[string]interface{})
+		for k, v := range term {
+			seen[k] = v.(string)
+		}
+	}
+	if seen["tenant_id"] != "tenant-a" || seen["doc_id"] != "doc-7" {
+		t.Fatalf("expected tenant+doc scoped delete query, got %v", got)
+	}
+}
+
 func TestHTTPIndexer_DeleteByDocIDRequiresID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -271,7 +271,7 @@ func TestAllowedDocumentPermissionsForRole(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := allowedDocumentPermissionsForRole(tc.role)
+			got := AllowedPermissionsForRole(tc.role)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("expected %v, got %v", tc.want, got)
 			}

@@ -144,7 +144,7 @@ func (noopProducer) Publish(context.Context, model.Task) error { return nil }
 type noopObjectStore struct{}
 
 func (noopObjectStore) Upload(context.Context, string, io.Reader, int64, string) error { return nil }
-func (noopObjectStore) DeleteByPrefix(context.Context, string) error                    { return nil }
+func (noopObjectStore) DeleteByPrefix(context.Context, string) error                   { return nil }
 
 func testUploadConfig() config.Config {
 	return config.Config{MaxUploadSize: 1 << 20, MultipartMaxMemoryBytes: 64 << 10}
@@ -190,7 +190,7 @@ func TestHandleUploadRequiresTenantContext(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/upload", nil)
 	rr := httptest.NewRecorder()
 
-	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil)
+	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != 401 {
@@ -221,7 +221,7 @@ func TestHandleUploadRecordsQueuedTaskStatus(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
 	rr := httptest.NewRecorder()
 
-	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, statusStore)
+	handler := handleUpload(testUploadConfig(), testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, statusStore, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusAccepted {
@@ -258,7 +258,7 @@ func TestHandleUploadRejectsOversizedMultipartBody(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a"))
 
 	rr := httptest.NewRecorder()
-	handler := handleUpload(config.Config{MaxUploadSize: 1024, MultipartMaxMemoryBytes: 512}, testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil)
+	handler := handleUpload(config.Config{MaxUploadSize: 1024, MultipartMaxMemoryBytes: 512}, testQueryService(), noopProducer{}, noopObjectStore{}, noopIdempotencyStore{}, nil, nil)
 	handler.ServeHTTP(rr, req)
 
 	if rr.Code != 413 {

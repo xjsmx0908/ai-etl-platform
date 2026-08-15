@@ -86,6 +86,26 @@ services:
       timeout: 3s
       retries: 3
 
+  # Relational store: users, tenants, document metadata registry, (Phase 2: audit).
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "${PG_HOST_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=${PG_USER:-app}
+      - POSTGRES_DB=${PG_DB:-ai_etl}
+      - POSTGRES_PASSWORD_FILE=/run/secrets/pg_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    secrets:
+      - pg_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-app} -d ${PG_DB:-ai_etl}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:v1.14.1
     ports:
@@ -314,6 +334,8 @@ services:
       - S3_SECRET_KEY_FILE=/run/secrets/s3_secret_key
       - S3_BUCKET=documents
       - S3_USE_SSL=${S3_USE_SSL:-false}
+      # Document registry write-through (status updates; warn-only on failure).
+      - PG_DSN_FILE=/run/secrets/pg_dsn
       - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
     secrets:
       - parser_internal_token
@@ -323,12 +345,15 @@ services:
       - es_api_key
       - s3_access_key
       - s3_secret_key
+      - pg_dsn
     depends_on:
       kafka-init:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
       redis-state:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -430,6 +455,13 @@ services:
       - S3_SECRET_KEY=${S3_SECRET_KEY:-}
       - S3_SECRET_KEY_FILE=/run/secrets/s3_secret_key
       - S3_BUCKET=documents
+      # Relational store: users/tenants/document registry. First-run bootstrap
+      # creates the initial admin from BOOTSTRAP_ADMIN_*.
+      - PG_DSN_FILE=/run/secrets/pg_dsn
+      - BOOTSTRAP_ADMIN_USERNAME=${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-admin}
+      - BOOTSTRAP_ADMIN_TENANT=${BOOTSTRAP_ADMIN_TENANT:-default}
+      - RECONCILE_DOCS_ON_STARTUP=${RECONCILE_DOCS_ON_STARTUP:-false}
       - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
     secrets:
       - jwt_secret
@@ -440,12 +472,15 @@ services:
       - es_api_key
       - s3_access_key
       - s3_secret_key
+      - pg_dsn
     depends_on:
       kafka:
         condition: service_healthy
       redis-cache:
         condition: service_healthy
       redis-state:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -467,15 +502,13 @@ services:
       # different file; keeps prompt history in git for eval A/B.
       - ./prompts:/prompts:ro
 
-  # Interview demo frontend (Next.js standalone). NEXT_PUBLIC_* are inlined at
-  # build time; pass WEB_API_BASE / WEB_JWT to override.
+  # Web frontend (Next.js standalone). Authentication is via POST /v1/auth/login
+  # + HttpOnly cookie (ai_etl_token), so no JWT is baked in at build time.
   web:
     build:
       context: ./web
       args:
         NEXT_PUBLIC_API_BASE: /api
-        NEXT_PUBLIC_JWT: ${WEB_JWT:-}
-        NEXT_PUBLIC_JWT_ADMIN: ${WEB_JWT_ADMIN:-}
     environment:
       # Backend for the rewrite proxy (compose-internal hostname).
       BACKEND_URL: http://query-api:8080
@@ -522,6 +555,7 @@ volumes:
   kafka_data:
   redis_cache_data:
   redis_state_data:
+  postgres_data:
   qdrant_data:
   es_data:
   minio_data:
@@ -534,6 +568,10 @@ secrets:
     file: ${PARSER_INTERNAL_TOKEN_FILE_PATH:-./secrets/examples/parser_internal_token}
   jwt_secret:
     file: ${JWT_SECRET_FILE_PATH:-./secrets/examples/jwt_secret}
+  pg_password:
+    file: ${PG_PASSWORD_FILE_PATH:-./secrets/examples/pg_password}
+  pg_dsn:
+    file: ${PG_DSN_FILE_PATH:-./secrets/examples/pg_dsn}
   embed_api_key:
     file: ${EMBED_API_KEY_FILE_PATH:-./secrets/examples/embed_api_key}
   llm_api_key:

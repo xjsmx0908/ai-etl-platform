@@ -314,7 +314,7 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	// limit (candidateLimit = TopK * 3 in the retrieval engine) and balloon both
 	// the vector search and the LLM context.
 	req.TopK = clampTopK(req.TopK)
-	allowedPermissions := allowedDocumentPermissionsForRole(access.Role)
+	allowedPermissions := AllowedPermissionsForRole(access.Role)
 	span := trace.SpanFromContext(ctx)
 
 	span.SetAttributes(
@@ -463,7 +463,7 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	req.TopK = clampTopK(req.TopK)
 
 	start := time.Now()
-	allowedPermissions := allowedDocumentPermissionsForRole(role)
+	allowedPermissions := AllowedPermissionsForRole(role)
 	retrievalResult, err := s.retriever.Retrieve(r.Context(), retrieval.Request{
 		Question:           req.Question,
 		TopK:               req.TopK,
@@ -589,7 +589,10 @@ func normalizeLLMEndpoint(raw string) string {
 	return u.String()
 }
 
-func allowedDocumentPermissionsForRole(role string) []string {
+// AllowedPermissionsForRole returns the document permission levels a role may
+// access. Unknown or missing roles fail safe to readonly (public only). It is
+// shared by query filtering and the document registry listing/detail endpoints.
+func AllowedPermissionsForRole(role string) []string {
 	normalizedRole := strings.ToLower(strings.TrimSpace(role))
 	if allowed, ok := roleAllowedDocPermissions[normalizedRole]; ok {
 		return allowed

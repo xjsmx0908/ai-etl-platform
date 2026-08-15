@@ -172,6 +172,17 @@ type Config struct {
 	S3Bucket                string
 	S3UseSSL                bool
 
+	// PostgreSQL (users, tenants, document registry)
+	// PGDSN is the connection string; supports PG_DSN_FILE via EnvSecret.
+	PGDSN string
+	// BootstrapAdmin* provision the initial admin on first startup (empty DB).
+	BootstrapAdminUsername string
+	BootstrapAdminPassword string
+	BootstrapAdminTenant   string
+	// ReconcileDocsOnStartup backfills the documents registry from Qdrant on
+	// startup (opt-in, one-shot for pre-existing data).
+	ReconcileDocsOnStartup bool
+
 	// Runtime
 	Environment string // "dev" | "staging" | "production"
 
@@ -316,6 +327,13 @@ func Load() Config {
 		S3SecretKey:             EnvSecret("S3_SECRET_KEY", "minioadmin"),
 		S3Bucket:                EnvStr("S3_BUCKET", "documents"),
 		S3UseSSL:                strings.EqualFold(EnvStr("S3_USE_SSL", "false"), "true"),
+
+		// PostgreSQL
+		PGDSN:                  EnvSecret("PG_DSN", ""),
+		BootstrapAdminUsername: EnvStr("BOOTSTRAP_ADMIN_USERNAME", "admin"),
+		BootstrapAdminPassword: EnvSecret("BOOTSTRAP_ADMIN_PASSWORD", ""),
+		BootstrapAdminTenant:   EnvStr("BOOTSTRAP_ADMIN_TENANT", "default"),
+		ReconcileDocsOnStartup: EnvBool("RECONCILE_DOCS_ON_STARTUP", false),
 
 		// Runtime
 		Environment: environment,
@@ -526,6 +544,12 @@ func (c Config) ValidateAPI() error {
 	}
 	if weakSecret(c.JWTSecret) || len(c.JWTSecret) < 32 {
 		return fmt.Errorf("JWT_SECRET must be strong in production (>=32 chars and not default value)")
+	}
+	if strings.TrimSpace(c.PGDSN) == "" {
+		return fmt.Errorf("PG_DSN is required in production")
+	}
+	if weakSecret(c.BootstrapAdminPassword) || len(c.BootstrapAdminPassword) < 12 {
+		return fmt.Errorf("BOOTSTRAP_ADMIN_PASSWORD must be strong in production (>=12 chars and not default value)")
 	}
 	if c.S3AccessKey == "minioadmin" || c.S3SecretKey == "minioadmin" {
 		return fmt.Errorf("S3 credentials must not use default values in production")

@@ -14,10 +14,12 @@ import (
 	"ai-etl-pipeline/internal/checkpoint"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/embedder"
 	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/kafka"
 	"ai-etl-pipeline/internal/metrics"
+	"ai-etl-pipeline/internal/migrations"
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/pipeline"
 	"ai-etl-pipeline/internal/prometheus"
@@ -121,8 +123,22 @@ func main() {
 	}
 	defer source.Close()
 
+	// The document registry (PostgreSQL) is optional for the worker: status
+	// write-through is best-effort and ingestion never blocks on it. Migrations
+	// are still applied so the schema exists if the API starts later.
+	var docStore docstore.Store
+	pgPool, err := migrations.Open(context.Background(), cfg.PGDSN)
+	if err != nil {
+		slog.Warn("postgres unavailable; document registry status write-through disabled", "error", err)
+	} else {
+		defer pgPool.Close()
+		docStore = docstore.New(pgPool)
+	}
+
 	// Build Pipeline
-	p := pipeline.NewWithSinks(cfg, emb, storer, fullTextSink, mc, ckpt, dlq).WithTaskStatusStore(taskStatusStore)
+	p := pipeline.NewWithSinks(cfg, emb, storer, fullTextSink, mc, ckpt, dlq).
+		WithTaskStatusStore(taskStatusStore).
+		WithDocStore(docStore)
 
 	// Start Pipeline
 	ctx, cancel := context.WithCancel(context.Background())

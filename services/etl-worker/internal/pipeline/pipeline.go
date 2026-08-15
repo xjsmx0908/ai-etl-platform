@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/parser"
@@ -21,6 +22,13 @@ import (
 )
 
 // Pipeline orchestrates concurrent document processing with panic recovery.
+// docStatusWriter is the document-registry status write surface. It is satisfied
+// by *docstore.PgStore. Status writes are best-effort: ingestion never blocks on
+// the registry.
+type docStatusWriter interface {
+	UpsertStatus(ctx context.Context, tenantID, docID string, d docstore.Document) error
+}
+
 type Pipeline struct {
 	cfg           config.Config
 	parser        *parser.Parser
@@ -32,6 +40,7 @@ type Pipeline struct {
 	checkpoint    model.CheckpointStore
 	dlq           model.DLQStore
 	taskStatus    model.TaskStatusStore
+	docStatus     docStatusWriter
 	sparseEncoder *sparse.Encoder
 
 	taskCh  chan model.TaskWithAck
@@ -68,6 +77,13 @@ func NewWithSinks(cfg config.Config, emb model.Embedder, st model.Storer, ft mod
 		sparseEncoder: sparseEnc,
 		taskCh:        make(chan model.TaskWithAck, cfg.TaskBufferSize),
 	}
+}
+
+// WithDocStore enables write-through of ingestion status to the document
+// registry (PostgreSQL). Best-effort: a failure is logged, never blocking.
+func (p *Pipeline) WithDocStore(store docStatusWriter) *Pipeline {
+	p.docStatus = store
+	return p
 }
 
 // WithTaskStatusStore enables task lifecycle status updates.
@@ -222,6 +238,21 @@ func (p *Pipeline) saveTaskStatusProgress(ctx context.Context, task model.Task, 
 	}
 	if err := p.taskStatus.Save(ctx, status); err != nil {
 		slog.Warn("task status update failed", "doc_id", task.DocID, "status", state, "error", err)
+	}
+
+	// Write-through to the document registry so the inventory mirrors durable
+	// task status. Best-effort: never blocks or fails ingestion.
+	if p.docStatus != nil {
+		if err := p.docStatus.UpsertStatus(ctx, task.TenantID, task.DocID, docstore.Document{
+			Status:      string(state),
+			Stage:       stage,
+			ChunksDone:  done,
+			ChunksTotal: total,
+			Error:       message,
+			CompletedAt: status.CompletedAt,
+		}); err != nil {
+			slog.Warn("document registry status update failed", "doc_id", task.DocID, "status", state, "error", err)
+		}
 	}
 }
 

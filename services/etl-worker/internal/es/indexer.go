@@ -67,11 +67,32 @@ func (i *HTTPIndexer) DeleteByDocID(ctx context.Context, docID string) error {
 	if strings.TrimSpace(docID) == "" {
 		return fmt.Errorf("doc_id is required")
 	}
-	body, err := json.Marshal(map[string]interface{}{
-		"query": map[string]interface{}{
-			"term": map[string]string{"doc_id": docID},
+	return i.deleteByQuery(ctx, map[string]interface{}{
+		"term": map[string]string{"doc_id": docID},
+	})
+}
+
+// DeleteByDocIDAndTenant removes ES documents for a doc_id scoped to a tenant.
+// The tenant_id term closes the same cross-tenant deletion bug as in Qdrant.
+func (i *HTTPIndexer) DeleteByDocIDAndTenant(ctx context.Context, tenantID, docID string) error {
+	if strings.TrimSpace(tenantID) == "" {
+		return fmt.Errorf("tenant_id is required")
+	}
+	if strings.TrimSpace(docID) == "" {
+		return fmt.Errorf("doc_id is required")
+	}
+	return i.deleteByQuery(ctx, map[string]interface{}{
+		"bool": map[string]interface{}{
+			"must": []map[string]interface{}{
+				{"term": map[string]string{"tenant_id": tenantID}},
+				{"term": map[string]string{"doc_id": docID}},
+			},
 		},
 	})
+}
+
+func (i *HTTPIndexer) deleteByQuery(ctx context.Context, query map[string]interface{}) error {
+	body, err := json.Marshal(map[string]interface{}{"query": query})
 	if err != nil {
 		return fmt.Errorf("marshal es delete query: %w", err)
 	}
