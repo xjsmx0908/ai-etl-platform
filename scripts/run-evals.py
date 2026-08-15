@@ -1070,6 +1070,11 @@ def main() -> int:
 
     golden_set_path = Path(args.golden_set)
     report_dir = Path(args.report_dir)
+    # Pre-create the report dir as the running user BEFORE docker compose up: the
+    # web service mounts docs/evals/reports (ro) as a volume, and Docker creates
+    # a missing mount source as root — which would make this directory unwritable
+    # by the non-root CI user later.
+    report_dir.mkdir(parents=True, exist_ok=True)
     if not golden_set_path.exists():
         raise EvalRunnerError(f"golden set not found: {golden_set_path}")
 
