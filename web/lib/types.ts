@@ -155,4 +155,7 @@ export type AgentRun = {
 };
 
 export type HealthService = { status: string; latency_ms: number };
-export type Health = Record<string, HealthService>;
+export type Health = {
+  overall: string;
+  services: Record<string, HealthService>;
+};

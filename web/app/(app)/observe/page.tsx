@@ -29,7 +29,7 @@ export default function ObservePage() {
     };
   }, []);
 
-  const entries = health ? Object.entries(health) : [];
+  const entries = health?.services ? Object.entries(health.services) : [];
   const upCount = entries.filter(([, h]) => h.status === "up").length;
   const degradedCount = entries.filter(([, h]) => h.status === "degraded").length;
   const downCount = entries.length - upCount - degradedCount;
