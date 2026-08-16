@@ -260,6 +260,10 @@ def compose_env(
     if profile.is_real:
         env.pop("EMBED_API_KEY_FILE", None)
         env.pop("LLM_API_KEY_FILE", None)
+    else:
+        # Mock mode: the verifier LLM is deterministic and never emits a grounded
+        # verdict, so disable the post-generation check to keep CI deterministic.
+        env["RETRIEVAL_GROUNDING_CHECK"] = "false"
     return env
 
 
@@ -871,6 +875,27 @@ def load_cases(path: Path) -> List[EvalCase]:
     return out
 
 
+def summarize_dist(values: Sequence[float]) -> Dict[str, Any]:
+    """Percentile summary of a score distribution for gate-separability analysis."""
+    vals = sorted(float(v) for v in values)
+    if not vals:
+        return {"count": 0}
+    n = len(vals)
+
+    def pct(p: float) -> float:
+        return vals[min(n - 1, max(0, int(p * n)))]
+
+    return {
+        "count": n,
+        "min": round(vals[0], 4),
+        "p25": round(pct(0.25), 4),
+        "median": round(pct(0.5), 4),
+        "p75": round(pct(0.75), 4),
+        "max": round(vals[-1], 4),
+        "mean": round(sum(vals) / n, 4),
+    }
+
+
 def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
     report_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
@@ -1226,6 +1251,8 @@ def main() -> int:
         judge_faithfulness_scores: List[int] = []
         judge_correctness_scores: List[int] = []
         judge_relevance_scores: List[int] = []
+        positive_max_relevance: List[float] = []
+        negative_max_relevance: List[float] = []
 
         for idx, case in enumerate(cases, start=1):
             print(f"[eval] {idx}/{len(cases)} upload {case.case_id}")
@@ -1306,6 +1333,15 @@ def main() -> int:
                 except JudgeError as exc:
                     judge_errors += 1
                     judge_error = str(exc)
+            # Observational relevance signals for gate-separability analysis.
+            retrieval_info = (payload or {}).get("retrieval") or {}
+            max_relevance = float(retrieval_info.get("max_relevance", 0.0) or 0.0)
+            candidate_count = int(retrieval_info.get("candidate_count", 0) or 0)
+            if case.expect_hit:
+                positive_max_relevance.append(max_relevance)
+            else:
+                negative_max_relevance.append(max_relevance)
+
             retrieval_pass = bool(details["assertion_pass"])
             answer_pass = bool(answer_details["answer_assertion_pass"])
             final_pass = retrieval_pass and answer_pass
@@ -1385,6 +1421,12 @@ def main() -> int:
                     "recall_at_3": details["recall_at_3"],
                     "recall_at_5": details["recall_at_5"],
                     "source_count": len((payload or {}).get("sources") or []),
+                    "max_relevance": max_relevance,
+                    "candidate_count": candidate_count,
+                    "grounding_checked": bool(retrieval_info.get("grounding_checked", False)),
+                    "grounding_passed": bool(retrieval_info.get("grounding_passed", True)),
+                    "answer": str((payload or {}).get("answer") or "")[:600],
+                    "source_doc_ids": [str(s.get("doc_id", "")) for s in (payload or {}).get("sources") or []],
                     "judge": judge_details,
                     "judge_error": judge_error,
                 }
@@ -1483,6 +1525,8 @@ def main() -> int:
                 "judge_avg_relevance": avg_judge_relevance,
                 "judge_threshold_pass_rate": args.judge_min_pass_rate,
                 "judge_threshold_faithfulness": args.judge_min_faithfulness,
+                "positive_max_relevance_dist": summarize_dist(positive_max_relevance),
+                "negative_max_relevance_dist": summarize_dist(negative_max_relevance),
             },
             "cases": eval_items,
         }
