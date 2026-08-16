@@ -40,7 +40,13 @@ Status: planned
    - sem-014 根因确认：其 query 问权限机制，被 user **合法可见**的 internal 规则文档（sem-006「三个可见级别」）合理回答（答案逐字复述 sem-006），grounding 判 supported 正确 → **评测数据缺陷非系统缺陷**。已把 query 改为「项目机密资料涉及的项目成员名单是什么？」（指向机密实体，与可见文档 max 相似度 0.429，避开 sem-006）。
    - 验证（bge-m3 语义集）：6/6 负例拒答（含修正后 sem-014），正例 hit_rate 0.921 不降；剩余 3 失败（sem-002/013/033）为既有 `retrieval:timeout` 检索噪声。
    - mock 验证（2026-08-16）：mock 语义集负例 6/6 仍失败，且 **确定性候选规则对 mock 不可行**——mock 的 hash relevance 在 0.5 处饱和（正例 median 与负例 5/6 均恰为 0.5，无分离阈值），mock LLM 输出固定模板（「基于参考文档回答」）不遵循拒答。mock 负例拒答属 mock 语义能力边界（mock 仅验链路，CLAUDE.md 明示其指标非质量证据），不作为质量门禁；CI 门禁（golden-set 锚点集，--min-hit-rate/pass-rate/answer-pass-rate 0.90）不受影响。
-1. **文档搜索/详情深化**：全文/元数据检索、chunk 级详情。
+1. **文档搜索/详情深化（已交付 2026-08-16）**：
+   - `GET /v1/documents/search?q=`：ES BM25 全文检索聚合到文档级（tenant+permission 过滤，docstore 富化 file_name/status，bestScore 排序；ES 关闭 → 503）。
+   - `GET /v1/documents/{docID}/chunks`：Qdrant scroll 按 doc+tenant+permission 返回全部切块（content/index/metadata，按 index 排序）；权限复用 `permissionAllowed`（跨租户/无权限 404）。store 层 `QdrantStorer.ListChunksByDoc`。
+   - 前端：文档详情页 `/documents/[id]`（元数据卡片 + chunks 手风琴，复用问答页引用展开模式）；列表页内容检索框 + 详情链接；apiClient/types/代理路由。
+   - 顺带修复：`parseUploadMetadata` 空 metadata 返回 nil → PG NOT NULL 违反（任何不带 metadata 的上传都会失败）→ 返回空 map。
+   - 测试：store 3 + handler 8 单测、web build、e2e-smoke（search/chunks 断言）全通过。
+   - e2e-smoke 加固：改为独立 compose project `ai-etl-smoke` + 独立端口（eval override 隐藏后端端口 + smoke override 仅暴露 query-api:8081）+ BOOTSTRAP admin 建在上传同租户。**原因：cleanup `down -v` 曾删掉共享主栈 volumes（数据丢失）**。
 2. **前端硬化**：HttpOnly cookie 复核、`/v1/query` retrieval 元数据进文档详情。
 
 ## 2026-08-08 - AI Engineer Roadmap
