@@ -58,6 +58,9 @@ export async function POST(req: NextRequest) {
     sameSite: "lax",
     path: "/",
     secure: process.env.NODE_ENV === "production",
+    // Match the token TTL so the cookie does not silently expire mid-session
+    // while the (still valid) token lives on, and vice versa.
+    maxAge: 24 * 60 * 60,
   });
   return res;
 }

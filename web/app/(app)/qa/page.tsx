@@ -30,6 +30,17 @@ function isHighConfidence(maxRelevance?: number): boolean {
   return (maxRelevance ?? 0) > 0.7;
 }
 
+// Post-generation faithfulness verdict. The grounding check only runs in the
+// ambiguous relevance band; a blocked answer was replaced with the fixed
+// refusal sentence because its claims were not traceable to the sources.
+function groundingLabel(retrieval?: AnswerMeta["retrieval"]): { value: string; highlight: boolean } {
+  if (!retrieval) return { value: "—", highlight: false };
+  if (!retrieval.grounding_checked) return { value: "未触发", highlight: false };
+  return retrieval.grounding_passed
+    ? { value: "通过（可溯源）", highlight: true }
+    : { value: "拦截（无据拒答）", highlight: true };
+}
+
 function Row({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -179,6 +190,11 @@ export default function QaPage() {
                   label="证据置信度"
                   value={confidenceLabel(meta.retrieval?.max_relevance)}
                   highlight={isHighConfidence(meta.retrieval?.max_relevance)}
+                />
+                <Row
+                  label="忠实度校验"
+                  value={groundingLabel(meta.retrieval).value}
+                  highlight={groundingLabel(meta.retrieval).highlight}
                 />
                 <Row label="检索耗时" value={meta.retrieval ? `${meta.retrieval.duration_ms}ms` : "—"} />
               </dl>

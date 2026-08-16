@@ -105,6 +105,8 @@ export type RetrievalInfo = {
   candidate_count: number;
   duration_ms: number;
   max_relevance?: number;
+  grounding_checked?: boolean;
+  grounding_passed?: boolean;
 };
 
 export type TokenUsage = {
