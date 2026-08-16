@@ -34,8 +34,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen bg-slate-50">
       <aside className="flex w-56 shrink-0 flex-col border-r border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-5 py-4">
-          <h1 className="text-base font-semibold text-slate-900">AI-ETL 企业知识库</h1>
-          <p className="mt-0.5 text-xs text-slate-500">企业文档知识问答平台</p>
+          <h1 className="text-base font-semibold text-slate-900">知境 · 企业知识库</h1>
+          <p className="mt-0.5 text-xs text-slate-500">企业智能知识平台</p>
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-4">
           {items.map((item) => {
@@ -72,7 +72,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6">
-          <span className="text-sm text-slate-500">企业文档知识问答平台</span>
+          <span className="text-sm text-slate-500">企业智能知识平台</span>
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-700">{user?.username || ""}</span>
             <button
