@@ -1,5 +1,16 @@
 # Backlog
 
+## 2026-08-16 - 系统真实感改造：知境（已交付）
+
+Status: implemented
+
+面试演示系统的"demo 感"（空文档 + 自指产品语料 + 泛化品牌）改为真实企业在用的 RAG 系统：
+
+1. **真实业务语料**：`docs/corpora/enterprise-kb.json` ——「中科智远科技有限公司」企业知识库 44 篇（internal 33 / confidential 4 / public 7），覆盖人力资源（员工手册/年假/考勤/报销/招聘/绩效/薪酬保密）、财务（预算/差旅标准/审批权限/经营目标）、法务合同（审批/签署权限/保密协议/知识产权）、采购（办法/招标/供应商）、项目管理（立项/里程碑/风险/验收）、信息安全（密码/数据分级/应急）、行政、产品技术（发布/选型/代码评审/API/路线图）。doc_id 编号风格（HR-2024-003）、content 真实制度风格（条款/金额/天数/流程）。经 `load-corpus.py --source` 灌入主栈（admin，default 租户）。
+2. **品牌化「知境」**：`web/app/layout.tsx`、`web/app/login/page.tsx`、`web/components/AppShell.tsx` 由「AI-ETL 企业知识库」改为「知境 · 企业知识库 / 企业智能知识平台」。
+3. **权限隔离演示**：interviewer（user 角色）可见 40 篇（public+internal，无 confidential）；confidential 4 篇（薪酬/经营目标/合同签署/产品路线图）仅 admin。实测 interviewer `/v1/users` 403。
+4. **业务问答**：基于真实语料回答（如「员工年假天数」→ 引用《员工年假管理制度》）。
+
 ## 2026-08-15 - 企业级改造 Phase 1（已交付）
 
 Status: implemented
