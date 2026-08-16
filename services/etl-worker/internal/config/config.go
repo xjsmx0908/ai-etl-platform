@@ -101,8 +101,22 @@ type Config struct {
 	// unrelated same-tenant chunks; without this gate the LLM answers from them.
 	// 0 disables the gate. Only Qdrant cosine scores are compared against it —
 	// BM25 is unbounded and corpus-dependent, so it shares no threshold.
-	RetrievalMinRelevance   float64
-	RerankEndpoint          string
+	RetrievalMinRelevance float64
+	// RetrievalGroundingCheck enables a post-generation faithfulness check that
+	// verifies the answer's claims are traceable to the retrieved sources.
+	// Score thresholds alone cannot separate a weak-but-grounded positive from an
+	// ungrounded fabrication on low-resolution embeddings (bge-m3 max_relevance
+	// is 0.5 for 26/38 real positives AND for the failing negative), so the
+	// ambiguous relevance band is decided by an explicit verifier call instead.
+	RetrievalGroundingCheck bool
+	// RetrievalGroundingLowBound is the bottom of the ambiguous relevance band.
+	// Candidates at or below this are handled by RetrievalMinRelevance (or no
+	// evidence); candidates above it are trusted without a verifier call.
+	RetrievalGroundingLowBound float64
+	// RetrievalGroundingHighBound is the top of the ambiguous relevance band.
+	// Candidates above this are high-confidence hits and skip the verifier.
+	RetrievalGroundingHighBound float64
+	RerankEndpoint              string
 	RerankAPIKey            string
 	RerankModel             string
 	SemanticCacheEnabled    bool
@@ -262,8 +276,11 @@ func Load() Config {
 		RetrievalEnableRerank:      EnvBool("RETRIEVAL_ENABLE_RERANK", false),
 		RetrievalRerankPolicy:      strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
 		RetrievalExactSchemaFields: EnvCSV("RETRIEVAL_EXACT_SCHEMA_FIELDS", DefaultRetrievalExactSchemaFields),
-		RetrievalMinRelevance:      EnvFloat("RETRIEVAL_MIN_RELEVANCE", 0),
-		RerankEndpoint:             EnvStr("RERANK_ENDPOINT", ""),
+		RetrievalMinRelevance:       EnvFloat("RETRIEVAL_MIN_RELEVANCE", 0),
+		RetrievalGroundingCheck:     EnvBool("RETRIEVAL_GROUNDING_CHECK", true),
+		RetrievalGroundingLowBound:  EnvFloat("RETRIEVAL_GROUNDING_LOW_BOUND", 0.45),
+		RetrievalGroundingHighBound: EnvFloat("RETRIEVAL_GROUNDING_HIGH_BOUND", 0.70),
+		RerankEndpoint:              EnvStr("RERANK_ENDPOINT", ""),
 		RerankAPIKey:               EnvSecret("RERANK_API_KEY", ""),
 		RerankModel:                EnvStr("RERANK_MODEL", "bge-reranker-base"),
 		SemanticCacheEnabled:       EnvBool("SEMANTIC_CACHE_ENABLED", true),
@@ -413,6 +430,10 @@ func (c Config) Validate() error {
 	}
 	if c.RetrievalMinRelevance < 0 || c.RetrievalMinRelevance > 1 {
 		return fmt.Errorf("RETRIEVAL_MIN_RELEVANCE must be between 0 and 1, got %v", c.RetrievalMinRelevance)
+	}
+	if c.RetrievalGroundingLowBound >= c.RetrievalGroundingHighBound {
+		return fmt.Errorf("RETRIEVAL_GROUNDING_LOW_BOUND (%v) must be < RETRIEVAL_GROUNDING_HIGH_BOUND (%v)",
+			c.RetrievalGroundingLowBound, c.RetrievalGroundingHighBound)
 	}
 	if c.RetrievalFinalTopK < 1 || c.RetrievalFinalTopK > 100 {
 		return fmt.Errorf("RETRIEVAL_FINAL_TOP_K must be between 1 and 100, got %d", c.RetrievalFinalTopK)

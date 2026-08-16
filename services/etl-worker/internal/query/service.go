@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -106,7 +107,14 @@ type RetrievalInfo struct {
 	// embedding (distributions overlap heavily — see ADR 0006), so the demo shows
 	// this as evidence confidence instead of silently gating on it.
 	MaxRelevance  float64  `json:"max_relevance,omitempty"`
-	PartialErrors []string `json:"partial_errors,omitempty"`
+	// GroundingChecked reports whether the post-generation faithfulness check ran
+	// on this answer (only queries in the ambiguous relevance band).
+	GroundingChecked bool `json:"grounding_checked,omitempty"`
+	// GroundingPassed reports whether the verifier found the answer supported by
+	// the retrieved sources. False with GroundingChecked true means the answer
+	// was blocked and replaced with the fixed refusal sentence.
+	GroundingPassed bool `json:"grounding_passed,omitempty"`
+	PartialErrors   []string `json:"partial_errors,omitempty"`
 }
 
 // TokenUsage carries provider-reported token consumption for one answer.
@@ -398,6 +406,38 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		}, nil
 	}
 
+	// Post-generation faithfulness check. The relevance band is ambiguous: on
+	// bge-m3, 26/38 real positives hit at max_relevance=0.5 and the failing
+	// negative also scores 0.5, so no threshold separates them. When the top
+	// candidate sits in the ambiguous band, ask a verifier whether the answer
+	// is actually supported by the retrieved sources before shipping it.
+	groundingChecked := false
+	groundingPassed := true
+	if s.cfg.RetrievalGroundingCheck && len(sources) > 0 {
+		maxRel := maxSourceRelevance(candidates)
+		if maxRel >= s.cfg.RetrievalGroundingLowBound && maxRel < s.cfg.RetrievalGroundingHighBound {
+			groundingChecked = true
+			ok, gerr := s.groundingCheck(ctx, req.Question, answer, sources)
+			if gerr != nil {
+				slog.Warn("grounding check failed; passing answer through", "error", gerr)
+			} else {
+				groundingPassed = ok
+			}
+		}
+	}
+	if groundingChecked && !groundingPassed {
+		span.SetAttributes(attribute.Bool("llm.ungrounded_answer_blocked", true))
+		info := retrievalInfoFromResult(retrievalResult, len(candidates))
+		info.GroundingChecked = true
+		info.GroundingPassed = false
+		return Response{
+			Answer:    NoEvidenceAnswer,
+			Sources:   []SourceContext{},
+			Duration:  time.Since(start).String(),
+			Retrieval: info,
+		}, nil
+	}
+
 	var tokenUsage *TokenUsage
 	if usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
 		tokenUsage = &TokenUsage{
@@ -407,13 +447,17 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		}
 	}
 
+	retrievalInfo := retrievalInfoFromResult(retrievalResult, len(candidates))
+	retrievalInfo.GroundingChecked = groundingChecked
+	retrievalInfo.GroundingPassed = groundingPassed
+
 	resp := Response{
 		Answer:        answer,
 		Sources:       sources,
 		Duration:      time.Since(start).String(),
 		TokenUsage:    tokenUsage,
 		PromptVersion: s.promptVersion,
-		Retrieval:     retrievalInfoFromResult(retrievalResult, len(candidates)),
+		Retrieval:     retrievalInfo,
 	}
 
 	slog.Info("query completed",
@@ -931,12 +975,7 @@ func retrievalInfoFromResult(r retrieval.Result, candidateCount int) *RetrievalI
 	if r.Route.UseElastic {
 		backends = append(backends, "elasticsearch")
 	}
-	var maxRelevance float64
-	for _, c := range r.Sources {
-		if c.RelevanceSource == retrieval.SourceQdrant && c.Relevance > maxRelevance {
-			maxRelevance = c.Relevance
-		}
-	}
+	maxRelevance := maxSourceRelevance(r.Sources)
 	return &RetrievalInfo{
 		Strategy:       string(r.Route.Strategy),
 		CacheHit:       r.CacheHit,
@@ -946,6 +985,85 @@ func retrievalInfoFromResult(r retrieval.Result, candidateCount int) *RetrievalI
 		MaxRelevance:   maxRelevance,
 		PartialErrors:  r.PartialErrors,
 	}
+}
+
+// maxSourceRelevance returns the highest Qdrant cosine score among candidates.
+func maxSourceRelevance(candidates []retrieval.Candidate) float64 {
+	var maxRel float64
+	for _, c := range candidates {
+		if c.RelevanceSource == retrieval.SourceQdrant && c.Relevance > maxRel {
+			maxRel = c.Relevance
+		}
+	}
+	return maxRel
+}
+
+// maxGroundingContextChars caps how much retrieved context is sent to the
+// verifier so a long context cannot inflate the second LLM call.
+const maxGroundingContextChars = 8000
+
+// groundingSystemPrompt instructs the verifier to judge whether an answer's
+// claims are traceable to the retrieved documents. It is deliberately strict
+// about numbers and novel facts, and lenient about paraphrase and translation.
+const groundingSystemPrompt = `你是严格的证据校验器。判断「回答」中的关键断言（事实、数字、专有名词、具体结论）是否都能在「参考文档」中找到明确支持。
+严禁使用你对世界的常识——即使回答在常识上合理，只要文档中没有明确出现，就必须判 false。
+判定规则：
+- 文档中明确存在该事实或数字 → supported=true
+- 回答是对文档的忠实概括或翻译，且不新增文档外信息 → supported=true
+- 回答包含文档中没有的数字、事实或结论（哪怕看似合理）→ supported=false
+- 回答基于常识补充了文档没有的内容 → supported=false
+示例：
+文档：「系统每天最多查询 200 次」 回答：「每天最多可查询 200 次」→ true
+文档：「系统每天最多查询 200 次」 回答：「查询上限是 500 次」→ false（数字 500 不在文档）
+文档：「支持 PDF 格式上传」 回答：「用户需要管理员审批才能上传」→ false（审批不在文档）
+只输出 JSON：{"supported": true} 或 {"supported": false}`
+
+// groundingCheck asks a verifier model whether answer is supported by sources.
+// It returns (true, nil) when supported, (false, nil) when the answer contains
+// claims not traceable to the sources, and an error when the verifier itself
+// fails (callers decide how to handle a failed verification).
+func (s *Service) groundingCheck(ctx context.Context, question, answer string, sources []SourceContext) (bool, error) {
+	var contextBuilder bytes.Buffer
+	for _, src := range sources {
+		fmt.Fprintf(&contextBuilder, "<document doc_id=%q>\n%s\n</document>\n\n", src.DocID, src.Content)
+	}
+	docs := contextBuilder.String()
+	if len(docs) > maxGroundingContextChars {
+		docs = docs[:maxGroundingContextChars]
+	}
+
+	messages := []map[string]string{
+		{"role": "system", "content": groundingSystemPrompt},
+		{"role": "user", "content": fmt.Sprintf(
+			"参考文档：\n%s\n\n用户问题：%s\n\n回答：%s",
+			docs, question, answer,
+		)},
+	}
+	reqBody := map[string]interface{}{
+		"model":       s.llmModel,
+		"messages":    messages,
+		"max_tokens":  64,
+		"temperature": 0,
+	}
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return false, fmt.Errorf("marshal grounding prompt: %w", err)
+	}
+	result, err := s.callLLM(ctx, data)
+	if err != nil {
+		return false, err
+	}
+	return parseGroundingVerdict(result.Content)
+}
+
+// parseGroundingVerdict extracts the supported boolean from a verifier response
+// that may include markdown fences or surrounding prose.
+func parseGroundingVerdict(content string) (bool, error) {
+	m := regexp.MustCompile(`(?i)"supported"\s*:\s*(true|false)`).FindStringSubmatch(content)
+	if len(m) != 2 {
+		return false, fmt.Errorf("no supported verdict in verifier response: %.200s", content)
+	}
+	return strings.EqualFold(m[1], "true"), nil
 }
 
 func sourceContextsFromCandidates(candidates []retrieval.Candidate) []SourceContext {
