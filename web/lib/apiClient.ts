@@ -4,6 +4,8 @@ import type {
   AuditEntry,
   AuditListResponse,
   Document,
+  DocumentChunksResponse,
+  DocumentSearchResult,
   DocumentsResponse,
   Health,
   LoginResponse,
@@ -96,6 +98,18 @@ export async function listDocuments(params: ListDocumentsParams = {}): Promise<D
 
 export async function getDocument(id: string): Promise<Document> {
   return request<Document>(`/documents/${encodeURIComponent(id)}`);
+}
+
+export async function getDocumentChunks(id: string): Promise<DocumentChunksResponse> {
+  return request<DocumentChunksResponse>(`/documents/${encodeURIComponent(id)}/chunks`);
+}
+
+export async function searchDocuments(
+  q: string,
+  limit = 100
+): Promise<{ total: number; items: DocumentSearchResult[] }> {
+  const sp = new URLSearchParams({ q, limit: String(limit) });
+  return request(`/documents/search?${sp.toString()}`);
 }
 
 export async function deleteDocument(id: string): Promise<void> {
@@ -280,6 +294,8 @@ export const apiClient = {
   logout,
   listDocuments,
   getDocument,
+  getDocumentChunks,
+  searchDocuments,
   deleteDocument,
   uploadDocument,
   getTaskStatus,

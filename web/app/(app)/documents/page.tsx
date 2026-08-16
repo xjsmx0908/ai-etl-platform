@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
-import type { Document } from "@/lib/types";
+import type { Document, DocumentSearchResult } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "排队中",
@@ -50,6 +51,10 @@ export default function DocumentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [searchResults, setSearchResults] = useState<DocumentSearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -90,6 +95,22 @@ export default function DocumentsPage() {
       setError((e as Error).message || "删除失败");
     } finally {
       setDeleting(null);
+    }
+  };
+
+  const onContentSearch = async () => {
+    const q = searchInput.trim();
+    if (!q) return;
+    setSearching(true);
+    setSearchError("");
+    try {
+      const data = await apiClient.searchDocuments(q);
+      setSearchResults(data.items);
+    } catch (e) {
+      setSearchError((e as Error).message || "内容搜索失败");
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
     }
   };
 
@@ -147,6 +168,59 @@ export default function DocumentsPage() {
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
 
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <label className="mb-1 block text-xs font-medium text-slate-500">内容全文检索（对文档正文）</label>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void onContentSearch();
+          }}
+          className="flex gap-2"
+        >
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="输入正文关键词，如「pipeline」"
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <button
+            type="submit"
+            className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+          >
+            内容搜索
+          </button>
+        </form>
+        {searchError && <p className="mt-2 text-xs text-red-600">{searchError}</p>}
+        {searching && <p className="mt-2 text-xs text-slate-400">搜索中…</p>}
+        {searchResults !== null && !searching && (
+          <div className="mt-3 space-y-2">
+            {searchResults.length === 0 ? (
+              <p className="text-xs text-slate-400">未找到匹配文档</p>
+            ) : (
+              searchResults.map((r) => (
+                <div key={r.doc_id} className="rounded-lg border border-slate-100 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link href={`/documents/${r.doc_id}`} className="text-sm font-medium text-blue-600 hover:underline">
+                      {r.file_name}
+                    </Link>
+                    <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                      {PERMISSION_LABELS[r.permission] || r.permission}
+                    </span>
+                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${statusChip(r.status)}`}>
+                      {STATUS_LABELS[r.status] || r.status}
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      命中 {r.hit_count} 段 · 相关度 {r.best_score.toFixed(4)}
+                    </span>
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-xs text-slate-600">{r.snippet}</p>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-500">文档列表</h2>
@@ -174,8 +248,16 @@ export default function DocumentsPage() {
               <tbody className="divide-y divide-slate-100">
                 {items.map((doc) => (
                   <tr key={doc.doc_id} className="hover:bg-slate-50/60">
-                    <td className="px-4 py-2.5 font-mono text-xs text-blue-600">{doc.doc_id}</td>
-                    <td className="px-4 py-2.5 text-slate-700">{doc.file_name}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-blue-600">
+                      <Link href={`/documents/${doc.doc_id}`} className="hover:underline">
+                        {doc.doc_id}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-700">
+                      <Link href={`/documents/${doc.doc_id}`} className="hover:text-blue-600 hover:underline">
+                        {doc.file_name}
+                      </Link>
+                    </td>
                     <td className="px-4 py-2.5">
                       <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
                         {PERMISSION_LABELS[doc.permission] || doc.permission}

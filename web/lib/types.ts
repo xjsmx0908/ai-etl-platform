@@ -44,6 +44,29 @@ export type DocumentsResponse = {
   offset: number;
 };
 
+export type DocumentChunk = {
+  chunk_id: string;
+  index: number;
+  content: string;
+  metadata?: Record<string, string>;
+};
+
+export type DocumentChunksResponse = {
+  doc_id: string;
+  total: number;
+  items: DocumentChunk[];
+};
+
+export type DocumentSearchResult = {
+  doc_id: string;
+  file_name: string;
+  permission: DocumentPermission;
+  status: string;
+  hit_count: number;
+  snippet: string;
+  best_score: number;
+};
+
 export type AuditEntry = {
   actor_user_id: string;
   actor_role: string;
