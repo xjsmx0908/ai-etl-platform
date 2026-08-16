@@ -57,7 +57,11 @@ export async function POST(req: NextRequest) {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    secure: process.env.NODE_ENV === "production",
+    // Secure only when explicitly enabled: a production build served over plain
+    // HTTP (e.g. http://host:3100) must NOT set Secure, or the browser drops the
+    // cookie and every authenticated request 401s back to /login. HTTPS
+    // deployments set COOKIE_SECURE=true.
+    secure: process.env.COOKIE_SECURE === "true",
     // Match the token TTL so the cookie does not silently expire mid-session
     // while the (still valid) token lives on, and vice versa.
     maxAge: 24 * 60 * 60,
