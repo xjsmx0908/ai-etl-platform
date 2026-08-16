@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/query"
+	"ai-etl-pipeline/internal/retrieval"
+	"ai-etl-pipeline/internal/store"
 )
 
 type documentView struct {
@@ -186,6 +190,179 @@ func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjec
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	}
+}
+
+// documentChunkLister reads a document's chunks from the vector store.
+type documentChunkLister interface {
+	ListChunksByDoc(ctx context.Context, tenantID, docID string, allowedPermissions []string) ([]store.StoredChunk, error)
+}
+
+type chunkView struct {
+	ChunkID  string            `json:"chunk_id"`
+	Index    int               `json:"index"`
+	Content  string            `json:"content"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// handleDocumentChunks serves GET /v1/documents/{docID}/chunks: the chunks of a
+// single document, tenant- and permission-scoped exactly like the registry
+// detail (missing/cross-tenant/not-allowed all 404).
+func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		docID := r.PathValue("docID")
+		if docID == "" {
+			writeError(w, http.StatusBadRequest, "doc_id is required")
+			return
+		}
+		tenantID := auth.GetTenantID(r.Context())
+		if tenantID == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		doc, found, err := docs.Get(r.Context(), tenantID, docID)
+		if err != nil {
+			slog.Error("document lookup failed", "doc_id", docID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if !found || !permissionAllowed(auth.GetPermission(r.Context()), doc.Permission) {
+			writeError(w, http.StatusNotFound, "document not found")
+			return
+		}
+		allowed := query.AllowedPermissionsForRole(auth.GetPermission(r.Context()))
+		list, err := chunks.ListChunksByDoc(r.Context(), tenantID, docID, allowed)
+		if err != nil {
+			slog.Error("chunk listing failed", "doc_id", docID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		items := make([]chunkView, 0, len(list))
+		for _, c := range list {
+			items = append(items, chunkView{ChunkID: c.ChunkID, Index: c.Index, Content: c.Content, Metadata: c.Metadata})
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"doc_id": docID,
+			"total":  len(items),
+			"items":  items,
+		})
+	}
+}
+
+// documentSearcher searches indexed chunk content (ES BM25, tenant+permission
+// filtered). The existing ElasticRetriever implements it.
+type documentSearcher interface {
+	Search(ctx context.Context, req retrieval.SearchRequest) ([]retrieval.Candidate, error)
+}
+
+type documentSearchResultView struct {
+	DocID      string  `json:"doc_id"`
+	FileName   string  `json:"file_name"`
+	Permission string  `json:"permission"`
+	Status     string  `json:"status"`
+	HitCount   int     `json:"hit_count"`
+	Snippet    string  `json:"snippet"`
+	BestScore  float64 `json:"best_score"`
+}
+
+// handleDocumentSearch serves GET /v1/documents/search?q=: full-text content
+// search over indexed chunks, aggregated to document level. Requires ES to be
+// enabled; enrichment comes from the tenant-scoped registry.
+func handleDocumentSearch(cfg config.Config, docs docstore.Store, searcher documentSearcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		if q == "" {
+			writeError(w, http.StatusBadRequest, "q is required")
+			return
+		}
+		if !cfg.RetrievalEnableES {
+			writeError(w, http.StatusServiceUnavailable, "full-text search disabled")
+			return
+		}
+		tenantID := auth.GetTenantID(r.Context())
+		if tenantID == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		role := auth.GetPermission(r.Context())
+		limit := searchLimit(r.URL.Query().Get("limit"))
+
+		candidates, err := searcher.Search(r.Context(), retrieval.SearchRequest{
+			Question:           q,
+			Limit:              limit,
+			TenantID:           tenantID,
+			AllowedPermissions: query.AllowedPermissionsForRole(role),
+			ExactSchemaFields:  cfg.RetrievalExactSchemaFields,
+		})
+		if err != nil {
+			slog.Error("document search failed", "q", q, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		// Aggregate chunk candidates by document.
+		byDoc := map[string]*documentSearchResultView{}
+		for _, c := range candidates {
+			v := byDoc[c.DocID]
+			if v == nil {
+				v = &documentSearchResultView{DocID: c.DocID}
+				byDoc[c.DocID] = v
+			}
+			v.HitCount++
+			if c.Score > v.BestScore {
+				v.BestScore = c.Score
+				if c.Content != "" {
+					v.Snippet = c.Content
+				}
+			}
+		}
+
+		// Enrich with registry metadata; skip docs not present in this tenant.
+		results := make([]documentSearchResultView, 0, len(byDoc))
+		for docID, v := range byDoc {
+			doc, found, err := docs.Get(r.Context(), tenantID, docID)
+			if err != nil {
+				slog.Warn("document enrichment failed", "doc_id", docID, "error", err)
+				continue
+			}
+			if !found {
+				continue
+			}
+			v.FileName = doc.FileName
+			v.Permission = doc.Permission
+			v.Status = doc.Status
+			results = append(results, *v)
+		}
+		sort.Slice(results, func(i, j int) bool { return results[i].BestScore > results[j].BestScore })
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"q":     q,
+			"total": len(results),
+			"items": results,
+		})
+	}
+}
+
+// searchLimit parses a request limit for content search, defaulting to 100 and
+// capping at 200 (wider than the registry page size of 100).
+func searchLimit(s string) int {
+	if s == "" {
+		return 100
+	}
+	if n, err := strconv.Atoi(s); err == nil && n > 0 {
+		if n > 200 {
+			return 200
+		}
+		return n
+	}
+	return 100
 }
 
 // deleteDocument removes the registry row and everything derived from it. The

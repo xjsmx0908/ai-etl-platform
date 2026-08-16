@@ -35,6 +35,7 @@ import (
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/prometheus"
 	"ai-etl-pipeline/internal/query"
+	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/s3"
 	"ai-etl-pipeline/internal/store"
 	"ai-etl-pipeline/internal/taskstatus"
@@ -274,6 +275,22 @@ func main() {
 	// the role→permission matrix); DELETE checks upload scope in-handler.
 	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore)))
 	apiV1.Handle("/v1/documents/", http.HandlerFunc(handleDocument(cfg, qs, s3Client, docStore, auditStore)))
+	// Document content search (ES BM25) and chunk-level detail (Qdrant). Both use
+	// long-lived clients: a per-request storer would re-run ensureCollection on
+	// every call.
+	esRetriever := retrieval.NewElasticRetriever(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, &http.Client{Timeout: 15 * time.Second})
+	apiV1.Handle("/v1/documents/search", http.HandlerFunc(handleDocumentSearch(cfg, docStore, esRetriever)))
+	var chunksHandler http.Handler
+	if chunkStorer, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension); err != nil {
+		slog.Warn("qdrant storer for chunk detail failed", "error", err)
+		chunksHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, http.StatusServiceUnavailable, "vector store unavailable")
+		})
+	} else {
+		defer chunkStorer.Close()
+		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorer))
+	}
+	apiV1.Handle("/v1/documents/{docID}/chunks", chunksHandler)
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
 	apiV1.Handle("/v1/users", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUsers(userStore))))
@@ -851,7 +868,9 @@ func readIdempotencyKey(r *http.Request) string {
 func parseUploadMetadata(raw string) (map[string]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return nil, nil
+		// Return an empty map, not nil: the registry column is NOT NULL and a
+		// nil slice would violate it on uploads without a metadata field.
+		return map[string]string{}, nil
 	}
 	var values map[string]string
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {

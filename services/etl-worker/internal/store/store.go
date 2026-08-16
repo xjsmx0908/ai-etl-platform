@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -300,6 +301,123 @@ func (q *QdrantStorer) ListDocs(ctx context.Context, limit, pageSize int) ([]Doc
 		refs = append(refs, r)
 	}
 	return refs, nil
+}
+
+// StoredChunk is a chunk read back from a Qdrant payload (no vectors).
+type StoredChunk struct {
+	ChunkID    string
+	DocID      string
+	TenantID   string
+	Content    string
+	Index      int
+	Permission string
+	Metadata   map[string]string
+}
+
+// ListChunksByDoc scrolls all points for a (tenant, doc) visible to the given
+// permissions and returns them sorted by chunk index. Used by the document
+// detail page to render a document's chunks. An empty allowedPermissions list
+// omits the permission clause entirely.
+func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID string, allowedPermissions []string) ([]StoredChunk, error) {
+	if tenantID == "" || docID == "" {
+		return nil, fmt.Errorf("tenant_id and doc_id are required")
+	}
+	must := []map[string]interface{}{
+		{"key": "tenant_id", "match": map[string]string{"value": tenantID}},
+		{"key": "doc_id", "match": map[string]string{"value": docID}},
+	}
+	if len(allowedPermissions) > 0 {
+		must = append(must, map[string]interface{}{
+			"key": "permission", "match": map[string]interface{}{"any": allowedPermissions},
+		})
+	}
+	filter := map[string]interface{}{"must": must}
+
+	var offset any
+	var chunks []StoredChunk
+	for {
+		body := map[string]interface{}{
+			"limit":        100,
+			"with_payload": true,
+			"filter":       filter,
+		}
+		if offset != nil {
+			body["offset"] = offset
+		}
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal scroll body: %w", err)
+		}
+
+		url := fmt.Sprintf("%s/collections/%s/points/scroll", q.endpoint, q.collection)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		q.setHeaders(req)
+
+		resp, err := q.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("qdrant scroll request failed: %w", err)
+		}
+		var sr struct {
+			Result struct {
+				Points []struct {
+					Payload map[string]interface{} `json:"payload"`
+				} `json:"points"`
+				NextPageOffset any `json:"next_page_offset"`
+			} `json:"result"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&sr)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode scroll response: %w", decodeErr)
+		}
+
+		for _, p := range sr.Result.Points {
+			chunk := StoredChunk{
+				ChunkID:    strVal(p.Payload["chunk_id"]),
+				DocID:      strVal(p.Payload["doc_id"]),
+				TenantID:   strVal(p.Payload["tenant_id"]),
+				Content:    strVal(p.Payload["content"]),
+				Permission: strVal(p.Payload["permission"]),
+			}
+			if chunk.ChunkID == "" || chunk.Content == "" {
+				continue
+			}
+			if idx, ok := p.Payload["index"].(float64); ok {
+				chunk.Index = int(idx)
+			}
+			if md, ok := p.Payload["metadata"].(map[string]interface{}); ok {
+				chunk.Metadata = stringMetadata(md)
+			}
+			chunks = append(chunks, chunk)
+		}
+		if sr.Result.NextPageOffset == nil {
+			break
+		}
+		offset = sr.Result.NextPageOffset
+	}
+
+	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
+	return chunks, nil
+}
+
+// strVal returns a payload value as a string when it is one.
+func strVal(v interface{}) string {
+	s, _ := v.(string)
+	return s
+}
+
+// stringMetadata keeps only string-valued entries of a JSON metadata map.
+func stringMetadata(m map[string]interface{}) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
 }
 
 // Close releases HTTP client resources.
