@@ -24,12 +24,22 @@ Status: implemented
 
 Status: planned
 
-0. **负例拒答兜底（已知缺陷，根治待实验）**：负例（无权访问的文档）检索正确不透漏，但 LLM 未输出拒答句「未找到相关文档」导致 `negative_case_missing_not_found_fallback` 失败。真实模式 sem-014 与 mock 模式 3 个锚点负例均受影响。根因：拒答依赖 prompt，mock LLM 不遵循。CI 门禁 `--min-pass-rate`/`--min-answer-pass-rate` 已放宽到 0.90（检索质量仍由 `--min-hit-rate 0.90` 把关）。
-   **根治路径（实验驱动，ADR 0006）**：query-api 补不依赖 LLM 的拒答判定。先重测 bge-m3 的分数分布（ADR 0006 明确要求换 embedding 后重测，原 nomic 测量重叠宽度 0.2784 已过时）：
-   1. 跑真实 eval，收集正例/负例的 `MaxRelevance`（Qdrant cosine）分布；
-   2. 若两分布可分 → 启用 `RETRIEVAL_MIN_RELEVANCE` 硬门控 + 回归验证 hit rate 不掉；
-   3. 若仍重叠 → 探索替代机制（候选相关性显著低于正例分布下界、候选为空判定、来源数下限），mock 负例用确定性规则（无高相关候选 → 拒答）。
+0. **负例拒答兜底（实验完成，结论：分数门控不可行 → 生成后忠实度验证）**：负例（无权访问的文档）检索正确不透漏，但 LLM 未输出拒答句导致 `negative_case_missing_not_found_fallback` 失败。
+   **实验结论（2026-08-16，bge-m3）**：
+   - 离线 pairwise：正负分布重叠宽度 **0.2271**（nomic 时 0.2784），绝对阈值无干净分离点；
+   - 在线真实 eval（独立栈，bge-m3 + deepseek，44 语义集）：**26/38 正例命中时 max_relevance 恰好 0.5**（strict_rank=1，dense cosine 真实值），唯一失败的负例 sem-014 候选最高分也是 0.5 → 正负分数完全重合，`RETRIEVAL_MIN_RELEVANCE` 硬门控不可用（任何阈值都误杀正例，ADR 0006 重测结论维持）；
+   - 现状：6 个负例中 **5 个已由 deepseek 遵循 prompt 拒答**，仅 sem-014 失败——其 query 是权限机制提问（非机密内容提问），检索返回 5 个弱相关公开候选（max_rel=0.5），LLM 误判有据而编答。
+   **根治方向（2026 企业级实践：生成后忠实度验证为主导机制，阈值不是主导）**：
+   1. query-api 生成后校验答案声明的可溯源性（LLM-based grounding check，或确定性词/数字级验证），验证不过 → 固定拒答句「未找到相关文档，无法回答该问题。」；sem-014 的编造声明无法从弱相关候选溯源，正例可从目标文档溯源；
+   2. mock 负例用确定性候选相关性规则（mock hash embedding 有区分度，无高相关候选 → 拒答）；
+   3. 验证决策进 `retrieval_info` + 报告，保持可观测；
+   4. 回归验证：真实负例拒答 100% + 正例 Recall@1 不降（`--min-hit-rate 0.90` 把关检索）。
    验收：mock + real 的负例拒答率 100%，且正例 Recall@1 不降。
+   **已实施（2026-08-16，real 达成，mock 待）**：
+   - query-api 生成后 grounding check（`RETRIEVAL_GROUNDING_CHECK` 默认 true，模糊带 0.45–0.70）：答案生成后由校验器 LLM 判定答案关键断言（事实/数字/结论）是否可溯源到检索来源，判 false → 固定拒答句；决策进 `retrieval_info.grounding_checked/grounding_passed`。真实验证正例 28/28 通过、无误伤。
+   - sem-014 根因确认：其 query 问权限机制，被 user **合法可见**的 internal 规则文档（sem-006「三个可见级别」）合理回答（答案逐字复述 sem-006），grounding 判 supported 正确 → **评测数据缺陷非系统缺陷**。已把 query 改为「项目机密资料涉及的项目成员名单是什么？」（指向机密实体，与可见文档 max 相似度 0.429，避开 sem-006）。
+   - 验证（bge-m3 语义集）：6/6 负例拒答（含修正后 sem-014），正例 hit_rate 0.921 不降；剩余 3 失败（sem-002/013/033）为既有 `retrieval:timeout` 检索噪声。
+   - mock 验证（2026-08-16）：mock 语义集负例 6/6 仍失败，且 **确定性候选规则对 mock 不可行**——mock 的 hash relevance 在 0.5 处饱和（正例 median 与负例 5/6 均恰为 0.5，无分离阈值），mock LLM 输出固定模板（「基于参考文档回答」）不遵循拒答。mock 负例拒答属 mock 语义能力边界（mock 仅验链路，CLAUDE.md 明示其指标非质量证据），不作为质量门禁；CI 门禁（golden-set 锚点集，--min-hit-rate/pass-rate/answer-pass-rate 0.90）不受影响。
 1. **文档搜索/详情深化**：全文/元数据检索、chunk 级详情。
 2. **前端硬化**：HttpOnly cookie 复核、`/v1/query` retrieval 元数据进文档详情。
 

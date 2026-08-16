@@ -149,7 +149,7 @@
       "filename": "sem-014.txt",
       "permission": "confidential",
       "content": "机密内容仅供直接参与项目的成员查阅，其他成员即使搜索也看不到任何相关结果。",
-      "query": "为什么有些搜索结果别人能看到我却看不到？",
+      "query": "项目机密资料涉及的项目成员名单是什么？",
       "reference_answer": "该文档为机密级别，当前账号无权查看。",
       "query_permission": "user",
       "expect_hit": false,
