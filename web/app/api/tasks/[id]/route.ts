@@ -9,7 +9,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     cache: "no-store",
   });
   const text = await upstream.text();
-  return new Response(text, {
+  return new Response(upstream.status === 204 ? null : text, {
     status: upstream.status,
     headers: { "Content-Type": "application/json" },
   });

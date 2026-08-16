@@ -11,7 +11,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     cache: "no-store",
   });
   const text = await upstream.text();
-  return new Response(text, {
+  return new Response(upstream.status === 204 ? null : text, {
     status: upstream.status,
     headers: { "Content-Type": "application/json" },
   });
@@ -32,7 +32,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     cache: "no-store",
   });
   const text = await upstream.text();
-  return new Response(text, {
+  return new Response(upstream.status === 204 ? null : text, {
     status: upstream.status,
     headers: { "Content-Type": "application/json" },
   });
@@ -48,7 +48,7 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
     cache: "no-store",
   });
   const text = await upstream.text();
-  return new Response(text, {
+  return new Response(upstream.status === 204 ? null : text, {
     status: upstream.status,
     headers: { "Content-Type": "application/json" },
   });

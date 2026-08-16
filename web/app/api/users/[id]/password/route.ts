@@ -17,8 +17,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     cache: "no-store",
   });
   const text = await upstream.text();
-  return new Response(text, {
+  // 204 No Content must not carry a body; `new Response(upstream.status === 204 ? null : text, 204)` makes
+  // Next.js throw and surface as a 500 even though the backend succeeded.
+  return new Response(upstream.status === 204 ? null : text, {
     status: upstream.status,
-    headers: { "Content-Type": "application/json" },
+    headers:
+      upstream.status === 204 ? undefined : { "Content-Type": "application/json" },
   });
 }
