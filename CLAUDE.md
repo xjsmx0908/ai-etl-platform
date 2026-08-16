@@ -58,6 +58,7 @@ python3 scripts/run-evals.py --real-models   # 真实 embedding+LLM，唯一能�
 - real 模式自动派生独立 Qdrant collection（`documents-real-<model>-<dim>`），维度创建后不可改。
 - 配置解析优先级与 Go 服务一致：CLI 参数 > 环境变量 > `*_FILE_PATH` secrets。
 - 可选 `--judge`（LLM-as-a-Judge）输出 Faithfulness/Correctness/Relevance。
+- CI 门禁：`--min-hit-rate 0.90` 把关检索质量；`--min-pass-rate`/`--min-answer-pass-rate` 放宽到 0.90——负例拒答依赖 LLM prompt、mock LLM 不遵循是已知缺陷（根治在 `docs/backlog.md`，关联 ADR 0006），**别把这两项改回 1.0**。
 
 ### 冒烟 / 语料加载 / 线上回归（scripts/）
 
@@ -70,6 +71,11 @@ python3 scripts/test-production-regressions.py --api-base http://localhost:8080 
 python3 scripts/run-agent-evals.py --api-base http://localhost:8080   # Agent API 成功率评测（需 AGENT_PLANNER_TYPE=llm）
 python3 scripts/reindex.py --api-base ... --s3-* --s3-bucket documents   # embedding 换模型后从 MinIO 重建（先删旧向量）
 scripts/backfill-qdrant-permission.sh               # Qdrant 缺失 permission 批量回填（默认 dry-run，--apply 生效）
+python3 scripts/load-test.py                        # 并发压测（见 docs/load-test.md）
+python3 scripts/analyze-eval-variance.py            # 评测分数方差分析
+python3 scripts/validate_eval_dataset.py            # 评测数据集结构/答案校验
+python3 scripts/judge_eval.py                       # LLM-as-a-Judge 打分
+bash scripts/real-rag-verify.sh                     # 真实检索链路回归
 ```
 
 登录：`POST /v1/auth/login`（username+password → JWT）。首启 `BOOTSTRAP_ADMIN_USERNAME/PASSWORD/TENANT` 自动创建初始 admin；admin 再经 `/v1/users`、`/v1/tenants` 管理用户/租户。
@@ -96,7 +102,7 @@ upload(/v1/upload → MinIO 落盘 + Kafka 投递)
 
 ### ETL worker（services/etl-worker，Go module `ai-etl-pipeline`）
 
-两个入口：`cmd/worker`（Kafka 消费端）、`cmd/api`（query-api）。业务逻辑全在 `internal/`。
+两个入口：`cmd/worker`（Kafka 消费端）、`cmd/api`（query-api）。业务逻辑全在 `internal/`。upload HTTP 入口在 `internal/gateway`（落盘 + Kafka 投递）；`internal/auth`（JWT 签发/校验）、`internal/audit`（审计追加式存储）、`internal/idempotency`（Redis 幂等键）属注册表/安全簇。
 
 **解析双路径**（`internal/pipeline/pipeline.go`，改动最频繁的核心）：
 - 纯文本（.txt/.md/.csv…）→ 本地确定性 scanner（`internal/parser`），与 golden-set 评测切块语义一致；
@@ -128,9 +134,10 @@ upload(/v1/upload → MinIO 落盘 + Kafka 投递)
 
 关系存储：`tenants`、`users`（bcrypt 密码哈希，role=admin/user/readonly）、`documents`（每租户每 doc_id 一行，含 permission/status/stage/metadata，写穿自 upload 与 worker）。`internal/migrations` 用 `//go:embed` 内嵌 SQL，启动自动迁移（api fail-fast、worker warn-only）。API：
 - `POST /v1/auth/login`（免鉴权，bcrypt 校验 → JWT，`auth.IssueToken` 复用现有 Claims/HS256）
-- `/v1/users*`、`/v1/tenants`（admin scope）：用户/租户管理，密码与角色分离修改
+- `/v1/users*`、`/v1/tenants`（admin scope）：用户/租户管理，密码与角色分离修改；admin 仅管理本租户（创建用户忽略请求体 tenant，跨租户目标一律 404 不透漏存在性）
 - `GET /v1/documents`、`GET/DELETE /v1/documents/{id}`：注册表列表（角色→权限矩阵过滤）与详情/删除
-首启 `BOOTSTRAP_ADMIN_*` 建初始 admin。跨租户删除已修复：Qdrant/ES 删除都带 `tenant_id` 过滤（`DeleteByDocIDAndTenant`），不再按 doc_id 裸删。
+- `GET /v1/audit`（admin）：审计轨迹，租户隔离 + action 过滤（`internal/audit`，`audit_logs` 表，login/upload/delete 埋点 best-effort 不阻塞主操作）
+首启 `BOOTSTRAP_ADMIN_*` 建初始 admin。密码重置递增 `users.token_version` 使旧 token 撤销：JWT 携带 `token_version`，middleware 经 `NewVerifierWithStore` 对 DB 复验；离线/测试 token（非 UUID UserID 或 DB 无行）放行。跨租户删除已修复：Qdrant/ES 删除都带 `tenant_id` 过滤（`DeleteByDocIDAndTenant`），不再按 doc_id 裸删。
 
 ### Agent orchestrator（internal/agent + internal/agentapi）
 
@@ -148,11 +155,12 @@ upload(/v1/upload → MinIO 落盘 + Kafka 投递)
 
 ### 前端（web/，Next.js 14）
 
-企业级产品 UI：问答（SSE 流式渲染 + 引用展开）、文档管理（列表/搜索/权限过滤/删除）、用户管理（admin 建用户/改角色/重置密码）、数据接入（上传/同 doc_id 重传即替换）、检索质量、系统可观测、Agent 编排。认证：`/login` → `/api/auth/login` 转发 `/v1/auth/login`，token 存 HttpOnly cookie（`ai_etl_token`）；`app/api/*` route handler 从 cookie 读 token 代理到 query-api `/v1/*`，SSE 透传无跨域。用户/租户/文档元数据经 PG 注册表（`internal/userstore`/`internal/docstore`）。前端本地开发用 `.env.local`（`NEXT_PUBLIC_API_BASE`）配 `BACKEND_URL`。
+企业级产品 UI：问答（SSE 流式渲染 + 引用展开）、文档管理（列表/搜索/权限过滤/删除）、用户管理（admin 建用户/改角色/重置密码）、数据接入（上传/同 doc_id 重传即替换）、检索质量、系统可观测、Agent 编排、审计日志（admin，`/audit` 页）。认证：`/login` → `/api/auth/login` 转发 `/v1/auth/login`，token 存 HttpOnly cookie（`ai_etl_token`）；`app/api/*` route handler 从 cookie 读 token 代理到 query-api `/v1/*`，SSE 透传无跨域。用户/租户/文档元数据经 PG 注册表（`internal/userstore`/`internal/docstore`）。前端本地开发用 `.env.local`（`NEXT_PUBLIC_API_BASE`）配 `BACKEND_URL`。
 
 ## 约定
 
 - **配置解析**：`KEY` > `KEY_FILE`（`<KEY>_FILE` 指向 secret 文件）> 默认值。新增配置要镜像进 `.env.example`。
+- **相关文件**：`AGENTS.md` 含重叠的仓库守则（改动时保持同步）；`LEARNINGS.md` 为历史学习日志（全局约定的 `LEARNINGS.claude.md` 未单独建）。
 - **Secrets**：绝不提交真实凭据。模板在 `secrets/examples/`，本地真实值放 `secrets/dev/`（git-ignored）。webhook/密码等真实文件只在 `secrets/dev/`。
 - **提交**：Conventional Commits（`feat:`/`fix:`/`chore:`），聚焦、描述用户可见或运维影响。分支保护要求 1 个 approval + CI 通过。
 - **代码风格**：Go 用 gofmt、包名短小写、测试 `_test.go` 与源码同包；Python PEP8 + Pydantic typed models。
