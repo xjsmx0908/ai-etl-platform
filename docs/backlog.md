@@ -12,21 +12,26 @@ Status: implemented
 4. **前端产品化**：登录页 + HttpOnly cookie 鉴权 + 侧边栏产品 UI（问答/文档管理/用户管理/数据接入/可观测/检索质量/Agent）。
 5. **demo 资产清理**：面试文档归档至 `docs/archive/`，demo 脚本归档至 `scripts/archive/`，`seed-demo-data.py` → `load-corpus.py`（经登录灌语料）。
 
-## 2026-08-15 - 企业级改造 Phase 2（规划中）
+## 2026-08-15 - 企业级改造 Phase 2（已完成部分）
+
+Status: implemented
+
+1. **审计日志**：`audit_logs` 表（migration 0002）+ `internal/audit` 包（追加式 Store + List）；login（成功/失败/禁用）、upload、document delete 埋点（best-effort，不阻塞主操作）；`GET /v1/audit` admin 查看 API（租户隔离 + action 过滤）；前端 `/audit` 审计日志页（admin）。
+2. **token 撤销**：`users.token_version` 列（migration 0003）+ `SetPasswordHash` 递增；JWT 携带 `token_version`，`Verifier` middleware 对 DB 中的用户校验版本/active（`NewVerifierWithStore`），密码重置后旧 token 失效。离线/测试 token（非 UUID UserID 或 DB 无行）放行，JWT 签名保护。
+3. **租户内 admin 隔离**：admin 仅管理本租户用户——创建用户强制使用调用者 JWT 的 tenant（忽略请求体）；update/delete/重置密码经 `requireTenantUser` 校验，跨租户目标一律 404（不透漏存在性）。
+
+## 2026-08-15 - 企业级改造 Phase 2（剩余）
 
 Status: planned
 
-0. **负例拒答兜底（已知缺陷）**：负例（无权访问的文档）检索正确不透漏，但 LLM 未输出拒答句「未找到相关文档」导致 `negative_case_missing_not_found_fallback` 失败。真实模式 sem-014 与 mock 模式 3 个锚点负例均受影响。根因：拒答依赖 prompt，mock LLM 不遵循。CI 门禁 `--min-pass-rate`/`--min-answer-pass-rate` 已放宽到 0.90（检索质量仍由 `--min-hit-rate 0.90` 把关）。
+0. **负例拒答兜底（已知缺陷，根治待实验）**：负例（无权访问的文档）检索正确不透漏，但 LLM 未输出拒答句「未找到相关文档」导致 `negative_case_missing_not_found_fallback` 失败。真实模式 sem-014 与 mock 模式 3 个锚点负例均受影响。根因：拒答依赖 prompt，mock LLM 不遵循。CI 门禁 `--min-pass-rate`/`--min-answer-pass-rate` 已放宽到 0.90（检索质量仍由 `--min-hit-rate 0.90` 把关）。
    **根治路径（实验驱动，ADR 0006）**：query-api 补不依赖 LLM 的拒答判定。先重测 bge-m3 的分数分布（ADR 0006 明确要求换 embedding 后重测，原 nomic 测量重叠宽度 0.2784 已过时）：
    1. 跑真实 eval，收集正例/负例的 `MaxRelevance`（Qdrant cosine）分布；
    2. 若两分布可分 → 启用 `RETRIEVAL_MIN_RELEVANCE` 硬门控 + 回归验证 hit rate 不掉；
    3. 若仍重叠 → 探索替代机制（候选相关性显著低于正例分布下界、候选为空判定、来源数下限），mock 负例用确定性规则（无高相关候选 → 拒答）。
    验收：mock + real 的负例拒答率 100%，且正例 Recall@1 不降。
-1. **审计日志**：`audit_logs` 表 + `agentapi.Observer` sink + 登录/摄入/删除审计。
-2. **token 撤销**：`users.token_version` 列，登录/重置密码使旧 token 失效。
-3. **租户内 admin 隔离**：admin 仅管理本租户用户（现为全局 admin）。
-4. **文档搜索/详情深化**：全文/元数据检索、chunk 级详情。
-5. **前端硬化**：HttpOnly cookie 复核、`/v1/query` retrieval 元数据进文档详情。
+1. **文档搜索/详情深化**：全文/元数据检索、chunk 级详情。
+2. **前端硬化**：HttpOnly cookie 复核、`/v1/query` retrieval 元数据进文档详情。
 
 ## 2026-08-08 - AI Engineer Roadmap
 
