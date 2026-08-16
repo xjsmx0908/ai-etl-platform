@@ -52,7 +52,7 @@ const inputCls =
   "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500";
 
 export default function UsersPage() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
   const [mounted, setMounted] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [total, setTotal] = useState(0);
@@ -168,6 +168,15 @@ export default function UsersPage() {
   }
 
   if (!isAdmin) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white p-10 text-center shadow-sm">
+        <p className="text-sm font-medium text-slate-700">无权访问</p>
+        <p className="mt-1 text-xs text-slate-500">该页面仅管理员可见。</p>
+      </div>
+    );
+  }
+
+  if (user && !isAdmin) {
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-10 text-center shadow-sm">
         <p className="text-sm font-medium text-slate-700">无权访问</p>

@@ -27,7 +27,7 @@ function formatDate(iso?: string): string {
 }
 
 export default function AuditPage() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
   const [mounted, setMounted] = useState(false);
   const [items, setItems] = useState<AuditEntry[]>([]);
   const [total, setTotal] = useState(0);
@@ -81,6 +81,15 @@ export default function AuditPage() {
   }
 
   if (!isAdmin) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white p-10 text-center shadow-sm">
+        <p className="text-sm font-medium text-slate-700">无权访问</p>
+        <p className="mt-1 text-xs text-slate-500">该页面仅管理员可见。</p>
+      </div>
+    );
+  }
+
+  if (user && !isAdmin) {
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-10 text-center shadow-sm">
         <p className="text-sm font-medium text-slate-700">无权访问</p>
