@@ -47,7 +47,10 @@ Status: planned
    - 顺带修复：`parseUploadMetadata` 空 metadata 返回 nil → PG NOT NULL 违反（任何不带 metadata 的上传都会失败）→ 返回空 map。
    - 测试：store 3 + handler 8 单测、web build、e2e-smoke（search/chunks 断言）全通过。
    - e2e-smoke 加固：改为独立 compose project `ai-etl-smoke` + 独立端口（eval override 隐藏后端端口 + smoke override 仅暴露 query-api:8081）+ BOOTSTRAP admin 建在上传同租户。**原因：cleanup `down -v` 曾删掉共享主栈 volumes（数据丢失）**。
-2. **前端硬化**：HttpOnly cookie 复核、`/v1/query` retrieval 元数据进文档详情。
+2. **前端硬化（已交付 2026-08-16）**：
+   - **HttpOnly cookie 复核**：`ai_etl_token` 已确认 httpOnly + sameSite=lax + path=/ + secure(生产)；补齐 `maxAge=24h`（匹配 token TTL，避免静默过期）；logout 正确 `maxAge=0` 清除。
+   - **retrieval 元数据**：问答页「检索链路」面板补齐 #0 新增的忠实度校验展示（`grounding_checked`/`grounding_passed` → 未触发 / 通过（可溯源）/ 拦截（无据拒答））；`RetrievalInfo` 类型补字段。
+   - web build 通过。
 
 ## 2026-08-08 - AI Engineer Roadmap
 
