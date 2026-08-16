@@ -6,8 +6,20 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 MOCK_PORT="${MOCK_PORT:-18080}"
+API_PORT="${API_PORT:-8081}"
 EMBED_DIMENSION="${EMBED_DIMENSION:-768}"
+# Run in an isolated compose project so cleanup (down -v --remove-orphans) only
+# ever touches the smoke stack's own volumes, never the demo stack's.
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ai-etl-smoke}"
+# Hide all backing-service host ports (eval override) and re-expose only the
+# query-api on API_PORT (smoke override) so the isolated stack never collides
+# with a running demo stack on the default ports.
+export COMPOSE_FILE="docker-compose.yml:docker-compose.eval.yml:docker-compose.smoke.yml"
+export QUERY_API_HOST_PORT="${API_PORT}"
 TENANT_ID="${TENANT_ID:-tenant-e2e}"
+# Bootstrap the smoke stack's admin in the same tenant the test token uploads
+# to, so the registry list (via admin login) can see the uploaded document.
+export BOOTSTRAP_ADMIN_TENANT="${TENANT_ID}"
 QUERY_TOP_K="${QUERY_TOP_K:-3}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-180}"
 JWT_SECRET="${JWT_SECRET:-change-me-in-production-please-use-32-plus-chars}"
@@ -56,6 +68,10 @@ export ENVIRONMENT=staging
 export WORKER_REPLICAS=1
 export API_REPLICAS=1
 export EMBED_DIMENSION
+# Isolate the smoke stack from the running demo collection: the smoke mock uses
+# a different embedding dimension (768) than a bge-m3 demo (1024), so a shared
+# collection would collide with a vector-dimension error.
+export STORE_COLLECTION="${STORE_COLLECTION:-documents-e2e}"
 export REDIS_CACHE_ADDR=redis-cache:6379
 export REDIS_CACHE_DB=0
 export REDIS_STATE_ADDR=redis-state:6379
@@ -75,7 +91,7 @@ docker compose up -d --build
 echo "[e2e] waiting query-api healthz"
 api_healthy=0
 for _ in $(seq 1 60); do
-  if curl -fsS "http://127.0.0.1:8080/healthz" >/dev/null; then
+  if curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null; then
     api_healthy=1
     break
   fi
@@ -152,7 +168,7 @@ EOF
 echo "[e2e] uploading sample document"
 UPLOAD_STATUS="$(
 curl -sS -o "${TMP_DIR}/upload.json" -w "%{http_code}" \
-  -X POST "http://127.0.0.1:8080/v1/upload" \
+  -X POST "http://127.0.0.1:${API_PORT}/v1/upload" \
   -H "Authorization: Bearer ${TOKEN}" \
   -F "file=@${DOC_FILE};type=text/plain" \
   -F "permission=${DOC_PERMISSION}"
@@ -170,7 +186,7 @@ success=0
 while (( SECONDS < deadline )); do
   QUERY_STATUS="$(
     curl -sS -o "${TMP_DIR}/query.json" -w "%{http_code}" \
-      -X POST "http://127.0.0.1:8080/v1/query" \
+      -X POST "http://127.0.0.1:${API_PORT}/v1/query" \
       -H "Authorization: Bearer ${TOKEN}" \
       -H "Content-Type: application/json" \
       -d "{\"question\":\"What does the smoke test verify?\",\"top_k\":${QUERY_TOP_K}}"
@@ -218,7 +234,7 @@ ADMIN_PASS="${BOOTSTRAP_ADMIN_PASSWORD:-admin}"
 echo "[e2e] logging in as ${ADMIN_USER}"
 LOGIN_STATUS="$(
   curl -sS -o "${TMP_DIR}/login.json" -w "%{http_code}" \
-    -X POST "http://127.0.0.1:8080/v1/auth/login" \
+    -X POST "http://127.0.0.1:${API_PORT}/v1/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}"
 )"
@@ -232,7 +248,7 @@ ADMIN_TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],enc
 echo "[e2e] listing document registry (write-through)"
 LIST_STATUS="$(
   curl -sS -o "${TMP_DIR}/list.json" -w "%{http_code}" \
-    "http://127.0.0.1:8080/v1/documents?limit=50" \
+    "http://127.0.0.1:${API_PORT}/v1/documents?limit=50" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}"
 )"
 if [[ "${LIST_STATUS}" != "200" ]]; then
@@ -247,10 +263,54 @@ if [[ -z "${DOC_ID}" ]]; then
   exit 1
 fi
 
+echo "[e2e] content search over indexed chunks (ES BM25)"
+SEARCH_HIT=0
+for attempt in $(seq 1 10); do
+  SEARCH_STATUS="$(
+    curl -sS -o "${TMP_DIR}/search.json" -w "%{http_code}" \
+      "http://127.0.0.1:${API_PORT}/v1/documents/search?q=pipeline" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  )"
+  if [[ "${SEARCH_STATUS}" == "200" ]]; then
+    SEARCH_HIT="$(
+      python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); print(1 if any(i["doc_id"]==sys.argv[2] for i in d.get("items") or []) else 0)' "${TMP_DIR}/search.json" "${DOC_ID}"
+    )"
+    if [[ "${SEARCH_HIT}" == "1" ]]; then
+      break
+    fi
+  fi
+  sleep 2
+done
+if [[ "${SEARCH_HIT}" != "1" ]]; then
+  echo "[e2e] content search did not surface uploaded doc ${DOC_ID}" >&2
+  cat "${TMP_DIR}/search.json" >&2 || true
+  exit 1
+fi
+
+echo "[e2e] listing chunks of ${DOC_ID}"
+CHUNKS_STATUS="$(
+  curl -sS -o "${TMP_DIR}/chunks.json" -w "%{http_code}" \
+    "http://127.0.0.1:${API_PORT}/v1/documents/${DOC_ID}/chunks" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}"
+)"
+if [[ "${CHUNKS_STATUS}" != "200" ]]; then
+  echo "[e2e] chunks listing failed, status=${CHUNKS_STATUS}" >&2
+  cat "${TMP_DIR}/chunks.json" >&2 || true
+  exit 1
+fi
+CHUNKS_TOTAL="$(
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); print(d.get("total",0))' "${TMP_DIR}/chunks.json"
+)"
+if [[ "${CHUNKS_TOTAL}" -lt 1 ]]; then
+  echo "[e2e] expected at least 1 chunk, got ${CHUNKS_TOTAL}" >&2
+  cat "${TMP_DIR}/chunks.json" >&2 || true
+  exit 1
+fi
+
 echo "[e2e] deleting document ${DOC_ID} via registry API"
 DELETE_STATUS="$(
   curl -sS -o /dev/null -w "%{http_code}" \
-    -X DELETE "http://127.0.0.1:8080/v1/documents/${DOC_ID}" \
+    -X DELETE "http://127.0.0.1:${API_PORT}/v1/documents/${DOC_ID}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}"
 )"
 if [[ "${DELETE_STATUS}" != "204" ]]; then
@@ -258,10 +318,10 @@ if [[ "${DELETE_STATUS}" != "204" ]]; then
   exit 1
 fi
 
-GET_STATUS="$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/v1/documents/${DOC_ID}" -H "Authorization: Bearer ${ADMIN_TOKEN}")"
+GET_STATUS="$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:${API_PORT}/v1/documents/${DOC_ID}" -H "Authorization: Bearer ${ADMIN_TOKEN}")"
 if [[ "${GET_STATUS}" != "404" ]]; then
   echo "[e2e] expected 404 after delete, got ${GET_STATUS}" >&2
   exit 1
 fi
 
-echo "[e2e] PASS: login -> registry list -> delete -> 404"
+echo "[e2e] PASS: login -> registry list -> content search -> chunks -> delete -> 404"

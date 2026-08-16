@@ -1,4 +1,6 @@
 services:
+  postgres:
+    ports: !reset []
   kafka:
     ports: !reset []
   redis-cache:
@@ -22,6 +24,8 @@ services:
   kafka-ui:
     ports: !reset []
   parser-service:
+    ports: !reset []
+  query-api:
     ports: !reset []
   reranker-service:
     ports: !reset []
