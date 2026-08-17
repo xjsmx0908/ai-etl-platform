@@ -60,16 +60,25 @@ export default function DataPage() {
   };
 
   const poll = (docId: string) => {
+    let failures = 0;
     pollRef.current = setInterval(async () => {
       try {
         const d = await apiClient.getTaskStatus(docId);
+        failures = 0;
         setTaskStatus(d);
         if (d.status === "completed" || d.status === "failed") {
           stopPolling();
           setStatus("done");
         }
-      } catch {
-        // keep polling
+      } catch (e: unknown) {
+        // A transient blip keeps polling, but repeated failures mean the status
+        // lookup is genuinely broken — stop spinning and surface the error.
+        failures += 1;
+        if (failures >= 3) {
+          stopPolling();
+          setStatus("error");
+          setError((e as Error).message || "任务状态查询失败");
+        }
       }
     }, 2000);
   };
@@ -92,7 +101,12 @@ export default function DataPage() {
       if (key === "parsing") return stage === "parsing" ? "active" : "done";
       if (key === "embedding") return stage === "embedding" ? "active" : "idle";
     }
-    if (!backendStatus) return key === "queued" ? "active" : "idle";
+    // No status yet (initial idle or before the first poll returns): only light
+    // up the first step while a task is actually in flight, never at rest.
+    if (!backendStatus) {
+      const inFlight = status === "uploading" || status === "polling";
+      return key === "queued" && inFlight ? "active" : "idle";
+    }
     return "idle";
   };
 
