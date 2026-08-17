@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
+import { Card } from "@/components/ui/Card";
+import { ChevronDown, ShieldAlert } from "lucide-react";
 import type { AnswerMeta, Source } from "@/lib/types";
 
 const STRATEGY_LABELS: Record<string, string> = {
@@ -131,39 +133,55 @@ export default function QaPage() {
       {(status === "streaming" || status === "done" || status === "error") && (
         <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
           <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <Card>
               <div className="mb-2 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-500">回答</h2>
               </div>
               {isRefusal ? (
-                <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-                  <p className="font-medium">未找到相关文档，无法回答该问题。</p>
-                  <p className="mt-1 text-xs text-amber-600">
-                    系统在检索到可支撑证据前拒绝作答，避免幻觉编造。
-                  </p>
+                <div className="flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                  <div>
+                    <p className="font-medium">未找到相关文档，无法回答该问题。</p>
+                    <p className="mt-1 text-xs text-amber-600">
+                      系统在检索到可支撑证据前拒绝作答，避免幻觉编造。
+                    </p>
+                  </div>
                 </div>
               ) : answer ? (
-                <p className="whitespace-pre-wrap leading-relaxed text-slate-800">{answer}</p>
+                <p className="whitespace-pre-wrap leading-relaxed text-slate-800">
+                  {answer}
+                  {status === "streaming" && (
+                    <span className="ml-0.5 inline-block h-4 w-[2px] animate-blink bg-cyan-500 align-middle" />
+                  )}
+                </p>
               ) : (
                 <p className="text-slate-400">{status === "streaming" ? "等待回答…" : ""}</p>
               )}
-            </div>
+            </Card>
 
             {sources.length > 0 && (
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <Card>
                 <h2 className="mb-3 text-sm font-semibold text-slate-500">引用来源（{sources.length}）</h2>
                 <div className="space-y-2">
-                  {sources.map((s) => (
+                  {sources.map((s, i) => (
                     <details key={s.chunk_id} className="group rounded-lg border border-slate-200">
                       <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm hover:bg-slate-50">
-                        <span className="font-mono text-blue-600">{s.doc_id}</span>
-                        <span className="text-xs text-slate-400">score {s.score.toFixed(4)}</span>
+                        <span className="flex items-center gap-2">
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-50 text-xs font-medium text-blue-600">
+                            {i + 1}
+                          </span>
+                          <span className="font-mono text-blue-600">{s.doc_id}</span>
+                        </span>
+                        <span className="flex items-center gap-2 text-xs text-slate-400">
+                          score {s.score.toFixed(4)}
+                          <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+                        </span>
                       </summary>
                       <p className="border-t border-slate-100 px-3 py-2 text-sm text-slate-600">{s.content}</p>
                     </details>
                   ))}
                 </div>
-              </div>
+              </Card>
             )}
 
             {status === "error" && (

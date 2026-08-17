@@ -3,6 +3,10 @@
 import { useEffect, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import StatCard from "@/components/StatCard";
+import { Card } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { Spinner } from "@/components/ui/Spinner";
+import { Activity, AlertTriangle, CheckCircle2, GaugeCircle, Server, XCircle } from "lucide-react";
 import type { Health } from "@/lib/types";
 
 export default function ObservePage() {
@@ -38,29 +42,42 @@ export default function ObservePage() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard label="服务总数" value={health ? String(entries.length) : "—"} />
-        <StatCard label="在线服务" value={health ? String(upCount) : "—"} />
-        <StatCard label="降级服务" value={health ? String(degradedCount) : "—"} />
-        <StatCard label="异常服务" value={health ? String(downCount) : "—"} accent={downCount > 0} />
+        <StatCard label="服务总数" value={health ? String(entries.length) : "—"} icon={Server} />
+        <StatCard
+          label="在线服务"
+          value={health ? String(upCount) : "—"}
+          tone={upCount > 0 ? "success" : "default"}
+          icon={Activity}
+        />
+        <StatCard
+          label="降级服务"
+          value={health ? String(degradedCount) : "—"}
+          tone={degradedCount > 0 ? "danger" : "default"}
+          icon={AlertTriangle}
+        />
+        <StatCard
+          label="异常服务"
+          value={health ? String(downCount) : "—"}
+          tone={downCount > 0 ? "danger" : "default"}
+          icon={XCircle}
+        />
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-500">服务健康</h2>
-          <span
-            className={
-              overall === "up"
-                ? "rounded bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700"
-                : overall === "loading"
-                  ? "rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-500"
-                  : "rounded bg-red-50 px-2 py-0.5 text-xs text-red-700"
-            }
-          >
-            {overall === "up" ? "全部在线" : overall === "loading" ? "加载中" : "有服务异常"}
+      <Card
+        header={
+          <span className="flex items-center gap-2">
+            <GaugeCircle className="h-4 w-4 text-slate-400" />
+            服务健康
           </span>
-        </div>
+        }
+        meta={
+          <Badge tone={overall === "up" ? "success" : overall === "loading" ? "neutral" : "danger"}>
+            {overall === "up" ? "全部在线" : overall === "loading" ? "加载中" : "有服务异常"}
+          </Badge>
+        }
+      >
         {loading && !health ? (
-          <div className="p-6 text-center text-sm text-slate-400">加载中…</div>
+          <Spinner label="加载服务健康…" />
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {entries.map(([name, h]) => (
@@ -68,10 +85,19 @@ export default function ObservePage() {
                 key={name}
                 className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2"
               >
-                <span className="font-mono text-xs text-slate-700">{name}</span>
+                <span className="flex items-center gap-1.5 font-mono text-xs text-slate-700">
+                  {h.status === "up" ? (
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                  ) : h.status === "degraded" ? (
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                  ) : (
+                    <XCircle className="h-3.5 w-3.5 text-red-500" />
+                  )}
+                  {name}
+                </span>
                 <span className="flex items-center gap-1.5">
                   <span
-                    className={`h-2 w-2 rounded-full ${
+                    className={`h-2 w-2 animate-pulse rounded-full ${
                       h.status === "up" ? "bg-emerald-500" : h.status === "degraded" ? "bg-amber-500" : "bg-red-500"
                     }`}
                   />
@@ -81,10 +107,8 @@ export default function ObservePage() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-xs text-slate-400">
-          经 query-api 聚合各服务 healthz · 每 10 秒自动刷新
-        </p>
-      </div>
+        <p className="mt-3 text-xs text-slate-400">经 query-api 聚合各服务 healthz · 每 10 秒自动刷新</p>
+      </Card>
     </div>
   );
 }

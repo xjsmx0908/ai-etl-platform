@@ -3,6 +3,13 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Card } from "@/components/ui/Card";
+import { Badge, statusTone } from "@/components/ui/Badge";
+import { Spinner } from "@/components/ui/Spinner";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Files, Search } from "lucide-react";
 import type { Document, DocumentSearchResult } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -177,18 +184,10 @@ export default function DocumentsPage() {
           }}
           className="flex gap-2"
         >
-          <input
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="输入正文关键词，如「pipeline」"
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-          <button
-            type="submit"
-            className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
-          >
+          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="输入正文关键词，如「pipeline」" />
+          <Button type="submit" icon={Search}>
             内容搜索
-          </button>
+          </Button>
         </form>
         {searchError && <p className="mt-2 text-xs text-red-600">{searchError}</p>}
         {searching && <p className="mt-2 text-xs text-slate-400">搜索中…</p>}
@@ -203,12 +202,8 @@ export default function DocumentsPage() {
                     <Link href={`/documents/${r.doc_id}`} className="text-sm font-medium text-blue-600 hover:underline">
                       {r.file_name}
                     </Link>
-                    <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                      {PERMISSION_LABELS[r.permission] || r.permission}
-                    </span>
-                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${statusChip(r.status)}`}>
-                      {STATUS_LABELS[r.status] || r.status}
-                    </span>
+                    <Badge>{PERMISSION_LABELS[r.permission] || r.permission}</Badge>
+                    <Badge tone={statusTone(r.status)}>{STATUS_LABELS[r.status] || r.status}</Badge>
                     <span className="text-xs text-slate-400">
                       命中 {r.hit_count} 段 · 相关度 {r.best_score.toFixed(4)}
                     </span>
@@ -221,15 +216,11 @@ export default function DocumentsPage() {
         )}
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <h2 className="text-sm font-semibold text-slate-500">文档列表</h2>
-          <span className="text-xs text-slate-400">共 {total} 篇</span>
-        </div>
+      <Card header="文档列表" meta={`共 ${total} 篇`} padding="none">
         {loading ? (
-          <div className="p-8 text-center text-sm text-slate-400">加载中…</div>
+          <Spinner />
         ) : items.length === 0 ? (
-          <div className="p-8 text-center text-sm text-slate-400">暂无文档</div>
+          <EmptyState icon={Files} title="暂无文档" />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
@@ -259,14 +250,10 @@ export default function DocumentsPage() {
                       </Link>
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                        {PERMISSION_LABELS[doc.permission] || doc.permission}
-                      </span>
+                      <Badge>{PERMISSION_LABELS[doc.permission] || doc.permission}</Badge>
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className={`rounded px-2 py-0.5 text-xs font-medium ${statusChip(doc.status)}`}>
-                        {STATUS_LABELS[doc.status] || doc.status}
-                      </span>
+                      <Badge tone={statusTone(doc.status)}>{STATUS_LABELS[doc.status] || doc.status}</Badge>
                     </td>
                     <td className="px-4 py-2.5 text-xs text-slate-600">
                       {doc.chunks_total ? `${doc.chunks_done ?? 0}/${doc.chunks_total}` : "—"}
@@ -288,7 +275,7 @@ export default function DocumentsPage() {
             </table>
           </div>
         )}
-      </div>
+      </Card>
     </div>
   );
 }

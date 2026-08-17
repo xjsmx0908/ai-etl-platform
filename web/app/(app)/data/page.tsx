@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
+import { CheckCircle2, ChevronRight, Loader2, XCircle } from "lucide-react";
 import type { TaskStatus } from "@/lib/types";
 
 const PIPELINE_STEPS = [
@@ -149,13 +150,20 @@ export default function DataPage() {
                     : "border-slate-200 bg-white text-slate-500";
             return (
               <div key={step.key} className="flex flex-1 items-center gap-2">
-                <div className={`flex-1 rounded-lg border px-3 py-2 text-center text-xs ${cls}`}>
+                <div className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-center text-xs ${cls}`}>
+                  {state === "active" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : state === "done" ? (
+                    <CheckCircle2 className="h-3 w-3" />
+                  ) : state === "failed" ? (
+                    <XCircle className="h-3 w-3" />
+                  ) : null}
                   {step.label}
                   {step.key === "embedding" && prog && state === "active" && (
-                    <span className="ml-1 font-semibold">({prog})</span>
+                    <span className="font-semibold">({prog})</span>
                   )}
                 </div>
-                {i < PIPELINE_STEPS.length - 1 && <span className="text-slate-300">→</span>}
+                {i < PIPELINE_STEPS.length - 1 && <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />}
               </div>
             );
           })}

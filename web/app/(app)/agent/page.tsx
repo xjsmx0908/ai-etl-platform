@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { apiClient } from "@/lib/apiClient";
+import { Badge } from "@/components/ui/Badge";
+import { CheckCircle2, Wrench, XCircle } from "lucide-react";
 import type { AgentRun } from "@/lib/types";
 
 const AGENT_SUGGESTIONS = [
@@ -97,13 +99,19 @@ export default function AgentPage() {
                   <span
                     className={
                       step.type === "final"
-                        ? "flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-xs"
+                        ? "flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-600"
                         : step.type === "error"
-                          ? "flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-xs"
-                          : "flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-xs"
+                          ? "flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600"
+                          : "flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-blue-600"
                     }
                   >
-                    {step.type === "final" ? "✓" : step.type === "error" ? "✗" : step.index}
+                    {step.type === "final" ? (
+                      <CheckCircle2 className="h-4 w-4" />
+                    ) : step.type === "error" ? (
+                      <XCircle className="h-4 w-4" />
+                    ) : (
+                      <Wrench className="h-4 w-4" />
+                    )}
                   </span>
                   {step.index < run.steps.length && <span className="mt-1 w-px flex-1 bg-slate-200" />}
                 </div>
@@ -112,11 +120,7 @@ export default function AgentPage() {
                     <span className="text-sm font-medium text-slate-700">
                       {STEP_TYPE_LABELS[step.type] || step.type}
                     </span>
-                    {step.tool_name && (
-                      <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-blue-700">
-                        {step.tool_name}
-                      </span>
-                    )}
+                    {step.tool_name && <Badge tone="brand" mono>{step.tool_name}</Badge>}
                     {step.duration ? <span className="text-xs text-slate-400">{step.duration}ms</span> : null}
                   </div>
                   {step.thought && <p className="mt-1 text-xs text-slate-500">思考：{step.thought}</p>}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Badge } from "@/components/ui/Badge";
 
 // Retrieval-quality data is served by /evals/latest.json (the latest real-model
 // eval summary) so the page always reflects the last actual evaluation run.
@@ -58,7 +59,10 @@ export default function QualityPage() {
           {quality.recall.map((r) => (
             <div key={r.k} className="flex flex-col items-center">
               <div className="relative flex h-40 w-14 items-end overflow-hidden rounded-lg bg-slate-100">
-                <div className="w-full rounded-b-lg bg-blue-500" style={{ height: `${r.value}%` }} />
+                <div
+                  className="bg-brand-gradient w-full rounded-t-lg transition-[height] duration-500"
+                  style={{ height: `${r.value}%` }}
+                />
                 <span className="absolute inset-x-0 top-1 text-center text-xs font-bold text-slate-700">
                   {r.value}%
                 </span>
@@ -83,9 +87,9 @@ export default function QualityPage() {
             <div key={e.title} className="rounded-lg border border-slate-200 p-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-slate-700">{e.title}</span>
-                <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                <Badge tone={e.good === false ? "danger" : e.good === true ? "success" : "neutral"}>
                   {e.verdict}
-                </span>
+                </Badge>
               </div>
               <p className="mt-2 text-xs text-slate-500">{e.detail}</p>
             </div>
