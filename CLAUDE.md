@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-企业级 AI 知识流水线平台（AI ETL/RAG）：上传文档 → Kafka 异步处理 → 解析切块 → 向量化 → Qdrant/ES 混合检索 → LLM 生成回答。三个核心工程关注点：**可靠性**（消息不丢）、**权限隔离**（检索源头过滤，机密不进候选）、**可量化检索质量**（双模式评测 + 对照实验）。web 前端（`web/`）为企业级产品 UI：登录认证（HttpOnly cookie）、文档管理、用户/租户管理（admin）。用户、租户、文档元数据注册表存 PostgreSQL；检索与文件仍用 Qdrant/ES/MinIO。
+企业级 AI 知识流水线平台（AI ETL/RAG）：上传文档 → Kafka 异步处理 → 解析切块 → 向量化 → Qdrant/ES 混合检索 → LLM 生成回答。三个核心工程关注点：**可靠性**（消息不丢）、**权限隔离**（检索源头过滤，机密不进候选）、**可量化检索质量**（双模式评测 + 对照实验）。web 前端（`web/`，品牌「知境 · 企业知识库」，Next.js 14）为企业级产品 UI：登录认证（HttpOnly cookie）、文档管理、用户/租户管理（admin）、检索质量、可观测、Agent 编排、审计日志。用户、租户、文档元数据注册表存 PostgreSQL；检索与文件仍用 Qdrant/ES/MinIO。
 
 ## 常用命令
 
@@ -65,7 +65,8 @@ python3 scripts/run-evals.py --real-models   # 真实 embedding+LLM，唯一能�
 ```bash
 bash scripts/e2e-smoke.sh                              # 起本地 compose 全链路 mock 冒烟
 python3 scripts/load-corpus.py --api-base http://localhost:8080 \
-    --username admin --password <pw>                   # 经登录灌语义集 44 篇（或用 --token）
+    --username admin --password <pw>                   # 经登录灌语料（默认 semantic-golden-set 44 篇；或用 --token）
+python3 scripts/load-corpus.py --api-base ... --source docs/corpora/enterprise-kb.json   # 灌「中科智远」企业知识库 44 篇
 python3 scripts/test-production-regressions.py --api-base http://localhost:8080 \
     --token <user_jwt> --admin-token <admin_jwt>       # 线上回归：真实 bge-m3 hit rate + 权限隔离 0 泄漏 + 同 doc_id 更新一致性 + 对抗/边缘输入
 python3 scripts/run-agent-evals.py --api-base http://localhost:8080   # Agent API 成功率评测（需 AGENT_PLANNER_TYPE=llm）
@@ -84,7 +85,7 @@ bash scripts/real-rag-verify.sh                     # 真实检索链路回归
 
 ```bash
 cd web
-cp .env.local.example .env.local   # 配 NEXT_PUBLIC_API_BASE 与后端地址（登录后 cookie 鉴权）
+cp .env.local.example .env.local   # 配 BACKEND_URL（query-api 地址，登录后 cookie 鉴权）
 npm install && npm run dev         # http://localhost:3000（compose 内为 WEB_HOST_PORT=3100）
 ```
 
@@ -153,9 +154,9 @@ upload(/v1/upload → MinIO 落盘 + Kafka 投递)
 - 核心教训：锚点集 100% 是假象（关键词匹配未走语义检索）；换真实语义集 + bge-m3 后 Recall@1 19% → 71%、@5 95%（nomic-embed-text → bge-m3）。embedding 选型是检索质量的决定性因素。
 - `docs/adr/` 记录关键决策。ADR 0006：相关性硬阈值因分数分布重叠（重叠宽度 0.2784）未启用，仅暴露 `MaxRelevance` 作可观测置信度，不做硬门控。
 
-### 前端（web/，Next.js 14）
+### 前端（web/，Next.js 14，品牌「知境 · 企业知识库」）
 
-企业级产品 UI：问答（SSE 流式渲染 + 引用展开）、文档管理（列表/搜索/权限过滤/删除）、用户管理（admin 建用户/改角色/重置密码）、数据接入（上传/同 doc_id 重传即替换）、检索质量、系统可观测、Agent 编排、审计日志（admin，`/audit` 页）。认证：`/login` → `/api/auth/login` 转发 `/v1/auth/login`，token 存 HttpOnly cookie（`ai_etl_token`）；`app/api/*` route handler 从 cookie 读 token 代理到 query-api `/v1/*`，SSE 透传无跨域。用户/租户/文档元数据经 PG 注册表（`internal/userstore`/`internal/docstore`）。前端本地开发用 `.env.local`（`NEXT_PUBLIC_API_BASE`）配 `BACKEND_URL`。
+企业级产品 UI：问答（SSE 流式渲染 + 引用展开）、文档管理（列表/搜索/权限过滤/删除）、用户管理（admin 建用户/改角色/重置密码）、数据接入（上传/同 doc_id 重传即替换）、检索质量、系统可观测、Agent 编排、审计日志（admin，`/audit` 页）。品牌外壳：图标侧边栏 + 移动端抽屉 + 组件库（`components/ui/`，Button/Card/DataTable/Modal 等）。认证：`/login` → `/api/auth/login` 转发 `/v1/auth/login`，token 存 HttpOnly cookie（`ai_etl_token`）；`app/api/*` route handler 从 cookie 读 token 代理到 query-api `/v1/*`，SSE 透传无跨域。用户/租户/文档元数据经 PG 注册表（`internal/userstore`/`internal/docstore`）。前端本地开发用 `.env.local` 配 `BACKEND_URL`（query-api 地址）。
 
 ## 约定
 
