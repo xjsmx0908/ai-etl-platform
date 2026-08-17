@@ -10,6 +10,7 @@ import { Badge, statusTone } from "@/components/ui/Badge";
 import { Spinner } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Files, Search } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 import type { Document, DocumentSearchResult } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -49,6 +50,7 @@ function formatDate(iso?: string): string {
 }
 
 export default function DocumentsPage() {
+  const { isAdmin } = useAuth();
   const [items, setItems] = useState<Document[]>([]);
   const [total, setTotal] = useState(0);
   const [qInput, setQInput] = useState("");
@@ -261,13 +263,15 @@ export default function DocumentsPage() {
                     <td className="px-4 py-2.5 text-xs text-slate-600">{formatSize(doc.file_size)}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500">{formatDate(doc.created_at)}</td>
                     <td className="px-4 py-2.5">
-                      <button
-                        onClick={() => void onDelete(doc)}
-                        disabled={deleting === doc.doc_id}
-                        className="rounded-md px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        {deleting === doc.doc_id ? "删除中…" : "删除"}
-                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => void onDelete(doc)}
+                          disabled={deleting === doc.doc_id}
+                          className="rounded-md px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          {deleting === doc.doc_id ? "删除中…" : "删除"}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
