@@ -9,8 +9,9 @@ import { Card } from "@/components/ui/Card";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { Spinner } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Files, Search } from "lucide-react";
+import { Files, Search, ShieldCheck, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth";
+import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
 import type { Document, DocumentSearchResult } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -125,6 +126,21 @@ export default function DocumentsPage() {
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3 text-xs text-slate-600">
+        <span className="flex items-center gap-1.5 font-medium text-slate-700">
+          <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+          多格式解析：TXT / Markdown / DOCX / PDF / 图片 OCR / 扫描件 OCR
+        </span>
+        <span className="flex items-center gap-1.5">
+          <ShieldCheck className="h-3.5 w-3.5 text-blue-600" />
+          权限隔离：公开 / 内部 / 机密，按角色过滤
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+          语义切块 + 向量 / 全文混合检索
+        </span>
+      </div>
+
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[220px] flex-1">
           <label className="mb-1 block text-xs font-medium text-slate-500">搜索</label>
@@ -230,11 +246,13 @@ export default function DocumentsPage() {
                 <tr>
                   <th className="px-4 py-2 font-medium">文档 ID</th>
                   <th className="px-4 py-2 font-medium">文件名</th>
+                  <th className="px-4 py-2 font-medium">类型</th>
                   <th className="px-4 py-2 font-medium">权限</th>
                   <th className="px-4 py-2 font-medium">状态</th>
                   <th className="px-4 py-2 font-medium">分块</th>
                   <th className="px-4 py-2 font-medium">大小</th>
                   <th className="px-4 py-2 font-medium">创建时间</th>
+                  <th className="px-4 py-2 font-medium">上传者</th>
                   <th className="px-4 py-2 font-medium">操作</th>
                 </tr>
               </thead>
@@ -252,6 +270,18 @@ export default function DocumentsPage() {
                       </Link>
                     </td>
                     <td className="px-4 py-2.5">
+                      {(() => {
+                        const meta = getFileTypeMeta(doc.file_name);
+                        const Icon = meta.icon;
+                        return (
+                          <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${meta.badgeClass}`}>
+                            <Icon className={`h-3.5 w-3.5 ${meta.iconClass}`} />
+                            {meta.label}
+                          </span>
+                        );
+                      })()}
+                    </td>
+                    <td className="px-4 py-2.5">
                       <Badge>{PERMISSION_LABELS[doc.permission] || doc.permission}</Badge>
                     </td>
                     <td className="px-4 py-2.5">
@@ -262,6 +292,16 @@ export default function DocumentsPage() {
                     </td>
                     <td className="px-4 py-2.5 text-xs text-slate-600">{formatSize(doc.file_size)}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500">{formatDate(doc.created_at)}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-500">
+                      {(() => {
+                        const up = formatUploader(doc.uploaded_by);
+                        return up.title ? (
+                          <span title={up.title}>{up.label}</span>
+                        ) : (
+                          up.label
+                        );
+                      })()}
+                    </td>
                     <td className="px-4 py-2.5">
                       {isAdmin && (
                         <button

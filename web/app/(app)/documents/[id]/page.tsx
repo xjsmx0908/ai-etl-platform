@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
+import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
 import type { Document, DocumentChunk } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -90,6 +91,16 @@ export default function DocumentDetailPage() {
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-base font-semibold text-slate-800">{doc.file_name}</h1>
+          {(() => {
+            const meta = getFileTypeMeta(doc.file_name);
+            const Icon = meta.icon;
+            return (
+              <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${meta.badgeClass}`}>
+                <Icon className={`h-3.5 w-3.5 ${meta.iconClass}`} />
+                {meta.label}
+              </span>
+            );
+          })()}
           <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
             {PERMISSION_LABELS[doc.permission] || doc.permission}
           </span>
@@ -103,6 +114,10 @@ export default function DocumentDetailPage() {
             <dd className="font-mono text-xs text-blue-600">{doc.doc_id}</dd>
           </div>
           <div>
+            <dt className="text-xs text-slate-400">文件类型</dt>
+            <dd>{getFileTypeMeta(doc.file_name).label}</dd>
+          </div>
+          <div>
             <dt className="text-xs text-slate-400">分块</dt>
             <dd>{doc.chunks_total ? `${doc.chunks_done ?? 0}/${doc.chunks_total}` : "—"}</dd>
           </div>
@@ -112,7 +127,12 @@ export default function DocumentDetailPage() {
           </div>
           <div>
             <dt className="text-xs text-slate-400">上传者</dt>
-            <dd>{doc.uploaded_by || "—"}</dd>
+            <dd>
+              {(() => {
+                const up = formatUploader(doc.uploaded_by);
+                return up.title ? <span title={up.title}>{up.label}</span> : up.label;
+              })()}
+            </dd>
           </div>
           <div>
             <dt className="text-xs text-slate-400">创建时间</dt>
