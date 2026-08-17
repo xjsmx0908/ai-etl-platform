@@ -17,11 +17,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
+import zipfile
 from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request
+from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SOURCE = ROOT / "docs" / "evals" / "semantic-golden-set.json"
@@ -36,7 +39,50 @@ def login(api_base: str, username: str, password: str) -> tuple[str, str]:
     return data["token"], data["user"]["tenant_id"]
 
 
-def multipart_body(filename: str, content: str, doc_id: str, tenant_id: str, permission: str) -> bytes:
+def build_docx(text: str) -> bytes:
+    """Build a minimal but valid .docx (OPC/zip + XML) using only the stdlib.
+
+    python-docx (used by parser-service) opens this fine: it reads the
+    document.xml paragraphs. The corpus content is single-paragraph text, so
+    each newline becomes one <w:p>. Must escape XML special chars.
+    """
+    paragraphs = text.split("\n")
+    body = "".join(
+        f'<w:p><w:r><w:t>{escape(p)}</w:t></w:r></w:p>' for p in paragraphs
+    )
+    sectpr = (
+        '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" '
+        'w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}{sectpr}</w:body></w:document>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("word/document.xml", document)
+    return buf.getvalue()
+
+
+def multipart_body(filename: str, content_type: str, data: bytes, doc_id: str, tenant_id: str, permission: str) -> bytes:
     boundary = "----load-corpus-boundary"
     parts = []
     for name, value in (("doc_id", doc_id), ("tenant_id", tenant_id), ("permission", permission)):
@@ -45,9 +91,9 @@ def multipart_body(filename: str, content: str, doc_id: str, tenant_id: str, per
         )
     parts.append(
         f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f"Content-Type: text/plain\r\n\r\n".encode()
+        f"Content-Type: {content_type}\r\n\r\n".encode()
     )
-    parts.append(content.encode("utf-8"))
+    parts.append(data)
     parts.append(f"\r\n--{boundary}--\r\n".encode())
     return b"".join(parts)
 
@@ -61,6 +107,12 @@ def main() -> int:
     parser.add_argument("--password", default="")
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--tenant-id", help="upload tenant; defaults to the login user's tenant")
+    parser.add_argument(
+        "--generated-dir",
+        type=Path,
+        default=ROOT / "docs" / "corpora" / "generated",
+        help="dir with rendered pdf/png files (from generate-corpus-files.py)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -81,19 +133,33 @@ def main() -> int:
     ok, failed = 0, 0
     for case in cases:
         doc_id = case["id"]
-        body = multipart_body(
-            f"{doc_id}.txt",
-            case["content"],
-            doc_id,
-            tenant_id,
-            case.get("permission", "internal"),
-        )
+        fmt = case.get("format", "txt").lower()
+        filename = case.get("filename") or f"{doc_id}.txt"
+        if fmt in ("txt", "md"):
+            data = case["content"].encode("utf-8")
+            content_type = "text/markdown; charset=utf-8" if fmt == "md" else "text/plain; charset=utf-8"
+        elif fmt == "docx":
+            data = build_docx(case["content"])
+            content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif fmt in ("pdf", "pdf-scan", "png"):
+            ext = "pdf" if fmt in ("pdf", "pdf-scan") else "png"
+            gen_path = args.generated_dir / f"{doc_id}.{ext}"
+            if not gen_path.exists():
+                failed += 1
+                print(f"[load] {doc_id}: missing rendered file {gen_path} — run generate-corpus-files.py first")
+                continue
+            data = gen_path.read_bytes()
+            content_type = "application/pdf" if fmt in ("pdf", "pdf-scan") else "image/png"
+        else:
+            data = case["content"].encode("utf-8")
+            content_type = "text/plain; charset=utf-8"
+        body = multipart_body(filename, content_type, data, doc_id, tenant_id, case.get("permission", "internal"))
         req = request.Request(f"{base}/v1/upload", data=body, method="POST")
         req.add_header("Authorization", f"Bearer {token}")
         req.add_header("Content-Type", "multipart/form-data; boundary=----load-corpus-boundary")
         try:
             if args.dry_run:
-                print(f"[load] dry-run: {doc_id}")
+                print(f"[load] dry-run: {doc_id} ({fmt}, {filename}, {len(data)} bytes)")
                 ok += 1
                 continue
             with request.urlopen(req, timeout=60) as resp:

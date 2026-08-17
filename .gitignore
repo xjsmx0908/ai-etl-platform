@@ -38,6 +38,9 @@ docs/evals/reports/
 docs/evals/private/*
 !docs/evals/private/.gitkeep
 
+# Rendered corpus files (PDF/PNG from generate-corpus-files.py, regenerable)
+docs/corpora/generated/
+
 # Manual/test upload artifacts
 test_docs/
 
