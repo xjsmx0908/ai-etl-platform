@@ -180,4 +180,22 @@ func TestHandleSetPassword_RotatesHash(t *testing.T) {
 	}
 }
 
+func TestHandleSetPassword_RejectsSamePassword(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "old-pw", "user", "acme", true)
+	u, found, _ := store.GetByUsername(context.Background(), "alice")
+	if !found {
+		t.Fatal("alice not seeded")
+	}
+	handler := handleUser(store)
+
+	rec := doRequest(handler, http.MethodPost, "/v1/users/"+u.ID+"/password", setPasswordRequest{Password: "old-pw"}, ctxWithTenant("acme"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for same password, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !auth.VerifyPassword(u.PasswordHash, "old-pw") {
+		t.Fatal("hash must be unchanged after rejected reset")
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }

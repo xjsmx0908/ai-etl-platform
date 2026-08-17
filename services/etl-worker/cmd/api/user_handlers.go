@@ -274,8 +274,15 @@ func handleSetPassword(w http.ResponseWriter, r *http.Request, users userstore.S
 		writeError(w, http.StatusBadRequest, "password is required")
 		return
 	}
-	if _, ok := requireTenantUser(r.Context(), users, id, auth.GetTenantID(r.Context())); !ok {
+	user, ok := requireTenantUser(r.Context(), users, id, auth.GetTenantID(r.Context()))
+	if !ok {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	// Reject resetting to the current password so a reset is always a real
+	// rotation — and the UI gets a clear 400 instead of a confusing gateway error.
+	if auth.VerifyPassword(user.PasswordHash, req.Password) {
+		writeError(w, http.StatusBadRequest, "新密码不能与当前密码相同")
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)
