@@ -1,3 +1,64 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  body {
+    font-family:
+      "Inter",
+      "PingFang SC",
+      "Hiragino Sans GB",
+      "Microsoft YaHei",
+      "Noto Sans CJK SC",
+      system-ui,
+      -apple-system,
+      sans-serif;
+    @apply antialiased;
+  }
+  ::selection {
+    @apply bg-blue-100 text-blue-900;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-blue-500/50;
+  }
+}
+
+@layer utilities {
+  /* 知境品牌渐变：主操作/Logo/图表高亮 */
+  .bg-brand-gradient {
+    background-image: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+  }
+  .text-brand-gradient {
+    background-image: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .animate-blink {
+    animation: blink 1s step-end infinite;
+  }
+  .skeleton-shimmer {
+    background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}

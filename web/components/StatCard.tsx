@@ -1,22 +1,25 @@
+import type { LucideIcon } from "lucide-react";
+
 export default function StatCard({
   label,
   value,
-  accent,
+  tone = "default",
+  icon: Icon,
 }: {
   label: string;
   value: string;
-  accent?: boolean;
+  tone?: "default" | "success" | "danger";
+  icon?: LucideIcon;
 }) {
+  const valueColor =
+    tone === "danger" ? "text-red-600" : tone === "success" ? "text-emerald-600" : "text-slate-800";
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-      <p className="text-xs text-slate-500">{label}</p>
-      <p
-        className={
-          accent ? "mt-1 text-xl font-semibold text-emerald-600" : "mt-1 text-xl font-semibold text-slate-800"
-        }
-      >
-        {value}
-      </p>
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-500">{label}</p>
+        {Icon && <Icon className="h-4 w-4 text-slate-400" />}
+      </div>
+      <p className={`mt-1 text-2xl font-semibold ${valueColor}`}>{value}</p>
     </div>
   );
 }
