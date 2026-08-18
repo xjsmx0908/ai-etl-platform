@@ -25,6 +25,7 @@ import (
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/tracing"
 )
@@ -44,10 +45,30 @@ type Service struct {
 	systemPrompt  string
 	promptVersion string
 
+	// governance is the optional document registry used to drop retired
+	// (superseded/archived) candidates and to disclose conflicting sources. It is
+	// nil in the worker and in tests, in which case both features are skipped —
+	// retrieval behaviour is then exactly as before.
+	governance governanceLookup
+
 	// Per-1k-token USD prices for cost estimation (LLM_PRICE_*). Zero means no
 	// cost is reported.
 	promptPricePer1K     float64
 	completionPricePer1K float64
+}
+
+// governanceLookup is the narrow slice of docstore.Store that retrieval needs.
+// Declaring it here keeps query decoupled from the full registry surface and
+// makes the dependency trivial to fake in tests.
+type governanceLookup interface {
+	GovernanceByDocIDs(ctx context.Context, tenantID string, docIDs []string) (map[string]docstore.Governance, error)
+}
+
+// WithGovernance attaches the document registry so retrieval can filter retired
+// documents and disclose conflicts. Wired in cmd/api; safe to omit.
+func (s *Service) WithGovernance(g governanceLookup) *Service {
+	s.governance = g
+	return s
 }
 
 // LLMObserver receives low-cardinality LLM request outcomes for metrics adapters.
@@ -102,11 +123,18 @@ type RetrievalInfo struct {
 	Backends       []string `json:"backends"`
 	CandidateCount int      `json:"candidate_count"`
 	DurationMs     int64    `json:"duration_ms"`
+	// AllowedPermissions are the permission levels the caller's role may
+	// retrieve (e.g. user → [public internal]). Exposed so the UI can state the
+	// retrieval boundary explicitly: confidential docs are filtered at the
+	// source, never reaching the candidate set.
+	AllowedPermissions []string `json:"allowed_permissions"`
+	// PermissionRole is the caller's role that produced the boundary above.
+	PermissionRole string `json:"permission_role,omitempty"`
 	// MaxRelevance is the highest Qdrant cosine score among returned candidates.
 	// Exposed for observability: a hard threshold is not reliable with the current
 	// embedding (distributions overlap heavily — see ADR 0006), so the demo shows
 	// this as evidence confidence instead of silently gating on it.
-	MaxRelevance  float64  `json:"max_relevance,omitempty"`
+	MaxRelevance float64 `json:"max_relevance,omitempty"`
 	// GroundingChecked reports whether the post-generation faithfulness check ran
 	// on this answer (only queries in the ambiguous relevance band).
 	GroundingChecked bool `json:"grounding_checked,omitempty"`
@@ -114,7 +142,32 @@ type RetrievalInfo struct {
 	// the retrieved sources. False with GroundingChecked true means the answer
 	// was blocked and replaced with the fixed refusal sentence.
 	GroundingPassed bool `json:"grounding_passed,omitempty"`
-	PartialErrors   []string `json:"partial_errors,omitempty"`
+	// GroundingUnavailable reports that the check was due to run but the verifier
+	// itself failed, so the answer shipped unverified (the gate fails open). This
+	// is distinct from GroundingChecked=false, which means the query never
+	// qualified for a check. Persistent true here means this defense is off.
+	GroundingUnavailable bool     `json:"grounding_unavailable,omitempty"`
+	PartialErrors        []string `json:"partial_errors,omitempty"`
+	// RetiredFiltered counts candidates dropped because their document is marked
+	// superseded or archived in the registry. Chunk payloads are written once at
+	// ingest, so this filtering necessarily happens after search — the count is
+	// exposed so a shrunken evidence set is explainable rather than mysterious.
+	RetiredFiltered int `json:"retired_filtered,omitempty"`
+	// ConflictDetected reports that the evidence set contains documents that may
+	// disagree (one supersedes another, or two versions of the same file with
+	// different effective dates). The system deliberately does NOT pick a winner;
+	// it discloses the conflict and leaves adjudication to a human.
+	ConflictDetected bool `json:"conflict_detected,omitempty"`
+	// ConflictingDocs describes each document involved in the disclosed conflict.
+	ConflictingDocs []ConflictingDoc `json:"conflicting_docs,omitempty"`
+}
+
+// ConflictingDoc identifies one side of a disclosed evidence conflict.
+type ConflictingDoc struct {
+	DocID         string `json:"doc_id"`
+	FileName      string `json:"file_name,omitempty"`
+	EffectiveDate string `json:"effective_date,omitempty"` // YYYY-MM-DD, empty = not tracked
+	Supersedes    string `json:"supersedes,omitempty"`
 }
 
 // TokenUsage carries provider-reported token consumption for one answer.
@@ -366,6 +419,15 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		candidates = gated
 	}
 
+	// Corpus governance: a document that has been superseded or archived must not
+	// be used as evidence even though its chunks are still indexed.
+	gov := s.applyGovernance(ctx, access.TenantID, candidates)
+	candidates = gov.candidates
+	if gov.retiredFiltered > 0 {
+		slog.Info("retired documents excluded from evidence",
+			"tenant_id", access.TenantID, "dropped", gov.retiredFiltered, "kept", len(candidates))
+	}
+
 	sources := sourceContextsFromCandidates(candidates)
 
 	if len(sources) == 0 {
@@ -375,8 +437,9 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 			Sources:  []SourceContext{},
 			Duration: time.Since(start).String(),
 			// Retrieval info is included so the demo can show WHY it refused
-			// (retrieval ran, but no sufficiently relevant evidence came back).
-			Retrieval: retrievalInfoFromResult(retrievalResult, 0),
+			// (retrieval ran, but no sufficiently relevant evidence came back —
+			// possibly because every match was a retired document).
+			Retrieval: gov.annotate(retrievalInfoFromResult(retrievalResult, 0, access.Role, allowedPermissions)),
 		}, nil
 	}
 
@@ -402,7 +465,7 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 			Answer:    NoEvidenceAnswer,
 			Sources:   []SourceContext{},
 			Duration:  time.Since(start).String(),
-			Retrieval: retrievalInfoFromResult(retrievalResult, len(candidates)),
+			Retrieval: gov.annotate(retrievalInfoFromResult(retrievalResult, len(candidates), access.Role, allowedPermissions)),
 		}, nil
 	}
 
@@ -413,21 +476,29 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	// is actually supported by the retrieved sources before shipping it.
 	groundingChecked := false
 	groundingPassed := true
+	groundingUnavailable := false
 	if s.cfg.RetrievalGroundingCheck && len(sources) > 0 {
 		maxRel := maxSourceRelevance(candidates)
 		if maxRel >= s.cfg.RetrievalGroundingLowBound && maxRel < s.cfg.RetrievalGroundingHighBound {
-			groundingChecked = true
 			ok, gerr := s.groundingCheck(ctx, req.Question, answer, sources)
 			if gerr != nil {
-				slog.Warn("grounding check failed; passing answer through", "error", gerr)
+				// Fail open: a broken verifier must not turn every answer into a
+				// refusal. But report it as NOT checked rather than checked-and-passed,
+				// so `grounding_checked` stops claiming a guarantee that did not run.
+				// A persistently failing verifier means this defense is off.
+				groundingUnavailable = true
+				span.SetAttributes(attribute.Bool("llm.grounding_verifier_unavailable", true))
+				slog.Warn("grounding verifier unavailable; answer passed through unverified",
+					"error", gerr, "tenant_id", access.TenantID)
 			} else {
+				groundingChecked = true
 				groundingPassed = ok
 			}
 		}
 	}
 	if groundingChecked && !groundingPassed {
 		span.SetAttributes(attribute.Bool("llm.ungrounded_answer_blocked", true))
-		info := retrievalInfoFromResult(retrievalResult, len(candidates))
+		info := gov.annotate(retrievalInfoFromResult(retrievalResult, len(candidates), access.Role, allowedPermissions))
 		info.GroundingChecked = true
 		info.GroundingPassed = false
 		return Response{
@@ -447,9 +518,10 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		}
 	}
 
-	retrievalInfo := retrievalInfoFromResult(retrievalResult, len(candidates))
+	retrievalInfo := gov.annotate(retrievalInfoFromResult(retrievalResult, len(candidates), access.Role, allowedPermissions))
 	retrievalInfo.GroundingChecked = groundingChecked
 	retrievalInfo.GroundingPassed = groundingPassed
+	retrievalInfo.GroundingUnavailable = groundingUnavailable
 
 	resp := Response{
 		Answer:        answer,
@@ -522,6 +594,8 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	if gated, _ := gateByRelevance(candidates, s.cfg.RetrievalMinRelevance); len(gated) > 0 {
 		candidates = gated
 	}
+	gov := s.applyGovernance(r.Context(), tenantID, candidates)
+	candidates = gov.candidates
 	sources := sourceContextsFromCandidates(candidates)
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -541,7 +615,7 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 		donePayload, _ := json.Marshal(map[string]interface{}{
 			"duration":       time.Since(start).String(),
 			"prompt_version": s.promptVersion,
-			"retrieval":      retrievalInfoFromResult(retrievalResult, 0),
+			"retrieval":      gov.annotate(retrievalInfoFromResult(retrievalResult, 0, role, allowedPermissions)),
 		})
 		fmt.Fprintf(w, "event: done\ndata: %s\n\n", donePayload)
 		flusher.Flush()
@@ -580,7 +654,7 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	done := map[string]interface{}{
 		"duration":       time.Since(start).String(),
 		"prompt_version": s.promptVersion,
-		"retrieval":      retrievalInfoFromResult(retrievalResult, len(candidates)),
+		"retrieval":      gov.annotate(retrievalInfoFromResult(retrievalResult, len(candidates), role, allowedPermissions)),
 	}
 	if stats.PromptTokens > 0 || stats.CompletionTokens > 0 {
 		done["token_usage"] = TokenUsage{
@@ -878,6 +952,11 @@ func (s *Service) callLLM(ctx context.Context, data []byte) (llmCallResult, erro
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			// Carried so a truncated completion is reported as truncation. Without
+			// it, a reasoning model that exhausts max_tokens before emitting any
+			// content looks indistinguishable from one that ignored the output
+			// format, which sends debugging in the wrong direction entirely.
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage *struct {
 			PromptTokens     int64 `json:"prompt_tokens"`
@@ -897,12 +976,14 @@ func (s *Service) callLLM(ctx context.Context, data []byte) (llmCallResult, erro
 		usage.CompletionTokens = result.Usage.CompletionTokens
 	}
 	usage.Content = result.Choices[0].Message.Content
+	usage.FinishReason = result.Choices[0].FinishReason
 	return usage, nil
 }
 
 // llmCallResult carries the LLM answer plus token usage reported in the response.
 type llmCallResult struct {
 	Content          string
+	FinishReason     string
 	PromptTokens     int64
 	CompletionTokens int64
 }
@@ -967,7 +1048,7 @@ func estimateLLMCost(usage llmCallResult, promptPrice, completionPrice float64) 
 		float64(usage.CompletionTokens)/1000*completionPrice
 }
 
-func retrievalInfoFromResult(r retrieval.Result, candidateCount int) *RetrievalInfo {
+func retrievalInfoFromResult(r retrieval.Result, candidateCount int, role string, allowedPermissions []string) *RetrievalInfo {
 	backends := make([]string, 0, 2)
 	if r.Route.UseQdrant {
 		backends = append(backends, "qdrant")
@@ -977,13 +1058,15 @@ func retrievalInfoFromResult(r retrieval.Result, candidateCount int) *RetrievalI
 	}
 	maxRelevance := maxSourceRelevance(r.Sources)
 	return &RetrievalInfo{
-		Strategy:       string(r.Route.Strategy),
-		CacheHit:       r.CacheHit,
-		Backends:       backends,
-		CandidateCount: candidateCount,
-		DurationMs:     r.Duration.Milliseconds(),
-		MaxRelevance:   maxRelevance,
-		PartialErrors:  r.PartialErrors,
+		Strategy:           string(r.Route.Strategy),
+		CacheHit:           r.CacheHit,
+		Backends:           backends,
+		CandidateCount:     candidateCount,
+		DurationMs:         r.Duration.Milliseconds(),
+		MaxRelevance:       maxRelevance,
+		AllowedPermissions: allowedPermissions,
+		PermissionRole:     role,
+		PartialErrors:      r.PartialErrors,
 	}
 }
 
@@ -1001,6 +1084,15 @@ func maxSourceRelevance(candidates []retrieval.Candidate) float64 {
 // maxGroundingContextChars caps how much retrieved context is sent to the
 // verifier so a long context cannot inflate the second LLM call.
 const maxGroundingContextChars = 8000
+
+// groundingMaxTokens budgets the verifier's completion. The verdict itself is
+// ~10 tokens, but reasoning models spend their budget on internal reasoning
+// tokens first and only emit content afterwards. Too tight a cap makes them stop
+// mid-reasoning and return an EMPTY content string, which surfaces as "no
+// supported verdict in verifier response" and — because the gate fails open —
+// silently disables the check on every query. Keep enough headroom for the
+// reasoning pass, and do not lower this to "just fit the JSON".
+const groundingMaxTokens = 512
 
 // groundingSystemPrompt instructs the verifier to judge whether an answer's
 // claims are traceable to the retrieved documents. It is deliberately strict
@@ -1042,7 +1134,7 @@ func (s *Service) groundingCheck(ctx context.Context, question, answer string, s
 	reqBody := map[string]interface{}{
 		"model":       s.llmModel,
 		"messages":    messages,
-		"max_tokens":  64,
+		"max_tokens":  groundingMaxTokens,
 		"temperature": 0,
 	}
 	data, err := json.Marshal(reqBody)
@@ -1052,6 +1144,13 @@ func (s *Service) groundingCheck(ctx context.Context, question, answer string, s
 	result, err := s.callLLM(ctx, data)
 	if err != nil {
 		return false, err
+	}
+	// Name truncation explicitly. An empty content with finish_reason="length"
+	// means the budget was consumed before the verdict was emitted, which calls
+	// for raising groundingMaxTokens — not for rewriting the prompt.
+	if strings.TrimSpace(result.Content) == "" && result.FinishReason == "length" {
+		return false, fmt.Errorf("verifier truncated before emitting a verdict (finish_reason=length, max_tokens=%d, completion_tokens=%d)",
+			groundingMaxTokens, result.CompletionTokens)
 	}
 	return parseGroundingVerdict(result.Content)
 }

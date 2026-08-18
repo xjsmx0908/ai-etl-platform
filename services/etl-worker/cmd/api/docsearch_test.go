@@ -14,8 +14,8 @@ import (
 )
 
 type fakeChunkLister struct {
-	chunks map[string][]store.StoredChunk
-	err    error
+	chunks      map[string][]store.StoredChunk
+	err         error
 	lastTenant  string
 	lastDoc     string
 	lastAllowed []string
@@ -155,12 +155,12 @@ func TestHandleDocumentSearch_SuccessAggregatesAndEnriches(t *testing.T) {
 	}
 	var resp struct {
 		Items []struct {
-			DocID     string  `json:"doc_id"`
-			FileName  string  `json:"file_name"`
-			Permission string `json:"permission"`
-			HitCount  int     `json:"hit_count"`
-			Snippet   string  `json:"snippet"`
-			BestScore float64 `json:"best_score"`
+			DocID      string  `json:"doc_id"`
+			FileName   string  `json:"file_name"`
+			Permission string  `json:"permission"`
+			HitCount   int     `json:"hit_count"`
+			Snippet    string  `json:"snippet"`
+			BestScore  float64 `json:"best_score"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {

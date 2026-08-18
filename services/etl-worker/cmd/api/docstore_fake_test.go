@@ -24,7 +24,29 @@ func (f *fakeDocStore) key(tenantID, docID string) string { return tenantID + "/
 func (f *fakeDocStore) Upsert(_ context.Context, d docstore.Document) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.docs[f.key(d.TenantID, d.DocID)] = d
+	key := f.key(d.TenantID, d.DocID)
+	// Mirror the real store's governance semantics: an empty governance field
+	// means "not supplied" and preserves the stored value, so a plain re-upload
+	// cannot silently clear an owner or an obsolescence marking. Without this the
+	// fake would be more permissive than PostgreSQL and hide such a regression.
+	if prev, ok := f.docs[key]; ok {
+		if d.DocStatus == "" {
+			d.DocStatus = prev.DocStatus
+		}
+		if d.EffectiveDate.IsZero() {
+			d.EffectiveDate = prev.EffectiveDate
+		}
+		if d.Supersedes == "" {
+			d.Supersedes = prev.Supersedes
+		}
+		if d.Owner == "" {
+			d.Owner = prev.Owner
+		}
+	}
+	if d.DocStatus == "" {
+		d.DocStatus = docstore.DocStatusActive
+	}
+	f.docs[key] = d
 	return nil
 }
 
@@ -33,6 +55,38 @@ func (f *fakeDocStore) Get(_ context.Context, tenantID, docID string) (docstore.
 	defer f.mu.Unlock()
 	d, ok := f.docs[f.key(tenantID, docID)]
 	return d, ok, nil
+}
+
+// GetByHash mirrors PgStore: only completed documents count as duplicates.
+func (f *fakeDocStore) GetByHash(_ context.Context, tenantID, fileHash string) (docstore.Document, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if fileHash == "" {
+		return docstore.Document{}, false, nil
+	}
+	for _, d := range f.docs {
+		if d.TenantID == tenantID && d.FileHash == fileHash && d.Status == docstore.StatusCompleted {
+			return d, true, nil
+		}
+	}
+	return docstore.Document{}, false, nil
+}
+
+func (f *fakeDocStore) GovernanceByDocIDs(_ context.Context, tenantID string, docIDs []string) (map[string]docstore.Governance, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]docstore.Governance{}
+	for _, id := range docIDs {
+		d, ok := f.docs[f.key(tenantID, id)]
+		if !ok {
+			continue
+		}
+		out[id] = docstore.Governance{
+			DocID: d.DocID, DocStatus: d.DocStatus, EffectiveDate: d.EffectiveDate,
+			Supersedes: d.Supersedes, FileName: d.FileName,
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeDocStore) Delete(_ context.Context, tenantID, docID string) error {

@@ -117,12 +117,12 @@ type Config struct {
 	// Candidates above this are high-confidence hits and skip the verifier.
 	RetrievalGroundingHighBound float64
 	RerankEndpoint              string
-	RerankAPIKey            string
-	RerankModel             string
-	SemanticCacheEnabled    bool
-	SemanticCacheTTL        time.Duration
-	SemanticCacheThreshold  float64
-	SemanticCacheMaxEntries int
+	RerankAPIKey                string
+	RerankModel                 string
+	SemanticCacheEnabled        bool
+	SemanticCacheTTL            time.Duration
+	SemanticCacheThreshold      float64
+	SemanticCacheMaxEntries     int
 
 	// Agent Orchestrator (Module 3)
 	AgentNodeID           string
@@ -269,24 +269,24 @@ func Load() Config {
 		SparseAvgDL: EnvFloat("SPARSE_AVG_DL", 256),
 
 		// Retrieval Gateway
-		RetrievalTimeout:           EnvDuration("RETRIEVAL_TIMEOUT", 300*time.Millisecond),
-		RetrievalCandidateK:        EnvInt("RETRIEVAL_CANDIDATE_K", 50),
-		RetrievalFinalTopK:         EnvInt("RETRIEVAL_FINAL_TOP_K", 5),
-		RetrievalEnableES:          EnvBool("RETRIEVAL_ENABLE_ES", true),
-		RetrievalEnableRerank:      EnvBool("RETRIEVAL_ENABLE_RERANK", false),
-		RetrievalRerankPolicy:      strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
-		RetrievalExactSchemaFields: EnvCSV("RETRIEVAL_EXACT_SCHEMA_FIELDS", DefaultRetrievalExactSchemaFields),
+		RetrievalTimeout:            EnvDuration("RETRIEVAL_TIMEOUT", 300*time.Millisecond),
+		RetrievalCandidateK:         EnvInt("RETRIEVAL_CANDIDATE_K", 50),
+		RetrievalFinalTopK:          EnvInt("RETRIEVAL_FINAL_TOP_K", 5),
+		RetrievalEnableES:           EnvBool("RETRIEVAL_ENABLE_ES", true),
+		RetrievalEnableRerank:       EnvBool("RETRIEVAL_ENABLE_RERANK", false),
+		RetrievalRerankPolicy:       strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
+		RetrievalExactSchemaFields:  EnvCSV("RETRIEVAL_EXACT_SCHEMA_FIELDS", DefaultRetrievalExactSchemaFields),
 		RetrievalMinRelevance:       EnvFloat("RETRIEVAL_MIN_RELEVANCE", 0),
 		RetrievalGroundingCheck:     EnvBool("RETRIEVAL_GROUNDING_CHECK", true),
 		RetrievalGroundingLowBound:  EnvFloat("RETRIEVAL_GROUNDING_LOW_BOUND", 0.45),
 		RetrievalGroundingHighBound: EnvFloat("RETRIEVAL_GROUNDING_HIGH_BOUND", 0.70),
 		RerankEndpoint:              EnvStr("RERANK_ENDPOINT", ""),
-		RerankAPIKey:               EnvSecret("RERANK_API_KEY", ""),
-		RerankModel:                EnvStr("RERANK_MODEL", "bge-reranker-base"),
-		SemanticCacheEnabled:       EnvBool("SEMANTIC_CACHE_ENABLED", true),
-		SemanticCacheTTL:           EnvDuration("SEMANTIC_CACHE_TTL", 10*time.Minute),
-		SemanticCacheThreshold:     EnvFloat("SEMANTIC_CACHE_THRESHOLD", 0.92),
-		SemanticCacheMaxEntries:    EnvInt("SEMANTIC_CACHE_MAX_ENTRIES", 128),
+		RerankAPIKey:                EnvSecret("RERANK_API_KEY", ""),
+		RerankModel:                 EnvStr("RERANK_MODEL", "bge-reranker-base"),
+		SemanticCacheEnabled:        EnvBool("SEMANTIC_CACHE_ENABLED", true),
+		SemanticCacheTTL:            EnvDuration("SEMANTIC_CACHE_TTL", 10*time.Minute),
+		SemanticCacheThreshold:      EnvFloat("SEMANTIC_CACHE_THRESHOLD", 0.92),
+		SemanticCacheMaxEntries:     EnvInt("SEMANTIC_CACHE_MAX_ENTRIES", 128),
 
 		// Agent Orchestrator
 		AgentNodeID:           EnvStr("AGENT_NODE_ID", "agent-api-1"),

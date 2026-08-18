@@ -110,6 +110,26 @@ func (c *Client) DeleteByPrefix(ctx context.Context, prefix string) error {
 	return deleteErr
 }
 
+// DeleteByPrefixExcept removes every object under prefix except keepKey. Upload
+// upsert uses it to wipe a document's previous objects after the replacement has
+// already been written under the same tenant/{docID} prefix.
+func (c *Client) DeleteByPrefixExcept(ctx context.Context, prefix, keepKey string) error {
+	objects := c.client.ListObjects(ctx, c.bucket, minio.ListObjectsOptions{Prefix: prefix})
+	var deleteErr error
+	for obj := range objects {
+		if obj.Err != nil {
+			return fmt.Errorf("list objects for prefix %s: %w", prefix, obj.Err)
+		}
+		if obj.Key == keepKey {
+			continue
+		}
+		if err := c.client.RemoveObject(ctx, c.bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
+			deleteErr = fmt.Errorf("delete %s: %w", obj.Key, err)
+		}
+	}
+	return deleteErr
+}
+
 // Exists checks if a file exists.
 func (c *Client) Exists(ctx context.Context, key string) (bool, error) {
 	_, err := c.client.StatObject(ctx, c.bucket, key, minio.GetObjectOptions{})

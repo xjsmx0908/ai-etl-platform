@@ -34,6 +34,13 @@ type documentView struct {
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
 	CompletedAt *time.Time        `json:"completed_at,omitempty"`
+	// Controlled-document governance. DocStatus is the document's lifecycle as a
+	// knowledge source (active/superseded/archived) and is a different axis from
+	// Status above, which is the ETL processing state.
+	DocStatus     string `json:"doc_status,omitempty"`
+	EffectiveDate string `json:"effective_date,omitempty"` // YYYY-MM-DD
+	Supersedes    string `json:"supersedes,omitempty"`
+	Owner         string `json:"owner,omitempty"`
 }
 
 func toDocView(d docstore.Document) documentView {
@@ -52,10 +59,18 @@ func toDocView(d docstore.Document) documentView {
 		UploadedBy:  d.UploadedBy,
 		CreatedAt:   d.CreatedAt,
 		UpdatedAt:   d.UpdatedAt,
+		DocStatus:   d.DocStatus,
+		Supersedes:  d.Supersedes,
+		Owner:       d.Owner,
 	}
 	if !d.CompletedAt.IsZero() {
 		t := d.CompletedAt
 		v.CompletedAt = &t
+	}
+	// Rendered as a plain date: the column is DATE, so a timestamp would imply a
+	// precision the registry does not have.
+	if !d.EffectiveDate.IsZero() {
+		v.EffectiveDate = d.EffectiveDate.Format("2006-01-02")
 	}
 	return v
 }

@@ -26,6 +26,16 @@ const (
 	StatusFailed     = "failed"
 )
 
+// DocStatus values describe a document's lifecycle as a knowledge source. This
+// is a different axis from Status above (the ETL processing state): a document
+// can be Status=completed and DocStatus=superseded, meaning it ingested fine but
+// must no longer be used as evidence.
+const (
+	DocStatusActive     = "active"
+	DocStatusSuperseded = "superseded"
+	DocStatusArchived   = "archived"
+)
+
 // ErrNotFound is returned by Get when no row matches (tenant, doc_id).
 var ErrNotFound = errors.New("docstore: not found")
 
@@ -49,6 +59,31 @@ type Document struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	CompletedAt time.Time
+
+	// Controlled-document governance (migration 0004).
+	DocStatus     string    // active | superseded | archived
+	EffectiveDate time.Time // zero = not tracked
+	Supersedes    string    // doc_id this version replaces; empty = none
+	Owner         string    // accountable owner, distinct from UploadedBy
+}
+
+// Governance is the subset of a document's governance state that retrieval needs
+// to decide whether a candidate may still be used as evidence, and whether two
+// candidates disagree. Kept separate from Document so the post-retrieval lookup
+// stays a narrow projection rather than a full row fetch per candidate.
+type Governance struct {
+	DocID         string
+	DocStatus     string
+	EffectiveDate time.Time
+	Supersedes    string
+	FileName      string
+}
+
+// IsRetired reports whether a document must be excluded from answer evidence.
+// An empty DocStatus is treated as active so rows predating migration 0004 (and
+// stores that do not track governance) keep working unchanged.
+func (g Governance) IsRetired() bool {
+	return g.DocStatus == DocStatusSuperseded || g.DocStatus == DocStatusArchived
 }
 
 // ListQuery filters document listing.
@@ -69,6 +104,13 @@ type Store interface {
 	List(ctx context.Context, q ListQuery) ([]Document, int, error)
 	UpsertStatus(ctx context.Context, tenantID, docID string, d Document) error
 	ReconcileUpsert(ctx context.Context, tenantID, docID, permission string) error
+	// GetByHash returns an existing document with identical content, used by the
+	// upload path to detect exact duplicates instead of indexing the same bytes
+	// under a second doc_id (which would pollute the retrieval candidate set).
+	GetByHash(ctx context.Context, tenantID, fileHash string) (Document, bool, error)
+	// GovernanceByDocIDs batch-loads governance state for retrieval candidates.
+	// Missing doc_ids are simply absent from the map.
+	GovernanceByDocIDs(ctx context.Context, tenantID string, docIDs []string) (map[string]Governance, error)
 }
 
 // PgStore implements Store on PostgreSQL.
@@ -91,8 +133,10 @@ func (s *PgStore) Upsert(ctx context.Context, d Document) error {
 		INSERT INTO documents (
 			tenant_id, doc_id, file_name, object_key, file_hash, file_size,
 			content_type, permission, status, stage, chunks_done, chunks_total,
-			error, metadata, uploaded_by, created_at, updated_at, completed_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			error, metadata, uploaded_by, created_at, updated_at, completed_at,
+			doc_status, effective_date, supersedes, owner
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+			COALESCE(NULLIF($19,''),'active'),$20,$21,$22)
 		ON CONFLICT (tenant_id, doc_id) DO UPDATE SET
 			file_name = EXCLUDED.file_name,
 			object_key = EXCLUDED.object_key,
@@ -108,10 +152,18 @@ func (s *PgStore) Upsert(ctx context.Context, d Document) error {
 			metadata = EXCLUDED.metadata,
 			uploaded_by = EXCLUDED.uploaded_by,
 			updated_at = now(),
-			completed_at = EXCLUDED.completed_at`,
+			completed_at = EXCLUDED.completed_at,
+			-- Governance fields are only overwritten when the caller supplied one,
+			-- so a plain re-upload cannot silently wipe an owner or an effective
+			-- date set through the governance path.
+			doc_status = CASE WHEN $19::text = '' THEN documents.doc_status ELSE $19::text END,
+			effective_date = COALESCE($20::date, documents.effective_date),
+			supersedes = CASE WHEN $21::text = '' THEN documents.supersedes ELSE $21::text END,
+			owner = CASE WHEN $22::text = '' THEN documents.owner ELSE $22::text END`,
 		d.TenantID, d.DocID, d.FileName, d.ObjectKey, d.FileHash, d.FileSize,
 		d.ContentType, d.Permission, d.Status, d.Stage, d.ChunksDone, d.ChunksTotal,
 		d.Error, d.Metadata, d.UploadedBy, d.CreatedAt, d.UpdatedAt, d.CompletedAt,
+		d.DocStatus, dateParam(d.EffectiveDate), d.Supersedes, d.Owner,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert document: %w", err)
@@ -121,11 +173,9 @@ func (s *PgStore) Upsert(ctx context.Context, d Document) error {
 
 // Get returns the registry row for (tenant, doc_id).
 func (s *PgStore) Get(ctx context.Context, tenantID, docID string) (Document, bool, error) {
-	row := s.q.QueryRow(ctx, `
-		SELECT tenant_id, doc_id, file_name, object_key, file_hash, file_size,
-		       content_type, permission, status, stage, chunks_done, chunks_total,
-		       error, metadata, uploaded_by, created_at, updated_at, completed_at
-		FROM documents WHERE tenant_id=$1 AND doc_id=$2`, tenantID, docID)
+	row := s.q.QueryRow(ctx,
+		"SELECT "+documentColumns+" FROM documents WHERE tenant_id=$1 AND doc_id=$2",
+		tenantID, docID)
 	d, found, err := scanDocument(row)
 	if err != nil {
 		return Document{}, false, err
@@ -134,6 +184,54 @@ func (s *PgStore) Get(ctx context.Context, tenantID, docID string) (Document, bo
 		return Document{}, false, nil
 	}
 	return d, true, nil
+}
+
+// GetByHash returns the newest document with the same content hash, if any. Only
+// completed documents count as duplicates: a queued or failed row may never
+// produce searchable chunks, so treating it as the canonical copy would silently
+// drop the upload.
+func (s *PgStore) GetByHash(ctx context.Context, tenantID, fileHash string) (Document, bool, error) {
+	if strings.TrimSpace(fileHash) == "" {
+		return Document{}, false, nil
+	}
+	row := s.q.QueryRow(ctx,
+		"SELECT "+documentColumns+` FROM documents
+		 WHERE tenant_id=$1 AND file_hash=$2 AND status='completed'
+		 ORDER BY created_at DESC LIMIT 1`, tenantID, fileHash)
+	return scanDocument(row)
+}
+
+// GovernanceByDocIDs loads governance state for the given doc_ids in one query,
+// avoiding an N+1 lookup on the query hot path.
+func (s *PgStore) GovernanceByDocIDs(ctx context.Context, tenantID string, docIDs []string) (map[string]Governance, error) {
+	out := map[string]Governance{}
+	if len(docIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.q.Query(ctx, `
+		SELECT doc_id, doc_status, effective_date, supersedes, file_name
+		FROM documents WHERE tenant_id=$1 AND doc_id = ANY($2::text[])`,
+		tenantID, docIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load document governance: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var g Governance
+		var effective *time.Time
+		if err := rows.Scan(&g.DocID, &g.DocStatus, &effective, &g.Supersedes, &g.FileName); err != nil {
+			return nil, fmt.Errorf("scan document governance: %w", err)
+		}
+		if effective != nil {
+			g.EffectiveDate = *effective
+		}
+		out[g.DocID] = g
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate document governance: %w", err)
+	}
+	return out, nil
 }
 
 // Delete removes the registry row for (tenant, doc_id).
@@ -151,11 +249,8 @@ func (s *PgStore) Delete(ctx context.Context, tenantID, docID string) error {
 func (s *PgStore) List(ctx context.Context, q ListQuery) ([]Document, int, error) {
 	where, args := listWhere(q)
 
-	rows, err := s.q.Query(ctx, `
-		SELECT tenant_id, doc_id, file_name, object_key, file_hash, file_size,
-		       content_type, permission, status, stage, chunks_done, chunks_total,
-		       error, metadata, uploaded_by, created_at, updated_at, completed_at
-		FROM documents `+where+`
+	rows, err := s.q.Query(ctx,
+		"SELECT "+documentColumns+" FROM documents "+where+`
 		ORDER BY created_at DESC
 		LIMIT $`+fmt.Sprint(len(args)+1)+` OFFSET $`+fmt.Sprint(len(args)+2),
 		append(args, q.Limit, q.Offset)...)
@@ -238,13 +333,21 @@ func listWhere(q ListQuery) (string, []any) {
 	return "WHERE " + strings.Join(conds, " AND "), args
 }
 
+// documentColumns is the single column list every full-row read shares, so
+// scanDocument's argument order can never drift from one of the queries.
+const documentColumns = `tenant_id, doc_id, file_name, object_key, file_hash, file_size,
+	content_type, permission, status, stage, chunks_done, chunks_total,
+	error, metadata, uploaded_by, created_at, updated_at, completed_at,
+	doc_status, effective_date, supersedes, owner`
+
 func scanDocument(row pgx.Row) (Document, bool, error) {
 	var d Document
-	var completedAt *time.Time
+	var completedAt, effectiveDate *time.Time
 	var metadata map[string]string
 	err := row.Scan(&d.TenantID, &d.DocID, &d.FileName, &d.ObjectKey, &d.FileHash, &d.FileSize,
 		&d.ContentType, &d.Permission, &d.Status, &d.Stage, &d.ChunksDone, &d.ChunksTotal,
-		&d.Error, &metadata, &d.UploadedBy, &d.CreatedAt, &d.UpdatedAt, &completedAt)
+		&d.Error, &metadata, &d.UploadedBy, &d.CreatedAt, &d.UpdatedAt, &completedAt,
+		&d.DocStatus, &effectiveDate, &d.Supersedes, &d.Owner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Document{}, false, nil
 	}
@@ -255,7 +358,19 @@ func scanDocument(row pgx.Row) (Document, bool, error) {
 	if completedAt != nil {
 		d.CompletedAt = *completedAt
 	}
+	if effectiveDate != nil {
+		d.EffectiveDate = *effectiveDate
+	}
 	return d, true, nil
+}
+
+// dateParam turns a zero time into a nil DATE parameter so "not tracked" is
+// stored as SQL NULL rather than year zero.
+func dateParam(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC().Format("2006-01-02")
 }
 
 // completedAtParam turns a zero time into an empty string so the SQL CASE treats

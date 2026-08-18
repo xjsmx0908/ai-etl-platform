@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -86,6 +87,14 @@ type documentObjectStore interface {
 	DeleteByPrefix(ctx context.Context, prefix string) error
 }
 
+// objectPrefixPruner is the optional capability upload-upsert needs to wipe a
+// document's old objects while sparing the replacement it just wrote. Stores
+// that do not implement it simply keep the superseded objects (harmless: they are
+// unreferenced once the registry and indexes point at the new version).
+type objectPrefixPruner interface {
+	DeleteByPrefixExcept(ctx context.Context, prefix, keepKey string) error
+}
+
 // uploadDeleteObjectStore is what the upload handler needs: write a new object
 // and, for doc_id upsert, wipe the old document's objects first.
 type uploadDeleteObjectStore interface {
@@ -101,6 +110,10 @@ type uploadAcceptedResponse struct {
 	FileHash  string `json:"file_hash"`
 	Message   string `json:"message"`
 	Timestamp string `json:"timestamp"`
+	// DuplicateOf is set when the upload was recognised as byte-identical to an
+	// already-indexed document. The upload is then a no-op and this names the
+	// existing doc_id. Status is "duplicate" in that case, not "processing".
+	DuplicateOf string `json:"duplicate_of,omitempty"`
 }
 
 type statusRecorder struct {
@@ -228,8 +241,11 @@ func main() {
 	}
 	defer idemStore.Close()
 
-	// Initialize services
-	qs := query.NewServiceWithObserver(cfg, prom)
+	// Initialize services. The registry is attached so retrieval can exclude
+	// superseded/archived documents from the evidence set and disclose conflicting
+	// sources — governance the chunk index cannot express, because chunk payloads
+	// are written once at ingest and never updated in place.
+	qs := query.NewServiceWithObserver(cfg, prom).WithGovernance(docStore)
 	taskStatusStore, err := newTaskStatusStore(cfg)
 	if err != nil {
 		slog.Error("failed to create task status store", "error", err)
@@ -380,6 +396,15 @@ func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
 // All backends are scoped to tenantID: deleting by doc_id alone would let one
 // tenant wipe another tenant's vectors/full-text when doc_ids collide.
 func cascadeDeleteDoc(ctx context.Context, cfg config.Config, s3Client documentObjectStore, tenantID, docID string) []string {
+	return cascadeDeleteDocExcept(ctx, cfg, s3Client, tenantID, docID, "")
+}
+
+// cascadeDeleteDocExcept is cascadeDeleteDoc with one object key spared. Upload
+// upsert needs this: it writes the replacement object *before* wiping the old
+// version (so a later failure cannot leave the document with neither), and the
+// new object shares the tenant/{docID} prefix the wipe would otherwise match.
+// keepObjectKey == "" deletes the whole prefix, which is what DELETE wants.
+func cascadeDeleteDocExcept(ctx context.Context, cfg config.Config, s3Client documentObjectStore, tenantID, docID, keepObjectKey string) []string {
 	var errs []string
 
 	qs, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension)
@@ -403,8 +428,16 @@ func cascadeDeleteDoc(ctx context.Context, cfg config.Config, s3Client documentO
 	}
 
 	if s3Client != nil {
-		if err := s3Client.DeleteByPrefix(ctx, tenantID+"/"+docID); err != nil {
-			errs = append(errs, "s3: "+err.Error())
+		if keepObjectKey == "" {
+			if err := s3Client.DeleteByPrefix(ctx, tenantID+"/"+docID); err != nil {
+				errs = append(errs, "s3: "+err.Error())
+			}
+		} else if pruner, ok := s3Client.(objectPrefixPruner); ok {
+			// Replacement already written: delete every old object under the
+			// prefix except the one just uploaded.
+			if err := pruner.DeleteByPrefixExcept(ctx, tenantID+"/"+docID, keepObjectKey); err != nil {
+				errs = append(errs, "s3: "+err.Error())
+			}
 		}
 	}
 	return errs
@@ -623,6 +656,36 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		// Classification is an authorization decision, not a free-form field: a
+		// caller may only label a document at a level it is also allowed to read.
+		// Without this, a `user` could write confidential docs it can never read
+		// back (the read path filters at the source), which is both a privilege
+		// escalation and a data-availability trap.
+		role := auth.GetPermission(r.Context())
+		if !canWritePermission(role, permission) {
+			recordAudit(r.Context(), audits, audit.Entry{
+				TenantID: tenantID, ActorUserID: auth.GetUserID(r.Context()),
+				ActorRole: role,
+				Action:    "upload", ResourceType: "document",
+				Result: audit.ResultFailure,
+				Detail: map[string]any{
+					"file_name": header.Filename, "permission": permission,
+					"reason": "role may not classify at this permission level",
+				},
+			})
+			http.Error(w, "insufficient role for requested permission", http.StatusForbidden)
+			return
+		}
+		// Controlled-document governance, all optional. Setting these is an
+		// editorial act about a document's authority, not about its content, so it
+		// is restricted to admins; a normal upload simply omits them and the store
+		// layer leaves any existing values untouched.
+		governance, err := parseUploadGovernance(r, role)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		metadata, err := parseUploadMetadata(r.FormValue("metadata"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -691,25 +754,79 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 		}
 		objectKey := fmt.Sprintf("%s/%s%s", tenantID, docID, ext)
 
-		// Upsert semantics: a user-supplied doc_id replaces the previous version,
-		// so wipe the old document's vectors, full-text docs, and objects first.
-		if userSuppliedDocID {
-			if errs := cascadeDeleteDoc(r.Context(), cfg, s3Client, tenantID, docID); len(errs) > 0 {
-				slog.Warn("upload upsert pre-delete partial failure", "doc_id", docID, "tenant_id", tenantID, "errors", errs)
+		// Upsert semantics: a user-supplied doc_id replaces an existing document,
+		// which is a destructive act on someone else's data unless we check who
+		// owns it. Authorize BEFORE touching any backend.
+		replacingExisting := false
+		if userSuppliedDocID && docStore != nil {
+			existing, found, err := docStore.Get(r.Context(), tenantID, docID)
+			if err != nil {
+				slog.Error("upsert ownership lookup failed", "tenant_id", tenantID, "doc_id", docID, "error", err)
+				http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if found {
+				replacingExisting = true
+				// The caller must be allowed to read the document it is about to
+				// overwrite, and (unless admin) must be the one who uploaded it.
+				// Otherwise any user could wipe a colleague's — or an admin's
+				// confidential — document by guessing its doc_id.
+				//
+				// An empty UploadedBy means the row was backfilled by reconciliation
+				// and its author is unknown. Unknown ownership is not open ownership:
+				// only an admin may replace it.
+				ownedByCaller := existing.UploadedBy != "" && existing.UploadedBy == auth.GetUserID(r.Context())
+				if !canWritePermission(role, existing.Permission) || (!isAdminRole(role) && !ownedByCaller) {
+					recordAudit(r.Context(), audits, audit.Entry{
+						TenantID: tenantID, ActorUserID: auth.GetUserID(r.Context()),
+						ActorRole: role,
+						Action:    "upload", ResourceType: "document", ResourceID: docID,
+						Result: audit.ResultFailure,
+						Detail: map[string]any{
+							"file_name": header.Filename,
+							"reason":    "not permitted to replace this document",
+						},
+					})
+					http.Error(w, "not permitted to replace this document", http.StatusForbidden)
+					return
+				}
 			}
 		}
 
-		// Upload to S3 while computing SHA-256.
-		hasher := sha256.New()
-		reader := io.TeeReader(file, hasher)
+		// Content hash is computed up front, before anything is written, because
+		// exact-duplicate detection has to happen before the upload commits: the
+		// point is to NOT create a second copy of identical bytes.
+		fileHash, err := hashUpload(file)
+		if err != nil {
+			slog.Error("hash upload failed", "error", err)
+			http.Error(w, "storage failed", http.StatusInternalServerError)
+			return
+		}
 
-		// Upload to S3
-		if err := s3Client.Upload(r.Context(), objectKey, reader, header.Size, header.Header.Get("Content-Type")); err != nil {
+		// Exact duplicate: the same bytes are already indexed under another doc_id.
+		// Ingesting them again would put near-identical chunks into the same
+		// candidate set, where they compete for the Top-K slots that should hold
+		// distinct evidence. Only checked when the caller did NOT name a doc_id —
+		// an explicit doc_id is an explicit intent to replace that document.
+		if !userSuppliedDocID && docStore != nil {
+			existing, found, err := docStore.GetByHash(r.Context(), tenantID, fileHash)
+			if err != nil {
+				// Detection is an optimisation, not a safety control: on a registry
+				// error keep ingesting rather than rejecting a legitimate upload.
+				slog.Warn("duplicate lookup failed; proceeding with upload",
+					"tenant_id", tenantID, "error", err)
+			} else if found {
+				writeDuplicateResponse(w, r, existing, header.Filename, now,
+					idemStore, idempotencyKey, requestSig, tenantID)
+				return
+			}
+		}
+
+		if err := s3Client.Upload(r.Context(), objectKey, file, header.Size, header.Header.Get("Content-Type")); err != nil {
 			slog.Error("s3 upload failed", "error", err)
 			http.Error(w, "storage failed", http.StatusInternalServerError)
 			return
 		}
-		fileHash := hex.EncodeToString(hasher.Sum(nil))
 
 		// Create and publish task
 		task := model.Task{
@@ -766,6 +883,19 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			return
 		}
 
+		// Replacement is durable (object written, task enqueued), so now retire the
+		// previous version's derived data. Doing this *after* the write means a
+		// failure above leaves the old document intact rather than deleting it and
+		// then failing to ingest the new one — the upload path must never end with
+		// neither version present.
+		if replacingExisting {
+			if errs := cascadeDeleteDocExcept(r.Context(), cfg, s3Client, tenantID, docID, objectKey); len(errs) > 0 {
+				// Stale vectors/full-text for the old version may linger; the new
+				// version still lands. Reconciliation and the next upsert retry it.
+				slog.Warn("upload upsert post-delete partial failure", "doc_id", docID, "tenant_id", tenantID, "errors", errs)
+			}
+		}
+
 		// Registry write-through: a queued row so the document appears in the
 		// inventory immediately. Failure is non-fatal for the upload path — the
 		// message is still durable — but is logged for reconciliation.
@@ -785,6 +915,11 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 				UploadedBy:  auth.GetUserID(r.Context()),
 				CreatedAt:   task.CreatedAt,
 				UpdatedAt:   now,
+
+				DocStatus:     governance.DocStatus,
+				EffectiveDate: governance.EffectiveDate,
+				Supersedes:    governance.Supersedes,
+				Owner:         governance.Owner,
 			}); err != nil {
 				slog.Warn("document registry upsert failed", "tenant_id", task.TenantID, "doc_id", task.DocID, "error", err)
 			}
@@ -858,6 +993,82 @@ func normalizePermission(raw string) (string, error) {
 	return permission, nil
 }
 
+// hashUpload computes the SHA-256 of the uploaded file and rewinds it so the
+// body can still be streamed to object storage afterwards. multipart.File is an
+// io.ReadSeeker for both the in-memory and spooled-to-disk cases, so no copy of
+// the payload is buffered here.
+func hashUpload(file multipart.File) (string, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind upload: %w", err)
+	}
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", fmt.Errorf("hash upload: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind upload after hash: %w", err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// writeDuplicateResponse answers an upload whose content already exists in the
+// registry. It is a 200 (not an error): from the user's perspective the content
+// they wanted in the knowledge base is in the knowledge base, and the response
+// points at the document that holds it.
+func writeDuplicateResponse(
+	w http.ResponseWriter, r *http.Request, existing docstore.Document, filename string,
+	now time.Time, idemStore idempotency.Store, idempotencyKey, requestSig, tenantID string,
+) {
+	resp := uploadAcceptedResponse{
+		TaskID:      existing.DocID,
+		DocID:       existing.DocID,
+		Status:      "duplicate",
+		File:        existing.ObjectKey,
+		FileHash:    existing.FileHash,
+		DuplicateOf: existing.DocID,
+		Message: fmt.Sprintf("file '%s' has identical content to existing document '%s'; not ingested again",
+			filename, existing.DocID),
+		Timestamp: now.Format(time.RFC3339),
+	}
+	respBytes, _ := json.Marshal(resp)
+
+	if idempotencyKey != "" {
+		if err := idemStore.Complete(r.Context(), tenantID, idempotencyKey, requestSig, idempotency.CachedResponse{
+			StatusCode:  http.StatusOK,
+			ContentType: "application/json",
+			Body:        respBytes,
+		}); err != nil {
+			slog.Warn("idempotency completion failed for duplicate upload",
+				"tenant_id", tenantID, "idempotency_key", idempotencyKey, "error", err)
+		}
+	}
+
+	slog.Info("duplicate upload short-circuited",
+		"tenant_id", tenantID, "doc_id", existing.DocID, "file_name", filename)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(respBytes)
+}
+
+// isAdminRole reports whether a role is the tenant administrator, which may
+// replace documents it did not upload.
+func isAdminRole(role string) bool {
+	return strings.EqualFold(strings.TrimSpace(role), "admin")
+}
+
+// canWritePermission reports whether a role may classify (or replace) a
+// document at the given permission level. Write scope mirrors read scope
+// deliberately — query.AllowedPermissionsForRole is the single source of truth —
+// so a caller can never create a document it is not allowed to retrieve.
+func canWritePermission(role, permission string) bool {
+	for _, allowed := range query.AllowedPermissionsForRole(role) {
+		if allowed == permission {
+			return true
+		}
+	}
+	return false
+}
+
 func readIdempotencyKey(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get("X-Idempotency-Key")); v != "" {
 		return v
@@ -892,6 +1103,65 @@ func parseUploadMetadata(raw string) (map[string]string, error) {
 		return nil, nil
 	}
 	return clean, nil
+}
+
+// uploadGovernance carries the optional controlled-document fields of an upload.
+// Zero values mean "not supplied", which the registry treats as "leave whatever
+// is already there" rather than as a clearing write.
+type uploadGovernance struct {
+	DocStatus     string
+	EffectiveDate time.Time
+	Supersedes    string
+	Owner         string
+}
+
+// parseUploadGovernance reads the governance form fields and validates them.
+//
+// These fields decide whether a document counts as authoritative evidence, which
+// is a stronger power than uploading content: marking a document superseded
+// removes it from every future answer. So writing them requires admin, and a
+// non-admin supplying any of them is rejected outright rather than silently
+// ignored — silently dropping a caller's obsolescence marking would leave them
+// believing a document was retired when it was not.
+func parseUploadGovernance(r *http.Request, role string) (uploadGovernance, error) {
+	g := uploadGovernance{
+		DocStatus:  strings.TrimSpace(r.FormValue("doc_status")),
+		Supersedes: strings.TrimSpace(r.FormValue("supersedes")),
+		Owner:      strings.TrimSpace(r.FormValue("owner")),
+	}
+	rawDate := strings.TrimSpace(r.FormValue("effective_date"))
+
+	supplied := g.DocStatus != "" || g.Supersedes != "" || g.Owner != "" || rawDate != ""
+	if !supplied {
+		return uploadGovernance{}, nil
+	}
+	if !isAdminRole(role) {
+		return uploadGovernance{}, fmt.Errorf("governance fields (doc_status/effective_date/supersedes/owner) require admin role")
+	}
+
+	switch g.DocStatus {
+	case "", docstore.DocStatusActive, docstore.DocStatusSuperseded, docstore.DocStatusArchived:
+	default:
+		return uploadGovernance{}, fmt.Errorf("doc_status must be one of active, superseded, archived")
+	}
+	if rawDate != "" {
+		// DATE column, so a date-only layout: accepting a timestamp would imply a
+		// precision the registry does not store.
+		parsed, err := time.Parse("2006-01-02", rawDate)
+		if err != nil {
+			return uploadGovernance{}, fmt.Errorf("effective_date must be YYYY-MM-DD")
+		}
+		g.EffectiveDate = parsed
+	}
+	if len(g.Supersedes) > 256 || len(g.Owner) > 256 {
+		return uploadGovernance{}, fmt.Errorf("supersedes/owner too long")
+	}
+	// A document superseding itself would make the conflict detector report a
+	// document as conflicting with itself.
+	if g.Supersedes != "" && g.Supersedes == strings.TrimSpace(r.FormValue("doc_id")) {
+		return uploadGovernance{}, fmt.Errorf("supersedes must not reference the document itself")
+	}
+	return g, nil
 }
 
 func buildUploadRequestSignature(tenantID, filename string, size int64, contentType, permission string, metadata map[string]string) string {
