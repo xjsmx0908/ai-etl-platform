@@ -51,7 +51,7 @@ function formatDate(iso?: string): string {
 }
 
 export default function DocumentsPage() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, role } = useAuth();
   const [items, setItems] = useState<Document[]>([]);
   const [total, setTotal] = useState(0);
   const [qInput, setQInput] = useState("");
@@ -139,6 +139,23 @@ export default function DocumentsPage() {
           <Sparkles className="h-3.5 w-3.5 text-blue-600" />
           语义切块 + 向量 / 全文混合检索
         </span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs text-slate-500">
+        <ShieldCheck className="h-3.5 w-3.5 text-slate-400" />
+        <span>
+          当前角色：<span className="font-medium text-slate-700">{role === "admin" ? "管理员" : role === "user" ? "普通用户" : role === "readonly" ? "只读用户" : "—"}</span>
+        </span>
+        <span className="text-slate-300">|</span>
+        <span>
+          检索边界：
+          <span className="font-medium text-slate-700">
+            {role === "admin" ? "公开 + 内部 + 机密（全部文档）" : role === "user" ? "公开 + 内部" : role === "readonly" ? "公开" : "—"}
+          </span>
+        </span>
+        {role !== "admin" && (
+          <span className="text-slate-400">机密文档对当前角色不可见（检索源头过滤）</span>
+        )}
       </div>
 
       <div className="flex flex-wrap items-end gap-3">

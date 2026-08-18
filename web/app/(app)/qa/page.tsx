@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
+import Link from "next/link";
 import { Card } from "@/components/ui/Card";
-import { ChevronDown, ShieldAlert } from "lucide-react";
+import { AlertTriangle, ChevronDown, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 import type { AnswerMeta, Source } from "@/lib/types";
 
 const STRATEGY_LABELS: Record<string, string> = {
@@ -11,6 +13,27 @@ const STRATEGY_LABELS: Record<string, string> = {
   semantic: "语义检索",
   hybrid: "混合检索（语义 + 关键词）",
 };
+
+const ROLE_LABELS: Record<string, string> = {
+  admin: "管理员",
+  user: "普通用户",
+  readonly: "只读用户",
+};
+
+const PERMISSION_LABELS: Record<string, string> = {
+  public: "公开",
+  internal: "内部",
+  confidential: "机密",
+};
+
+// The permission boundary applied to this query's retrieval. When the role
+// cannot see confidential docs, the boundary itself is the isolation proof:
+// confidential documents are filtered at the source and never reach candidates.
+function permissionBoundaryLabel(retrieval?: AnswerMeta["retrieval"]): string {
+  if (!retrieval || !retrieval.allowed_permissions?.length) return "—";
+  const perms = retrieval.allowed_permissions.map((p) => PERMISSION_LABELS[p] || p).join(" + ");
+  return `${ROLE_LABELS[retrieval.permission_role || ""] || retrieval.permission_role || "未知角色"} · ${perms}`;
+}
 
 function formatCost(usd: number): string {
   if (usd >= 0.01) return `$${usd.toFixed(3)}`;
@@ -43,6 +66,17 @@ function groundingLabel(retrieval?: AnswerMeta["retrieval"]): { value: string; h
     : { value: "拦截（无据拒答）", highlight: true };
 }
 
+// Corpus governance applied to this answer's evidence: superseded/archived
+// documents dropped after retrieval (their chunks stay indexed, so the filter
+// runs against the registry), plus any conflict disclosed above.
+function governanceLabel(retrieval?: AnswerMeta["retrieval"]): string {
+  if (!retrieval) return "—";
+  const parts: string[] = [];
+  if ((retrieval.retired_filtered ?? 0) > 0) parts.push(`剔除作废 ${retrieval.retired_filtered} 条`);
+  if (retrieval.conflict_detected) parts.push(`冲突 ${retrieval.conflicting_docs?.length ?? 0} 份`);
+  return parts.length > 0 ? parts.join(" · ") : "无异常";
+}
+
 function Row({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -59,6 +93,7 @@ function Row({ label, value, highlight }: { label: string; value: string; highli
 }
 
 export default function QaPage() {
+  const { role } = useAuth();
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [sources, setSources] = useState<Source[]>([]);
@@ -130,9 +165,64 @@ export default function QaPage() {
         </button>
       </form>
 
+      {(role === "admin" || role === "user" || role === "readonly") && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs text-slate-500">
+          <ShieldCheck className="h-3.5 w-3.5 text-slate-400" />
+          <span>
+            检索边界：<span className="font-medium text-slate-700">{ROLE_LABELS[role] || role}</span>
+          </span>
+          <span className="text-slate-300">|</span>
+          <span>
+            可见范围：
+            <span className="font-medium text-slate-700">
+              {role === "admin" ? "公开 + 内部 + 机密" : role === "user" ? "公开 + 内部" : "公开"}
+            </span>
+          </span>
+          {role !== "admin" && (
+            <span className="text-amber-600">机密文档在检索源头即被过滤，不会进入回答素材</span>
+          )}
+        </div>
+      )}
+
       {(status === "streaming" || status === "done" || status === "error") && (
         <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
           <div className="space-y-4">
+            {/* Conflicting sources are disclosed, never adjudicated: the system
+                does not decide which document is right, it shows both so a human
+                can. Placed above the answer because it qualifies everything below. */}
+            {meta.retrieval?.conflict_detected && (meta.retrieval.conflicting_docs?.length ?? 0) > 0 && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-amber-800">
+                      检索到 {meta.retrieval.conflicting_docs?.length} 份文档对此描述可能不一致
+                    </p>
+                    <p className="mt-1 text-xs text-amber-700">
+                      回答可能只采用了其中一份。请核对下列来源，以现行版本为准。
+                    </p>
+                    <ul className="mt-2 space-y-1">
+                      {meta.retrieval.conflicting_docs?.map((c) => (
+                        <li key={c.doc_id} className="flex flex-wrap items-center gap-x-2 text-xs text-amber-800">
+                          <Link
+                            href={`/documents/${encodeURIComponent(c.doc_id)}`}
+                            className="font-mono hover:underline"
+                          >
+                            {c.doc_id}
+                          </Link>
+                          {c.file_name && <span className="text-amber-700">{c.file_name}</span>}
+                          {c.effective_date && <span className="text-amber-600">生效 {c.effective_date}</span>}
+                          {c.supersedes && (
+                            <span className="text-amber-600">声明替代 {c.supersedes}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <Card>
               <div className="mb-2 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-500">回答</h2>
@@ -194,6 +284,14 @@ export default function QaPage() {
               <h2 className="mb-3 text-sm font-semibold text-slate-500">检索链路</h2>
               <dl className="space-y-2 text-sm">
                 <Row
+                  label="检索边界"
+                  value={permissionBoundaryLabel(meta.retrieval)}
+                  highlight={
+                    meta.retrieval?.allowed_permissions?.length === 3 ||
+                    (meta.retrieval?.permission_role === "user" && meta.retrieval?.allowed_permissions?.length === 2)
+                  }
+                />
+                <Row
                   label="路由策略"
                   value={meta.retrieval ? STRATEGY_LABELS[meta.retrieval.strategy] || meta.retrieval.strategy : "—"}
                 />
@@ -213,6 +311,11 @@ export default function QaPage() {
                   label="忠实度校验"
                   value={groundingLabel(meta.retrieval).value}
                   highlight={groundingLabel(meta.retrieval).highlight}
+                />
+                <Row
+                  label="语料治理"
+                  value={governanceLabel(meta.retrieval)}
+                  highlight={(meta.retrieval?.retired_filtered ?? 0) > 0}
                 />
                 <Row label="检索耗时" value={meta.retrieval ? `${meta.retrieval.duration_ms}ms` : "—"} />
               </dl>

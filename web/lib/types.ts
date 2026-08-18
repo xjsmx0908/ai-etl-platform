@@ -20,6 +20,11 @@ export type LoginResponse = {
 
 export type DocumentPermission = "public" | "internal" | "confidential";
 
+// Lifecycle of a document as a knowledge source, distinct from `status` (the ETL
+// processing state). A superseded/archived document keeps its chunks indexed but
+// is excluded from answer evidence.
+export type DocStatus = "active" | "superseded" | "archived";
+
 export type Document = {
   doc_id: string;
   tenant_id: string;
@@ -35,6 +40,21 @@ export type Document = {
   created_at: string;
   updated_at?: string;
   completed_at?: string;
+  doc_status?: DocStatus;
+  effective_date?: string; // YYYY-MM-DD
+  supersedes?: string; // doc_id this version replaces
+  owner?: string; // accountable owner, distinct from uploaded_by
+};
+
+// Upload outcome. `status: "duplicate"` means the exact same bytes were already
+// indexed, `duplicate_of` names the document holding them, and nothing was
+// ingested a second time — a normal result, not an error.
+export type UploadResult = {
+  doc_id: string;
+  task_id: string;
+  status?: string;
+  duplicate_of?: string;
+  message?: string;
 };
 
 export type DocumentsResponse = {
@@ -98,6 +118,15 @@ export type Source = {
   score: number;
 };
 
+// One document involved in a disclosed conflict. The backend never decides which
+// side is correct — it discloses both and leaves adjudication to a human.
+export type ConflictingDoc = {
+  doc_id: string;
+  file_name?: string;
+  effective_date?: string; // YYYY-MM-DD, empty = not tracked
+  supersedes?: string;
+};
+
 export type RetrievalInfo = {
   strategy: string;
   cache_hit: boolean;
@@ -107,6 +136,13 @@ export type RetrievalInfo = {
   max_relevance?: number;
   grounding_checked?: boolean;
   grounding_passed?: boolean;
+  allowed_permissions?: string[];
+  permission_role?: string;
+  // Corpus governance: candidates dropped because their document is superseded
+  // or archived, and conflicts among the documents that did survive.
+  retired_filtered?: number;
+  conflict_detected?: boolean;
+  conflicting_docs?: ConflictingDoc[];
 };
 
 export type TokenUsage = {

@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
-import { CheckCircle2, ChevronRight, Loader2, XCircle } from "lucide-react";
-import type { TaskStatus } from "@/lib/types";
+import { useAuth } from "@/lib/auth";
+import { CheckCircle2, ChevronRight, Copy, Loader2, XCircle } from "lucide-react";
+import type { TaskStatus, UploadResult } from "@/lib/types";
 
 const PIPELINE_STEPS = [
   { key: "queued", label: "上传 · Kafka 异步" },
@@ -12,21 +14,24 @@ const PIPELINE_STEPS = [
   { key: "completed", label: "入库 · Qdrant + ES" },
 ];
 
+// Classification is authorized server-side; the options are narrowed here so the
+// UI does not offer a level the caller's role would be rejected for.
 const PERMISSION_OPTIONS = [
-  { value: "public", label: "public（公开）" },
-  { value: "internal", label: "internal（内部）" },
-  { value: "confidential", label: "confidential（机密）" },
+  { value: "public", label: "public（公开）", adminOnly: false },
+  { value: "internal", label: "internal（内部）", adminOnly: false },
+  { value: "confidential", label: "confidential（机密）", adminOnly: true },
 ];
 
 export default function DataPage() {
+  const { isAdmin } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [permission, setPermission] = useState("internal");
-  const [docId, setDocId] = useState("");
   const [status, setStatus] = useState<"idle" | "uploading" | "polling" | "done" | "error">("idle");
-  const [uploadResult, setUploadResult] = useState<{ doc_id?: string; task_id?: string } | null>(null);
+  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
   const [error, setError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const permissionOptions = PERMISSION_OPTIONS.filter((o) => isAdmin || !o.adminOnly);
 
   useEffect(() => {
     return () => {
@@ -49,8 +54,14 @@ export default function DataPage() {
     setTaskStatus(null);
     setError("");
     try {
-      const res = await apiClient.uploadDocument(file, permission, docId);
+      const res = await apiClient.uploadDocument(file, permission);
       setUploadResult(res);
+      // Identical content is already indexed: there is no new task to follow, and
+      // polling a doc_id whose ETL finished long ago would just spin.
+      if (res.duplicate_of) {
+        setStatus("done");
+        return;
+      }
       setStatus("polling");
       poll(res.doc_id);
     } catch (e: unknown) {
@@ -83,6 +94,7 @@ export default function DataPage() {
     }, 2000);
   };
 
+  const isDuplicate = Boolean(uploadResult?.duplicate_of);
   const backendStatus = taskStatus?.status || "";
   const stage = taskStatus?.stage || (status === "uploading" || status === "polling" ? "parsing" : "");
   const isCompleted = backendStatus === "completed";
@@ -121,19 +133,12 @@ export default function DataPage() {
             onChange={(e) => setFile(e.target.files?.[0] || null)}
             className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
           />
-          <input
-            value={docId}
-            onChange={(e) => setDocId(e.target.value)}
-            placeholder="doc_id（留空自动生成）"
-            className="w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
-            title="指定 doc_id 并重复上传同一 doc_id 可更新文档（旧版本被替换）"
-          />
           <select
             value={permission}
             onChange={(e) => setPermission(e.target.value)}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
           >
-            {PERMISSION_OPTIONS.map((o) => (
+            {permissionOptions.map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>
@@ -146,12 +151,40 @@ export default function DataPage() {
           >
             {status === "uploading" || status === "polling" ? "上传中…" : "上传"}
           </button>
-          {uploadResult && (
+          {uploadResult && !isDuplicate && (
             <span className="font-mono text-xs text-slate-500">doc: {uploadResult.doc_id}</span>
           )}
         </div>
+        <p className="mt-2 text-xs text-slate-400">
+          文档编号由系统分配。要更新已有文档，请在
+          <Link href="/documents" className="mx-1 text-blue-600 hover:underline">
+            文档管理
+          </Link>
+          中打开该文档，使用「上传新版本」。
+          {!isAdmin && <span className="ml-1 text-amber-600">机密级别需管理员上传。</span>}
+        </p>
 
-        <div className="mt-5 flex items-center gap-2">
+        {/* Identical content is a normal outcome, not an error: what the user
+            wanted in the knowledge base is already in it. */}
+        {isDuplicate && (
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+            <Copy className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">内容相同，已存在于知识库</p>
+              <p className="mt-1 text-xs text-blue-700">
+                未重复入库，避免同一份内容占用检索候选位。现有文档：
+                <Link
+                  href={`/documents/${encodeURIComponent(uploadResult?.duplicate_of || "")}`}
+                  className="ml-1 font-mono hover:underline"
+                >
+                  {uploadResult?.duplicate_of}
+                </Link>
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className={`mt-5 flex items-center gap-2 ${isDuplicate ? "hidden" : ""}`}>
           {PIPELINE_STEPS.map((step, i) => {
             const state = stepState(step.key);
             const cls =

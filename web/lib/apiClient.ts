@@ -11,6 +11,7 @@ import type {
   LoginResponse,
   Source,
   TaskStatus,
+  UploadResult,
   User,
 } from "./types";
 import { clearUser, setUser } from "./auth";
@@ -118,16 +119,19 @@ export async function deleteDocument(id: string): Promise<void> {
 
 // ── Upload / Task ────────────────────────────────────────────────────────
 
+// Passing docId replaces that document with a new version (the caller must own
+// it, or be an admin). Omitting it creates a new document, and identical content
+// is recognised as a duplicate instead of being ingested twice.
 export async function uploadDocument(
   file: File,
   permission: string,
   docId?: string
-): Promise<{ doc_id: string; task_id: string }> {
+): Promise<UploadResult> {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("permission", permission);
   if (docId?.trim()) fd.append("doc_id", docId.trim());
-  return request<{ doc_id: string; task_id: string }>("/upload", { method: "POST", body: fd });
+  return request<UploadResult>("/upload", { method: "POST", body: fd });
 }
 
 export async function getTaskStatus(docId: string): Promise<TaskStatus> {
