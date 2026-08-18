@@ -20,6 +20,19 @@ docker compose logs -f query-api
 
 ### Go (services/etl-worker)
 
+**本机没有 go toolchain**（`which go` 为空），make 目标要在容器里跑。go.mod 要求 go 1.25，镜像用 `golang:1.25`（与 Dockerfile 一致）：
+
+```bash
+docker run --rm -v "$PWD/services/etl-worker":/src -w /src golang:1.25 \
+    go test ./internal/... -count=1                       # 全量单测
+docker run --rm -v "$PWD/services/etl-worker":/src -w /src golang:1.25 \
+    go test ./internal/retrieval/ -run TestRRF -count=1    # 单个测试
+docker run --rm -v "$PWD/services/etl-worker":/src -w /src golang:1.25 \
+    sh -c 'gofmt -l . && go vet ./...'                     # CI 的 gofmt/vet 门禁
+```
+
+有 toolchain 的机器上直接用 Makefile：
+
 ```bash
 cd services/etl-worker
 make build        # 编译 worker + api 两个二进制
@@ -59,6 +72,8 @@ python3 scripts/run-evals.py --real-models   # 真实 embedding+LLM，唯一能�
 - 配置解析优先级与 Go 服务一致：CLI 参数 > 环境变量 > `*_FILE_PATH` secrets。
 - 可选 `--judge`（LLM-as-a-Judge）输出 Faithfulness/Correctness/Relevance。
 - CI 门禁：`--min-hit-rate 0.90` 把关检索质量；`--min-pass-rate`/`--min-answer-pass-rate` 放宽到 0.90——负例拒答依赖 LLM prompt、mock LLM 不遵循是已知缺陷（根治在 `docs/backlog.md`，关联 ADR 0006），**别把这两项改回 1.0**。
+- 默认数据集是锚点集 `golden-set.json`（`--golden-set` 可换成 `semantic-golden-set.json`）。
+- **compose 隔离**：run-evals 自派生一次性 project（`ai-etl-eval-<ts>`）+ `docker-compose.eval.yml`（`ports: !reset []` 隐藏后端端口）；`e2e-smoke.sh` 用 project `ai-etl-smoke` + eval/smoke 两层 overlay。两者 cleanup 都 `down -v`，**绝不能跑在主栈 project 上**（曾误删主栈 volumes）。
 
 ### 冒烟 / 语料加载 / 线上回归（scripts/）
 
@@ -66,9 +81,10 @@ python3 scripts/run-evals.py --real-models   # 真实 embedding+LLM，唯一能�
 bash scripts/e2e-smoke.sh                              # 起本地 compose 全链路 mock 冒烟
 python3 scripts/load-corpus.py --api-base http://localhost:8080 \
     --username admin --password <pw>                   # 经登录灌语料（默认 semantic-golden-set 44 篇；或用 --token）
-python3 scripts/load-corpus.py --api-base ... --source docs/corpora/enterprise-kb.json   # 灌「中科智远」企业知识库 44 篇
+python3 scripts/load-corpus.py --api-base ... --source docs/corpora/enterprise-kb.json   # 灌「中科智远」企业知识库 45 篇（含治理字段，需 admin token）
 python3 scripts/test-production-regressions.py --api-base http://localhost:8080 \
-    --token <user_jwt> --admin-token <admin_jwt>       # 线上回归：真实 bge-m3 hit rate + 权限隔离 0 泄漏 + 同 doc_id 更新一致性 + 对抗/边缘输入
+    --token <user_jwt> --admin-token <admin_jwt> \
+    --corpus docs/corpora/enterprise-kb.json           # 线上回归：hit rate + 权限隔离 0 泄漏 + 更新一致性 + 写入门禁/去重 + 对抗/边缘输入
 python3 scripts/run-agent-evals.py --api-base http://localhost:8080   # Agent API 成功率评测（需 AGENT_PLANNER_TYPE=llm）
 python3 scripts/reindex.py --api-base ... --s3-* --s3-bucket documents   # embedding 换模型后从 MinIO 重建（先删旧向量）
 scripts/backfill-qdrant-permission.sh               # Qdrant 缺失 permission 批量回填（默认 dry-run，--apply 生效）
@@ -79,6 +95,8 @@ python3 scripts/judge_eval.py                       # LLM-as-a-Judge 打分
 bash scripts/real-rag-verify.sh                     # 真实检索链路回归
 ```
 
+**回归脚本的 `--corpus` 必须与目标环境实际灌入的语料一致**：doc_id 取自各 case 的 `id`（与 `load-corpus.py` 同源）。指错语料会让 hit rate 变 0（是测量错误，不是检索退化），且权限隔离项会因「查的机密文档不存在」而假通过。脚本已加两道防线：preflight 校验 token（401 直接 exit 2）、隔离项要求 `--admin-token` 作正向对照（无对照报 SKIP 而非 PASS）。
+
 登录：`POST /v1/auth/login`（username+password → JWT）。首启 `BOOTSTRAP_ADMIN_USERNAME/PASSWORD/TENANT` 自动创建初始 admin；admin 再经 `/v1/users`、`/v1/tenants` 管理用户/租户。
 
 ### 前端 (web/)
@@ -87,7 +105,11 @@ bash scripts/real-rag-verify.sh                     # 真实检索链路回归
 cd web
 cp .env.local.example .env.local   # 配 BACKEND_URL（query-api 地址，登录后 cookie 鉴权）
 npm install && npm run dev         # http://localhost:3000（compose 内为 WEB_HOST_PORT=3100）
+npm run build                      # 类型检查 + 构建；改完前端务必跑（CI 不覆盖 web）
+npm run lint
 ```
+
+web 不在 CI 门禁里，前端改动只能靠本地 `npm run build` 验证。
 
 ## 架构总览
 
@@ -151,6 +173,7 @@ upload(/v1/upload → MinIO 落盘 + Kafka 投递)
 ### 评测体系（scripts/ + docs/evals/）
 
 - 数据集：`golden-set.json`（锚点/关键词匹配，别拿它当质量证据）、`semantic-golden-set.json`（44 篇语义集，检索质量主依据）、`real-baseline-findings.md`（真实基线报告）。
+- 演示语料 `docs/corpora/enterprise-kb.json`（45 篇，6 种 format：txt/md/docx/pdf/pdf-scan/png；permission 分布 internal 34 / public 7 / confidential 4，权限隔离演示依赖这 4 篇机密）。`FIN-2024-002`（差旅费报销标准）与 `FIN-2025-001`（2025 修订版，带 `supersedes` + `effective_date`）构成替代链，住宿/餐饮限额直接冲突，是**冲突披露**的演示数据；把 `FIN-2024-002` 标 `doc_status=superseded` 即演示**作废过滤**。治理字段是 admin-only，灌这份语料必须用 admin token。二进制格式需先渲染：`scripts/generate-corpus-files.py` 要在 parser-service 容器内跑（宿主无 PyMuPDF/PIL/CJK 字体），产物落 `docs/corpora/generated/`（git-ignored，脚本头部有完整 docker cp/exec 步骤）。
 - 核心教训：锚点集 100% 是假象（关键词匹配未走语义检索）；换真实语义集 + bge-m3 后 Recall@1 19% → 71%、@5 95%（nomic-embed-text → bge-m3）。embedding 选型是检索质量的决定性因素。
 - `docs/adr/` 记录关键决策。ADR 0006：相关性硬阈值因分数分布重叠（重叠宽度 0.2784）未启用，仅暴露 `MaxRelevance` 作可观测置信度，不做硬门控。
 

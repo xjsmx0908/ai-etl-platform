@@ -52,7 +52,7 @@ Instead:
 
 - `RETRIEVAL_MIN_RELEVANCE` remains `0` (gate disabled) and is documented as
   observational, not a quality ceiling.
-- The demo shows "evidence confidence" so interviewers can see we understood the
-  score semantics rather than hard-coding an arbitrary number.
+- The UI surfaces "evidence confidence" so operators can read the score semantics
+  themselves rather than trusting an arbitrary hard-coded number.
 - Future embedding changes must re-run the distribution check above; a
   clearable separation would justify enabling the gate.

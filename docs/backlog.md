@@ -1,5 +1,32 @@
 # Backlog
 
+## 2026-08-17 - 语料治理：写入分级、文档身份、去重、作废与冲突披露（已交付）
+
+Status: implemented
+
+此前治理集中在「读」侧（检索源头权限过滤），「写」侧几乎没有门禁，四个缺口均经读码确认：
+
+1. **机密写入门禁**：`normalizePermission` 原先只校验值在白名单内、不看调用者 role，user 可上传 `permission=confidential`（写进去自己反而读不到）。新增 `canWritePermission`，复用 `query.AllowedPermissionsForRole` 同一套矩阵——写入范围与读取范围一致，非成员 403 并埋审计。
+2. **doc_id 所有权校验 + 先写后删**：用户自选 doc_id 时会 `cascadeDeleteDoc` 删除旧文档的向量/全文/对象且无所有权校验，同租户任何 user 可覆盖删除他人（含 admin 的机密）文档。现在替换前先 `Get` 现有行，校验密级可写 + `uploaded_by`（admin 不受限），任一不过直接 403 且不碰任何后端；并把清理改到「对象已写 + Kafka 已投」之后（`cascadeDeleteDocExcept` 放过新对象），避免后续失败导致两个版本都不在。
+3. **file_hash 去重**：`file_hash` 原先只写不读。新增 `GetByHash` + `documents_tenant_hash_idx`（非唯一，同内容合法地存在于多个 doc_id）。未指定 doc_id 时命中已完成的同内容文档即返回 200 + `duplicate_of`，不重复入库——重复副本会挤占 Top-K 候选位，直接拖累检索质量。指定 doc_id 是明确替换意图，不查重。
+4. **受控文件字段 + 作废过滤 + 冲突披露**：migration 0004 加 `doc_status`/`effective_date`/`supersedes`/`owner`（`doc_status` 是知识源生命周期，与 ETL 的 `status` 是两个维度）。**作废过滤在检索后置阶段按 `documents` 表做**，因为 chunk payload 只在 ETL 写入时生成、代码中不存在任何 `set_payload`，把已入库文档标作废不会回写其 chunk。冲突判据保守可解释、不引入 LLM 判断：证据集内出现 `supersedes` 链两端同时被引用，或同 `file_name` 但 `effective_date` 不同。前端在回答上方披露双方 doc_id/生效日期，交由人裁决。
+5. **UI 收敛**：数据接入撤掉 doc_id 输入框（编号由系统分配），非 admin 不显示 confidential 选项；更新文档改为文档详情页「上传新版本」+ 二次确认。注册表 API 与详情页透出治理字段。
+
+设计取舍：注册表故障在去重与作废过滤两处都降级放行（记日志继续），因为二者都不是机密性控制——机密性由检索源头的权限过滤保证，不受影响。未登记的 doc_id 视作 active（reconciliation 会补行，丢弃反而静默缩小证据集）。
+
+范围外（enterprise 做法，尚未实现）：
+
+- 按目录/空间继承密级（SharePoint/Confluence 模式，需新增 spaces 数据模型）
+- 自动分类器（内容检测敏感信息自动升密级）
+- 近似重复检测（MinHash/SimHash；`file_hash` 只能抓精确重复，改一个字就绕过）
+- 发布审批流（受控文件进语料前的门禁）
+- 复审周期与「未验证」标记（Guru 模式：过期知识主动降权/提示）
+- 治理字段的 UI 入口：`/v1/upload` 已接受 `doc_status`/`effective_date`/`supersedes`/`owner`（admin-only，非 admin 传即 400 而非静默忽略；空值表示「未提供」，普通重传不会清空既有标记），`load-corpus.py` 会透传语料里的这些字段。仍缺前端：文档详情页无治理字段编辑，把一份文档标作废目前只能走 API 或 SQL
+- 治理字段的独立更新接口：现在只能随上传附带，改一个 `owner` 也要重传文件。缺 `PATCH /v1/documents/{id}` 之类的纯元数据写入口
+- 冲突检测只认显式关系（`supersedes` 链、同 `file_name` 不同 `effective_date`）。实测查「住宿限额」时 `HR-2024-005`（差旅报销流程）也写着五百元，与 `FIN-2025-001` 的八百元矛盾，但两者无 `supersedes` 关系、文件名也不同，因此 `conflict_detected` 不置位——这次是 LLM 自己在答案里提示了不一致，属运气而非机制。要覆盖这类跨文档矛盾需主题聚类或数值抽取比对，比现有保守判据重得多，故留作后续
+- `documents.chunks_done` 恒为 0（45 行全部如此，与本次改动无关）：向量确实在 Qdrant（每篇 1 chunk），只是计数器没回写，前端进度显示因此不可用
+- 回归脚本把 `api500` 计入检索未命中：实测 `HR-2024-005` 报 miss，根因是上游 LLM 返回空响应（`empty LLM response`，90 分钟内仅 1 次，重试 4 次全部命中 Top-1），检索链路正常。生成失败与检索未命中混在一个指标里，会让上游抖动看起来像检索退化，应分开统计
+
 ## 2026-08-16 - 系统真实感改造：知境（已交付）
 
 Status: implemented
@@ -8,7 +35,7 @@ Status: implemented
 
 1. **真实业务语料**：`docs/corpora/enterprise-kb.json` ——「中科智远科技有限公司」企业知识库 44 篇（internal 33 / confidential 4 / public 7），覆盖人力资源（员工手册/年假/考勤/报销/招聘/绩效/薪酬保密）、财务（预算/差旅标准/审批权限/经营目标）、法务合同（审批/签署权限/保密协议/知识产权）、采购（办法/招标/供应商）、项目管理（立项/里程碑/风险/验收）、信息安全（密码/数据分级/应急）、行政、产品技术（发布/选型/代码评审/API/路线图）。doc_id 编号风格（HR-2024-003）、content 真实制度风格（条款/金额/天数/流程）。经 `load-corpus.py --source` 灌入主栈（admin，default 租户）。
 2. **品牌化「知境」**：`web/app/layout.tsx`、`web/app/login/page.tsx`、`web/components/AppShell.tsx` 由「AI-ETL 企业知识库」改为「知境 · 企业知识库 / 企业智能知识平台」。
-3. **权限隔离演示**：interviewer（user 角色）可见 40 篇（public+internal，无 confidential）；confidential 4 篇（薪酬/经营目标/合同签署/产品路线图）仅 admin。实测 interviewer `/v1/users` 403。
+3. **权限隔离演示**：`zhangwei`（普通员工，user 角色）可见 40 篇（public+internal，无 confidential）；confidential 4 篇（薪酬/经营目标/合同签署/产品路线图）仅 admin。实测 `zhangwei` 调 `/v1/users` 403。只读外部审计场景用 `external_auditor`（readonly，仅 public）。
 4. **业务问答**：基于真实语料回答（如「员工年假天数」→ 引用《员工年假管理制度》）。
 
 ## 2026-08-15 - 企业级改造 Phase 1（已交付）

@@ -82,10 +82,31 @@ def build_docx(text: str) -> bytes:
     return buf.getvalue()
 
 
-def multipart_body(filename: str, content_type: str, data: bytes, doc_id: str, tenant_id: str, permission: str) -> bytes:
+# Controlled-document fields the upload API accepts. They are admin-only server
+# side, so a corpus that carries them must be loaded with an admin token; a
+# non-admin load of such a corpus is rejected with 400 rather than silently
+# dropping the governance intent.
+GOVERNANCE_FIELDS = ("doc_status", "effective_date", "supersedes", "owner")
+
+
+def multipart_body(
+    filename: str,
+    content_type: str,
+    data: bytes,
+    doc_id: str,
+    tenant_id: str,
+    permission: str,
+    governance: dict[str, str] | None = None,
+) -> bytes:
     boundary = "----load-corpus-boundary"
     parts = []
-    for name, value in (("doc_id", doc_id), ("tenant_id", tenant_id), ("permission", permission)):
+    fields = [("doc_id", doc_id), ("tenant_id", tenant_id), ("permission", permission)]
+    # Only send governance fields the case actually sets: an empty value means
+    # "not supplied" to the registry, and sending one for every case would make
+    # the request look like an editorial act on documents that need none.
+    for name, value in (governance or {}).items():
+        fields.append((name, value))
+    for name, value in fields:
         parts.append(
             f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
         )
@@ -153,13 +174,23 @@ def main() -> int:
         else:
             data = case["content"].encode("utf-8")
             content_type = "text/plain; charset=utf-8"
-        body = multipart_body(filename, content_type, data, doc_id, tenant_id, case.get("permission", "internal"))
+        governance = {f: str(case[f]) for f in GOVERNANCE_FIELDS if case.get(f)}
+        body = multipart_body(
+            filename,
+            content_type,
+            data,
+            doc_id,
+            tenant_id,
+            case.get("permission", "internal"),
+            governance,
+        )
         req = request.Request(f"{base}/v1/upload", data=body, method="POST")
         req.add_header("Authorization", f"Bearer {token}")
         req.add_header("Content-Type", "multipart/form-data; boundary=----load-corpus-boundary")
         try:
             if args.dry_run:
-                print(f"[load] dry-run: {doc_id} ({fmt}, {filename}, {len(data)} bytes)")
+                gov = f" governance={governance}" if governance else ""
+                print(f"[load] dry-run: {doc_id} ({fmt}, {filename}, {len(data)} bytes){gov}")
                 ok += 1
                 continue
             with request.urlopen(req, timeout=60) as resp:
