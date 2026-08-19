@@ -406,3 +406,18 @@ Plan:
 3. Use the benchmark to verify latency impact from CPU Cross-Encoder reranking and latency reduction from Redis semantic cache.
 4. Fix the exact-route guardrail gap found during schema exact pressure testing.
 5. Document the benchmark result in `docs/module2-load-test-report.md`.
+
+## 2026-08-19 - Legacy Word DOC Parsing
+
+Status: implemented
+
+Goal: parse genuine binary Microsoft Word `.doc` uploads instead of routing them to the DOCX-only `python-docx` parser.
+
+Plan:
+
+1. Add a regression test at the `parse_document(path)` boundary for a legacy `.doc` conversion.
+2. Convert `.doc` files with a dedicated, headless LibreOffice parser using a per-request profile and bounded execution time.
+3. Keep `.docx` parsing on `python-docx` and preserve the original upload size in parser responses.
+4. Install the required LibreOffice Writer runtime in the parser-service image.
+5. Rebuild the service and replay the original failed MinIO object through the parser API.
+6. Run parser tests and the repository verification suites, then update operator documentation and the learning log.

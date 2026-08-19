@@ -276,6 +276,7 @@ python -m app.main
 
 ### Parser Service (Python)
 - ✅ PDF 解析（PyMuPDF）
+- ✅ 旧版 DOC 解析（LibreOffice 隔离转换）
 - ✅ DOCX 解析（python-docx）
 - ✅ 自动编码检测（chardet）
 - ✅ 语义切块（标题感知）

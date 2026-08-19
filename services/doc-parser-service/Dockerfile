@@ -21,7 +21,7 @@ FROM python:3.11-slim
 
 # OpenCV (OCR via rapidocr) runtime dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 \
+    libgl1 libglib2.0-0 libreoffice-writer-nogui \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

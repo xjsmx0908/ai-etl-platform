@@ -5,7 +5,7 @@
 ## 架构定位
 
 从 Go ETL Worker 中拆分出的独立微服务，专门负责：
-- **文档解析**：PDF、DOCX、TXT、MD 等格式
+- **文档解析**：PDF、DOC、DOCX、TXT、MD 等格式
 - **语义切块**：标题感知分块、段落合并、重叠切分
 - **计算隔离**：计算密集型任务不影响 Go Worker 的并发性能
 
@@ -13,6 +13,7 @@
 
 - **FastAPI** - 高性能异步 HTTP 框架
 - **PyMuPDF** - PDF 解析（支持文本、图像、元数据）
+- **LibreOffice Writer** - 旧版二进制 DOC 转换
 - **python-docx** - DOCX 文档解析
 - **chardet** - 文本编码自动检测
 - **Pydantic** - 数据校验与序列化
@@ -30,6 +31,9 @@ venv\Scripts\activate  # Windows
 
 # 安装依赖
 pip install -r requirements.txt
+
+# 解析旧版 .doc 时还需 LibreOffice Writer
+sudo apt-get install libreoffice-writer-nogui
 
 # 启动服务
 python -m app.main
@@ -122,6 +126,7 @@ curl http://localhost:8000/healthz
 | 格式 | 解析器 | 说明 |
 |------|--------|------|
 | PDF | PyMuPDF | 支持文本提取、分页标记 |
+| DOC | LibreOffice + python-docx | 隔离转换为 DOCX，最长 60 秒 |
 | DOCX | python-docx | 保留标题层级结构 |
 | TXT | chardet | 自动编码检测 |
 | MD | chardet | Markdown 标题感知 |

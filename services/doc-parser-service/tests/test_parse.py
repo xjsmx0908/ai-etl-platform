@@ -1,10 +1,50 @@
 import hashlib
+import os
 from types import SimpleNamespace
 
 import pytest
+from docx import Document
 
 from app.routers import parse as parse_module
 from app.services.chunker import estimate_tokens
+from app.services.parser import parse_document
+
+
+def test_parse_document_converts_legacy_word_doc(tmp_path, monkeypatch):
+    converted_docx = tmp_path / "converted.docx"
+    document = Document()
+    document.add_paragraph("Legacy Word content")
+    document.save(converted_docx)
+
+    converter = tmp_path / "libreoffice"
+    converter.write_text(
+        """#!/bin/sh
+set -eu
+outdir=""
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--outdir" ]; then
+        outdir="$2"
+        shift 2
+        continue
+    fi
+    shift
+done
+cp "$FAKE_CONVERTED_DOCX" "$outdir/source.docx"
+""",
+        encoding="utf-8",
+    )
+    converter.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_CONVERTED_DOCX", str(converted_docx))
+
+    legacy_doc = tmp_path / "source.doc"
+    legacy_doc.write_bytes(bytes.fromhex("d0cf11e0a1b11ae1") + b"legacy-word-probe")
+
+    text, file_size, parser_name = parse_document(str(legacy_doc))
+
+    assert text == "Legacy Word content"
+    assert file_size == os.path.getsize(legacy_doc)
+    assert parser_name == "doc"
 
 
 def test_estimate_tokens_cjk_not_underestimated():
