@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ai-etl-pipeline/internal/auth"
@@ -436,6 +437,11 @@ func TestHandleUploadRejectsReplacingOtherUsersDoc(t *testing.T) {
 	}
 	if len(producer.published) != 0 {
 		t.Fatalf("rejected replace must not enqueue: %+v", producer.published)
+	}
+	// The refusal must name the reason so the caller can act on it — a bare 403
+	// would send a confused user (or frontend) in the wrong direction.
+	if !strings.Contains(rr.Body.String(), "uploader") && !strings.Contains(rr.Body.String(), "admin") {
+		t.Errorf("ownership refusal must say who may replace, got: %s", rr.Body.String())
 	}
 }
 

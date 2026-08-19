@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
+import { useAuth } from "@/lib/auth";
 import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
 import { Upload } from "lucide-react";
 import type { Document, DocumentChunk } from "@/lib/types";
@@ -59,6 +60,7 @@ function formatDate(iso?: string): string {
 
 export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const { user, isAdmin } = useAuth();
   const [doc, setDoc] = useState<Document | null>(null);
   const [chunks, setChunks] = useState<DocumentChunk[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,6 +97,12 @@ export default function DocumentDetailPage() {
     setReplaceFile(null);
     setReplaceError("");
   };
+
+  // The server enforces ownership on replace (only the uploader or an admin may
+  // overwrite a document). Mirror it here so the action is not offered at all
+  // when it would be rejected — but keep the check best-effort: a mismatch in
+  // identity (e.g. stale localStorage) still surfaces a clear server error.
+  const canReplace = !!(doc && (isAdmin || (user?.id && doc.uploaded_by === user.id)));
 
   // Uploading with this document's own doc_id replaces it in place: the new
   // version is written and enqueued first, and only then is the previous
@@ -163,6 +171,16 @@ export default function DocumentDetailPage() {
             icon={Upload}
             className="ml-auto"
             onClick={() => setReplaceOpen(true)}
+            disabled={!canReplace}
+            title={
+              isAdmin
+                ? ""
+                : user?.id && doc.uploaded_by === user.id
+                  ? "上传新版本替换当前文档"
+                  : doc?.uploaded_by
+                    ? "仅该文档的上传者或管理员可上传新版本"
+                    : "仅管理员可上传新版本（未知上传者）"
+            }
           >
             上传新版本
           </Button>

@@ -777,6 +777,16 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 				// only an admin may replace it.
 				ownedByCaller := existing.UploadedBy != "" && existing.UploadedBy == auth.GetUserID(r.Context())
 				if !canWritePermission(role, existing.Permission) || (!isAdminRole(role) && !ownedByCaller) {
+					// Report the actual reason, not a blanket 403: whether the blocker
+					// is "you cannot write this permission level" or "you are not this
+					// document's author" changes what the user can do about it.
+					reason := "not permitted to replace this document"
+					status := http.StatusForbidden
+					if !canWritePermission(role, existing.Permission) {
+						reason = "existing document permission " + existing.Permission + " exceeds your write scope"
+					} else if !isAdminRole(role) && !ownedByCaller {
+						reason = "only the document's uploader or an admin may upload a new version"
+					}
 					recordAudit(r.Context(), audits, audit.Entry{
 						TenantID: tenantID, ActorUserID: auth.GetUserID(r.Context()),
 						ActorRole: role,
@@ -784,10 +794,10 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 						Result: audit.ResultFailure,
 						Detail: map[string]any{
 							"file_name": header.Filename,
-							"reason":    "not permitted to replace this document",
+							"reason":    reason,
 						},
 					})
-					http.Error(w, "not permitted to replace this document", http.StatusForbidden)
+					http.Error(w, reason, status)
 					return
 				}
 			}
