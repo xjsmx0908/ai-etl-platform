@@ -421,3 +421,17 @@ Plan:
 4. Install the required LibreOffice Writer runtime in the parser-service image.
 5. Rebuild the service and replay the original failed MinIO object through the parser API.
 6. Run parser tests and the repository verification suites, then update operator documentation and the learning log.
+
+## 2026-08-19 - Document Content Search Web Proxy
+
+Status: implemented
+
+Goal: make document content searches from the Web document manager preserve the `q` and `limit` query parameters required by Query API.
+
+Plan:
+
+1. Add a Web-boundary smoke assertion for `/api/documents/search?q=...` using the session cookie.
+2. Add a dedicated static Next.js route that forwards the complete query string and authentication token.
+3. Build and redeploy the Web service, then verify the reported Chinese query through the live proxy.
+4. Run TypeScript, Compose, unit, and isolated end-to-end verification.
+5. Update the learning log and commit the focused fix.

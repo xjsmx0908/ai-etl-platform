@@ -1,8 +1,11 @@
 # Override for e2e-smoke.sh: runs in the isolated ai-etl-smoke project with all
 # backing-service ports hidden (via docker-compose.eval.yml's ports: !reset []),
-# re-exposing only the query-api on the smoke API port so it never collides with
-# a running demo stack on the default 8080/9200/9092/... host ports.
+# re-exposing only the query-api and Web app on smoke-specific ports so they
+# never collide with a running demo stack on the default host ports.
 services:
   query-api:
     ports:
       - "${API_PORT:-8081}:8080"
+  web:
+    ports:
+      - "${WEB_PORT:-3101}:3000"

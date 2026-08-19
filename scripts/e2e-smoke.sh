@@ -7,6 +7,7 @@ cd "${ROOT_DIR}"
 
 MOCK_PORT="${MOCK_PORT:-18080}"
 API_PORT="${API_PORT:-8081}"
+WEB_PORT="${WEB_PORT:-3101}"
 EMBED_DIMENSION="${EMBED_DIMENSION:-768}"
 # Run in an isolated compose project so cleanup (down -v --remove-orphans) only
 # ever touches the smoke stack's own volumes, never the demo stack's.
@@ -284,6 +285,28 @@ done
 if [[ "${SEARCH_HIT}" != "1" ]]; then
   echo "[e2e] content search did not surface uploaded doc ${DOC_ID}" >&2
   cat "${TMP_DIR}/search.json" >&2 || true
+  exit 1
+fi
+
+echo "[e2e] content search through Web session proxy"
+WEB_SEARCH_STATUS="$(
+  curl -sS -o "${TMP_DIR}/web-search.json" -w "%{http_code}" \
+    --get "http://127.0.0.1:${WEB_PORT}/api/documents/search" \
+    --cookie "ai_etl_token=${ADMIN_TOKEN}" \
+    --data-urlencode "q=pipeline" \
+    --data-urlencode "limit=100"
+)"
+if [[ "${WEB_SEARCH_STATUS}" != "200" ]]; then
+  echo "[e2e] Web content search failed, status=${WEB_SEARCH_STATUS}" >&2
+  cat "${TMP_DIR}/web-search.json" >&2 || true
+  exit 1
+fi
+WEB_SEARCH_HIT="$(
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); print(1 if any(i["doc_id"]==sys.argv[2] for i in d.get("items") or []) else 0)' "${TMP_DIR}/web-search.json" "${DOC_ID}"
+)"
+if [[ "${WEB_SEARCH_HIT}" != "1" ]]; then
+  echo "[e2e] Web content search did not surface uploaded doc ${DOC_ID}" >&2
+  cat "${TMP_DIR}/web-search.json" >&2 || true
   exit 1
 fi
 
