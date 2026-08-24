@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
+import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
 import { CheckCircle2, ChevronRight, Copy, Loader2, XCircle } from "lucide-react";
-import type { TaskStatus, UploadResult } from "@/lib/types";
+import type { KnowledgeSpace, TaskStatus, UploadResult } from "@/lib/types";
 
 const PIPELINE_STEPS = [
   { key: "queued", label: "上传 · Kafka 异步" },
@@ -26,6 +27,8 @@ export default function DataPage() {
   const { isAdmin } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [permission, setPermission] = useState("internal");
+  const [knowledgeSpace, setKnowledgeSpace] = useState("");
+  const [knowledgeSpaces, setKnowledgeSpaces] = useState<KnowledgeSpace[]>([]);
   const [status, setStatus] = useState<"idle" | "uploading" | "polling" | "done" | "error">("idle");
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
@@ -34,6 +37,12 @@ export default function DataPage() {
   const permissionOptions = PERMISSION_OPTIONS.filter((o) => isAdmin || !o.adminOnly);
 
   useEffect(() => {
+    void apiClient.listKnowledgeSpaces().then(({ items }) => {
+      const writable = items.filter((space) => space.kind === "production");
+      setKnowledgeSpaces(writable);
+      const preferred = writable.find((space) => space.is_default) || writable[0];
+      if (preferred) setKnowledgeSpace(preferred.id);
+    }).catch((e: Error) => setError(e.message || "知识空间加载失败"));
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -54,7 +63,7 @@ export default function DataPage() {
     setTaskStatus(null);
     setError("");
     try {
-      const res = await apiClient.uploadDocument(file, permission);
+      const res = await apiClient.uploadDocument(file, permission, undefined, knowledgeSpace);
       setUploadResult(res);
       // Identical content is already indexed: there is no new task to follow, and
       // polling a doc_id whose ETL finished long ago would just spin.
@@ -129,11 +138,19 @@ export default function DataPage() {
         <div className="flex flex-wrap items-center gap-3">
           <input
             type="file"
-            accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp,.bmp"
+            accept={UPLOAD_ACCEPT}
             onChange={(e) => setFile(e.target.files?.[0] || null)}
             className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
           />
           <select
+			value={knowledgeSpace}
+			onChange={(e) => setKnowledgeSpace(e.target.value)}
+			aria-label="目标知识空间"
+			className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+		  >
+			{knowledgeSpaces.map((space) => <option key={space.id} value={space.id}>{space.name}</option>)}
+		  </select>
+		  <select
             value={permission}
             onChange={(e) => setPermission(e.target.value)}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
@@ -146,7 +163,7 @@ export default function DataPage() {
           </select>
           <button
             onClick={() => void upload()}
-            disabled={!file || status === "uploading" || status === "polling"}
+            disabled={!file || !knowledgeSpace || status === "uploading" || status === "polling"}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {status === "uploading" || status === "polling" ? "上传中…" : "上传"}
@@ -162,6 +179,7 @@ export default function DataPage() {
           </Link>
           中打开该文档，使用「上传新版本」。
           {!isAdmin && <span className="ml-1 text-amber-600">机密级别需管理员上传。</span>}
+		  <span className="ml-1">新文档完成处理后仍为草稿，须由管理员发布后才会用于问答。</span>
         </p>
 
         {/* Identical content is a normal outcome, not an error: what the user

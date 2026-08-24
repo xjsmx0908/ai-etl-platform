@@ -21,6 +21,8 @@ TENANT_ID="${TENANT_ID:-tenant-e2e}"
 # Bootstrap the smoke stack's admin in the same tenant the test token uploads
 # to, so the registry list (via admin login) can see the uploaded document.
 export BOOTSTRAP_ADMIN_TENANT="${TENANT_ID}"
+export BOOTSTRAP_ADMIN_USERNAME="${BOOTSTRAP_ADMIN_USERNAME:-admin}"
+export BOOTSTRAP_ADMIN_PASSWORD="${BOOTSTRAP_ADMIN_PASSWORD:-admin}"
 QUERY_TOP_K="${QUERY_TOP_K:-3}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-180}"
 JWT_SECRET="${JWT_SECRET:-change-me-in-production-please-use-32-plus-chars}"
@@ -134,32 +136,9 @@ echo "[e2e] restarting etl-worker after topic creation"
 docker compose restart etl-worker >/dev/null
 sleep 5
 
-cat >"${TOKEN_GO_FILE}" <<'EOF'
-package main
-
-import (
-	"fmt"
-	"os"
-
-	"ai-etl-pipeline/internal/auth"
-)
-
-func main() {
-	token, err := auth.GenerateTestToken(os.Args[1], os.Args[2], "e2e-user", []string{"upload", "query"})
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(token)
-}
-EOF
-
-TOKEN="$(
-docker run --rm \
-  -v "${ROOT_DIR}:/workspace" \
-  -w /workspace/services/etl-worker \
-  golang:1.25 \
-  sh -c "go run /workspace/services/etl-worker/tmp_e2e_gen_token.go \"${JWT_SECRET}\" \"${TENANT_ID}\""
-)"
+TOKEN="$(curl -fsS -H 'Content-Type: application/json' \
+  -d "{\"username\":\"${BOOTSTRAP_ADMIN_USERNAME}\",\"password\":\"${BOOTSTRAP_ADMIN_PASSWORD}\"}" \
+  "http://127.0.0.1:${API_PORT}/v1/auth/login" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
 
 cat >"${DOC_FILE}" <<'EOF'
 AI ETL smoke test document.
@@ -180,6 +159,20 @@ if [[ "${UPLOAD_STATUS}" != "202" ]]; then
   cat "${TMP_DIR}/upload.json" >&2 || true
   exit 1
 fi
+
+DOC_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["doc_id"])' "${TMP_DIR}/upload.json")"
+echo "[e2e] waiting for ingestion before publication"
+deadline=$((SECONDS + MAX_WAIT_SECONDS))
+while (( SECONDS < deadline )); do
+  task_state="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "http://127.0.0.1:${API_PORT}/v1/tasks/${DOC_ID}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
+  [[ "${task_state}" == "completed" ]] && break
+  [[ "${task_state}" == "failed" ]] && { echo "[e2e] ingestion failed" >&2; exit 1; }
+  sleep 2
+done
+[[ "${task_state:-}" == "completed" ]] || { echo "[e2e] ingestion timed out" >&2; exit 1; }
+curl -fsS -X PATCH "http://127.0.0.1:${API_PORT}/v1/documents/${DOC_ID}" \
+  -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+  -d '{"publication_status":"published"}' >/dev/null
 
 echo "[e2e] polling /v1/query until indexed"
 deadline=$((SECONDS + MAX_WAIT_SECONDS))

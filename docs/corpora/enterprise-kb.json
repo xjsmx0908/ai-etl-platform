@@ -1,6 +1,8 @@
 {
   "version": "1.0",
   "name": "enterprise-kb",
+  "knowledge_base_id": "enterprise-demo",
+  "applicable_scope": "demo",
   "description": "中科智远科技有限公司企业知识库：人力资源、财务、法务合同、采购、项目管理、信息安全、行政、产品技术等业务制度与规范。",
   "cases": [
     {

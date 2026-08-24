@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "datasets": {
+    "nanoscifact": {
+      "name": "NanoSciFact",
+      "repository": "zeta-alpha-ai/NanoSciFact",
+      "revision": "309f1d1ae3ae2e092444a8a0c25bed59b82318bc",
+      "license": "CC-BY-4.0",
+      "source_url": "https://huggingface.co/datasets/zeta-alpha-ai/NanoSciFact",
+      "evaluation_scope": "retrieval",
+      "language": "en",
+      "domain": "scientific-claims",
+      "configs": {
+        "corpus": {
+          "config": "corpus",
+          "split": "train",
+          "expected_rows": 2919,
+          "sha256": "0c6a88f6300816b45031394378fc62b7239de4b527baa380bff339220e7cbd54"
+        },
+        "queries": {
+          "config": "queries",
+          "split": "train",
+          "expected_rows": 50,
+          "sha256": "cdb50e11bdd0f7618bf84f3a65bdf6cdfe55af986575e67cb58cf84f1dce6a18"
+        },
+        "qrels": {
+          "config": "qrels",
+          "split": "train",
+          "expected_rows": 56,
+          "sha256": "4d1b76c42f9de64ec720671626aa896ba6d7edfb19995a66c61d0fc9d83154f2"
+        }
+      }
+    }
+  }
+}

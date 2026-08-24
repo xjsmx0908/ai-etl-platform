@@ -89,13 +89,16 @@ type Config struct {
 	SparseAvgDL float64 // Average document length in tokens
 
 	// Retrieval Gateway (Module 2)
-	RetrievalTimeout           time.Duration
-	RetrievalCandidateK        int
-	RetrievalFinalTopK         int
-	RetrievalEnableES          bool
-	RetrievalEnableRerank      bool
-	RetrievalRerankPolicy      string
-	RetrievalExactSchemaFields []string
+	RetrievalTimeout      time.Duration
+	RetrievalCandidateK   int
+	RetrievalFinalTopK    int
+	RetrievalEnableES     bool
+	RetrievalEnableRerank bool
+	RetrievalRerankPolicy string
+	// RetrievalDiagnosticsEnabled permits controlled evaluation requests to ask
+	// for aggregate required-document stage coverage. It is disabled by default.
+	RetrievalDiagnosticsEnabled bool
+	RetrievalExactSchemaFields  []string
 	// RetrievalMinRelevance gates answer generation on raw backend similarity.
 	// Permission filtering can remove the target document while still returning
 	// unrelated same-tenant chunks; without this gate the LLM answers from them.
@@ -167,6 +170,7 @@ type Config struct {
 	HealthPort            int
 	HTTPReadTimeout       time.Duration
 	HTTPReadHeaderTimeout time.Duration
+	HTTPHandlerTimeout    time.Duration
 	HTTPWriteTimeout      time.Duration
 	HTTPIdleTimeout       time.Duration
 	HTTPMaxHeaderBytes    int
@@ -275,6 +279,7 @@ func Load() Config {
 		RetrievalEnableES:           EnvBool("RETRIEVAL_ENABLE_ES", true),
 		RetrievalEnableRerank:       EnvBool("RETRIEVAL_ENABLE_RERANK", false),
 		RetrievalRerankPolicy:       strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
+		RetrievalDiagnosticsEnabled: EnvBool("RETRIEVAL_DIAGNOSTICS_ENABLED", false),
 		RetrievalExactSchemaFields:  EnvCSV("RETRIEVAL_EXACT_SCHEMA_FIELDS", DefaultRetrievalExactSchemaFields),
 		RetrievalMinRelevance:       EnvFloat("RETRIEVAL_MIN_RELEVANCE", 0),
 		RetrievalGroundingCheck:     EnvBool("RETRIEVAL_GROUNDING_CHECK", true),
@@ -326,6 +331,7 @@ func Load() Config {
 		HealthPort:            EnvInt("HEALTH_PORT", 8080),
 		HTTPReadTimeout:       EnvDuration("HTTP_READ_TIMEOUT", 15*time.Second),
 		HTTPReadHeaderTimeout: EnvDuration("HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
+		HTTPHandlerTimeout:    EnvDuration("HTTP_HANDLER_TIMEOUT", 60*time.Second),
 		HTTPWriteTimeout:      EnvDuration("HTTP_WRITE_TIMEOUT", 60*time.Second),
 		HTTPIdleTimeout:       EnvDuration("HTTP_IDLE_TIMEOUT", 120*time.Second),
 		HTTPMaxHeaderBytes:    EnvInt("HTTP_MAX_HEADER_BYTES", 1<<20),

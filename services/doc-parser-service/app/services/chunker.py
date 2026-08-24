@@ -1,5 +1,6 @@
 """Semantic chunking with heading-aware splitting and paragraph merging"""
 import re
+import unicodedata
 from typing import List, Dict, Any
 from loguru import logger
 from app.config import get_settings
@@ -108,11 +109,38 @@ def chunk_text(
     dropped = len(chunks) - len(kept)
     if dropped:
         logger.info(f"Chunked document {doc_id}: dropped {dropped}/{len(chunks)} noise chunks")
-    return kept
+
+    # Parser output is the earliest reliable boundary for preventing one
+    # document's repeated body from occupying multiple retrieval slots. Use a
+    # normalized comparison key while preserving the first chunk's text.
+    unique = []
+    seen = set()
+    for item in kept:
+        key = normalize_content_key(item["content"])
+        if key in seen:
+            continue
+        seen.add(key)
+        item["index"] = len(unique)
+        item["chunk_id"] = f"{doc_id}_{len(unique):04d}"
+        unique.append(item)
+
+    duplicates = len(kept) - len(unique)
+    if duplicates:
+        logger.info(
+            f"Chunked document {doc_id}: dropped {duplicates}/{len(kept)} duplicate chunks"
+        )
+    return unique
 
 
 SIGNATURE_KEYWORDS = ("拟制", "审核", "批准", "会签")
 TOC_PATTERNS = ("目次", "目 次", "目 录", "目录")
+TOC_MAX_NOISE_CHARS = 300
+
+
+def normalize_content_key(content: str) -> str:
+    """Return a stable key for exact-content deduplication."""
+    normalized = unicodedata.normalize("NFKC", content)
+    return " ".join(normalized.split())
 
 
 def is_noise_chunk(content: str) -> bool:
@@ -123,8 +151,10 @@ def is_noise_chunk(content: str) -> bool:
     if not text:
         return True
 
-    # Table of contents pages ("目 次", "目 录") list headings + page numbers.
-    if any(k in text for k in TOC_PATTERNS):
+    # Only short table-of-contents fragments are safe to discard. Long business
+    # bodies can legitimately mention a product/catalog directory, and dropping
+    # the whole chunk would make the document silently disappear from retrieval.
+    if len(text) <= TOC_MAX_NOISE_CHARS and any(k in text for k in TOC_PATTERNS):
         return True
 
     # Signature / approval pages are short, table-like form text.

@@ -160,22 +160,32 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 		AllowedPermissions: req.AllowedPermissions,
 		Question:           req.Question,
 		TopK:               req.TopK,
+		KnowledgeBaseID:    req.KnowledgeBaseID,
+		ApplicableScope:    req.ApplicableScope,
 	}
+	cacheDiagnostics := len(req.DiagnosticRequiredDocIDs) > 0
 	cacheCtx, cacheSpan := tracer.Start(ctx, "Retrieval.CacheLookup")
-	if sources, ok, err := e.cache.Lookup(cacheCtx, cacheKey, denseVector); err != nil {
+	if cacheDiagnostics {
+		cacheSpan.SetAttributes(attribute.Bool("cache.skipped_for_diagnostics", true))
+		cacheSpan.End()
+	} else if sources, ok, err := e.cache.Lookup(cacheCtx, cacheKey, denseVector); err != nil {
 		cacheSpan.RecordError(err)
 		cacheSpan.SetStatus(codes.Error, "semantic cache lookup failed")
 		cacheSpan.End()
 		slog.Warn("retrieval cache lookup failed", "tenant_id", req.TenantID, "error", err)
 	} else if ok && len(sources) > 0 {
+		selected, diversity := diversifyCandidates(sources, req.TopK, defaultMaxChunksPerDocument)
 		cacheSpan.SetAttributes(attribute.Bool("cache.hit", true), attribute.Int("cache.result_count", len(sources)))
 		cacheSpan.End()
 		span.SetAttributes(attribute.Bool("retrieval.cache_hit", true))
 		return Result{
-			Sources:  topCandidates(sources, req.TopK),
-			Route:    RouteQuery(req.Question, e.hasRetriever(SourceElasticsearch)),
-			CacheHit: true,
-			Duration: time.Since(start),
+			Sources:                    selected,
+			Route:                      RouteQuery(req.Question, e.hasRetriever(SourceElasticsearch)),
+			CacheHit:                   true,
+			DeduplicatedCandidateCount: diversity.DeduplicatedCount,
+			SelectedContextCount:       len(selected),
+			UniqueDocumentCount:        diversity.UniqueDocumentCount,
+			Duration:                   time.Since(start),
 		}, nil
 	} else {
 		cacheSpan.SetAttributes(attribute.Bool("cache.hit", false))
@@ -198,7 +208,6 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 	if len(active) == 0 {
 		return Result{}, fmt.Errorf("no retrieval backends enabled")
 	}
-
 	searchCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
@@ -225,6 +234,8 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 				TenantID:           req.TenantID,
 				AllowedPermissions: req.AllowedPermissions,
 				ExactSchemaFields:  e.cfg.RetrievalExactSchemaFields,
+				KnowledgeBaseID:    req.KnowledgeBaseID,
+				ApplicableScope:    req.ApplicableScope,
 			})
 			backendSpan.SetAttributes(attribute.Int("retrieval.candidate_count", len(candidates)))
 			if err != nil {
@@ -239,32 +250,43 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 	close(resultCh)
 
 	results := make(map[string][]Candidate)
+	backendCandidateCounts := make(map[string]int, len(active))
 	partialErrors := make([]string, 0)
 	for result := range resultCh {
 		if result.err != nil {
 			partialErrors = append(partialErrors, fmt.Sprintf("%s: %v", result.name, result.err))
 			continue
 		}
-		if len(result.candidates) > 0 {
-			results[result.name] = result.candidates
-		}
+		results[result.name] = result.candidates
+		backendCandidateCounts[result.name] = len(result.candidates)
 	}
 	if len(results) == 0 && len(partialErrors) > 0 {
-		return Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}, fmt.Errorf("all retrieval backends failed: %s", strings.Join(partialErrors, "; "))
+		result := Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}
+		if cacheDiagnostics {
+			diagnostics := DiagnoseStages(req.DiagnosticRequiredDocIDs, results, nil, nil)
+			result.StageDiagnostics = &diagnostics
+		}
+		return result, fmt.Errorf("all retrieval backends failed: %s", strings.Join(partialErrors, "; "))
 	}
 
 	_, fusionSpan := tracer.Start(ctx, "Retrieval.Fusion")
 	fused := Fuse(results, route, candidateLimit)
+	fusedCandidateCount := len(fused)
 	fusionSpan.SetAttributes(
 		attribute.Int("retrieval.backend_result_count", len(results)),
 		attribute.Int("retrieval.fused_candidate_count", len(fused)),
 	)
 	fusionSpan.End()
 	if len(fused) == 0 {
-		return Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}, nil
+		result := Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}
+		if cacheDiagnostics {
+			diagnostics := DiagnoseStages(req.DiagnosticRequiredDocIDs, results, fused, nil)
+			result.StageDiagnostics = &diagnostics
+		}
+		return result, nil
 	}
 
-	ranked := topCandidates(fused, req.TopK)
+	ranked := append([]Candidate(nil), fused...)
 	if e.rerankerConfigured() {
 		decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused)
 		span.SetAttributes(
@@ -273,10 +295,7 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 		)
 		rerankErr := ""
 		if decision.ShouldRerank {
-			rerankTopK := req.TopK
-			if decision.ProtectExactMatches {
-				rerankTopK = len(fused)
-			}
+			rerankTopK := len(fused)
 			rerankCtx, rerankSpan := tracer.Start(ctx, "Retrieval.Rerank",
 				trace.WithSpanKind(trace.SpanKindClient),
 				trace.WithAttributes(
@@ -294,9 +313,9 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 			} else {
 				rerankSpan.SetAttributes(attribute.Int("rerank.result_count", len(reranked)))
 				if decision.ProtectExactMatches {
-					ranked = protectExactMatches(reranked, fused, decision.Evidence, req.TopK)
+					ranked = protectExactMatches(reranked, fused, decision.Evidence, len(fused))
 				} else {
-					ranked = topCandidates(reranked, req.TopK)
+					ranked = reranked
 				}
 			}
 			rerankSpan.End()
@@ -305,21 +324,22 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 			if rerankErr != "" {
 				decision.Reason = "reranker_failed_exact_candidate_pinned"
 			}
-			ranked = protectExactMatches(fused, fused, decision.Evidence, req.TopK)
+			ranked = protectExactMatches(fused, fused, decision.Evidence, len(fused))
 		}
 		e.logRerankDecision(req, route, decision, fused, ranked, rerankErr)
 	} else if decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused); decision.ProtectExactMatches {
 		decision.ShouldRerank = false
 		decision.Reason = "reranker_not_configured_exact_candidate_pinned"
-		ranked = protectExactMatches(fused, fused, decision.Evidence, req.TopK)
+		ranked = protectExactMatches(fused, fused, decision.Evidence, len(fused))
 		e.logRerankDecision(req, route, decision, fused, ranked, "")
 	}
+	ranked, diversity := diversifyCandidates(ranked, req.TopK, defaultMaxChunksPerDocument)
 
 	cacheStoreCtx, cacheStoreSpan := tracer.Start(ctx, "Retrieval.CacheStore")
 	// Never cache an empty result set: a cached empty hit would make every
 	// subsequent identical question answer with "no relevant documents", even
 	// after the corpus grows. A no-result answer is cheap to recompute anyway.
-	if len(ranked) > 0 {
+	if len(ranked) > 0 && !cacheDiagnostics {
 		if err := e.cache.Store(cacheStoreCtx, cacheKey, denseVector, ranked); err != nil {
 			cacheStoreSpan.RecordError(err)
 			cacheStoreSpan.SetStatus(codes.Error, "semantic cache store failed")
@@ -333,13 +353,23 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 		attribute.Int("retrieval.partial_error_count", len(partialErrors)),
 	)
 
-	return Result{
-		Sources:       ranked,
-		Route:         route,
-		CacheHit:      false,
-		PartialErrors: partialErrors,
-		Duration:      time.Since(start),
-	}, nil
+	result = Result{
+		Sources:                    ranked,
+		Route:                      route,
+		CacheHit:                   false,
+		BackendCandidateCounts:     backendCandidateCounts,
+		FusedCandidateCount:        fusedCandidateCount,
+		DeduplicatedCandidateCount: diversity.DeduplicatedCount,
+		SelectedContextCount:       len(ranked),
+		UniqueDocumentCount:        diversity.UniqueDocumentCount,
+		PartialErrors:              partialErrors,
+		Duration:                   time.Since(start),
+	}
+	if cacheDiagnostics {
+		diagnostics := DiagnoseStages(req.DiagnosticRequiredDocIDs, results, fused, ranked)
+		result.StageDiagnostics = &diagnostics
+	}
+	return result, nil
 }
 
 func (e *Engine) Close() error {

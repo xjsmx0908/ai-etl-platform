@@ -21,6 +21,8 @@ type CacheKey struct {
 	AllowedPermissions []string
 	Question           string
 	TopK               int
+	KnowledgeBaseID    string
+	ApplicableScope    string
 }
 
 type cacheEntry struct {
@@ -203,6 +205,8 @@ func (c *RedisSemanticCache) entryKey(key CacheKey) string {
 	return c.prefix + ":entry:" + hashStrings(
 		key.TenantID,
 		scopeString(key.AllowedPermissions),
+		key.KnowledgeBaseID,
+		key.ApplicableScope,
 		normalizeQuestion(key.Question),
 		fmt.Sprintf("top:%d", key.TopK),
 	)
@@ -212,6 +216,8 @@ func (c *RedisSemanticCache) indexKey(key CacheKey) string {
 	return c.prefix + ":index:" + hashStrings(
 		key.TenantID,
 		scopeString(key.AllowedPermissions),
+		key.KnowledgeBaseID,
+		key.ApplicableScope,
 		fmt.Sprintf("top:%d", key.TopK),
 	)
 }

@@ -1,7 +1,6 @@
 import type {
   AgentRun,
   AnswerMeta,
-  AuditEntry,
   AuditListResponse,
   Document,
   DocumentChunksResponse,
@@ -9,6 +8,7 @@ import type {
   DocumentsResponse,
   Health,
   LoginResponse,
+	KnowledgeSpace,
   Source,
   TaskStatus,
   UploadResult,
@@ -117,6 +117,17 @@ export async function deleteDocument(id: string): Promise<void> {
   return request<void>(`/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+export async function updateDocumentPublication(id: string, publicationStatus: "draft" | "published" | "retired"): Promise<Document> {
+  return request<Document>(`/documents/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ publication_status: publicationStatus }),
+  });
+}
+
+export async function listKnowledgeSpaces(): Promise<{ items: KnowledgeSpace[] }> {
+  return request<{ items: KnowledgeSpace[] }>("/knowledge-spaces");
+}
+
 // ── Upload / Task ────────────────────────────────────────────────────────
 
 // Passing docId replaces that document with a new version (the caller must own
@@ -125,12 +136,14 @@ export async function deleteDocument(id: string): Promise<void> {
 export async function uploadDocument(
   file: File,
   permission: string,
-  docId?: string
+  docId?: string,
+  knowledgeSpaceId?: string
 ): Promise<UploadResult> {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("permission", permission);
   if (docId?.trim()) fd.append("doc_id", docId.trim());
+  if (knowledgeSpaceId?.trim()) fd.append("knowledge_space_id", knowledgeSpaceId.trim());
   return request<UploadResult>("/upload", { method: "POST", body: fd });
 }
 
@@ -224,12 +237,13 @@ export type QuerySSEHandlers = {
 export async function querySSE(
   question: string,
   handlers: QuerySSEHandlers,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  filters?: { knowledge_space_id?: string }
 ): Promise<void> {
   const resp = await fetch(`${BASE}/query`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ question, top_k: 5 }),
+    body: JSON.stringify({ question, top_k: 5, ...filters }),
     signal,
   });
 
@@ -301,6 +315,8 @@ export const apiClient = {
   getDocumentChunks,
   searchDocuments,
   deleteDocument,
+	updateDocumentPublication,
+	listKnowledgeSpaces,
   uploadDocument,
   getTaskStatus,
   listUsers,

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { useAuth } from "@/lib/auth";
 import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
+import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
 import { Upload } from "lucide-react";
 import type { Document, DocumentChunk } from "@/lib/types";
 
@@ -30,6 +31,12 @@ const DOC_STATUS_LABELS: Record<string, string> = {
   active: "现行",
   superseded: "已被替代",
   archived: "已归档",
+};
+
+const PUBLICATION_LABELS: Record<string, string> = {
+  draft: "草稿",
+  published: "已发布",
+  retired: "已退役",
 };
 
 function docStatusChip(docStatus: string): string {
@@ -70,6 +77,7 @@ export default function DocumentDetailPage() {
   const [replacing, setReplacing] = useState(false);
   const [replaceError, setReplaceError] = useState("");
   const [replaced, setReplaced] = useState(false);
+  const [updatingPublication, setUpdatingPublication] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -112,7 +120,7 @@ export default function DocumentDetailPage() {
     setReplacing(true);
     setReplaceError("");
     try {
-      await apiClient.uploadDocument(replaceFile, doc.permission, doc.doc_id);
+      await apiClient.uploadDocument(replaceFile, doc.permission, doc.doc_id, doc.knowledge_space_id);
       closeReplace();
       setReplaced(true);
       await load();
@@ -120,6 +128,19 @@ export default function DocumentDetailPage() {
       setReplaceError((e as Error).message || "上传失败");
     } finally {
       setReplacing(false);
+    }
+  };
+
+  const updatePublication = async (publicationStatus: "draft" | "published" | "retired") => {
+    if (!doc) return;
+    setUpdatingPublication(true);
+    setError("");
+    try {
+      setDoc(await apiClient.updateDocumentPublication(doc.doc_id, publicationStatus));
+    } catch (e) {
+      setError((e as Error).message || "发布状态更新失败");
+    } finally {
+      setUpdatingPublication(false);
     }
   };
 
@@ -165,6 +186,9 @@ export default function DocumentDetailPage() {
               {DOC_STATUS_LABELS[doc.doc_status] || doc.doc_status}
             </span>
           )}
+          <span className={`rounded px-2 py-0.5 text-xs font-medium ${doc.publication_status === "published" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+            {PUBLICATION_LABELS[doc.publication_status] || doc.publication_status}
+          </span>
           <Button
             variant="secondary"
             size="sm"
@@ -198,6 +222,10 @@ export default function DocumentDetailPage() {
           </div>
         )}
         <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+		  <div>
+			<dt className="text-xs text-slate-400">知识空间</dt>
+			<dd>{doc.knowledge_space_id || "—"}</dd>
+		  </div>
           <div>
             <dt className="text-xs text-slate-400">文档 ID</dt>
             <dd className="font-mono text-xs text-blue-600">{doc.doc_id}</dd>
@@ -257,6 +285,19 @@ export default function DocumentDetailPage() {
             </div>
           )}
         </dl>
+        {isAdmin && (
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+            <Button size="sm" onClick={() => void updatePublication("published")} loading={updatingPublication} disabled={doc.publication_status === "published" || doc.status !== "completed"}>
+              发布
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => void updatePublication("draft")} disabled={updatingPublication || doc.publication_status === "draft"}>
+              退回草稿
+            </Button>
+            <Button size="sm" variant="danger" onClick={() => void updatePublication("retired")} disabled={updatingPublication || doc.publication_status === "retired"}>
+              退役
+            </Button>
+          </div>
+        )}
         {doc.metadata && Object.keys(doc.metadata).length > 0 && (
           <div className="mt-3 border-t border-slate-100 pt-3">
             <dt className="text-xs text-slate-400">元数据</dt>
@@ -330,7 +371,7 @@ export default function DocumentDetailPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp,.bmp"
+              accept={UPLOAD_ACCEPT}
               onChange={(e) => setReplaceFile(e.target.files?.[0] || null)}
               className="w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
             />

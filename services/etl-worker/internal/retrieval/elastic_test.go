@@ -66,6 +66,43 @@ func TestElasticRetriever_SearchFiltersTenantAndPermission(t *testing.T) {
 	}
 }
 
+func TestElasticRetriever_SearchUsesPhraseFirstAndFallback(t *testing.T) {
+	var gotShould []interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		query := body["query"].(map[string]interface{})
+		boolQuery := query["bool"].(map[string]interface{})
+		gotShould = boolQuery["should"].([]interface{})
+		if boolQuery["minimum_should_match"].(float64) != 1 {
+			t.Fatalf("expected minimum_should_match=1, got %#v", boolQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hits":{"hits":[]}}`))
+	}))
+	defer srv.Close()
+
+	retriever := NewElasticRetriever(srv.URL, "", "documents_text", srv.Client())
+	if _, err := retriever.Search(context.Background(), SearchRequest{
+		Question: "办公用品", TenantID: "tenant-a", AllowedPermissions: []string{"internal"},
+	}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(gotShould) != 2 {
+		t.Fatalf("expected phrase and AND clauses, got %#v", gotShould)
+	}
+	phrase := gotShould[0].(map[string]interface{})["match_phrase"].(map[string]interface{})
+	if phrase["content"].(map[string]interface{})["boost"].(float64) != 4 {
+		t.Fatalf("expected phrase boost, got %#v", phrase)
+	}
+	match := gotShould[1].(map[string]interface{})["match"].(map[string]interface{})
+	if match["content"].(map[string]interface{})["operator"] != "and" {
+		t.Fatalf("expected AND fallback, got %#v", match)
+	}
+}
+
 func TestElasticRetriever_SearchUsesExactSchemaMetadata(t *testing.T) {
 	var gotShould []interface{}
 

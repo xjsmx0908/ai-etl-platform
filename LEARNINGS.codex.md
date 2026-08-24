@@ -17,3 +17,376 @@ This file is an append-only record of completed PRAR cycles.
 - **Act:** Added a dedicated search proxy that forwards the complete query string and the HttpOnly session token. Extended the isolated smoke stack with a Web port and a session-proxy content-search assertion.
 - **Refine:** Rebuilt and redeployed Web, verified the reported Chinese query returned HTTP 200, and passed the production build, TypeScript check, service tests, Trivy/configuration gates, and full pipeline smoke. `npm audit` retained the existing Next.js/PostCSS findings, and the deterministic eval runner remained blocked by an existing Compose compatibility issue where an unpublished port resolves to `0`.
 - **Prevention:** Every client API path needs a matching proxy-route test at the browser-facing boundary; backend endpoint coverage alone cannot detect Next.js route fallthrough.
+
+## 2026-08-19 - RAG Evidence Integrity and Scope Isolation
+
+- **Perceive:** `办公用品` retrieved repeated chunks from one legacy Word file,
+  mixed a user upload with demo policy, showed an RRF rank score as cosine, and
+  called every retrieved chunk a citation. SSE also bypassed JSON-path safety.
+- **Reason:** Deduplication stopped at chunk ID, final Top-K had no document or
+  file diversity, Chinese `standard` analysis used broad single-character OR,
+  knowledge scope was absent from retrieval, and the response contract did not
+  distinguish model evidence from cited sources.
+- **Act:** Added parser and retrieval content deduplication, file-hash collapse,
+  strict document diversity, stable raw relevance, JSON/SSE path unification,
+  phrase-first CJK search, versioned index migration, scope filtering, citation
+  extraction, truthful stage counts, and matching Workbench controls.
+- **Refine:** Rebuilt the live services, migrated 71 ES documents to a CJK alias,
+  reprocessed both legacy Word copies, backfilled demo scope, flushed semantic
+  cache, and verified document search and SSE with a normal-user token.
+- **Prevention:** Retrieval diagnostics must retain stage-specific values; source
+  identity needs content and file semantics in addition to IDs; any knowledge
+  space added to reads also needs an explicit write authorization boundary.
+
+## 2026-08-19 - Enterprise Knowledge Governance P0
+
+- **Perceive:** Free-form scope metadata and post-retrieval Top-1 selection could
+  mix policies, hide authorization decisions, and allow draft or demo evidence
+  to reach generation.
+- **Reason:** Enterprise isolation needs an authoritative catalog resolved before
+  retrieval, explicit publication state, and fail-closed evidence validation.
+- **Act:** Added tenant-scoped spaces and membership roles, upload/query ACLs,
+  draft/published/retired lifecycle controls, catalog-backed evidence filtering,
+  management APIs, and matching Web controls and diagnostics.
+- **Refine:** A fresh-stack E2E exposed that tenants created after migration had
+  no default space. Added migration `0006` to backfill and transactionally
+  provision new tenants. The eval runner also gained a loopback random port and
+  role-correct fixture uploads. Full suites, E2E, live checks, and the 47-case
+  deterministic eval then passed their configured gates.
+- **Prevention:** Any trigger that inserts a child row must have the parent
+  invariant established for both migrated and newly created owners. Evaluation
+  fixtures must enter through real identities and authorization paths rather
+  than synthetic JWTs that bypass catalog membership.
+
+## 2026-08-19 - Evidence Sufficiency and Safe Refusal
+
+- **Perceive:** Permission filtering correctly removed confidential targets, but
+  unrelated same-tenant candidates still reached the mock LLM. Its refusal
+  variant retained unrelated sources, so three security negatives failed answer
+  assertions despite passing retrieval isolation.
+- **Reason:** Similarity and rank cannot prove a requested contract, order, or
+  trace identifier exists. That proof must be deterministic and applied after
+  every authorization and lifecycle filter, before generation.
+- **Act:** Reused the retrieval engine's strong-token normalization to add an
+  exact-evidence sufficiency gate, normalized refusal variants, removed all
+  refusal sources, exposed boolean diagnostics in the Workbench, and added an
+  independent 100% negative-case CI gate.
+- **Refine:** Public HTTP and retrieval tests passed, followed by the 47-case
+  isolated eval at 100% retrieval, answer, overall, and negative pass rates.
+  Every confidential negative returned the fixed refusal with zero sources.
+- **Prevention:** Safety cohorts require their own zero-tolerance metric; an
+  aggregate quality score must never hide a permission or evidence failure.
+- **Deployment verification:** The rebuilt live API refused an unknown contract
+  id with zero retrieved sources and citations, while `办公用品` still returned
+  grounded evidence from one document. Boolean audit diagnostics now serialize
+  explicit `false` values; omitting them makes "failed" indistinguishable from
+  "instrumentation absent" to API consumers.
+
+## 2026-08-19 - Web Framework Security Upgrade
+
+- **Perceive:** Next.js 14 and its transitive PostCSS dependency had high-severity
+  advisories. The initially evaluated Next.js 15 backport still selected a Sharp
+  release covered by newer high-severity libvips advisories.
+- **Reason:** Overriding Sharp outside Next.js 15's declared range would produce
+  an unsupported combination. Next.js 16.3.1 is the first supported dependency
+  set that clears Next.js, PostCSS, and Sharp findings together and requires
+  Node 20 plus async dynamic-route parameters.
+- **Act:** Upgraded Next.js and the container runtime, migrated route and viewport
+  contracts, established ESLint 9, regenerated the official-registry lock file,
+  and excluded dependencies, build output, npm config, and environment files
+  from the Docker build context.
+- **Refine:** Clean install, full audit, lint, TypeScript, production build,
+  no-cache image build, isolated end-to-end smoke, and deployed session-proxy
+  checks all passed. `npm audit` reports zero vulnerabilities.
+- **Prevention:** A dependency gate must inspect transitive native packages, not
+  only the named framework. Docker contexts must explicitly exclude local env
+  and package-manager files before any image is considered releasable.
+
+## 2026-08-19 - Public RAG Retrieval Baseline
+
+- **Perceive:** Public RAG datasets can provide a reproducible generic retrieval
+  baseline, but they do not represent this product's Chinese enterprise policies,
+  authorization rules, or answer-quality acceptance criteria.
+- **Reason:** A benchmark needs immutable provenance and a document/query data
+  model. The legacy case-per-document format duplicated shared corpus documents,
+  lost multi-relevance qrels, and implicitly required answers for retrieval-only
+  datasets.
+- **Act:** Added evaluation protocol v2, a licensed BEIR importer, an approved
+  NanoSciFact catalog, and a paginated Dataset Server downloader pinned by commit,
+  expected row counts, and SHA-256 hashes. Reports now disclose source, license,
+  scope, sampling comparability, and model mode.
+- **Refine:** Imported and validated 2,919 documents, 50 queries, and 56 qrels;
+  passed 38 script tests, a 30-document v2 isolated smoke, and the legacy 47-case
+  regression. Public corpus and reports remain Git-ignored.
+- **Prevention:** Never treat mock embedding scores, sampled public results, or
+  an English scientific benchmark as enterprise acceptance evidence. Public
+  baselines complement rather than replace reviewed, deidentified business data.
+
+## 2026-08-19 - Real Model Baseline and ETL Readiness
+
+- **Perceive:** The configured stack had usable local `bge-m3` embeddings and an
+  authenticated external `deepseek-v4-flash` endpoint, but no local chat model.
+- **Reason:** A real retrieval result is meaningful only when the model mode,
+  fixed dataset revision, sampling, reranker policy, token usage, and cost limits
+  are disclosed. ES count alone cannot prove that all uploaded documents have
+  completed ETL.
+- **Act:** Ran a matched 30-document/10-query sample. Recall@5 was 70% without
+  reranking and 90% with `auto` reranking. Added task-status polling before
+  publication so large uploads cannot fail with a 409 lifecycle race.
+- **Refine:** Both isolated runs cleaned their Compose projects; reports retain
+  per-query misses and token counts. A 300-document attempt failed before scoring
+  because ETL was incomplete, which motivated the readiness fix rather than being
+  recorded as a model result.
+- **Prevention:** Full public baselines against a billed endpoint require an
+  explicit budget and time window. Sampled scores are directional only and must
+  not become enterprise quality gates.
+
+## 2026-08-20 - Full Real Retrieval Baseline
+
+- **Perceive:** The complete NanoSciFact snapshot contained 2,919 documents and
+  50 queries. Local F16 `bge-m3` embedding on the four-thread host made ETL
+  readiness much slower than the per-query timeout used by the evaluator.
+- **Reason:** ES count is only an indexing signal; publication must wait on every
+  task status. A reranker comparison must also use the exact same published
+  corpus, otherwise upload timing and vectorization become confounders.
+- **Act:** Added a separate batch `--processing-timeout`, stopped a readiness
+  scan immediately on tenant-wide 429s, and added a dataset-digest-bound upload
+  map for corpus reuse. Completed matched real-model runs with and without
+  `auto` reranking.
+- **Refine:** No-rerank Recall@1/3/5 was 52%/60%/66%; rerank was 54%/72%/72%.
+  Reranking recovered 4 misses, regressed 1 hit, and raised tokens 14.1%.
+  Answer and negative assertions were 100% in this retrieval-only dataset.
+- **Prevention:** Keep public benchmark scores separate from enterprise gates;
+  collect reviewed Chinese business qrels and repeat the comparison before
+  selecting production defaults.
+
+## 2026-08-20 - Enterprise Chinese Auto-Silver Baseline
+
+- **Perceive:** All 40 private documents could be extracted locally, but the
+  corpus included confidential candidates, low-content files, PII indicators,
+  and a possible version conflict. Treating model-written questions as gold
+  would have hidden both data-governance uncertainty and evaluator noise.
+- **Reason:** Silver generation must bind every answer to verbatim evidence and
+  keep private artifacts local. Retrieval, citation, answer content, refusal,
+  and permission behavior require separate metrics because one aggregate score
+  cannot locate the failing layer.
+- **Act:** Added a local evidence-first dataset builder and review tables, binary
+  source uploads with digest checks, query-aware context selection, configurable
+  local LLM limits, and an isolated real-model runner. Generated 114 cases and
+  evaluated them with local `bge-m3` plus `qwen2.5:1.5b` without reranking.
+- **Refine:** Recall@5 reached 83.49% and all 5 no-answer cases passed, while
+  answer assertions reached only 26.32%. Failure aggregation found 18 retrieval
+  misses, 27 missing citations after retrieval, and 41 missing key facts after
+  retrieval. Validation also showed high query/evidence lexical overlap, so the
+  retrieval score may overstate natural-query performance. Private case details
+  remained Git-ignored and the eval stack, volumes, networks, and images were
+  removed after the run.
+- **Prevention:** Do not promote auto-silver results to release gates. Require
+  data-owner review of permissions, effective versions, conflicts, and uncertain
+  labels; then repeat matched reranker and answer-quality experiments with a
+  grounding verifier and multiple runs.
+
+## 2026-08-20 - Automated Enterprise Review and Technical Gold Draft
+
+- **Perceive:** Mechanical evidence checks passed all 111 positive candidates,
+  but that did not make their questions natural or answers complete. Requiring
+  the user to review every row would waste attention, while letting a local
+  model declare business validity would create false authority.
+- **Reason:** Technical and authority decisions need separate outputs. Source
+  integrity, conservative permissions, evidence binding, and semantic label
+  quality can be automated; current policy effectiveness, official ownership,
+  and the winning version in a conflict cannot be inferred as fact.
+- **Act:** Added a cached local review tool with tested permission, quality,
+  conflict, evidence, and promotion rules. It emits audit CSVs, a technical gold
+  draft, and a minimal authority-only confirmation list while preserving the
+  original review tables.
+- **Refine:** Twenty-seven documents and 20 cases entered the draft; 4 documents
+  were excluded for low content, 2 were held for a version conflict, and 7 need
+  effectiveness confirmation. Only 16/111 positives passed independent semantic
+  review, while all 17 safety negatives passed. The remaining manual list has 8
+  items and all 71 script tests passed.
+- **Prevention:** Lexical-overlap warnings must be cohort labels rather than a
+  universal rejection rule: exact identifiers and policy terms are legitimate
+  enterprise queries, but their scores cannot prove semantic retrieval quality.
+  Never call a technical draft business-approved gold.
+
+## 2026-08-21 - Latest-Date Confirmation Rule
+
+- **Perceive:** The remaining 8 confirmations contained 7 dated historical
+  items and one duplicate-version pair. Content dates tied for the duplicate,
+  while embedded Office modification metadata differed.
+- **Reason:** A reproducible recency rule needs an evidence hierarchy and must
+  fail on ties. Filesystem upload timestamps are not business dates; content,
+  filename, PDF metadata, and Office metadata are auditable inputs, but still do
+  not equal policy-register validation.
+- **Act:** Added a tested confirmation applicator that extracts full dates,
+  compares embedded metadata, records source and basis, rejects unresolved
+  ties, excludes the losing version, and builds a private Gold candidate.
+- **Refine:** All 8 rows resolved under the user-approved rule. The candidate
+  contains 35 documents and 31 cases with no broken references; 75 script tests
+  and strict dataset validation passed. Only one positive case is currently in
+  the low-overlap semantic cohort.
+- **Prevention:** Preserve `business_approval_complete=false` for recency-based
+  confirmation. Report lexical, semantic, and safety cohorts separately, and
+  prioritize natural semantic and cross-document case creation next.
+
+## 2026-08-21 - Semantic and Cross-Document Eval Expansion
+
+- **Perceive:** The first reviewed candidate had only one semantic case and no
+  cross-document cases. Whole-document Chinese character overlap also falsely
+  classified natural questions against long policies as lexical copies.
+- **Reason:** Natural-query quality must be measured against bound evidence,
+  while cross-document acceptance must require every source in retrieval and
+  citations. Model output cannot replace deterministic evidence constraints.
+- **Act:** Added a local-only, cached generation and independent-review pipeline,
+  evidence-relative overlap checks, deterministic cross-document answer
+  composition, explicit cohorts, and `required_doc_ids` evaluator semantics.
+- **Refine:** Generated a 35-document/70-case technical candidate with 30
+  semantic, 15 lexical, 10 cross-document, and 15 safety-negative cases. All 40
+  positive semantic/cross cases have verbatim bindings; source hashes and final
+  integrity checks reported zero errors.
+- **Prevention:** Fail closed on missing local review, unsupported facts,
+  incompatible scopes, missing sources, or non-loopback model endpoints. Keep
+  this candidate distinct from business-approved Gold and compare rerankers by
+  cohort over repeated matched runs.
+
+## 2026-08-22 - Enterprise Reranker Repeated A/B Evaluation
+
+- **Perceive:** The first diagnostic run looked like poor retrieval, but 40 of
+  70 answers were empty because a hard-coded 60-second HTTP middleware timeout
+  cancelled the local LLM before its configured 180-second timeout. Treating
+  those missing responses as retrieval misses would have published invalid
+  quality evidence.
+- **Reason:** A repeated comparison needs both configuration matching and a run
+  completeness gate. Cohort means are insufficient without within-arm spread,
+  and noise from latency milliseconds must never be combined numerically with
+  percentage metrics.
+- **Act:** Added a configurable handler timeout with a backward-compatible
+  default, evaluator provenance and completeness fields, cohort summaries, and
+  a matched 3+3 analyzer that rejects invalid or drifting reports. Ran all six
+  measurements against one private dataset digest and upload map using only
+  loopback Ollama models.
+- **Refine:** All six reports had 70/70 successful Query API cases and complete
+  grounding. `auto` reduced semantic Recall@5 from 68.89% to 33.33%, lexical
+  Recall@5 from 66.67% to 35.56%, left cross-document all-source recall at 0%,
+  and failed the 100% safety-refusal rule. It therefore did not pass the release
+  gate despite lower observed latency and token use in several cohorts.
+- **Prevention:** Gate evaluator validity before reading quality scores, keep
+  per-metric noise in its native unit, and do not select a reranker from a public
+  English model name or latency result alone. Cross-document zero recall must be
+  fixed in candidate generation/fusion before reranking can be credited.
+
+## 2026-08-23 - P1.8 Stage Diagnostics and Environment Boundaries
+
+- **Perceive:** The P1.7 result showed 0% cross-document all-source recall in both
+  arms, but the API exposed only final sources and total counts. The possible
+  loss points were backend Top-50, Qdrant's internal RRF, application fusion, or
+  final diversity selection.
+- **Reason:** A diagnostic protocol must identify stage coverage without exposing
+  private case identifiers or evidence. It also must bypass semantic cache so a
+  cached result cannot hide backend-stage observations.
+- **Act:** Added aggregate-only `StageDiagnostics`, controlled by the disabled-by-
+  default `RETRIEVAL_DIAGNOSTICS_ENABLED` flag, with deterministic unit and engine
+  tests. The evaluator now sends required ids only to an enabled local service and
+  reports backend/fused/selected all-required rates. Made isolated eval user
+  provisioning idempotent and lowered only the eval Compose ES disk thresholds.
+- **Refine:** Focused Go and evaluator tests pass. Two real diagnostic attempts
+  were excluded: one reused document ids without their project volumes and hit
+  empty ES shards; the fresh isolated attempt hit host disk pressure and then a
+  local Ollama embedding circuit breaker. No production retrieval repair was
+  inferred from those invalid runs.
+- **Prevention:** Treat upload mappings as identity metadata, not portable data
+  volumes. Require `run_valid=true` before stage conclusions, and keep reranker
+  changes blocked until a valid diagnostic run identifies the upstream loss.
+
+## 2026-08-23 - P1.8 Cohort-Scoped Retrieval Diagnostics
+
+- **Perceive:** A full 70-case answer evaluation was too expensive and coupled
+  retrieval diagnosis to local LLM latency, while cross-document cases still
+  needed all 35 documents present as distractors.
+- **Reason:** The evaluator must narrow only the query cohort, never the upload
+  corpus. A retrieval-only request must also be explicitly feature-gated so a
+  client cannot silently suppress answer generation in the normal API.
+- **Act:** Added `--cohort`, `--retrieval-only`, Query Service gating, config
+  coverage, and tests. Stage Markdown now reports Qdrant and Elasticsearch
+  independently; provenance records selected cohort and retrieval-only mode.
+- **Refine:** Python evaluator tests (33), Go full tests, Go vet, compilation,
+  and diff checks pass. The root stack stayed running. Resource preflight found
+  5.9GB free on a 97%-full root filesystem; one loopback `bge-m3` probe passed,
+  so no invalid full diagnostic run was started.
+- **Prevention:** Keep the 10-case diagnostic loop retrieval-only until a valid
+  stage boundary is identified, and treat disk headroom plus repeated embedding
+  probes as hard preconditions for isolated Compose evaluation.
+
+## 2026-08-23 - P1.8 Ranking Diagnosis After Valid Runs
+
+- **Perceive:** A valid retrieval-only run showed that some multi-source loss
+  occurs before final selection, while other cases have every necessary source
+  after fusion but lose one before Top-5. Elasticsearch successfully returned
+  an empty candidate set, but the engine omitted successful empty backends from
+  diagnostics.
+- **Reason:** A hit boolean cannot distinguish rank 6 from rank 50, and changing
+  diversity without that information confounds diagnosis with product behavior.
+  The safe next signal is the deepest first-occurrence rank only when all
+  necessary sources are present.
+- **Act:** Retained successful empty backend results, tested a distinct-document-
+  first selector in an isolated run, rejected and reverted it after no metric
+  improved, and added aggregate-only `all_required_max_rank` with test-first
+  coverage and JSON privacy assertions.
+- **Refine:** Focused retrieval tests, 102 scripts tests, full Go tests, Go vet,
+  Compose configuration validation, and diff checks pass. The evaluator already
+  preserves stage diagnostic objects verbatim in ignored detailed reports, so
+  no private rank data was added to tracked aggregate reports.
+- **Prevention:** Require a valid real diagnostic before retaining ranking
+  changes. Reuse one isolated corpus and rebuild only Query API for subsequent
+  hypotheses; never infer that document diversity is missing merely from a
+  multi-source Top-K failure.
+
+## 2026-08-23 - P1.8 Ingestion Completeness and Deep Semantic Rank
+
+- **Perceive:** Anonymous rank diagnostics showed complete necessary sources at
+  fused ranks 8-45 for 40% of cases. K=200 raised backend completeness to 80%
+  but placed new sources as deep as rank 187. A full-collection dense query still
+  missed one case because two completed registry documents had no Qdrant points.
+- **Reason:** Retrieval quality cannot be judged against a corpus that reports
+  successful ingestion while storing zero chunks. Keyword-based noise filters
+  must fail conservatively: a long body mentioning a directory is not itself a
+  table of contents. Candidate depth can reveal an upper bound but cannot make a
+  rank-216 source fit into Top-5.
+- **Act:** Added a pipeline error for zero stored chunks, narrowed TOC filtering
+  to short fragments, and added regression tests. Reprocessed only the two empty
+  documents; Qdrant then covered all 35 documents and every necessary source was
+  present in the full collection.
+- **Refine:** After ingestion repair, dense full-collection recall was 10/10,
+  while production K=50 fused coverage remained 40% and final Top-5 remained 0%.
+  Sparse unigram/bigram, MMR, distinct-document selection, and local multi-query
+  candidates failed or regressed and were reverted or left unimplemented. Full
+  verification passed: Go tests and vet, 32 parser tests, one reranker test, 102
+  script tests, Web lint/typecheck/build, Compose validation, and diff checks;
+  all 17 root Compose services remained running.
+- **Prevention:** Gate eval validity on non-zero chunks for successfully ingested
+  non-empty documents. Preserve only hypotheses that improve a valid real run,
+  and distinguish corpus completeness, candidate recall, and final ranking as
+  separate release gates.
+
+## 2026-08-24 - P1.8-B Deterministic Clause Retrieval Rejection
+
+- **Perceive:** Full-collection dense retrieval contained every necessary source,
+  but some appeared as deep as rank 216. A deterministic clause candidate could
+  promote explicit semantic facets without using evaluation-required ids.
+- **Reason:** The external retrieval interface should stay small; clause planning,
+  governed dense search, fusion, and fallback belong inside the retrieval module.
+  Activation must be observable because a non-triggering strategy cannot be
+  credited or rejected from final recall alone.
+- **Act:** Built the candidate test-first behind a disabled switch, verified its
+  public-safe promotion, authorization, exact-query, timeout, determinism, and
+  provenance behavior, then ran one matched feature-off/on isolated comparison.
+- **Refine:** Both runs were valid with 10/10 successful retrieval-only requests.
+  The candidate expanded 0/10 questions; Qdrant/Fuse completeness stayed 40%
+  and final Top-5 stayed 0%. The questions carried implicit cross-document intent
+  rather than two safely separable clauses, so all candidate code and settings
+  were reverted. Dedicated containers, volumes, network, and images were removed.
+- **Prevention:** Measure strategy activation separately from outcome. Do not
+  loosen deterministic string splitting until it guesses latent intent; move the
+  next design toward document-side semantic units or a constrained local planner,
+  with a public-safe activation benchmark before private evaluation.

@@ -96,11 +96,19 @@ def multipart_body(
     doc_id: str,
     tenant_id: str,
     permission: str,
+    knowledge_base_id: str,
+    applicable_scope: str,
     governance: dict[str, str] | None = None,
 ) -> bytes:
     boundary = "----load-corpus-boundary"
     parts = []
-    fields = [("doc_id", doc_id), ("tenant_id", tenant_id), ("permission", permission)]
+    fields = [
+        ("doc_id", doc_id),
+        ("tenant_id", tenant_id),
+        ("permission", permission),
+        ("knowledge_base_id", knowledge_base_id),
+        ("applicable_scope", applicable_scope),
+    ]
     # Only send governance fields the case actually sets: an empty value means
     # "not supplied" to the registry, and sending one for every case would make
     # the request look like an editorial act on documents that need none.
@@ -150,7 +158,10 @@ def main() -> int:
         print(f"[load] logged in as {args.username} (tenant {tenant_id})")
     tenant_id = tenant_id or "default"
 
-    cases = json.loads(args.source.read_text(encoding="utf-8"))["cases"]
+    corpus = json.loads(args.source.read_text(encoding="utf-8"))
+    cases = corpus["cases"]
+    knowledge_base_id = corpus.get("knowledge_base_id", corpus.get("name", "enterprise-demo"))
+    applicable_scope = corpus.get("applicable_scope", "demo")
     ok, failed = 0, 0
     for case in cases:
         doc_id = case["id"]
@@ -182,6 +193,8 @@ def main() -> int:
             doc_id,
             tenant_id,
             case.get("permission", "internal"),
+            case.get("knowledge_base_id", knowledge_base_id),
+            case.get("applicable_scope", applicable_scope),
             governance,
         )
         req = request.Request(f"{base}/v1/upload", data=body, method="POST")

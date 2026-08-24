@@ -102,6 +102,125 @@ class EvalDatasetValidationTests(unittest.TestCase):
         self.assertEqual(categories, {"etl", "retrieval", "agent", "observability"})
         self.assertGreaterEqual(sum(not case.get("expect_hit", True) for case in data["cases"]), 12)
 
+    def test_accepts_licensed_v2_public_retrieval_dataset_without_reference_answers(self):
+        dataset = {
+            "version": "2.0",
+            "name": "public-fixture",
+            "dataset_type": "public_benchmark",
+            "evaluation_scope": "retrieval",
+            "provenance": {
+                "license": "CC-BY-4.0",
+                "source_url": "https://example.invalid/public-fixture",
+                "dataset_version": "immutable-v1",
+                "split": "test",
+            },
+            "documents": [
+                {"id": "d1", "filename": "d1.txt", "permission": "internal", "content": "Evidence one."},
+                {"id": "d2", "filename": "d2.txt", "permission": "internal", "content": "Evidence two."},
+            ],
+            "cases": [
+                {
+                    "id": "q1",
+                    "document_id": "d1",
+                    "query": "Which evidence applies?",
+                    "acceptable_doc_ids": ["d1", "d2"],
+                    "required_doc_ids": ["d1", "d2"],
+                }
+            ],
+        }
+
+        report = validate_eval_dataset.validate_dataset(
+            self.write_raw_dataset(dataset),
+            min_cases=1,
+            require_reference_answers=True,
+            fail_on_sensitive_patterns=True,
+        )
+
+        self.assertTrue(report.valid, report.errors)
+        self.assertEqual(report.case_count, 1)
+
+    def test_semantic_cohort_uses_bound_evidence_overlap_metadata(self):
+        dataset = {
+            "version": "2.0",
+            "name": "private-semantic-fixture",
+            "dataset_type": "enterprise_private_gold_candidate",
+            "evaluation_scope": "answer_and_retrieval",
+            "provenance": {},
+            "documents": [
+                {
+                    "id": "d1",
+                    "filename": "d1.txt",
+                    "permission": "internal",
+                    "content": "差旅报销材料返程十个工作日提交，员工问返程后材料什么时候提交。",
+                }
+            ],
+            "cases": [
+                {
+                    "id": "q1",
+                    "document_id": "d1",
+                    "query": "返程后材料什么时候提交？",
+                    "reference_answer": "十个工作日内。",
+                    "metadata": {
+                        "evaluation_cohort": "semantic",
+                        "query_evidence_overlap": 0.25,
+                    },
+                }
+            ],
+        }
+
+        report = validate_eval_dataset.validate_dataset(
+            self.write_raw_dataset(dataset),
+            min_cases=1,
+            require_reference_answers=True,
+            fail_on_sensitive_patterns=True,
+        )
+
+        self.assertTrue(report.valid, report.errors)
+        self.assertFalse(any("likely keyword-match" in warning for warning in report.warnings))
+
+    def test_rejects_v2_public_dataset_with_unknown_document_or_missing_license(self):
+        dataset = {
+            "version": "2.0",
+            "name": "public-fixture",
+            "dataset_type": "public_benchmark",
+            "evaluation_scope": "retrieval",
+            "provenance": {
+                "source_url": "https://example.invalid/public-fixture",
+                "dataset_version": "immutable-v1",
+                "split": "test",
+            },
+            "documents": [
+                {"id": "d1", "filename": "d1.txt", "permission": "internal", "content": "Evidence one."}
+            ],
+            "cases": [
+                {
+                    "id": "q1",
+                    "document_id": "missing",
+                    "query": "Find it",
+                    "required_doc_ids": ["d1", "also-missing"],
+                }
+            ],
+        }
+
+        report = validate_eval_dataset.validate_dataset(
+            self.write_raw_dataset(dataset),
+            min_cases=1,
+            require_reference_answers=True,
+            fail_on_sensitive_patterns=True,
+        )
+
+        self.assertFalse(report.valid)
+        self.assertTrue(any("provenance.license is required" in error for error in report.errors))
+        self.assertTrue(any("unknown document_id" in error for error in report.errors))
+        self.assertTrue(any("required_doc_ids contains unknown" in error for error in report.errors))
+
+    def write_raw_dataset(self, payload: dict) -> Path:
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        with handle:
+            json.dump(payload, handle)
+        self.addCleanup(Path(handle.name).unlink, missing_ok=True)
+        return Path(handle.name)
+
 
 if __name__ == "__main__":
     unittest.main()

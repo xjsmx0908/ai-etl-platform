@@ -33,6 +33,32 @@ func mockParserServer(t *testing.T, docID string, chunks []map[string]interface{
 	return srv.URL
 }
 
+func TestRequiresParserService(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]bool{
+		"policy.pdf":    true,
+		"legacy.DOC":    true,
+		"workbook.xls":  true,
+		"workbook.XLSX": true,
+		"briefing.pptx": true,
+		"scan.jpeg":     true,
+		"notes.txt":     false,
+		"records.jsonl": false,
+		"markdown.md":   false,
+		"no-extension":  false,
+	}
+	for path, want := range tests {
+		path, want := path, want
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			if got := requiresParserService(path); got != want {
+				t.Fatalf("requiresParserService(%q) = %v, want %v", path, got, want)
+			}
+		})
+	}
+}
+
 type noopEmbedder struct{}
 
 func (noopEmbedder) Embed(context.Context, *model.Chunk) error { return nil }
@@ -464,6 +490,36 @@ func TestProcessTask_BinaryParserServicePathCompletes(t *testing.T) {
 	}
 	if !foundTotal {
 		t.Fatalf("expected an embedding stage with TotalChunks=2, got %+v", statuses.statuses)
+	}
+}
+
+func TestProcessTask_BinaryParserServiceRejectsZeroChunks(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.PipelineTimeout = 5 * time.Second
+	cfg.StageTimeout = 5 * time.Second
+	cfg.ParserEndpoint = mockParserServer(t, "doc-empty", nil)
+
+	tmp, err := os.CreateTemp(t.TempDir(), "doc-*.pdf")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+
+	storer := &captureStorer{}
+	p := New(cfg, vectorEmbedder{}, storer, metrics.NewCollector(10), &noopCheckpoint{}, &dlqStub{})
+	err = p.processTask(context.Background(), model.Task{
+		DocID:      "doc-empty",
+		TenantID:   "tenant-a",
+		FilePath:   tmp.Name(),
+		Permission: "internal",
+	})
+	if err == nil || !strings.Contains(err.Error(), "parser produced no chunks") {
+		t.Fatalf("processTask error = %v, want parser produced no chunks", err)
+	}
+	if len(storer.chunks) != 0 {
+		t.Fatalf("expected no stored chunks, got %d", len(storer.chunks))
 	}
 }
 

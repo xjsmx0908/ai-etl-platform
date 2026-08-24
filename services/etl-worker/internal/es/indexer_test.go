@@ -37,6 +37,44 @@ func TestMapChunkToESDoc_NormalizesPermissionAndCreatedAt(t *testing.T) {
 	}
 }
 
+func TestNewHTTPIndexerCreatesVersionedCJKIndexAndWriteAlias(t *testing.T) {
+	var created map[string]interface{}
+	var aliased map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodHead && r.URL.Path == "/documents_text":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPut && r.URL.Path == "/documents_text_v2":
+			_ = json.NewDecoder(r.Body).Decode(&created)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/_aliases":
+			_ = json.NewDecoder(r.Body).Decode(&aliased)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatalf("new indexer: %v", err)
+	}
+	defer idx.Close()
+
+	mappings := created["mappings"].(map[string]interface{})
+	properties := mappings["properties"].(map[string]interface{})
+	content := properties["content"].(map[string]interface{})
+	if content["analyzer"] != "cjk" || content["search_analyzer"] != "cjk" {
+		t.Fatalf("expected CJK analyzer mapping, got %#v", content)
+	}
+	actions := aliased["actions"].([]interface{})
+	add := actions[0].(map[string]interface{})["add"].(map[string]interface{})
+	if add["alias"] != "documents_text" || add["index"] != "documents_text_v2" || add["is_write_index"] != true {
+		t.Fatalf("unexpected alias action: %#v", add)
+	}
+}
+
 // DeleteByDocID must POST a delete-by-query with a doc_id term filter.
 func TestHTTPIndexer_DeleteByDocID(t *testing.T) {
 	var got map[string]interface{}
@@ -187,6 +225,7 @@ func TestHTTPIndexer_IndexChunk(t *testing.T) {
 func TestHTTPIndexer_EnsureIndex_CreatesWhenMissing(t *testing.T) {
 	headCount := 0
 	createCount := 0
+	aliasCount := 0
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
@@ -196,8 +235,16 @@ func TestHTTPIndexer_EnsureIndex_CreatesWhenMissing(t *testing.T) {
 		}
 		if r.Method == http.MethodPut && !strings.Contains(r.URL.Path, "/_doc/") {
 			createCount++
+			if r.URL.Path != "/documents_text_v2" {
+				t.Fatalf("expected versioned physical index, got %s", r.URL.Path)
+			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"acknowledged":true}`))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/_aliases" {
+			aliasCount++
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -215,5 +262,8 @@ func TestHTTPIndexer_EnsureIndex_CreatesWhenMissing(t *testing.T) {
 	}
 	if createCount != 1 {
 		t.Fatalf("expected one create request, got %d", createCount)
+	}
+	if aliasCount != 1 {
+		t.Fatalf("expected one alias request, got %d", aliasCount)
 	}
 }

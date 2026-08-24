@@ -66,7 +66,10 @@ func Fuse(results map[string][]Candidate, route Route, limit int) []Candidate {
 			// bounded similarity measure, while BM25 is unbounded and corpus-
 			// dependent, so the two cannot share a threshold.
 			if source == SourceQdrant && current.RelevanceSource != SourceQdrant {
-				current.Relevance = candidate.Score
+				current.Relevance = candidate.Relevance
+				if candidate.RelevanceSource != SourceQdrant {
+					current.Relevance = candidate.Score
+				}
 				current.RelevanceSource = source
 			}
 			current.sourceSet[source] = struct{}{}

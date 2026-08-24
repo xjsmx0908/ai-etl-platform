@@ -6,9 +6,10 @@ import (
 )
 
 func exactMetadataFromPayload(payload map[string]interface{}, fields []string) map[string]string {
-	if len(payload) == 0 || len(fields) == 0 {
+	if len(payload) == 0 {
 		return nil
 	}
+	fields = append(append([]string(nil), fields...), "knowledge_base_id", "applicable_scope", "file_hash")
 
 	metadata := make(map[string]string)
 	if raw, ok := payload["metadata"]; ok {

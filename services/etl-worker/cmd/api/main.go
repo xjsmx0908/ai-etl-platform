@@ -31,6 +31,7 @@ import (
 	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/idempotency"
 	"ai-etl-pipeline/internal/kafka"
+	"ai-etl-pipeline/internal/knowledgecatalog"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/middleware"
 	"ai-etl-pipeline/internal/model"
@@ -53,6 +54,9 @@ var allowedUploadExtensions = map[string]struct{}{
 	".pdf":      {},
 	".docx":     {},
 	".doc":      {},
+	".xls":      {},
+	".xlsx":     {},
+	".pptx":     {},
 	".txt":      {},
 	".md":       {},
 	".markdown": {},
@@ -194,6 +198,7 @@ func main() {
 	}
 	docStore := docstore.New(pgPool)
 	auditStore := audit.New(pgPool)
+	knowledgeCatalog := knowledgecatalog.New(knowledgecatalog.NewPostgresStore(pgPool))
 
 	// Initialize auth. The verifier re-validates each token's token_version
 	// against the user store so password resets revoke outstanding tokens.
@@ -245,7 +250,7 @@ func main() {
 	// superseded/archived documents from the evidence set and disclose conflicting
 	// sources — governance the chunk index cannot express, because chunk payloads
 	// are written once at ingest and never updated in place.
-	qs := query.NewServiceWithObserver(cfg, prom).WithGovernance(docStore)
+	qs := query.NewServiceWithObserver(cfg, prom).WithGovernance(docStore).WithKnowledgeCatalog(knowledgeCatalog)
 	taskStatusStore, err := newTaskStatusStore(cfg)
 	if err != nil {
 		slog.Error("failed to create task status store", "error", err)
@@ -289,13 +294,14 @@ func main() {
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
 	// Document registry: list/detail open to any authenticated role (filtered by
 	// the role→permission matrix); DELETE checks upload scope in-handler.
-	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore)))
+	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore, qs)))
+	apiV1.Handle("/v1/knowledge-spaces", http.HandlerFunc(handleKnowledgeSpaces(knowledgeCatalog)))
 	apiV1.Handle("/v1/documents/", http.HandlerFunc(handleDocument(cfg, qs, s3Client, docStore, auditStore)))
 	// Document content search (ES BM25) and chunk-level detail (Qdrant). Both use
 	// long-lived clients: a per-request storer would re-run ensureCollection on
 	// every call.
 	esRetriever := retrieval.NewElasticRetriever(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, &http.Client{Timeout: 15 * time.Second})
-	apiV1.Handle("/v1/documents/search", http.HandlerFunc(handleDocumentSearch(cfg, docStore, esRetriever)))
+	apiV1.Handle("/v1/documents/search", http.HandlerFunc(handleDocumentSearch(cfg, docStore, esRetriever, qs)))
 	var chunksHandler http.Handler
 	if chunkStorer, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension); err != nil {
 		slog.Warn("qdrant storer for chunk detail failed", "error", err)
@@ -304,7 +310,7 @@ func main() {
 		})
 	} else {
 		defer chunkStorer.Close()
-		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorer))
+		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorer, qs))
 	}
 	apiV1.Handle("/v1/documents/{docID}/chunks", chunksHandler)
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
@@ -321,7 +327,7 @@ func main() {
 	handler = verifier.Middleware()(handler)
 	handler = middleware.APIVersion("1")(handler)
 	handler = middleware.CORS(cfg.CORSAllowedOrigins)(handler)
-	handler = middleware.Timeout(60 * time.Second)(handler)
+	handler = middleware.Timeout(cfg.HTTPHandlerTimeout)(handler)
 	handler = prom.HTTPMiddleware(handler)
 	handler = tracing.HTTPMiddleware("query-api.http")(handler)
 
@@ -691,6 +697,20 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		space, err := qs.ResolveKnowledgeSpace(r.Context(), r.FormValue("knowledge_space_id"), query.AccessContext{
+			TenantID: tenantID, UserID: auth.GetUserID(r.Context()), Role: role,
+		}, knowledgecatalog.CapabilityUpload)
+		if err != nil {
+			status := http.StatusServiceUnavailable
+			if errors.Is(err, knowledgecatalog.ErrForbidden) || errors.Is(err, knowledgecatalog.ErrNotFound) {
+				status = http.StatusForbidden
+			}
+			http.Error(w, "knowledge space unavailable", status)
+			return
+		}
+		metadata["knowledge_space_id"] = space.ID
+		metadata["knowledge_base_id"] = space.ID
+		metadata["applicable_scope"] = string(space.Kind)
 
 		idempotencyKey := readIdempotencyKey(r)
 		requestSig := buildUploadRequestSignature(
@@ -819,7 +839,7 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 		// distinct evidence. Only checked when the caller did NOT name a doc_id —
 		// an explicit doc_id is an explicit intent to replace that document.
 		if !userSuppliedDocID && docStore != nil {
-			existing, found, err := docStore.GetByHash(r.Context(), tenantID, fileHash)
+			existing, found, err := docStore.GetByHash(r.Context(), tenantID, space.ID, fileHash)
 			if err != nil {
 				// Detection is an optimisation, not a safety control: on a registry
 				// error keep ingesting rather than rejecting a legitimate upload.
@@ -926,10 +946,12 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 				CreatedAt:   task.CreatedAt,
 				UpdatedAt:   now,
 
-				DocStatus:     governance.DocStatus,
-				EffectiveDate: governance.EffectiveDate,
-				Supersedes:    governance.Supersedes,
-				Owner:         governance.Owner,
+				DocStatus:         governance.DocStatus,
+				EffectiveDate:     governance.EffectiveDate,
+				Supersedes:        governance.Supersedes,
+				Owner:             governance.Owner,
+				KnowledgeSpaceID:  space.ID,
+				PublicationStatus: "draft",
 			}); err != nil {
 				slog.Warn("document registry upsert failed", "tenant_id", task.TenantID, "doc_id", task.DocID, "error", err)
 			}
@@ -1110,9 +1132,56 @@ func parseUploadMetadata(raw string) (map[string]string, error) {
 		clean[key] = value
 	}
 	if len(clean) == 0 {
-		return nil, nil
+		return map[string]string{}, nil
 	}
 	return clean, nil
+}
+
+func applyUploadScope(metadata map[string]string, knowledgeBaseID, applicableScope, role string) (map[string]string, error) {
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	knowledgeBaseID = strings.TrimSpace(knowledgeBaseID)
+	customScopeSupplied := knowledgeBaseID != ""
+	if knowledgeBaseID == "" {
+		knowledgeBaseID = strings.TrimSpace(metadata["knowledge_base_id"])
+		customScopeSupplied = knowledgeBaseID != ""
+	}
+	if knowledgeBaseID == "" {
+		knowledgeBaseID = "user-uploads"
+	}
+	applicableScope = strings.TrimSpace(applicableScope)
+	customScopeSupplied = customScopeSupplied || applicableScope != ""
+	if applicableScope == "" {
+		applicableScope = strings.TrimSpace(metadata["applicable_scope"])
+		customScopeSupplied = customScopeSupplied || applicableScope != ""
+	}
+	if applicableScope == "" {
+		applicableScope = "organization"
+	}
+	if len(knowledgeBaseID) > 64 || len(applicableScope) > 128 {
+		return nil, fmt.Errorf("knowledge_base_id/applicable_scope too long")
+	}
+	if customScopeSupplied && !isAdminRole(role) {
+		return nil, fmt.Errorf("knowledge_base_id/applicable_scope require admin role")
+	}
+	if !validScopeIdentifier(knowledgeBaseID) {
+		return nil, fmt.Errorf("invalid knowledge_base_id (allowed: letters, digits, . _ -)")
+	}
+	metadata["knowledge_base_id"] = knowledgeBaseID
+	metadata["applicable_scope"] = applicableScope
+	return metadata, nil
+}
+
+func validScopeIdentifier(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return value != ""
 }
 
 // uploadGovernance carries the optional controlled-document fields of an upload.

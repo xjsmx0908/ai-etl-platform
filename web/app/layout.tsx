@@ -1,12 +1,13 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "知境 · 企业知识库",
   description: "企业智能知识平台",
   icons: { icon: "/icon.svg" },
-  themeColor: "#2563eb",
 };
+
+export const viewport: Viewport = { themeColor: "#2563eb" };
 
 export default function RootLayout({
   children,

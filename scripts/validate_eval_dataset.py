@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a private historical RAG evaluation dataset before use."""
+"""Validate a legacy or protocol-v2 RAG evaluation dataset before use."""
 
 from __future__ import annotations
 
@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-REQUIRED_FIELDS = ("id", "filename", "permission", "content", "query")
+LEGACY_REQUIRED_FIELDS = ("id", "filename", "permission", "content", "query")
+DOCUMENT_REQUIRED_FIELDS = ("id", "filename", "permission", "content")
+V2_CASE_REQUIRED_FIELDS = ("id", "document_id", "query")
+PUBLIC_PROVENANCE_FIELDS = ("license", "source_url", "dataset_version", "split")
 
 # Max fraction of query content words that may appear verbatim in the target
 # content before the case is flagged as keyword-match instead of semantic.
@@ -79,6 +82,19 @@ def validate_dataset(
     if report.case_count < min_cases:
         report.errors.append(f"dataset has {report.case_count} cases; requires at least {min_cases}")
 
+    is_v2 = str(raw.get("version", "")) == "2.0" or "documents" in raw
+    evaluation_scope = raw.get("evaluation_scope", "answer_and_retrieval")
+    document_ids: set[str] = set()
+    documents_by_id: dict[str, dict[str, Any]] = {}
+    if is_v2:
+        documents_by_id = validate_v2_documents(
+            raw.get("documents"),
+            report,
+            fail_on_sensitive_patterns=fail_on_sensitive_patterns,
+        )
+        document_ids = set(documents_by_id)
+        validate_v2_provenance(raw, report)
+
     seen_ids: set[str] = set()
     for index, case in enumerate(cases, start=1):
         case_label = f"case #{index}"
@@ -86,7 +102,8 @@ def validate_dataset(
             report.errors.append(f"{case_label}: must be an object")
             continue
 
-        for field_name in REQUIRED_FIELDS:
+        required_fields = V2_CASE_REQUIRED_FIELDS if is_v2 else LEGACY_REQUIRED_FIELDS
+        for field_name in required_fields:
             if not isinstance(case.get(field_name), str) or not case[field_name].strip():
                 report.errors.append(f"{case_label}: {field_name} is required")
 
@@ -97,35 +114,115 @@ def validate_dataset(
                 report.errors.append(f"{case_label}: duplicate id")
             seen_ids.add(normalized_id)
 
-        if require_reference_answers and (
+        if require_reference_answers and evaluation_scope != "retrieval" and (
             not isinstance(case.get("reference_answer"), str)
             or not case["reference_answer"].strip()
         ):
             report.errors.append(f"{case_label}: reference_answer is required")
 
         validate_optional_types(case, case_label, report)
+        if is_v2:
+            validate_v2_case_references(case, case_label, document_ids, report)
 
         # Semantic-set guardrail: a query that mostly repeats the target
         # document's words is a keyword-match test, not a semantic one. It
         # would pass without any semantic understanding and inflate metrics.
-        overlap = query_content_overlap(case)
+        overlap_case = case
+        document_id = case.get("document_id")
+        if is_v2 and isinstance(document_id, str) and document_id in documents_by_id:
+            overlap_case = dict(case, content=documents_by_id[document_id].get("content", ""))
+        overlap = query_content_overlap(overlap_case)
+        metadata = case.get("metadata") if isinstance(case.get("metadata"), dict) else {}
+        if metadata.get("evaluation_cohort") in {"semantic", "cross_document"}:
+            try:
+                overlap = float(metadata["query_evidence_overlap"])
+            except (KeyError, TypeError, ValueError):
+                report.warnings.append(
+                    f"{case_label}: semantic cohort lacks numeric query_evidence_overlap"
+                )
         if overlap > MAX_QUERY_CONTENT_OVERLAP:
             report.warnings.append(
                 f"{case_label}: query/content lexical overlap {overlap:.0%} "
                 f"(> {MAX_QUERY_CONTENT_OVERLAP:.0%}); likely keyword-match, not semantic"
             )
 
-        for field_name, value in text_values(case):
-            for pattern_name, pattern in SENSITIVE_PATTERNS:
-                if pattern.search(value):
-                    message = f"{case_label}: {field_name} matches {pattern_name}"
-                    if fail_on_sensitive_patterns:
-                        report.errors.append(message)
-                    else:
-                        report.warnings.append(message)
-                    break
+        scan_sensitive_values(
+            case,
+            case_label,
+            report,
+            fail_on_sensitive_patterns=fail_on_sensitive_patterns,
+        )
 
     return report
+
+
+def validate_v2_documents(
+    documents: Any,
+    report: DatasetReport,
+    *,
+    fail_on_sensitive_patterns: bool,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(documents, list) or not documents:
+        report.errors.append("eval protocol v2 documents must be a non-empty array")
+        return {}
+
+    documents_by_id: dict[str, dict[str, Any]] = {}
+    for index, document in enumerate(documents, start=1):
+        document_label = f"document #{index}"
+        if not isinstance(document, dict):
+            report.errors.append(f"{document_label}: must be an object")
+            continue
+        for field_name in DOCUMENT_REQUIRED_FIELDS:
+            if not isinstance(document.get(field_name), str) or not document[field_name].strip():
+                report.errors.append(f"{document_label}: {field_name} is required")
+        document_id = document.get("id")
+        if isinstance(document_id, str) and document_id.strip():
+            normalized_id = document_id.strip()
+            if normalized_id in documents_by_id:
+                report.errors.append(f"{document_label}: duplicate id")
+            else:
+                documents_by_id[normalized_id] = document
+        if "metadata" in document and not isinstance(document["metadata"], dict):
+            report.errors.append(f"{document_label}: metadata must be an object")
+        scan_sensitive_values(
+            document,
+            document_label,
+            report,
+            fail_on_sensitive_patterns=fail_on_sensitive_patterns,
+        )
+    return documents_by_id
+
+
+def validate_v2_provenance(raw: dict[str, Any], report: DatasetReport) -> None:
+    provenance = raw.get("provenance")
+    if not isinstance(provenance, dict):
+        report.errors.append("eval protocol v2 provenance must be an object")
+        return
+    if raw.get("dataset_type") != "public_benchmark":
+        return
+    for field_name in PUBLIC_PROVENANCE_FIELDS:
+        if not isinstance(provenance.get(field_name), str) or not provenance[field_name].strip():
+            report.errors.append(f"provenance.{field_name} is required for public_benchmark")
+
+
+def validate_v2_case_references(
+    case: dict[str, Any],
+    case_label: str,
+    document_ids: set[str],
+    report: DatasetReport,
+) -> None:
+    document_id = case.get("document_id")
+    if isinstance(document_id, str) and document_id.strip() and document_id not in document_ids:
+        report.errors.append(f"{case_label}: unknown document_id")
+    for field_name in ("acceptable_doc_ids", "required_doc_ids", "must_not_hit_doc_ids"):
+        references = case.get(field_name)
+        if not isinstance(references, list):
+            continue
+        unknown = sorted(
+            value for value in references if isinstance(value, str) and value.strip() and value not in document_ids
+        )
+        if unknown:
+            report.errors.append(f"{case_label}: {field_name} contains unknown document ids")
 
 
 def tokenize(text: str) -> set[str]:
@@ -168,6 +265,7 @@ def validate_optional_types(case: dict[str, Any], case_label: str, report: Datas
         report.errors.append(f"{case_label}: metadata must be an object")
     for field_name in (
         "acceptable_doc_ids",
+        "required_doc_ids",
         "must_not_hit_doc_ids",
         "answer_must_include",
         "answer_must_not_include",
@@ -191,11 +289,29 @@ def text_values(case: dict[str, Any]) -> Iterable[tuple[str, str]]:
                 yield f"metadata.{field_name}", value
 
 
+def scan_sensitive_values(
+    value: dict[str, Any],
+    label: str,
+    report: DatasetReport,
+    *,
+    fail_on_sensitive_patterns: bool,
+) -> None:
+    for field_name, text in text_values(value):
+        for pattern_name, pattern in SENSITIVE_PATTERNS:
+            if pattern.search(text):
+                message = f"{label}: {field_name} matches {pattern_name}"
+                if fail_on_sensitive_patterns:
+                    report.errors.append(message)
+                else:
+                    report.warnings.append(message)
+                break
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate a deidentified historical RAG evaluation dataset"
+        description="Validate a legacy or protocol-v2 RAG evaluation dataset"
     )
-    parser.add_argument("--golden-set", required=True, help="private golden-set JSON path")
+    parser.add_argument("--golden-set", required=True, help="evaluation dataset JSON path")
     parser.add_argument("--min-cases", type=int, default=100)
     parser.add_argument("--allow-missing-reference-answers", action="store_true")
     parser.add_argument("--allow-sensitive-patterns", action="store_true")

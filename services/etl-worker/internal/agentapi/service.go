@@ -720,6 +720,7 @@ func registerRAGQueryTool(registry *agent.Registry, qs QueryService) error {
 		}
 		resp, err := qs.Ask(ctx, query.Request{Question: question, TopK: topK}, query.AccessContext{
 			TenantID: inv.TenantID,
+			UserID:   inv.UserID,
 			Role:     inv.Role,
 		})
 		if err != nil {

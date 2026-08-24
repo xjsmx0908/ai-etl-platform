@@ -24,6 +24,8 @@ type HTTPIndexer struct {
 	client  *http.Client
 }
 
+const cjkIndexVersion = "v2"
+
 // NewHTTPIndexer creates an indexer and ensures target index exists.
 func NewHTTPIndexer(address, apiKey, index string) (*HTTPIndexer, error) {
 	address = strings.TrimRight(strings.TrimSpace(address), "/")
@@ -176,13 +178,18 @@ func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 		return fmt.Errorf("es index check failed: status=%d body=%s", headResp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
+	physicalIndex := i.index + "_" + cjkIndexVersion
 	createBody := map[string]interface{}{
 		"mappings": map[string]interface{}{
 			"properties": map[string]interface{}{
-				"chunk_id":   map[string]string{"type": "keyword"},
-				"doc_id":     map[string]string{"type": "keyword"},
-				"tenant_id":  map[string]string{"type": "keyword"},
-				"content":    map[string]string{"type": "text"},
+				"chunk_id":  map[string]string{"type": "keyword"},
+				"doc_id":    map[string]string{"type": "keyword"},
+				"tenant_id": map[string]string{"type": "keyword"},
+				"content": map[string]string{
+					"type":            "text",
+					"analyzer":        "cjk",
+					"search_analyzer": "cjk",
+				},
 				"permission": map[string]string{"type": "keyword"},
 				"chunk_index": map[string]string{
 					"type": "integer",
@@ -198,7 +205,8 @@ func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 		return fmt.Errorf("marshal es create index body: %w", err)
 	}
 
-	createReq, err := http.NewRequestWithContext(ctx, http.MethodPut, headURL, bytes.NewReader(data))
+	physicalURL := fmt.Sprintf("%s/%s", i.address, pathEscape(physicalIndex))
+	createReq, err := http.NewRequestWithContext(ctx, http.MethodPut, physicalURL, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("create es index request: %w", err)
 	}
@@ -210,19 +218,44 @@ func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 	}
 	defer createResp.Body.Close()
 
-	if createResp.StatusCode >= 200 && createResp.StatusCode < 300 {
-		slog.Info("elasticsearch index created", "index", i.index)
-		return nil
-	}
-
 	body, _ := io.ReadAll(io.LimitReader(createResp.Body, 4096))
-	if createResp.StatusCode == http.StatusBadRequest &&
+	created := createResp.StatusCode >= 200 && createResp.StatusCode < 300
+	alreadyExists := createResp.StatusCode == http.StatusBadRequest &&
 		(strings.Contains(string(body), "resource_already_exists_exception") ||
-			strings.Contains(string(body), "already_exists")) {
-		return nil
+			strings.Contains(string(body), "already_exists"))
+	if !created && !alreadyExists {
+		return fmt.Errorf("es create index failed: status=%d body=%s", createResp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	return fmt.Errorf("es create index failed: status=%d body=%s", createResp.StatusCode, strings.TrimSpace(string(body)))
+	aliasData, err := json.Marshal(map[string]interface{}{
+		"actions": []map[string]interface{}{
+			{"add": map[string]interface{}{
+				"index":          physicalIndex,
+				"alias":          i.index,
+				"is_write_index": true,
+			}},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal es alias body: %w", err)
+	}
+	aliasReq, err := http.NewRequestWithContext(ctx, http.MethodPost, i.address+"/_aliases", bytes.NewReader(aliasData))
+	if err != nil {
+		return fmt.Errorf("create es alias request: %w", err)
+	}
+	i.setHeaders(aliasReq)
+	aliasResp, err := i.client.Do(aliasReq)
+	if err != nil {
+		return fmt.Errorf("es alias request failed: %w", err)
+	}
+	defer aliasResp.Body.Close()
+	if aliasResp.StatusCode < 200 || aliasResp.StatusCode >= 300 {
+		aliasBody, _ := io.ReadAll(io.LimitReader(aliasResp.Body, 4096))
+		return fmt.Errorf("es alias creation failed: status=%d body=%s", aliasResp.StatusCode, strings.TrimSpace(string(aliasBody)))
+	}
+
+	slog.Info("elasticsearch CJK index created", "index", physicalIndex, "alias", i.index)
+	return nil
 }
 
 func pathEscape(segment string) string {

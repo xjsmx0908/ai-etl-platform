@@ -256,6 +256,16 @@ func (p *Pipeline) saveTaskStatusProgress(ctx context.Context, task model.Task, 
 	}
 }
 
+func requiresParserService(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".pdf", ".docx", ".doc", ".xls", ".xlsx", ".pptx",
+		".png", ".jpg", ".jpeg", ".webp", ".bmp":
+		return true
+	default:
+		return false
+	}
+}
+
 // processTask: streaming Parse → batch Embed → Store
 func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 	taskCtx, cancel := context.WithTimeout(ctx, p.cfg.PipelineTimeout)
@@ -277,9 +287,7 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 	// Plain-text files keep the deterministic local scanner (identical chunk
 	// semantics to the golden-set eval). Binary documents (PDF/DOCX, including
 	// scanned PDFs) go to the parser service, which does real extraction and OCR.
-	ext := strings.ToLower(filepath.Ext(task.FilePath))
-	needsParserService := ext == ".pdf" || ext == ".docx" || ext == ".doc" ||
-		ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp"
+	needsParserService := requiresParserService(task.FilePath)
 
 	// Stream parse with safe error propagation via channel. Both sources (the
 	// local scanner and the parser-service response) feed the same channel, so
@@ -386,6 +394,9 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 	// (e.g. materialize or parser-service failures) instead of swallowing it.
 	if err := <-parseErrCh; err != nil {
 		return err
+	}
+	if total == 0 {
+		return errors.New("parser produced no chunks")
 	}
 
 	slog.Info("document processed", "doc_id", task.DocID, "chunks", total)

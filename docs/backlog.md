@@ -1,5 +1,607 @@
 # Backlog
 
+## 2026-08-23 - P1.8 Cross-Document Retrieval Diagnosis and Repair
+
+Status: in progress; implementation approved after P1.7 showed 0% all-required-
+document hit rate in both no-rerank and `auto` arms
+
+Goal: identify the exact retrieval stage where a necessary source is lost, add
+aggregate-only diagnostics and deterministic regression coverage, then apply the
+smallest upstream repair before reconsidering reranking. Private case ids,
+filenames, questions, answers, evidence, and detailed reports remain local and
+Git ignored.
+
+Approved plan and acceptance criteria:
+
+1. Preserve the accumulated worktree and perform a read-only review; record
+   logical checkpoint candidates without reverting or cleaning unknown changes.
+2. Add tests and a public-safe diagnostic protocol that records only aggregate
+   counts/booleans for necessary sources at backend candidate, fused Top-50, and
+   final Top-5 stages. Do not expose private case identifiers or content.
+3. Add deterministic retrieval/fusion regression coverage that constructs a
+   multi-source query where one required document is lower-ranked, distinguishing
+   backend recall, fusion truncation, deduplication/diversity, and final Top-K
+   loss.
+4. Use the failing tests and diagnostics to make the minimum candidate-fusion,
+   multi-document retention, or diversity repair. Do not replace the reranker
+   before the upstream loss is located; preserve permission, scope, exact-match,
+   and grounding behavior.
+5. Run focused tests, the full Go/Python/Web verification suites, and
+   `git diff --check`.
+6. In an isolated Compose project, repeat the no-rerank enterprise evaluation
+   three times. Require cross-document all-required-source hit rate to be
+   materially above 0% and ensure existing semantic, lexical, permission,
+   grounding, and safety metrics do not regress.
+7. Update aggregate-only evaluation documentation, this backlog, and
+   `LEARNINGS.codex.md`; keep private artifacts untracked and do not create a
+   mixed-scope commit.
+
+Acceptance: stage-level diagnostics and deterministic regression tests identify
+the loss boundary; the minimal repair passes focused and full verification; and
+three valid no-rerank runs show stable, materially non-zero cross-document
+all-required-source retrieval without regressions in existing gates.
+
+Progress update:
+
+- Added aggregate-only backend/fused/selected stage diagnostics, feature-gated
+  at the Query API boundary, with focused retrieval/query/evaluator tests.
+- Fixed isolated evaluator user provisioning when reusing an upload map and
+  documented that upload maps do not carry Qdrant/Elasticsearch volumes.
+- Added `--cohort cross_document` filtering that leaves the full document corpus
+  intact, plus feature-gated `--retrieval-only` requests that skip answer LLM
+  generation. Reports now show Qdrant and Elasticsearch stage rates separately
+  instead of collapsing them to the maximum backend rate.
+- Fixed retrieval-only evaluation to record the first successful response once
+  instead of polling it repeatedly. Evaluator regression coverage now contains
+  34 passing tests.
+- Completed a valid 35-document/10-case isolated retrieval-only diagnosis. Query
+  requests succeeded 10/10 with zero answer-model tokens. Qdrant and fused
+  candidates each contained every necessary source in 40% of cases, while
+  Elasticsearch and final Top-5 each did so in 0%.
+- Fixed diagnostics to retain a successful backend that returns zero candidates;
+  otherwise Elasticsearch disappeared from the stage report instead of being
+  represented as a measured empty result.
+- Tested a distinct-document-first selection hypothesis in a second valid run.
+  It did not improve any stage rate, and every final result already contained
+  five distinct documents, so that behavior change was rejected and reverted.
+- Added aggregate-only `all_required_max_rank`: when a stage contains every
+  necessary source it records the deepest first-occurrence rank; incomplete
+  stages report zero. This permits the next isolated run to distinguish a
+  shallow Top-K cutoff from deeper candidate-ranking failure without exposing
+  document identifiers or content.
+- A valid K=50 run found complete fused sources in 40% of cases, with deepest
+  first-occurrence ranks 8, 35, 45, and 45. Raising candidate depth to 200 moved
+  fused completeness to 80%, but added necessary sources at ranks 61, 91, 104,
+  and 187; final Top-5 remained 0%. Candidate depth is therefore a diagnostic,
+  not a sufficient product repair.
+- Found two registry documents marked completed with zero chunks. One was a
+  necessary cross-document source. Both parsers extracted non-empty text, but
+  the noise filter discarded every chunk solely because long body text contained
+  a table-of-contents keyword. Limited that heuristic to short fragments and
+  made zero stored chunks a pipeline error instead of a false completion.
+- Reprocessed only those two documents in the isolated stack. Qdrant unique
+  document coverage increased from 33/35 to 35/35, and no necessary source was
+  absent from the collection. A dense-only full-collection diagnostic then
+  found all necessary sources in 10/10 cases, at deepest ranks from 8 to 216.
+- Rejected after valid or offline evidence: distinct-document-first selection,
+  sparse Chinese unigram and overlapping-bigram changes, MMR, and local 1.5B/4B
+  multi-query rewriting. None improved final Top-5; the sparse changes regressed
+  K=50 fused completeness from 40% to 10% and were reverted.
+- Completed project verification: all Go tests and `go vet`, 32 parser tests,
+  one lightweight reranker test, 102 script tests, Web lint/typecheck/production
+  build, Compose configuration validation, and `git diff --check` passed. The
+  root Compose project retained 17 running services.
+- Removed 56 reviewed historical evaluation/test images and pruned only build
+  cache older than seven days. The root development stack remains running.
+
+Next diagnostic step:
+
+1. Keep the zero-chunk and conservative TOC-filter fixes; run complete project
+   verification and a full ingestion regression before release.
+2. Design a deterministic cross-document retrieval strategy that can promote a
+   second semantic facet from ranks up to 216 without using private required IDs
+   at runtime. Do not merely increase final context size or candidate K.
+3. Add an offline, public-safe benchmark for that strategy across semantic,
+   lexical, and cross-document cohorts before changing production ranking.
+4. Only after a candidate improves Top-5, run matched isolated no-rerank trials
+   and confirm permission, grounding, safety, latency, and token gates.
+
+### P1.8-B Deterministic Multi-Semantic Retrieval
+
+Status: rejected after a valid matched isolated comparison; no product ranking
+change retained
+
+Approved test-driven plan:
+
+1. Keep the external retrieval interface unchanged. Add an engine-internal query
+   plan that retains the original question and, only for semantic/hybrid routes,
+   derives at most two meaningful clauses using deterministic punctuation and
+   conjunction rules. Exact-keyword queries must remain single-path.
+2. Add a Qdrant dense-only search mode for derived clauses. It must reuse the
+   existing tenant, permission, knowledge-space, and applicable-scope filters,
+   and must not duplicate sparse retrieval or the raw-cosine follow-up request.
+3. Fuse the original whole-query ranking with clause rankings through a single
+   coverage-aware module. Preserve the original top candidate, admit at most one
+   leading candidate per derived clause before filling by aggregate rank, dedupe
+   by chunk/document rules, and keep the final context limit unchanged at five.
+4. Start with public-safe engine-interface tests: prove that a second semantic
+   source absent from the original candidate window can enter Top-5 through its
+   clause, while default-off, exact-query, authorization-filter, timeout, and
+   deterministic-order behavior remain unchanged.
+5. Add a disabled-by-default configuration switch and document the isolated
+   evaluation opt-in. Do not expose evaluation-required document ids to query
+   planning, backend requests, fusion, logs, or production configuration.
+6. Run focused and complete Go verification plus the existing Python, scripts,
+   Web, Compose, and diff checks. Retain the candidate only if those gates pass.
+7. Then run an isolated retrieval-only comparison with no reranker. Require a
+   material Top-5 cross-document improvement without semantic/lexical regression
+   before enabling the strategy by default or starting three-run acceptance.
+
+Acceptance: the public-safe benchmark promotes both independently relevant
+semantic facets into an unchanged Top-5 without required-id access; existing
+security and exact-query behavior pass unchanged; and a valid private aggregate
+comparison improves cross-document Top-5 before any production-default change.
+
+Outcome:
+
+- Implemented the candidate test-first behind a disabled switch, with a small
+  engine-internal interface, dense-only governed Qdrant clause searches,
+  deterministic coverage-aware fusion, fallback behavior, and configuration
+  provenance. Focused and complete engineering verification passed before the
+  real comparison.
+- Ran one feature-off baseline and one feature-on candidate against the same 35
+  published documents, tenant, model, K=50, final Top-5, and no-rerank settings.
+  Both runs were valid with 10/10 successful retrieval-only requests.
+- Baseline and candidate were identical at the aggregate retrieval boundaries:
+  Qdrant/Fuse all-required coverage remained 40%, and selected Top-5 remained
+  0%. The candidate expanded 0/10 questions because none could be conservatively
+  reduced to two complete semantic clauses.
+- The private questions express cross-document needs implicitly rather than as
+  two explicit punctuation/conjunction-delimited facets. Relaxing deterministic
+  splitting would guess missing intent and risk semantic/lexical regressions, so
+  the candidate failed its gate and all implementation/configuration changes
+  were reverted.
+- Detailed reports remain Git ignored. The dedicated Compose project, volumes,
+  network, and five project-built images were removed; the root stack remained
+  running.
+
+Next design gate: evaluate document-side semantic units or a constrained local
+query planner that can infer implicit facets without runtime required ids. Any
+new candidate needs a public-safe activation/coverage benchmark before another
+private run; punctuation splitting must not be reintroduced as the main path.
+
+## 2026-08-21 - P1.7 Enterprise Reranker Repeated A/B Evaluation
+
+Status: completed; `auto` rerank failed the predeclared release gates
+
+Goal: compare no-rerank and `auto` rerank on the same private enterprise
+candidate dataset with auditable configuration, cohort-level metrics, and at
+least three matched repetitions per arm before changing the production default.
+Private filenames, questions, answers, evidence, and case-level reports must
+remain local and Git ignored.
+
+Approved plan and acceptance criteria:
+
+1. Add public-boundary tests for the evaluator JSON/Markdown reports before
+   adding cohort metrics, request latency, and resolved configuration
+   provenance. Preserve legacy dataset and report behavior.
+2. Record each case's `evaluation_cohort`; summarize lexical, semantic,
+   cross-document, and safety-negative cohorts separately. Include Recall@5,
+   all-required-document hit rate, citation completeness, key-fact coverage,
+   safety refusal, grounding, p50/p95 final Query API request latency, and token
+   usage with explicit eligible-case denominators.
+3. Record the dataset SHA-256, embedding/LLM/reranker models, rerank enable and
+   policy, candidate/final Top-K, query Top-K, grounding configuration, and
+   other non-secret settings needed to detect configuration drift.
+4. Add CLI-boundary tests, then extend `analyze-eval-variance.py` to compare
+   baseline and candidate groups while retaining same-arm variance analysis.
+   Report cohort mean, sample standard deviation, range, case flips, and the
+   observed within-arm noise floor; do not present this floor as a formal
+   hypothesis test.
+5. Use one dataset digest, tenant, upload mapping, corpus, Top-K, embedding, LLM,
+   and reranker model for all runs. Run no-rerank at least three times, then
+   `RETRIEVAL_ENABLE_RERANK=true` with policy `auto` at least three times in an
+   isolated Compose project. Do not reuse, stop, or mutate the root development
+   stack.
+6. Require semantic Recall@5 improvement of at least the larger of 3.33
+   percentage points or observed noise, and cross-document all-required-source
+   hit-rate improvement of at least the larger of 10 percentage points or
+   observed noise.
+7. Reject the candidate if lexical Recall@5, citation completeness, key-fact
+   coverage, or grounding regresses beyond observed noise; require 100% safety
+   refusal in every run. Limit p95 latency increase to both 50% and two seconds,
+   and average token increase to 20%.
+8. Publish only aggregate, non-sensitive P1.7 results and limitations. Keep the
+   technical candidate distinct from business-approved acceptance Gold, update
+   evaluator documentation and the learning log, and run focused plus complete
+   verification before completion.
+
+Delivered:
+
+- Added tested cohort-level JSON/Markdown summaries, Query API latency and
+  completeness fields, dataset/configuration provenance, and invalid-run gates.
+- Added matched 3+3 A/B analysis with configuration-drift checks, per-metric
+  means, sample standard deviations, ranges, noise floors, aggregate case flips,
+  and the approved release thresholds.
+- Made the Query API handler timeout configurable while preserving its 60-second
+  default; the isolated evaluation used a seven-minute handler/write timeout so
+  the local LLM could complete without middleware cancellation.
+- Completed three valid no-rerank and three valid `auto` runs: all six had 70/70
+  successful Query API cases, zero unavailable grounding checks, one dataset
+  digest, and stable within-arm configuration hashes.
+- Rejected `auto`: semantic Recall@5 changed from 68.89% to 33.33%, lexical from
+  66.67% to 35.56%, cross-document all-required-doc hit rate remained 0%, and
+  candidate safety refusal was not 100% in any run. The default remains
+  no-rerank. Aggregate details are in
+  `docs/evals/p1.7-enterprise-reranker-ab.md`.
+- Kept all private case data and detailed reports Git ignored and local; retained
+  `business_approval_complete=false`.
+
+## 2026-08-21 - P1.6 Semantic and Cross-Document Evaluation Expansion
+
+Status: completed; technical candidate v2 generated and validated
+
+Goal: expand the private enterprise candidate set into distinct lexical,
+semantic, cross-document, and safety cohorts before making any reranker choice.
+All generation and review must remain local, preserve verbatim source evidence,
+and keep the result explicitly below business-approved acceptance gold.
+
+Approved plan and acceptance criteria:
+
+1. Add tests for natural-query rewrite validation, evidence binding,
+   cross-document compatibility, deterministic identifiers, cohort accounting,
+   and fail-closed local review behavior.
+2. Rework technically usable rejected cases into natural paraphrases with lower
+   source overlap while retaining complete reference answers and exact evidence.
+3. Generate controlled cross-document cases only from documents in compatible
+   business scopes; require evidence and expected document references for every
+   source used by an answer.
+4. Run mechanical validation and an independent local-model review. Never send
+   private filenames, text, questions, answers, or evidence to an external
+   endpoint.
+5. Produce private `gold-candidate-v2.json` with explicit cohort metadata and
+   at least 30 semantic, 15 lexical, 10 cross-document, and 15 safety-negative
+   cases. Keep cohorts separate in reports and do not call this acceptance gold.
+6. Validate schema, document references, evidence integrity, cohort counts, and
+   relevant script tests; publish aggregate-only results and limitations.
+
+The subsequent reranker experiment is a separate gate: compare matched
+no-rerank and `auto` runs with at least three repetitions only after this dataset
+passes P1.6 validation.
+
+Delivered:
+
+- Added a tested, cached local pipeline using `qwen3:4b` for generation and
+  `qwen3:1.7b` for independent review; non-loopback model endpoints fail closed.
+- Produced a private 35-document/70-case `gold-candidate-v2.json` with 30
+  semantic, 15 lexical, 10 cross-document, and 15 safety-negative cases.
+- Rejected 57 of 86 semantic generation attempts mechanically before review;
+  retained 29 new semantic cases plus the existing reviewed semantic case.
+- Bound all 40 semantic and cross-document cases to private verbatim evidence;
+  all source hashes, case references, key facts, and cohort counts validated.
+- Extended the evaluator so cross-document cases must retrieve and cite every
+  `required_doc_ids` source. Legacy cases retain their previous behavior.
+- Kept `business_approval_complete=false`; detailed data and caches remain Git
+  ignored. Aggregate results are in `docs/evals/p1.6-semantic-cross-document.md`.
+
+## 2026-08-20 - P1.5 Automated Business Review and Gold Draft
+
+Status: date-rule confirmations completed; gold candidate generated
+
+Goal: perform the evidence-based portion of enterprise dataset review locally,
+reduce manual work to genuinely authoritative business decisions, and produce a
+private gold draft without presenting model inference as business approval.
+
+Plan:
+
+1. Verify every source path and SHA-256 before reviewing any derived label.
+2. Apply conservative permission decisions from sensitivity and PII signals;
+   exclude low-content documents and unresolved version conflicts from the gold
+   draft.
+3. Use a local model to suggest business domain, document kind, effectiveness
+   signals, and independently review question/answer/evidence consistency.
+4. Promote only technically verified cases whose documents do not require a
+   blocking authority decision. Mark the output as a technical gold draft, not
+   business-approved acceptance gold.
+5. Generate a minimal private confirmation list for effective-version and
+   ownership decisions that cannot be established from document evidence.
+6. Validate the draft, publish aggregate-only results, and keep all private
+   review details Git-ignored and local.
+
+Delivered:
+
+- Verified source paths and SHA-256 for all 40 documents before label review.
+- Ran a cached local `qwen2.5:1.5b` review with structured, non-narrative output;
+  no private content was transferred externally.
+- Technically admitted 27 documents, excluded 4 low-content documents, held 2
+  documents for one unresolved version conflict, and routed 7 current-effect
+  decisions to business authority.
+- Mechanically verified all 111 positive evidence bindings. Independent semantic
+  review retained 16 positive cases and all 17 safety negatives; failures were
+  concentrated in unnatural questions, incomplete answers, and weak support.
+- Produced a private 27-document/20-case technical gold draft with separate
+  lexical, semantic, and safety cohorts, initially leaving 8 confirmation rows.
+- Applied the user-approved latest-date rule to all 8 confirmations. Seven
+  dated historical items were marked `historical`; the version conflict kept
+  the document with the later embedded Office modification date.
+- Generated a private 35-document/31-case `gold-candidate.json`. All date-rule
+  confirmations are resolved, while `business_approval_complete=false` remains
+  explicit because recency is not a substitute for a policy register.
+
+Details and limitations are recorded in `docs/evals/p1.5-automated-review.md`.
+
+## 2026-08-20 - P1.4 Enterprise Chinese Silver Evaluation
+
+Status: completed for local auto-silver baseline; business gold review pending
+
+Goal: establish a local-only enterprise evaluation baseline from all 40 real
+documents in `rag_datas/`, including the 12 sensitive candidates, without
+sending their contents to an external model endpoint.
+
+Plan:
+
+1. Exclude `rag_datas/` and generated private artifacts from Git and retain only
+   aggregate, non-sensitive results in tracked documentation.
+2. Add tested XLS, XLSX, and PPTX support across upload validation, parser
+   routing, and worker dispatch; verify OCR fallback for scanned PDFs.
+3. Build a deterministic inventory and local extraction pipeline with document
+   hashes, draft permission labels, provenance, evidence spans, and PII flags.
+4. Use a local Chinese model to draft questions and reference answers. Accept
+   only cases whose cited evidence is present verbatim; route conflicts,
+   permissions, weak OCR, and low-confidence cases to a private review table.
+5. Validate at least 100 silver cases across factual, procedural, cross-document,
+   refusal, permission, version-conflict, and citation cohorts.
+6. Run matched local retrieval baselines, publish aggregate metrics and misses,
+   and keep the silver set distinct from business-approved gold acceptance data.
+
+Delivered:
+
+- Parsed all 40 documents and generated 114 locally validated silver cases:
+  109 positive and 5 no-answer, including all sensitive candidates.
+- Kept source files, extracted text, review tables, generated cases, and detailed
+  reports in Git-ignored local directories; no private content was sent to an
+  external LLM or Judge.
+- Completed a real `bge-m3` + `qwen2.5:1.5b` baseline without reranking. Recall@5
+  was 83.49%, negative pass rate was 100%, answer pass rate was 26.32%, and
+  end-to-end pass rate was 24.56%.
+- Classified failures without publishing private values: 18 retrieval misses,
+  27 missing citations after a hit, and 41 missing key facts after a hit.
+- Added original-binary eval uploads, source hash validation, local model limits,
+  query-aware context selection, ETL readiness polling, upload-map reuse, and
+  isolated Compose disk/port controls needed for a reproducible private run.
+
+Remaining acceptance work: data owners must review permissions, effective
+versions, conflicts, PII flags, and low-confidence cases before any sample is
+promoted from silver to gold. The baseline details and next gates are documented
+in `docs/evals/p1.4-enterprise-baseline.md`.
+
+## 2026-08-19 - P1.3 Real Model Retrieval Baseline
+
+Status: completed for public retrieval baseline; enterprise acceptance dataset still pending
+
+Goal: measure retrieval quality with the configured real embedding/LLM stack and
+compare reranking without presenting a sampled public result as enterprise proof.
+
+Delivered:
+
+- Verified the active stack: `bge-m3` 1024-dimensional embeddings and
+  `deepseek-v4-flash` through the configured external OpenAI-compatible endpoint.
+- Ran the same deterministic 30-document/10-query NanoSciFact sample with and
+  without reranking. No-rerank Recall@5 was 70%; rerank `auto` Recall@5 was 90%.
+- Recorded model mode, provenance, sampling, token counts, and result reports in
+  `docs/evals/p1.3-real-model-baseline.md` and ignored report directories.
+- Fixed an evaluator race where ES count was ready before ETL task completion;
+  publication now waits for every `/v1/tasks/{doc_id}` to reach `completed`.
+- Completed the full 2,919-document/50-query run with real `bge-m3` +
+  `deepseek-v4-flash`, both without reranking and with `auto` reranking.
+- Added batch processing timeout, immediate 429 scan backoff, and a
+  dataset-digest-bound upload map so matched reranker runs reuse the same
+  published corpus instead of re-embedding it.
+
+Findings:
+
+- No reranker: Recall@1/3/5 = 52%/60%/66%.
+- Reranker `auto`: Recall@1/3/5 = 54%/72%/72%; 4 misses recovered and 1 hit
+  regressed. Token usage increased from 92,617 to 105,721.
+- Public benchmark metrics are directional only; do not use them as an
+  enterprise release gate. The next gate requires reviewed Chinese enterprise
+  data and repeated-run confidence intervals.
+
+## 2026-08-19 - P1.2 Public RAG Benchmark Baseline
+
+Status: implemented and verified (P1)
+
+Goal: establish a reproducible public retrieval baseline without presenting
+public benchmark scores as proof of enterprise-domain answer quality.
+
+Approved seams and acceptance criteria:
+
+1. A command-line importer converts standard BEIR corpus, query, and qrel files
+   into evaluation protocol v2. Documents are uploaded once even when multiple
+   queries reference them, and each query retains all relevant document ids.
+2. Every import records dataset name, immutable version, source URL, SPDX-style
+   license, split, sampling rules, and whether the result remains comparable to
+   the full benchmark. Imports without explicit license provenance fail closed.
+3. A reviewed public dataset catalog exposes only approved datasets. The first
+   integration is NanoSciFact (`CC-BY-4.0`) for retrieval evaluation; it does
+   not claim Chinese or enterprise-domain coverage.
+4. The existing evaluator accepts both legacy case-per-document files and v2
+   document/query datasets. Reports clearly identify public/private/synthetic
+   origin, retrieval-only scope, sampling, and model mode.
+5. Tests exercise CLI output, invalid provenance, deterministic sampling,
+   evaluator compatibility, and report disclosure. Network tests mock only the
+   external dataset API boundary; CI never depends on live Hugging Face access.
+
+Definition of done: the approved NanoSciFact snapshot can be imported and
+validated locally, deterministic tests and the existing eval suite pass, and
+documentation gives separate commands for quick sampled checks and a complete
+real-model baseline.
+
+Delivered and verified:
+
+- Added protocol v2 with separate documents and queries, unique-document upload,
+  multi-relevance qrels, retrieval-only behavior, and provenance-rich reports.
+- Added an approved public dataset catalog and a paginated Dataset Server
+  downloader pinned by commit, row count, license, and SHA-256 content hashes.
+- Downloaded, imported, and strictly validated the 2,919-document, 50-query,
+  56-qrel NanoSciFact snapshot in Git-ignored local storage.
+- Added deterministic sampling with explicit non-comparability and documented
+  separate mock smoke and complete real-model commands.
+- Passed 38 script tests, a protocol-v2 30-document/3-query isolated smoke, and
+  the legacy 47-case isolated regression at 100% across retrieval, answer,
+  overall, and negative-security gates. Mock scores remain non-quality signals.
+
+## 2026-08-19 - P1.1 Evidence Sufficiency and Safe Refusal
+
+Status: implemented and verified
+
+Goal: prevent a semantically similar but identifier-mismatched candidate from
+reaching generation, and make every evidence refusal canonical and source-free.
+
+Delivered and verified:
+
+1. Strong business identifiers such as contract numbers, order ids, trace ids,
+   UUIDs, emails, and phone numbers require a surviving authorized candidate
+   containing the requested identifier before the LLM is called.
+2. Common model refusal variants are normalized to the canonical refusal and
+   returned with empty retrieved sources and citations.
+3. Retrieval diagnostics expose whether exact evidence was required and whether
+   it matched; the Workbench renders this as `强标识校验` without exposing tokens.
+4. Deterministic eval now has an independent `negative_pass_rate` gate that
+   defaults to 100% and is explicit in CI.
+5. The 47-case isolated eval passed at 100% for retrieval, answers, overall, and
+   security negatives. All three confidential negative cases returned the fixed
+   refusal with zero sources.
+
+## 2026-08-19 - Web Framework Security Upgrade
+
+Status: implemented, verified, and deployed locally (P1)
+
+Goal: remove the high-severity Next.js, PostCSS, and Sharp advisories reported by
+`npm audit` without regressing authentication or API proxy routes.
+
+Plan:
+
+1. Upgrade deliberately to Next.js 16.3.1 on Node 20 while retaining compatible
+   React 18. The maintained Next.js 15 backport still selects a Sharp release
+   affected by current high-severity advisories, so it cannot meet the gate.
+2. Migrate deprecated metadata/viewport configuration and resolve build warnings.
+3. Re-run login/session, upload, document search, knowledge-space, and query SSE
+   browser-boundary tests plus the production build and dependency audit.
+4. Require zero known high/critical production dependency findings before merge.
+
+Delivered and verified:
+
+- Upgraded to Next.js 16.3.1 on Node 20 with patched PostCSS 8.5 and Sharp 0.35,
+  migrated async route parameters and viewport metadata, and added ESLint 9.
+- Added a Web `.dockerignore` so local dependencies, build output, npm settings,
+  and environment files never enter the image build context; disabled telemetry.
+- Regenerated the lock file against the official npm registry. Clean `npm ci`,
+  full `npm audit`, ESLint, TypeScript, and the production build all passed with
+  zero vulnerabilities and no framework warnings. CI now runs these checks in a
+  dedicated Web job included in the repository's `Required Checks` gate.
+- The isolated upload/login/session/document-proxy smoke passed. The deployed
+  Web also passed knowledge-space, `办公用品` search, and query SSE proxy checks.
+
+## 2026-08-19 - Enterprise Knowledge Governance P0
+
+Status: implemented and deployed locally
+
+Goal: make knowledge selection an explicit, authorized product decision instead
+of a free-form metadata convention or a consequence of retrieval rank.
+
+Approved vertical slices and public test seams:
+
+1. Add first-class tenant knowledge spaces, membership roles, default production
+   spaces, document publication state, and deterministic legacy backfill.
+2. Add a deep `knowledgecatalog` module whose interface resolves query scope,
+   authorizes upload destinations, lists accessible spaces, and filters evidence.
+3. Resolve the space before Qdrant/Elasticsearch retrieval; remove Top-1 scope
+   selection and fail closed when authoritative governance cannot be checked.
+4. Accept `knowledge_space_id` in upload/query, expose space management routes,
+   and return the resolved space in retrieval diagnostics.
+5. Add workbench and upload selectors plus document space/publication display.
+6. Quarantine demo content from default production retrieval while retaining
+   legacy scope metadata for controlled rollback.
+7. Verify through catalog, migration, handler, full-stack isolation, full test,
+   lint, build, Compose, and deterministic evaluation seams.
+
+Definition of done: no unauthorized, cross-space, draft, superseded, archived,
+or demo-by-default evidence reaches generation; existing production documents
+remain queryable after backfill; catalog failures do not produce an answer.
+
+Delivered and verified:
+
+- Added tenant knowledge spaces, memberships, document publication states, and
+  deterministic legacy backfill. Migration `0006` also provisions the default
+  space transactionally for every tenant created after schema migration.
+- Query and upload now resolve and authorize an explicit space before retrieval
+  or ingestion. Evidence is checked against authoritative published document
+  state, and catalog failures fail closed.
+- Added space APIs, document publication controls, dynamic Web selectors, and
+  space/publication diagnostics. Demo content is quarantined from the default
+  production space.
+- The live stack, fresh-volume E2E, full Go/Python/Web suites, Compose checks,
+  and deterministic 47-case eval passed. The mock eval achieved 100% retrieval
+  assertions and 93.62% answer assertions; its three answer failures were the
+  mock's non-canonical refusal wording, with no confidential target retrieved.
+
+## 2026-08-19 - RAG evidence integrity and truthful retrieval diagnostics (implemented)
+
+Status: implemented and deployed locally
+
+The live query `办公用品` exposed a chained correctness failure rather than a
+single prompt issue: one legacy Word upload produced repeated chunks, retrieval
+allowed one document to consume four of five context slots, documents from
+different operational scopes were synthesized together, and the SSE workbench
+skipped the grounding behavior implemented by the JSON query path. Retrieval
+diagnostics also reported the selected context count as "candidates" and could
+replace the raw Qdrant cosine with an RRF score depending on map iteration order.
+
+Approved vertical slices and public test seams:
+
+1. Preserve raw Qdrant relevance through cross-backend fusion and make the result
+   independent of backend iteration order (`retrieval.Fuse`).
+2. Make JSON and SSE `/v1/query` share retrieval, relevance filtering,
+   governance, refusal, and grounding behavior.
+3. Remove normalized duplicate chunks at parse time and diversify final Top-K by
+   content and document, without preventing legitimate multi-chunk answers.
+4. Replace single-character OR behavior for Chinese keyword search with a
+   phrase-first query and versioned CJK index mapping.
+5. Separate knowledge spaces, carry source metadata into citations, and prevent
+   unqualified synthesis across incompatible scopes.
+6. Expose backend, fused, deduplicated, selected-context, and unique-document
+   counts separately; distinguish retrieved evidence from answer citations.
+7. Reprocess the affected document, rebuild the local text index, flush semantic
+   cache, and verify `办公用品` through the browser-facing SSE endpoint.
+
+Definition of done: no exact duplicate content in Top-5, at most two chunks per
+document when alternatives exist, stable cosine diagnostics, semantically
+equivalent JSON/SSE safety outcomes, scoped answers with traceable citations,
+and focused plus full-project verification passing.
+
+Delivered and verified:
+
+- Parser output now removes NFKC/whitespace-equivalent chunks and reindexes IDs.
+  The affected legacy Word file dropped 10 duplicate chunks (18 to 8).
+- Retrieval preserves Qdrant cosine, collapses duplicate files by `file_hash`,
+  removes duplicate content, and enforces two chunks per document when distinct
+  alternatives exist.
+- SSE reuses the JSON `Ask` path, so relevance gating, governance, refusal, and
+  grounding checks cannot diverge or leak provisional answers.
+- Elasticsearch uses phrase-first plus AND fallback and a versioned CJK index;
+  71 documents were migrated atomically to the `documents_text` alias.
+- Upload/query contracts carry `knowledge_base_id` and `applicable_scope`.
+  Custom scope writes require admin; unqualified queries select one scope and
+  disclose cross-scope filtering instead of synthesizing incompatible sources.
+- Responses distinguish retrieved evidence from answer citations, enrich cited
+  chunks with file/scope metadata, and expose backend/fused/deduplicated/final
+  counts. The Workbench renders these values and verifier-unavailable state.
+- Browser-facing verification for `办公用品`: document search HTTP 200; automatic
+  scope selected one demo source and filtered four cross-scope candidates;
+  explicit user-upload scope returned five unique chunks from one canonical
+  file, one citation, and a passing grounding verdict.
+
 ## 2026-08-17 - 语料治理：写入分级、文档身份、去重、作废与冲突披露（已交付）
 
 Status: implemented

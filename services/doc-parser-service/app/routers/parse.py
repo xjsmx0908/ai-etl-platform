@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/v1", tags=["parser"], dependencies=[Depends(requ
 
 ALLOWED_EXTENSIONS = {
     ".pdf", ".docx", ".doc", ".txt", ".md", ".markdown", ".csv", ".log", ".rtf", ".odt",
-    ".png", ".jpg", ".jpeg", ".webp", ".bmp",
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".xls", ".xlsx", ".pptx",
 }
 
 STREAM_CHUNK_SIZE = 1024 * 1024

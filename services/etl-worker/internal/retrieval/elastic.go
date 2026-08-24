@@ -51,10 +51,21 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 		allowed = []string{"public"}
 	}
 
-	contentMatch := map[string]interface{}{
-		"match": map[string]interface{}{
-			"content": map[string]interface{}{
-				"query": req.Question,
+	contentClauses := []map[string]interface{}{
+		{
+			"match_phrase": map[string]interface{}{
+				"content": map[string]interface{}{
+					"query": req.Question,
+					"boost": 4.0,
+				},
+			},
+		},
+		{
+			"match": map[string]interface{}{
+				"content": map[string]interface{}{
+					"query":    req.Question,
+					"operator": "and",
+				},
 			},
 		},
 	}
@@ -71,12 +82,23 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 				},
 			},
 		},
+		"should":               contentClauses,
+		"minimum_should_match": 1,
 	}
-	if should := metadataExactShouldClauses(req.Question, req.ExactSchemaFields); len(should) > 0 {
-		boolQuery["should"] = append([]map[string]interface{}{contentMatch}, should...)
-		boolQuery["minimum_should_match"] = 1
-	} else {
-		boolQuery["must"] = []map[string]interface{}{contentMatch}
+	filters := boolQuery["filter"].([]map[string]interface{})
+	if value := strings.TrimSpace(req.KnowledgeBaseID); value != "" {
+		filters = append(filters, map[string]interface{}{
+			"term": map[string]interface{}{"metadata.knowledge_base_id": value},
+		})
+	}
+	if value := strings.TrimSpace(req.ApplicableScope); value != "" {
+		filters = append(filters, map[string]interface{}{
+			"term": map[string]interface{}{"metadata.applicable_scope": value},
+		})
+	}
+	boolQuery["filter"] = filters
+	if exact := metadataExactShouldClauses(req.Question, req.ExactSchemaFields); len(exact) > 0 {
+		boolQuery["should"] = append(contentClauses, exact...)
 	}
 
 	body := map[string]interface{}{
@@ -84,7 +106,7 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 		"query": map[string]interface{}{
 			"bool": boolQuery,
 		},
-		"_source": []string{"chunk_id", "doc_id", "tenant_id", "content", "metadata"},
+		"_source": []string{"chunk_id", "doc_id", "tenant_id", "content", "file_hash", "metadata"},
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -122,6 +144,7 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 					DocID    string                 `json:"doc_id"`
 					TenantID string                 `json:"tenant_id"`
 					Content  string                 `json:"content"`
+					FileHash string                 `json:"file_hash"`
 					Metadata map[string]interface{} `json:"metadata"`
 				} `json:"_source"`
 			} `json:"hits"`
@@ -133,6 +156,10 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 
 	candidates := make([]Candidate, 0, len(result.Hits.Hits))
 	for i, hit := range result.Hits.Hits {
+		metadata := exactMetadataFromPayload(map[string]interface{}{
+			"file_hash": hit.Source.FileHash,
+			"metadata":  hit.Source.Metadata,
+		}, req.ExactSchemaFields)
 		candidates = append(candidates, Candidate{
 			ChunkID:  hit.Source.ChunkID,
 			DocID:    hit.Source.DocID,
@@ -141,7 +168,7 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 			Score:    hit.Score,
 			Source:   SourceElasticsearch,
 			Rank:     i + 1,
-			Metadata: exactMetadataFromPayload(map[string]interface{}{"metadata": hit.Source.Metadata}, req.ExactSchemaFields),
+			Metadata: metadata,
 		})
 	}
 	return candidates, nil

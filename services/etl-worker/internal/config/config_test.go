@@ -32,6 +32,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.HealthPort != 8080 {
 		t.Errorf("expected HealthPort=8080, got %d", cfg.HealthPort)
 	}
+	if cfg.HTTPHandlerTimeout != 60*time.Second {
+		t.Errorf("expected HTTPHandlerTimeout=60s, got %v", cfg.HTTPHandlerTimeout)
+	}
 	if cfg.IdempotencyTTL != 24*time.Hour {
 		t.Errorf("expected IdempotencyTTL=24h, got %v", cfg.IdempotencyTTL)
 	}
@@ -85,6 +88,9 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.RetrievalEnableRerank {
 		t.Error("expected RetrievalEnableRerank=false")
+	}
+	if cfg.RetrievalDiagnosticsEnabled {
+		t.Error("expected RetrievalDiagnosticsEnabled=false")
 	}
 	if cfg.RetrievalRerankPolicy != RerankPolicyAuto {
 		t.Errorf("expected RetrievalRerankPolicy=auto, got %s", cfg.RetrievalRerankPolicy)
@@ -159,6 +165,7 @@ func TestLoad_Defaults(t *testing.T) {
 
 func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("PIPELINE_MAX_WORKERS", "20")
+	os.Setenv("HTTP_HANDLER_TIMEOUT", "7m")
 	os.Setenv("ENVIRONMENT", "production")
 	os.Setenv("EMBED_API_KEY", "sk-test")
 	os.Setenv("ES_ADDRESS", "http://es:9200")
@@ -177,6 +184,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("RETRIEVAL_ENABLE_ES", "false")
 	os.Setenv("RETRIEVAL_ENABLE_RERANK", "true")
 	os.Setenv("RETRIEVAL_RERANK_POLICY", "always")
+	os.Setenv("RETRIEVAL_DIAGNOSTICS_ENABLED", "true")
 	os.Setenv("RETRIEVAL_EXACT_SCHEMA_FIELDS", "contract_no,trace_id")
 	os.Setenv("RERANK_ENDPOINT", "http://reranker:8080/rerank")
 	os.Setenv("RERANK_API_KEY", "rk-test")
@@ -206,6 +214,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("RECONCILE_DOCS_ON_STARTUP", "true")
 	defer func() {
 		os.Unsetenv("PIPELINE_MAX_WORKERS")
+		os.Unsetenv("HTTP_HANDLER_TIMEOUT")
 		os.Unsetenv("ENVIRONMENT")
 		os.Unsetenv("EMBED_API_KEY")
 		os.Unsetenv("ES_ADDRESS")
@@ -224,6 +233,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("RETRIEVAL_ENABLE_ES")
 		os.Unsetenv("RETRIEVAL_ENABLE_RERANK")
 		os.Unsetenv("RETRIEVAL_RERANK_POLICY")
+		os.Unsetenv("RETRIEVAL_DIAGNOSTICS_ENABLED")
 		os.Unsetenv("RETRIEVAL_EXACT_SCHEMA_FIELDS")
 		os.Unsetenv("RERANK_ENDPOINT")
 		os.Unsetenv("RERANK_API_KEY")
@@ -258,8 +268,14 @@ func TestLoad_EnvOverride(t *testing.T) {
 	if cfg.MaxWorkers != 20 {
 		t.Errorf("expected MaxWorkers=20, got %d", cfg.MaxWorkers)
 	}
+	if cfg.HTTPHandlerTimeout != 7*time.Minute {
+		t.Errorf("expected HTTPHandlerTimeout=7m, got %v", cfg.HTTPHandlerTimeout)
+	}
 	if cfg.Environment != "production" {
 		t.Errorf("expected Environment=production, got %s", cfg.Environment)
+	}
+	if !cfg.RetrievalDiagnosticsEnabled {
+		t.Error("expected RetrievalDiagnosticsEnabled=true")
 	}
 	if cfg.EmbedAPIKey != "sk-test" {
 		t.Errorf("expected EmbedAPIKey=sk-test, got %s", cfg.EmbedAPIKey)

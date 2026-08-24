@@ -46,6 +46,12 @@ func (f *fakeDocStore) Upsert(_ context.Context, d docstore.Document) error {
 	if d.DocStatus == "" {
 		d.DocStatus = docstore.DocStatusActive
 	}
+	if d.KnowledgeSpaceID == "" {
+		d.KnowledgeSpaceID = "user-uploads"
+	}
+	if d.PublicationStatus == "" {
+		d.PublicationStatus = "draft"
+	}
 	f.docs[key] = d
 	return nil
 }
@@ -58,14 +64,14 @@ func (f *fakeDocStore) Get(_ context.Context, tenantID, docID string) (docstore.
 }
 
 // GetByHash mirrors PgStore: only completed documents count as duplicates.
-func (f *fakeDocStore) GetByHash(_ context.Context, tenantID, fileHash string) (docstore.Document, bool, error) {
+func (f *fakeDocStore) GetByHash(_ context.Context, tenantID, knowledgeSpaceID, fileHash string) (docstore.Document, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if fileHash == "" {
 		return docstore.Document{}, false, nil
 	}
 	for _, d := range f.docs {
-		if d.TenantID == tenantID && d.FileHash == fileHash && d.Status == docstore.StatusCompleted {
+		if d.TenantID == tenantID && d.KnowledgeSpaceID == knowledgeSpaceID && d.FileHash == fileHash && d.Status == docstore.StatusCompleted {
 			return d, true, nil
 		}
 	}
@@ -119,6 +125,18 @@ func (f *fakeDocStore) List(_ context.Context, q docstore.ListQuery) ([]docstore
 		if q.Status != "" && d.Status != q.Status {
 			continue
 		}
+		if len(q.KnowledgeSpaceIDs) > 0 {
+			allowed := false
+			for _, id := range q.KnowledgeSpaceIDs {
+				if d.KnowledgeSpaceID == id {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
+		}
 		out = append(out, d)
 	}
 	return out, len(out), nil
@@ -151,5 +169,18 @@ func (f *fakeDocStore) UpsertStatus(_ context.Context, tenantID, docID string, d
 		existing.CompletedAt = d.CompletedAt
 	}
 	f.docs[key] = existing
+	return nil
+}
+
+func (f *fakeDocStore) UpdatePublication(_ context.Context, tenantID, docID, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := f.key(tenantID, docID)
+	doc, ok := f.docs[key]
+	if !ok || (status == "published" && (doc.Status != docstore.StatusCompleted || doc.DocStatus != docstore.DocStatusActive)) {
+		return docstore.ErrNotFound
+	}
+	doc.PublicationStatus = status
+	f.docs[key] = doc
 	return nil
 }

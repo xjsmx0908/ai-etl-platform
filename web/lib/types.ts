@@ -44,6 +44,16 @@ export type Document = {
   effective_date?: string; // YYYY-MM-DD
   supersedes?: string; // doc_id this version replaces
   owner?: string; // accountable owner, distinct from uploaded_by
+  knowledge_space_id: string;
+  publication_status: "draft" | "published" | "retired";
+};
+
+export type KnowledgeSpace = {
+  id: string;
+  name: string;
+  kind: "production" | "demo";
+  is_default: boolean;
+  active: boolean;
 };
 
 // Upload outcome. `status: "duplicate"` means the exact same bytes were already
@@ -116,6 +126,10 @@ export type Source = {
   chunk_id: string;
   content: string;
   score: number;
+  file_name?: string;
+  effective_date?: string;
+  knowledge_base_id?: string;
+  applicable_scope?: string;
 };
 
 // One document involved in a disclosed conflict. The backend never decides which
@@ -132,10 +146,25 @@ export type RetrievalInfo = {
   cache_hit: boolean;
   backends: string[];
   candidate_count: number;
+  backend_candidate_counts?: Record<string, number>;
+  fused_candidate_count?: number;
+  deduplicated_candidate_count?: number;
+  selected_context_count: number;
+  unique_document_count: number;
+  selected_knowledge_base_id?: string;
+  selected_applicable_scope?: string;
+  resolved_knowledge_space_id?: string;
+  resolved_knowledge_space_name?: string;
+  unpublished_filtered?: number;
+  exact_evidence_required: boolean;
+  exact_evidence_matched: boolean;
+  cross_scope_filtered?: number;
+  scope_ambiguous?: boolean;
   duration_ms: number;
   max_relevance?: number;
   grounding_checked?: boolean;
   grounding_passed?: boolean;
+  grounding_unavailable?: boolean;
   allowed_permissions?: string[];
   permission_role?: string;
   // Corpus governance: candidates dropped because their document is superseded

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"ai-etl-pipeline/internal/tracing"
 )
@@ -55,7 +56,18 @@ func (r *QdrantRetriever) Search(ctx context.Context, req SearchRequest) ([]Cand
 			{"key": "permission", "match": map[string]interface{}{"any": allowed}},
 		},
 	}
-
+	must := filter["must"].([]map[string]interface{})
+	if value := strings.TrimSpace(req.KnowledgeBaseID); value != "" {
+		must = append(must, map[string]interface{}{
+			"key": "metadata.knowledge_base_id", "match": map[string]string{"value": value},
+		})
+	}
+	if value := strings.TrimSpace(req.ApplicableScope); value != "" {
+		must = append(must, map[string]interface{}{
+			"key": "metadata.applicable_scope", "match": map[string]string{"value": value},
+		})
+	}
+	filter["must"] = must
 	// Main query: dense + sparse prefetch fused by RRF. Scores here are
 	// rank-based fusion scores (1/(k+rank)), which carry no similarity signal.
 	query := map[string]interface{}{

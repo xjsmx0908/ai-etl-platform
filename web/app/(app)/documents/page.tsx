@@ -28,14 +28,6 @@ const PERMISSION_LABELS: Record<string, string> = {
   confidential: "机密",
 };
 
-function statusChip(status: string): string {
-  const s = status.toLowerCase();
-  if (s === "completed") return "bg-emerald-50 text-emerald-700";
-  if (s === "processing") return "bg-blue-50 text-blue-700";
-  if (s === "failed") return "bg-red-50 text-red-700";
-  return "bg-amber-50 text-amber-700";
-}
-
 function formatSize(bytes?: number): string {
   if (!bytes && bytes !== 0) return "—";
   if (bytes < 1024) return `${bytes} B`;
@@ -265,6 +257,8 @@ export default function DocumentsPage() {
                   <th className="px-4 py-2 font-medium">文件名</th>
                   <th className="px-4 py-2 font-medium">类型</th>
                   <th className="px-4 py-2 font-medium">权限</th>
+				  <th className="px-4 py-2 font-medium">知识空间</th>
+				  <th className="px-4 py-2 font-medium">发布</th>
                   <th className="px-4 py-2 font-medium">状态</th>
                   <th className="px-4 py-2 font-medium">分块</th>
                   <th className="px-4 py-2 font-medium">大小</th>
@@ -301,6 +295,12 @@ export default function DocumentsPage() {
                     <td className="px-4 py-2.5">
                       <Badge>{PERMISSION_LABELS[doc.permission] || doc.permission}</Badge>
                     </td>
+					<td className="px-4 py-2.5 text-xs text-slate-600">{doc.knowledge_space_id || "—"}</td>
+					<td className="px-4 py-2.5">
+					  <Badge tone={doc.publication_status === "published" ? "success" : "warning"}>
+						{doc.publication_status === "published" ? "已发布" : doc.publication_status === "retired" ? "已退役" : "草稿"}
+					  </Badge>
+					</td>
                     <td className="px-4 py-2.5">
                       <Badge tone={statusTone(doc.status)}>{STATUS_LABELS[doc.status] || doc.status}</Badge>
                     </td>

@@ -61,10 +61,12 @@ type Document struct {
 	CompletedAt time.Time
 
 	// Controlled-document governance (migration 0004).
-	DocStatus     string    // active | superseded | archived
-	EffectiveDate time.Time // zero = not tracked
-	Supersedes    string    // doc_id this version replaces; empty = none
-	Owner         string    // accountable owner, distinct from UploadedBy
+	DocStatus         string    // active | superseded | archived
+	EffectiveDate     time.Time // zero = not tracked
+	Supersedes        string    // doc_id this version replaces; empty = none
+	Owner             string    // accountable owner, distinct from UploadedBy
+	KnowledgeSpaceID  string    // governed tenant-local knowledge space
+	PublicationStatus string    // draft | published | retired
 }
 
 // Governance is the subset of a document's governance state that retrieval needs
@@ -88,12 +90,13 @@ func (g Governance) IsRetired() bool {
 
 // ListQuery filters document listing.
 type ListQuery struct {
-	TenantID    string
-	Status      string
-	Permissions []string // empty = no permission filter; else IN (...) set
-	Search      string   // matches file_name or doc_id (ILIKE)
-	Limit       int
-	Offset      int
+	TenantID          string
+	Status            string
+	Permissions       []string // empty = no permission filter; else IN (...) set
+	KnowledgeSpaceIDs []string
+	Search            string // matches file_name or doc_id (ILIKE)
+	Limit             int
+	Offset            int
 }
 
 // Store is the persistence surface for the document registry.
@@ -107,7 +110,7 @@ type Store interface {
 	// GetByHash returns an existing document with identical content, used by the
 	// upload path to detect exact duplicates instead of indexing the same bytes
 	// under a second doc_id (which would pollute the retrieval candidate set).
-	GetByHash(ctx context.Context, tenantID, fileHash string) (Document, bool, error)
+	GetByHash(ctx context.Context, tenantID, knowledgeSpaceID, fileHash string) (Document, bool, error)
 	// GovernanceByDocIDs batch-loads governance state for retrieval candidates.
 	// Missing doc_ids are simply absent from the map.
 	GovernanceByDocIDs(ctx context.Context, tenantID string, docIDs []string) (map[string]Governance, error)
@@ -134,9 +137,11 @@ func (s *PgStore) Upsert(ctx context.Context, d Document) error {
 			tenant_id, doc_id, file_name, object_key, file_hash, file_size,
 			content_type, permission, status, stage, chunks_done, chunks_total,
 			error, metadata, uploaded_by, created_at, updated_at, completed_at,
-			doc_status, effective_date, supersedes, owner
+			doc_status, effective_date, supersedes, owner,
+			knowledge_space_id, publication_status
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-			COALESCE(NULLIF($19,''),'active'),$20,$21,$22)
+			COALESCE(NULLIF($19,''),'active'),$20,$21,$22,
+			COALESCE(NULLIF($23,''),'user-uploads'),COALESCE(NULLIF($24,''),'draft'))
 		ON CONFLICT (tenant_id, doc_id) DO UPDATE SET
 			file_name = EXCLUDED.file_name,
 			object_key = EXCLUDED.object_key,
@@ -159,11 +164,14 @@ func (s *PgStore) Upsert(ctx context.Context, d Document) error {
 			doc_status = CASE WHEN $19::text = '' THEN documents.doc_status ELSE $19::text END,
 			effective_date = COALESCE($20::date, documents.effective_date),
 			supersedes = CASE WHEN $21::text = '' THEN documents.supersedes ELSE $21::text END,
-			owner = CASE WHEN $22::text = '' THEN documents.owner ELSE $22::text END`,
+			owner = CASE WHEN $22::text = '' THEN documents.owner ELSE $22::text END,
+			knowledge_space_id = CASE WHEN $23::text = '' THEN documents.knowledge_space_id ELSE $23::text END,
+			publication_status = CASE WHEN $24::text = '' THEN documents.publication_status ELSE $24::text END`,
 		d.TenantID, d.DocID, d.FileName, d.ObjectKey, d.FileHash, d.FileSize,
 		d.ContentType, d.Permission, d.Status, d.Stage, d.ChunksDone, d.ChunksTotal,
 		d.Error, d.Metadata, d.UploadedBy, d.CreatedAt, d.UpdatedAt, d.CompletedAt,
 		d.DocStatus, dateParam(d.EffectiveDate), d.Supersedes, d.Owner,
+		d.KnowledgeSpaceID, d.PublicationStatus,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert document: %w", err)
@@ -190,14 +198,14 @@ func (s *PgStore) Get(ctx context.Context, tenantID, docID string) (Document, bo
 // completed documents count as duplicates: a queued or failed row may never
 // produce searchable chunks, so treating it as the canonical copy would silently
 // drop the upload.
-func (s *PgStore) GetByHash(ctx context.Context, tenantID, fileHash string) (Document, bool, error) {
+func (s *PgStore) GetByHash(ctx context.Context, tenantID, knowledgeSpaceID, fileHash string) (Document, bool, error) {
 	if strings.TrimSpace(fileHash) == "" {
 		return Document{}, false, nil
 	}
 	row := s.q.QueryRow(ctx,
 		"SELECT "+documentColumns+` FROM documents
-		 WHERE tenant_id=$1 AND file_hash=$2 AND status='completed'
-		 ORDER BY created_at DESC LIMIT 1`, tenantID, fileHash)
+		 WHERE tenant_id=$1 AND knowledge_space_id=$2 AND file_hash=$3 AND status='completed'
+		 ORDER BY created_at DESC LIMIT 1`, tenantID, knowledgeSpaceID, fileHash)
 	return scanDocument(row)
 }
 
@@ -311,6 +319,23 @@ func (s *PgStore) UpsertStatus(ctx context.Context, tenantID, docID string, d Do
 	return nil
 }
 
+// UpdatePublication changes evidence eligibility without re-uploading content.
+// Publishing is allowed only after successful ingestion and for an active
+// controlled document.
+func (s *PgStore) UpdatePublication(ctx context.Context, tenantID, docID, status string) error {
+	tag, err := s.q.Exec(ctx, `UPDATE documents SET publication_status=$3, updated_at=now()
+		WHERE tenant_id=$1 AND doc_id=$2
+		  AND ($3 <> 'published' OR (status='completed' AND doc_status='active'))`,
+		tenantID, docID, status)
+	if err != nil {
+		return fmt.Errorf("update publication: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func listWhere(q ListQuery) (string, []any) {
 	var conds []string
 	var args []any
@@ -326,6 +351,10 @@ func listWhere(q ListQuery) (string, []any) {
 		args = append(args, q.Permissions)
 		conds = append(conds, fmt.Sprintf("permission = ANY($%d::text[])", len(args)))
 	}
+	if len(q.KnowledgeSpaceIDs) > 0 {
+		args = append(args, q.KnowledgeSpaceIDs)
+		conds = append(conds, fmt.Sprintf("knowledge_space_id = ANY($%d::text[])", len(args)))
+	}
 	if q.Search != "" {
 		args = append(args, "%"+strings.ToLower(q.Search)+"%")
 		conds = append(conds, fmt.Sprintf("(lower(file_name) LIKE $%d OR lower(doc_id) LIKE $%d)", len(args), len(args)))
@@ -338,7 +367,7 @@ func listWhere(q ListQuery) (string, []any) {
 const documentColumns = `tenant_id, doc_id, file_name, object_key, file_hash, file_size,
 	content_type, permission, status, stage, chunks_done, chunks_total,
 	error, metadata, uploaded_by, created_at, updated_at, completed_at,
-	doc_status, effective_date, supersedes, owner`
+	doc_status, effective_date, supersedes, owner, knowledge_space_id, publication_status`
 
 func scanDocument(row pgx.Row) (Document, bool, error) {
 	var d Document
@@ -347,7 +376,7 @@ func scanDocument(row pgx.Row) (Document, bool, error) {
 	err := row.Scan(&d.TenantID, &d.DocID, &d.FileName, &d.ObjectKey, &d.FileHash, &d.FileSize,
 		&d.ContentType, &d.Permission, &d.Status, &d.Stage, &d.ChunksDone, &d.ChunksTotal,
 		&d.Error, &metadata, &d.UploadedBy, &d.CreatedAt, &d.UpdatedAt, &completedAt,
-		&d.DocStatus, &effectiveDate, &d.Supersedes, &d.Owner)
+		&d.DocStatus, &effectiveDate, &d.Supersedes, &d.Owner, &d.KnowledgeSpaceID, &d.PublicationStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Document{}, false, nil
 	}

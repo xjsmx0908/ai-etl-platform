@@ -1,5 +1,6 @@
 import argparse
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -67,6 +68,36 @@ def _minimal_result(model_mode="mock", embed_model="eval-embed"):
 
 
 class JudgeReportTest(unittest.TestCase):
+    def test_public_dataset_report_discloses_scope_license_and_sampling(self):
+        module = self._load_module("run_evals_public_report")
+        result = _minimal_result(model_mode="real", embed_model="real-embed")
+        result["dataset"] = {
+            "version": "2.0",
+            "name": "nanoscifact",
+            "dataset_type": "public_benchmark",
+            "evaluation_scope": "retrieval",
+            "document_count": 200,
+            "case_count": 20,
+            "provenance": {
+                "license": "CC-BY-4.0",
+                "source_url": "https://huggingface.co/datasets/zeta-alpha-ai/NanoSciFact",
+                "dataset_version": "309f1d1",
+                "split": "train",
+                "benchmark_comparable": False,
+                "sampling": {"max_documents": 200, "max_queries": 20, "seed": 42},
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            _, markdown_path = module.write_report(Path(directory), result)
+            markdown = markdown_path.read_text(encoding="utf-8")
+
+        self.assertIn("Dataset type: public_benchmark", markdown)
+        self.assertIn("Evaluation scope: retrieval", markdown)
+        self.assertIn("License: CC-BY-4.0", markdown)
+        self.assertIn("Benchmark comparable: NO (sampled)", markdown)
+        self.assertIn("This public retrieval score is not enterprise-domain acceptance evidence.", markdown)
+
     def test_writes_judge_summary_and_case_scores(self):
         module_path = Path(__file__).resolve().parents[1] / "run-evals.py"
         spec = importlib.util.spec_from_file_location("run_evals", module_path)
@@ -156,6 +187,156 @@ class JudgeReportTest(unittest.TestCase):
         self.assertEqual(sum(not case.expect_hit for case in cases), 12)
         self.assertTrue(all(case.reference_answer for case in cases))
 
+    def test_loads_v2_dataset_with_documents_separate_from_queries(self):
+        module = self._load_module("run_evals_v2_dataset")
+        payload = {
+            "version": "2.0",
+            "name": "public-fixture",
+            "dataset_type": "public_benchmark",
+            "evaluation_scope": "retrieval",
+            "provenance": {
+                "license": "Apache-2.0",
+                "source_url": "https://example.invalid/data",
+                "dataset_version": "v1",
+                "split": "test",
+            },
+            "documents": [
+                {"id": "d1", "filename": "d1.txt", "permission": "internal", "content": "Evidence one."},
+                {"id": "d2", "filename": "d2.txt", "permission": "internal", "content": "Evidence two."},
+            ],
+            "cases": [
+                {
+                    "id": "q1",
+                    "document_id": "d1",
+                    "query": "Find evidence one",
+                    "acceptable_doc_ids": ["d1", "d2"],
+                    "required_doc_ids": ["d1", "d2"],
+                    "require_source_citation": False,
+                },
+                {
+                    "id": "q2",
+                    "document_id": "d1",
+                    "query": "Find the shared evidence",
+                    "acceptable_doc_ids": ["d1"],
+                    "require_source_citation": False,
+                },
+            ],
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+            import json
+
+            json.dump(payload, handle)
+            dataset_path = Path(handle.name)
+        self.addCleanup(dataset_path.unlink, missing_ok=True)
+
+        dataset = module.load_eval_dataset(dataset_path)
+
+        self.assertEqual([document.document_id for document in dataset.documents], ["d1", "d2"])
+        self.assertEqual([case.document_id for case in dataset.cases], ["d1", "d1"])
+        self.assertEqual(dataset.cases[0].acceptable_doc_ids, ["d1", "d2"])
+        self.assertEqual(dataset.cases[0].required_doc_ids, ["d1", "d2"])
+        self.assertEqual(dataset.dataset_type, "public_benchmark")
+        self.assertEqual(dataset.evaluation_scope, "retrieval")
+        self.assertEqual(dataset.provenance["license"], "Apache-2.0")
+
+    def test_v2_source_path_uploads_original_binary_with_detected_media_type(self):
+        module = self._load_module("run_evals_binary_source")
+        with tempfile.TemporaryDirectory(dir=module.ROOT) as directory:
+            source = Path(directory) / "policy.xlsx"
+            source.write_bytes(b"PK\x03\x04binary-workbook")
+            relative_source = source.relative_to(module.ROOT)
+            dataset_path = Path(directory) / "dataset.json"
+            dataset_path.write_text(
+                json.dumps(
+                    {
+                        "version": "2.0",
+                        "documents": [
+                            {
+                                "id": "d-binary",
+                                "filename": "policy.xlsx",
+                                "permission": "internal",
+                                "content": "extracted text used for labels",
+                                "source_path": str(relative_source),
+                            }
+                        ],
+                        "cases": [
+                            {
+                                "id": "q-binary",
+                                "document_id": "d-binary",
+                                "query": "What is the policy?",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            dataset = module.load_eval_dataset(dataset_path)
+            captured = {}
+
+            def fake_http_json(method, url, headers=None, body=None, timeout=0):
+                captured.update(method=method, url=url, headers=headers, body=body, timeout=timeout)
+                return 202, {"doc_id": "uploaded-binary"}
+
+            module.http_json = fake_http_json
+            uploaded = module.upload_document("http://api.invalid", "token", dataset.documents[0])
+
+        self.assertEqual(uploaded, "uploaded-binary")
+        self.assertIn(b"PK\x03\x04binary-workbook", captured["body"])
+        self.assertIn(b"Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", captured["body"])
+        self.assertNotIn(b"extracted text used for labels", captured["body"])
+
+    def test_v2_source_path_cannot_escape_repository(self):
+        module = self._load_module("run_evals_source_path_boundary")
+        payload = {
+            "version": "2.0",
+            "documents": [
+                {
+                    "id": "d-escape",
+                    "filename": "outside.pdf",
+                    "permission": "internal",
+                    "content": "label text",
+                    "source_path": "../outside.pdf",
+                }
+            ],
+            "cases": [{"id": "q-escape", "document_id": "d-escape", "query": "query"}],
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            dataset_path = Path(handle.name)
+        self.addCleanup(dataset_path.unlink, missing_ok=True)
+
+        with self.assertRaisesRegex(module.EvalRunnerError, "source_path must stay within repository"):
+            module.load_eval_dataset(dataset_path)
+
+    def test_v2_source_path_must_match_declared_sha256(self):
+        module = self._load_module("run_evals_source_hash")
+        with tempfile.TemporaryDirectory(dir=module.ROOT) as directory:
+            source = Path(directory) / "policy.pdf"
+            source.write_bytes(b"current binary")
+            dataset_path = Path(directory) / "dataset.json"
+            dataset_path.write_text(
+                json.dumps(
+                    {
+                        "version": "2.0",
+                        "documents": [
+                            {
+                                "id": "d-stale",
+                                "filename": "policy.pdf",
+                                "content": "labels from an older file",
+                                "source_path": str(source.relative_to(module.ROOT)),
+                                "metadata": {"source_sha256": "0" * 64},
+                            }
+                        ],
+                        "cases": [{"id": "q-stale", "document_id": "d-stale", "query": "query"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(module.EvalRunnerError, "source_sha256 does not match"):
+                module.load_eval_dataset(dataset_path)
+
     def test_compose_eval_environment_uses_unique_project_and_dynamic_ports(self):
         module_path = Path(__file__).resolve().parents[1] / "run-evals.py"
         spec = importlib.util.spec_from_file_location("run_evals_isolation", module_path)
@@ -199,6 +380,137 @@ class JudgeReportTest(unittest.TestCase):
         self.assertEqual(module.resolve_compose_project("AI-ETL_EVAL-42"), "ai-etl_eval-42")
         with self.assertRaisesRegex(module.EvalRunnerError, "--compose-project"):
             module.resolve_compose_project("invalid project name")
+
+    def test_eval_compose_publishes_query_api_on_ephemeral_loopback_port(self):
+        compose_path = Path(__file__).resolve().parents[2] / "docker-compose.eval.yml"
+        compose_text = compose_path.read_text(encoding="utf-8")
+        query_api_block = compose_text.split("  query-api:", 1)[1].split(
+            "  reranker-service:", 1
+        )[0]
+
+        self.assertIn('"127.0.0.1::8080"', query_api_block)
+
+    def test_confidential_eval_fixtures_are_uploaded_by_admin(self):
+        module = self._load_module("run_evals_upload_role")
+
+        self.assertEqual(module.upload_role_for_permission("public"), "user")
+        self.assertEqual(module.upload_role_for_permission("internal"), "user")
+        self.assertEqual(module.upload_role_for_permission("confidential"), "admin")
+        with self.assertRaisesRegex(module.EvalRunnerError, "unsupported document permission"):
+            module.upload_role_for_permission("restricted")
+
+    def test_waits_for_all_document_tasks_before_publication(self):
+        module = self._load_module("run_evals_task_wait")
+        responses = {
+            "doc-1": iter([(200, {"status": "queued"}), (200, {"status": "completed"})]),
+            "doc-2": iter([(200, {"status": "processing"}), (200, {"status": "completed"})]),
+        }
+        calls = []
+
+        def fake_http_json(method, url, **kwargs):
+            calls.append((method, url))
+            document_id = url.rsplit("/", 1)[-1]
+            return next(responses[document_id])
+
+        original = module.http_json
+        module.http_json = fake_http_json
+        self.addCleanup(lambda: setattr(module, "http_json", original))
+
+        module.wait_for_document_tasks(
+            "http://api.invalid",
+            "token",
+            ["doc-1", "doc-2"],
+            timeout_sec=1,
+            poll_sec=0,
+        )
+
+        self.assertEqual([call[0] for call in calls], ["GET", "GET", "GET", "GET"])
+        self.assertTrue(all("/v1/tasks/" in call[1] for call in calls))
+
+    def test_task_rate_limit_is_retried_during_readiness_poll(self):
+        module = self._load_module("run_evals_task_rate_limit")
+        responses = iter([(429, {"error": "rate_limited"}), (200, {"status": "completed"})])
+
+        def fake_http_json(*args, **kwargs):
+            return next(responses)
+
+        original = module.http_json
+        module.http_json = fake_http_json
+        self.addCleanup(lambda: setattr(module, "http_json", original))
+
+        module.wait_for_document_tasks(
+            "http://api.invalid",
+            "token",
+            ["doc-1"],
+            timeout_sec=1,
+            poll_sec=0,
+        )
+
+    def test_task_rate_limit_stops_the_current_scan_before_retrying(self):
+        module = self._load_module("run_evals_task_rate_limit_scan")
+        calls = []
+        slept = False
+
+        def fake_http_json(*args, **kwargs):
+            nonlocal slept
+            calls.append(args[1])
+            if len(calls) == 1:
+                return 429, {"error": "rate_limited"}
+            if not slept:
+                self.fail("readiness poll continued scanning after a 429")
+            return 200, {"status": "completed"}
+
+        def fake_sleep(_seconds):
+            nonlocal slept
+            slept = True
+
+        original_http_json = module.http_json
+        original_sleep = module.time.sleep
+        module.http_json = fake_http_json
+        module.time.sleep = fake_sleep
+        self.addCleanup(lambda: setattr(module, "http_json", original_http_json))
+        self.addCleanup(lambda: setattr(module.time, "sleep", original_sleep))
+
+        module.wait_for_document_tasks(
+            "http://api.invalid",
+            "token",
+            ["doc-1", "doc-2"],
+            timeout_sec=1,
+            poll_sec=0,
+        )
+
+        self.assertEqual(len(calls), 3)
+
+    def test_upload_map_round_trip_is_bound_to_dataset_and_tenant(self):
+        module = self._load_module("run_evals_upload_map")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset_path = root / "dataset.json"
+            dataset_path.write_text('{"version":"2.0"}', encoding="utf-8")
+            map_path = root / "upload-map.json"
+
+            module.write_upload_map(
+                map_path,
+                tenant_id="tenant-eval",
+                dataset_path=dataset_path,
+                uploaded_doc_ids={"source-1": "doc-1", "source-2": "doc-2"},
+            )
+
+            tenant_id, uploaded = module.load_upload_map(
+                map_path,
+                dataset_path=dataset_path,
+                expected_document_ids=["source-1", "source-2"],
+            )
+            self.assertEqual(tenant_id, "tenant-eval")
+            self.assertEqual(uploaded, {"source-1": "doc-1", "source-2": "doc-2"})
+
+            dataset_path.write_text('{"version":"2.1"}', encoding="utf-8")
+            with self.assertRaisesRegex(module.EvalRunnerError, "dataset digest"):
+                module.load_upload_map(
+                    map_path,
+                    dataset_path=dataset_path,
+                    expected_document_ids=["source-1", "source-2"],
+                )
 
     def _load_module(self, name):
         module_path = Path(__file__).resolve().parents[1] / "run-evals.py"
@@ -260,6 +572,53 @@ class JudgeReportTest(unittest.TestCase):
         self.assertEqual(profile.store_collection, "documents-real-nomic-embed-text-768")
         self.assertNotEqual(profile.store_collection, "documents")
 
+    def test_resolved_configuration_records_non_secret_ab_settings(self):
+        module = self._load_module("run_evals_resolved_configuration")
+        env = {
+            "RETRIEVAL_ENABLE_RERANK": "true",
+            "RETRIEVAL_RERANK_POLICY": "auto",
+            "RETRIEVAL_CANDIDATE_K": "40",
+            "RETRIEVAL_FINAL_TOP_K": "5",
+            "RETRIEVAL_GROUNDING_CHECK": "true",
+            "RERANK_MODEL": "request-model",
+            "RERANKER_MODEL": "cross-encoder/model-v1",
+            "RERANKER_BACKEND": "cross-encoder",
+            "COMPOSE_PROFILES": "rerank",
+            "LLM_MAX_TOKENS": "64",
+            "LLM_MAX_CONTEXT_CHARS": "1200",
+            "PROMPT_VERSION": "v1",
+            "PIPELINE_MAX_WORKERS": "1",
+            "PIPELINE_BATCH_SIZE": "10",
+            "PIPELINE_STAGE_TIMEOUT": "10m",
+            "PIPELINE_TIMEOUT": "60m",
+            "LLM_API_KEY": "must-not-leak",
+        }
+
+        config = module.resolved_eval_configuration(
+            env,
+            query_top_k=5,
+            query_timeout_seconds=90.0,
+            required_consecutive_hits=1,
+            poll_interval_seconds=0.2,
+            negative_max_wait_seconds=1,
+        )
+
+        self.assertTrue(config["retrieval_enable_rerank"])
+        self.assertEqual(config["retrieval_rerank_policy"], "auto")
+        self.assertEqual(config["retrieval_candidate_k"], 40)
+        self.assertEqual(config["retrieval_final_top_k"], 5)
+        self.assertEqual(config["reranker_model"], "cross-encoder/model-v1")
+        self.assertEqual(config["compose_profiles"], ["rerank"])
+        self.assertEqual(config["llm_max_tokens"], 64)
+        self.assertEqual(config["llm_max_context_chars"], 1200)
+        self.assertEqual(config["query_timeout_seconds"], 90.0)
+        self.assertEqual(config["required_consecutive_hits"], 1)
+        self.assertEqual(config["negative_max_wait_seconds"], 1)
+        self.assertEqual(config["pipeline_max_workers"], 1)
+        self.assertEqual(config["pipeline_stage_timeout"], "10m")
+        self.assertRegex(config["sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("must-not-leak", json.dumps(config))
+
     # ES is an async full-text sink; querying before it catches up makes the
     # eval report false retrieval timeouts for exact-keyword cases (ES carries
     # 0.75 weight). wait_for_es_sync must block until the count is reached.
@@ -315,6 +674,117 @@ class JudgeReportTest(unittest.TestCase):
                 f"refusal not detected: {phrasing}",
             )
 
+    def test_query_assertion_records_final_request_latency(self):
+        module = self._load_module("run_evals_query_latency")
+        original_query_case = module.query_case
+        original_perf_counter = module.time.perf_counter
+        perf_values = iter([10.0, 10.25])
+        module.query_case = lambda *args, **kwargs: (
+            200,
+            {
+                "answer": "answer",
+                "sources": [{"doc_id": "doc-1", "score": 0.9}],
+                "token_usage": {"prompt_tokens": 3, "completion_tokens": 2},
+            },
+        )
+        module.time.perf_counter = lambda: next(perf_values)
+        try:
+            details, _ = module.evaluate_case_assertions(
+                "http://api.invalid",
+                "token",
+                "query",
+                "doc-1",
+                True,
+                ["doc-1"],
+                [],
+                5,
+                5,
+                1,
+                0.01,
+                1,
+            )
+        finally:
+            module.query_case = original_query_case
+            module.time.perf_counter = original_perf_counter
+
+        self.assertEqual(details["query_attempts"], 1)
+        self.assertEqual(details["query_latency_ms"], 250.0)
+
+    def test_filter_eval_cases_selects_cohort_without_changing_document_corpus(self):
+        module = self._load_module("run_evals_cohort_filter")
+        cases = [
+            module.EvalCase(
+                case_id="cross-1",
+                query="combine sources",
+                document_id="doc-a",
+                metadata={"evaluation_cohort": "cross_document"},
+                required_doc_ids=["doc-a", "doc-b"],
+            ),
+            module.EvalCase(
+                case_id="semantic-1",
+                query="semantic question",
+                document_id="doc-c",
+                metadata={"evaluation_cohort": "semantic"},
+            ),
+        ]
+
+        selected = module.filter_eval_cases(cases, "cross_document")
+
+        self.assertEqual([case.case_id for case in selected], ["cross-1"])
+        self.assertEqual(selected[0].required_doc_ids, ["doc-a", "doc-b"])
+        self.assertEqual([case.case_id for case in module.filter_eval_cases(cases)], ["cross-1", "semantic-1"])
+        with self.assertRaises(module.EvalRunnerError):
+            module.filter_eval_cases(cases, "missing")
+
+    def test_query_case_marks_retrieval_only_explicitly(self):
+        module = self._load_module("run_evals_retrieval_only_payload")
+        captured = {}
+        original = module.http_json
+
+        def fake_http_json(method, url, headers=None, body=None, timeout=0):
+            captured["payload"] = json.loads(body.decode("utf-8"))
+            return 200, {"sources": []}
+
+        module.http_json = fake_http_json
+        try:
+            module.query_case(
+                "http://api.invalid",
+                "token",
+                "question",
+                diagnostic_required_doc_ids=["doc-b", "doc-a", "doc-a"],
+                retrieval_only=True,
+            )
+        finally:
+            module.http_json = original
+
+        self.assertEqual(captured["payload"]["diagnostic_required_doc_ids"], ["doc-a", "doc-b"])
+        self.assertTrue(captured["payload"]["retrieval_only"])
+
+    def test_answer_metrics_are_independent_of_citation_failure(self):
+        module = self._load_module("run_evals_answer_metric_signals")
+        case = module.EvalCase(
+            case_id="case-1",
+            query="policy question",
+            require_source_citation=True,
+            answer_must_include=["审批期限", "来源:"],
+        )
+
+        details = module.evaluate_answer_assertions(
+            case,
+            {
+                "answer": "审批期限为三个工作日。",
+                "sources": [{"doc_id": "doc-1"}],
+            },
+            ["doc-1"],
+            True,
+        )
+
+        self.assertFalse(details["answer_assertion_pass"])
+        self.assertEqual(details["answer_assertion_reason"], "missing_source_citation")
+        self.assertTrue(details["key_fact_check_eligible"])
+        self.assertTrue(details["key_fact_assertion_pass"])
+        self.assertFalse(details["safety_refusal_eligible"])
+
     # "来源:" in a dataset means "cite the source", not "emit this substring".
     # Asserting the literal encoded the mock's output template.
     def test_citation_token_is_checked_structurally(self):
@@ -347,6 +817,130 @@ class JudgeReportTest(unittest.TestCase):
         )
         self.assertFalse(uncited["answer_assertion_pass"])
         self.assertEqual(uncited["answer_assertion_reason"], "missing_source_citation")
+
+    def test_cross_document_answer_requires_every_source_citation(self):
+        module = self._load_module("run_evals_cross_citation")
+        case = module.EvalCase(
+            case_id="cross",
+            query="How do both rules apply?",
+            document_id="source-a",
+            required_doc_ids=["source-a", "source-b"],
+        )
+
+        missing = module.evaluate_answer_assertions(
+            case,
+            {
+                "answer": "Rule A applies [source-a].",
+                "sources": [{"doc_id": "source-a"}, {"doc_id": "source-b"}],
+            },
+            ["source-a", "source-b"],
+            True,
+            required_doc_ids=["source-a", "source-b"],
+        )
+        complete = module.evaluate_answer_assertions(
+            case,
+            {
+                "answer": "Rule A applies [source-a], and rule B applies [source-b].",
+                "sources": [{"doc_id": "source-a"}, {"doc_id": "source-b"}],
+            },
+            ["source-a", "source-b"],
+            True,
+            required_doc_ids=["source-a", "source-b"],
+        )
+
+        self.assertFalse(missing["answer_assertion_pass"])
+        self.assertEqual(missing["answer_assertion_reason"], "missing_required_source_citation")
+        self.assertTrue(complete["answer_assertion_pass"], complete)
+
+    def test_cross_document_retrieval_requires_all_sources_in_same_result(self):
+        module = self._load_module("run_evals_cross_retrieval")
+        payloads = [
+            {
+                "answer": "combined",
+                "sources": [
+                    {"doc_id": "source-a", "score": 0.9},
+                    {"doc_id": "source-b", "score": 0.8},
+                ],
+            }
+        ]
+        original = module.query_case
+        module.query_case = lambda *args, **kwargs: (200, payloads[0])
+        try:
+            details, _ = module.evaluate_case_assertions(
+                "http://api.invalid",
+                "token",
+                "query",
+                "source-a",
+                True,
+                ["source-a", "source-b"],
+                [],
+                5,
+                5,
+                1,
+                0.001,
+                1,
+                required_doc_ids=["source-a", "source-b"],
+            )
+        finally:
+            module.query_case = original
+
+        self.assertTrue(details["assertion_pass"], details)
+        self.assertTrue(details["required_docs_hit"])
+        self.assertEqual(details["required_doc_ranks"], {"source-a": 1, "source-b": 2})
+
+    def test_retrieval_only_records_one_successful_observation_without_polling(self):
+        module = self._load_module("run_evals_retrieval_only_single_observation")
+        calls = {"count": 0}
+        original = module.query_case
+
+        def fake_query(*args, **kwargs):
+            calls["count"] += 1
+            return 200, {
+                "sources": [{"doc_id": "source-a", "score": 0.9}],
+                "retrieval": {
+                    "stage_diagnostics": {
+                        "selected": {
+                            "required_document_count": 2,
+                            "hit_document_count": 1,
+                            "all_required_hit": False,
+                            "all_required_max_rank": 0,
+                        }
+                    }
+                },
+            }
+
+        module.query_case = fake_query
+        try:
+            details, _ = module.evaluate_case_assertions(
+                "http://api.invalid",
+                "token",
+                "query",
+                "source-a",
+                True,
+                ["source-a", "source-b"],
+                [],
+                5,
+                5,
+                2,
+                1,
+                10,
+                required_doc_ids=["source-a", "source-b"],
+                retrieval_only=True,
+            )
+        finally:
+            module.query_case = original
+
+        self.assertEqual(calls["count"], 1)
+        self.assertEqual(details["query_attempts"], 1)
+        self.assertFalse(details["required_docs_hit"])
+        self.assertEqual(
+            details["retrieval_stage_diagnostics"]["selected"]["hit_document_count"],
+            1,
+        )
+        self.assertEqual(
+            details["retrieval_stage_diagnostics"]["selected"]["all_required_max_rank"],
+            0,
+        )
 
     # Relaxing refusal phrasing must not let a negative case pass by answering.
     def test_negative_case_still_fails_when_model_answers(self):
@@ -394,6 +988,203 @@ class JudgeReportTest(unittest.TestCase):
         self.assertIn("Model mode: REAL", md)
         self.assertIn("nomic-embed-text", md)
         self.assertNotIn("NOT a quality signal", md)
+
+    def test_report_aggregates_cohort_metrics_and_resolved_configuration(self):
+        module = self._load_module("run_evals_cohort_report")
+        result = _minimal_result(model_mode="real", embed_model="bge-m3")
+        result["dataset"] = {
+            "version": "2.0",
+            "name": "enterprise-candidate",
+            "dataset_type": "enterprise_gold_candidate",
+            "evaluation_scope": "answer_and_retrieval",
+            "document_count": 4,
+            "case_count": 4,
+            "sha256": "a" * 64,
+            "provenance": {"business_approval_complete": False},
+        }
+        result["models"]["reranker_model"] = "BAAI/bge-reranker-base"
+        result["configuration"] = {
+            "retrieval_enable_rerank": True,
+            "retrieval_rerank_policy": "auto",
+            "retrieval_candidate_k": 50,
+            "retrieval_final_top_k": 5,
+            "query_top_k": 5,
+            "retrieval_grounding_check": True,
+        }
+        result["cases"] = [
+            {
+                "case_id": "semantic-1",
+                "evaluation_cohort": "semantic",
+                "expect_hit": True,
+                "recall_at_5": True,
+                "required_doc_ids": [],
+                "required_docs_hit": True,
+                "citation_check_eligible": True,
+                "answer_source_citation_ok": True,
+                "key_fact_check_eligible": True,
+                "key_fact_assertion_pass": True,
+                "safety_refusal_eligible": False,
+                "safety_refusal_pass": False,
+                "grounding_checked": True,
+                "grounding_passed": True,
+                "query_latency_ms": 100.0,
+                "prompt_tokens": 8,
+                "completion_tokens": 2,
+                "retrieval_assertion_pass": True,
+                "answer_assertion_pass": True,
+                "assertion_pass": True,
+                "strict_rank": 1,
+                "max_strict_rank": 5,
+                "assertion_reason": "all_assertions_passed",
+            },
+            {
+                "case_id": "cross-1",
+                "evaluation_cohort": "cross_document",
+                "expect_hit": True,
+                "recall_at_5": False,
+                "required_doc_ids": ["doc-a", "doc-b"],
+                "required_docs_hit": False,
+                "citation_check_eligible": True,
+                "answer_source_citation_ok": False,
+                "key_fact_check_eligible": True,
+                "key_fact_assertion_pass": True,
+                "safety_refusal_eligible": False,
+                "safety_refusal_pass": False,
+                "grounding_checked": True,
+                "grounding_passed": False,
+                "query_latency_ms": 1000.0,
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "retrieval_assertion_pass": False,
+                "answer_assertion_pass": False,
+                "assertion_pass": False,
+                "strict_rank": 0,
+                "max_strict_rank": 5,
+                "assertion_reason": "retrieval:missing_required_documents",
+                "retrieval_stage_diagnostics": {
+                    "required_document_count": 2,
+                    "backend": {
+                        "qdrant": {
+                            "required_document_count": 2,
+                            "hit_document_count": 2,
+                            "all_required_hit": True,
+                        }
+                    },
+                    "fused": {
+                        "required_document_count": 2,
+                        "hit_document_count": 2,
+                        "all_required_hit": True,
+                    },
+                    "selected": {
+                        "required_document_count": 2,
+                        "hit_document_count": 1,
+                        "all_required_hit": False,
+                    },
+                },
+            },
+            {
+                "case_id": "lexical-1",
+                "evaluation_cohort": "lexical",
+                "expect_hit": True,
+                "recall_at_5": False,
+                "required_doc_ids": [],
+                "required_docs_hit": True,
+                "citation_check_eligible": True,
+                "answer_source_citation_ok": True,
+                "key_fact_check_eligible": True,
+                "key_fact_assertion_pass": False,
+                "safety_refusal_eligible": False,
+                "safety_refusal_pass": False,
+                "grounding_checked": False,
+                "grounding_passed": True,
+                "query_latency_ms": 200.0,
+                "prompt_tokens": 15,
+                "completion_tokens": 5,
+                "retrieval_assertion_pass": False,
+                "answer_assertion_pass": False,
+                "assertion_pass": False,
+                "strict_rank": 0,
+                "max_strict_rank": 5,
+                "assertion_reason": "retrieval:timeout",
+            },
+            {
+                "case_id": "safety-1",
+                "evaluation_cohort": "safety_negative",
+                "expect_hit": False,
+                "recall_at_5": False,
+                "required_doc_ids": [],
+                "required_docs_hit": True,
+                "citation_check_eligible": False,
+                "answer_source_citation_ok": True,
+                "key_fact_check_eligible": False,
+                "key_fact_assertion_pass": True,
+                "safety_refusal_eligible": True,
+                "safety_refusal_pass": True,
+                "grounding_checked": False,
+                "grounding_passed": True,
+                "query_latency_ms": 400.0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "retrieval_assertion_pass": True,
+                "answer_assertion_pass": True,
+                "assertion_pass": True,
+                "strict_rank": 0,
+                "max_strict_rank": 0,
+                "assertion_reason": "all_assertions_passed",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, markdown_path = module.write_report(Path(tmp), result)
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+
+        self.assertEqual(payload["cohorts"]["semantic"]["recall_at_5"], 1.0)
+        self.assertEqual(
+            payload["cohorts"]["cross_document"]["all_required_docs_hit_rate"],
+            0.0,
+        )
+        self.assertEqual(payload["cohorts"]["cross_document"]["citation_complete_rate"], 0.0)
+        self.assertEqual(payload["cohorts"]["cross_document"]["key_fact_pass_rate"], 1.0)
+        self.assertEqual(payload["cohorts"]["cross_document"]["grounding_pass_rate"], 0.0)
+        self.assertEqual(payload["cohorts"]["cross_document"]["latency_ms"]["p95"], 1000.0)
+        diagnostics = payload["cohorts"]["cross_document"]["retrieval_stage_diagnostics"]
+        self.assertEqual(diagnostics["fused"]["all_required_hit_rate"], 1.0)
+        self.assertEqual(diagnostics["selected"]["all_required_hit_rate"], 0.0)
+        self.assertEqual(diagnostics["backend"]["qdrant"]["all_required_hit_rate"], 1.0)
+        self.assertEqual(payload["cohorts"]["lexical"]["total_tokens"], 20)
+        self.assertEqual(payload["cohorts"]["safety_negative"]["safety_refusal_rate"], 1.0)
+        self.assertIn("## Cohort Metrics", markdown)
+        self.assertIn("Dataset SHA-256: " + "a" * 64, markdown)
+        self.assertIn("Rerank enabled: true", markdown)
+        self.assertIn("Rerank policy: auto", markdown)
+        self.assertIn("BAAI/bge-reranker-base", markdown)
+
+    def test_report_marks_incomplete_query_or_grounding_as_invalid(self):
+        module = self._load_module("run_evals_invalid_run_report")
+        result = _minimal_result(model_mode="real", embed_model="bge-m3")
+        result["cases"] = [
+            {
+                **result["cases"][0],
+                "query_successful": True,
+                "grounding_unavailable": False,
+            },
+            {
+                **result["cases"][0],
+                "case_id": "case-002",
+                "query_successful": False,
+                "grounding_unavailable": True,
+            },
+        ]
+        result["summary"]["total_cases"] = 2
+
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, _ = module.write_report(Path(tmp), result)
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["summary"]["successful_query_cases"], 1)
+        self.assertEqual(payload["summary"]["grounding_unavailable_cases"], 1)
+        self.assertFalse(payload["summary"]["run_valid"])
 
 
 if __name__ == "__main__":

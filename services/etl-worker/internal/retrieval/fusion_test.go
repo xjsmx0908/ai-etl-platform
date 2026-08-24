@@ -38,7 +38,10 @@ func TestFuse_PrefersQdrantRelevanceOnCrossSourceHit(t *testing.T) {
 			{ChunkID: "c1", DocID: "d1", Score: 14.2, Source: SourceElasticsearch, Rank: 1},
 		},
 		SourceQdrant: {
-			{ChunkID: "c1", DocID: "d1", Score: 0.73, Source: SourceQdrant, Rank: 1},
+			{
+				ChunkID: "c1", DocID: "d1", Score: 0.5, Source: SourceQdrant, Rank: 1,
+				Relevance: 0.73, RelevanceSource: SourceQdrant,
+			},
 		},
 	}
 

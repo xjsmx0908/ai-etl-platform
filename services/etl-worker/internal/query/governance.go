@@ -16,6 +16,7 @@ type governanceOutcome struct {
 	candidates      []retrieval.Candidate
 	retiredFiltered int
 	conflicts       []ConflictingDoc
+	documents       map[string]docstore.Governance
 }
 
 // applyGovernance drops candidates whose document is no longer authoritative and
@@ -58,6 +59,7 @@ func (s *Service) applyGovernance(ctx context.Context, tenantID string, candidat
 	}
 	outcome.candidates = kept
 	outcome.conflicts = detectConflicts(kept, governance)
+	outcome.documents = governance
 	return outcome
 }
 

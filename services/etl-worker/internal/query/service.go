@@ -17,6 +17,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -26,30 +28,33 @@ import (
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/knowledgecatalog"
 	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/tracing"
 )
 
 // Service handles RAG queries: question → hybrid search → LLM generation.
 type Service struct {
-	cfg           config.Config
-	llmEndpoint   string
-	llmAPIKey     string
-	llmModel      string
-	llmMaxTokens  int
-	retriever     *retrieval.Engine
-	httpClient    *http.Client
-	breaker       *circuit.Breaker
-	tracer        trace.Tracer
-	llmObserver   LLMObserver
-	systemPrompt  string
-	promptVersion string
+	cfg                config.Config
+	llmEndpoint        string
+	llmAPIKey          string
+	llmModel           string
+	llmMaxTokens       int
+	llmMaxContextChars int
+	retriever          *retrieval.Engine
+	httpClient         *http.Client
+	breaker            *circuit.Breaker
+	tracer             trace.Tracer
+	llmObserver        LLMObserver
+	systemPrompt       string
+	promptVersion      string
 
 	// governance is the optional document registry used to drop retired
 	// (superseded/archived) candidates and to disclose conflicting sources. It is
 	// nil in the worker and in tests, in which case both features are skipped —
 	// retrieval behaviour is then exactly as before.
 	governance governanceLookup
+	catalog    *knowledgecatalog.Catalog
 
 	// Per-1k-token USD prices for cost estimation (LLM_PRICE_*). Zero means no
 	// cost is reported.
@@ -69,6 +74,29 @@ type governanceLookup interface {
 func (s *Service) WithGovernance(g governanceLookup) *Service {
 	s.governance = g
 	return s
+}
+
+// WithKnowledgeCatalog enables mandatory pre-retrieval space resolution and
+// fail-closed publication filtering.
+func (s *Service) WithKnowledgeCatalog(catalog *knowledgecatalog.Catalog) *Service {
+	s.catalog = catalog
+	return s
+}
+
+// ResolveKnowledgeSpace exposes the catalog decision to the upload handler so
+// reads and writes share one policy module.
+func (s *Service) ResolveKnowledgeSpace(ctx context.Context, requestedSpaceID string, access AccessContext, capability knowledgecatalog.Capability) (knowledgecatalog.Space, error) {
+	if s.catalog == nil {
+		return knowledgecatalog.Space{ID: "user-uploads", Slug: "user-uploads", Name: "用户上传", Kind: knowledgecatalog.SpaceKindProduction, Active: true}, nil
+	}
+	return s.catalog.Resolve(ctx, knowledgecatalog.Principal{TenantID: access.TenantID, UserID: access.UserID, Role: access.Role}, requestedSpaceID, capability)
+}
+
+func (s *Service) ListKnowledgeSpaces(ctx context.Context, access AccessContext) ([]knowledgecatalog.Space, error) {
+	if s.catalog == nil {
+		return []knowledgecatalog.Space{{ID: "user-uploads", Name: "用户上传", Kind: knowledgecatalog.SpaceKindProduction, IsDefault: true, Active: true}}, nil
+	}
+	return s.catalog.List(ctx, knowledgecatalog.Principal{TenantID: access.TenantID, UserID: access.UserID, Role: access.Role})
 }
 
 // LLMObserver receives low-cardinality LLM request outcomes for metrics adapters.
@@ -96,15 +124,31 @@ const (
 
 // Request represents a query request from the client.
 type Request struct {
-	Question string `json:"question"`
-	TopK     int    `json:"top_k,omitempty"`
+	Question         string `json:"question"`
+	TopK             int    `json:"top_k,omitempty"`
+	KnowledgeSpaceID string `json:"knowledge_space_id,omitempty"`
+	// DiagnosticRequiredDocIDs is accepted only when the controlled evaluation
+	// diagnostic flag is enabled; responses contain aggregate counts only.
+	DiagnosticRequiredDocIDs []string `json:"diagnostic_required_doc_ids,omitempty"`
+	// RetrievalOnly is honored only with the controlled diagnostics flag. It
+	// returns selected evidence without invoking answer generation.
+	RetrievalOnly bool `json:"retrieval_only,omitempty"`
+	// Deprecated compatibility fields. They are never used to authorize or
+	// automatically select a knowledge space.
+	KnowledgeBaseID string `json:"knowledge_base_id,omitempty"`
+	ApplicableScope string `json:"applicable_scope,omitempty"`
 }
 
 // Response represents the query result returned to the client.
 type Response struct {
-	Answer   string          `json:"answer"`
-	Sources  []SourceContext `json:"sources"`
-	Duration string          `json:"duration"`
+	Answer string `json:"answer"`
+	// Sources is the legacy name for all retrieved evidence. New clients should
+	// use RetrievedSources and Citations so evidence considered by the model is
+	// never presented as if the answer actually cited it.
+	Sources          []SourceContext `json:"sources"`
+	RetrievedSources []SourceContext `json:"retrieved_sources"`
+	Citations        []SourceContext `json:"citations"`
+	Duration         string          `json:"duration"`
 	// TokenUsage is populated when the LLM provider reports usage. Omitted
 	// otherwise so callers can rely on zero value meaning "not reported".
 	TokenUsage *TokenUsage `json:"token_usage,omitempty"`
@@ -118,11 +162,28 @@ type Response struct {
 
 // RetrievalInfo summarizes the retrieval stage of a query.
 type RetrievalInfo struct {
-	Strategy       string   `json:"strategy"`
-	CacheHit       bool     `json:"cache_hit"`
-	Backends       []string `json:"backends"`
-	CandidateCount int      `json:"candidate_count"`
-	DurationMs     int64    `json:"duration_ms"`
+	Strategy                   string                      `json:"strategy"`
+	CacheHit                   bool                        `json:"cache_hit"`
+	Backends                   []string                    `json:"backends"`
+	BackendCandidateCounts     map[string]int              `json:"backend_candidate_counts,omitempty"`
+	FusedCandidateCount        int                         `json:"fused_candidate_count,omitempty"`
+	DeduplicatedCandidateCount int                         `json:"deduplicated_candidate_count,omitempty"`
+	StageDiagnostics           *retrieval.StageDiagnostics `json:"stage_diagnostics,omitempty"`
+	SelectedContextCount       int                         `json:"selected_context_count"`
+	UniqueDocumentCount        int                         `json:"unique_document_count"`
+	SelectedKnowledgeBaseID    string                      `json:"selected_knowledge_base_id,omitempty"`
+	SelectedApplicableScope    string                      `json:"selected_applicable_scope,omitempty"`
+	ResolvedKnowledgeSpaceID   string                      `json:"resolved_knowledge_space_id,omitempty"`
+	ResolvedKnowledgeSpaceName string                      `json:"resolved_knowledge_space_name,omitempty"`
+	UnpublishedFiltered        int                         `json:"unpublished_filtered,omitempty"`
+	ExactEvidenceRequired      bool                        `json:"exact_evidence_required"`
+	ExactEvidenceMatched       bool                        `json:"exact_evidence_matched"`
+	CrossScopeFiltered         int                         `json:"cross_scope_filtered,omitempty"`
+	ScopeAmbiguous             bool                        `json:"scope_ambiguous,omitempty"`
+	// CandidateCount is retained for API compatibility and equals the final
+	// selected context count, not the pre-fusion candidate pool.
+	CandidateCount int   `json:"candidate_count"`
+	DurationMs     int64 `json:"duration_ms"`
 	// AllowedPermissions are the permission levels the caller's role may
 	// retrieve (e.g. user → [public internal]). Exposed so the UI can state the
 	// retrieval boundary explicitly: confidential docs are filtered at the
@@ -179,22 +240,53 @@ type TokenUsage struct {
 
 // SourceContext represents a retrieved document chunk with its relevance score.
 type SourceContext struct {
-	ChunkID  string  `json:"chunk_id"`
-	DocID    string  `json:"doc_id"`
-	Content  string  `json:"content"`
-	Score    float64 `json:"score"`
-	TenantID string  `json:"tenant_id,omitempty"`
+	ChunkID         string  `json:"chunk_id"`
+	DocID           string  `json:"doc_id"`
+	Content         string  `json:"content"`
+	Score           float64 `json:"score"`
+	TenantID        string  `json:"tenant_id,omitempty"`
+	FileName        string  `json:"file_name,omitempty"`
+	EffectiveDate   string  `json:"effective_date,omitempty"`
+	KnowledgeBase   string  `json:"knowledge_base_id,omitempty"`
+	ApplicableScope string  `json:"applicable_scope,omitempty"`
 }
 
 // AccessContext is the authenticated caller context used by HTTP handlers and internal tools.
 type AccessContext struct {
 	TenantID string
+	UserID   string
 	Role     string
 }
 
 // NoEvidenceAnswer is returned when retrieval yields no sufficiently relevant
 // evidence. Callers and evals treat it as an explicit refusal rather than an answer.
 const NoEvidenceAnswer = "未找到相关文档，无法回答该问题。"
+
+var refusalMarkers = []string{
+	NoEvidenceAnswer,
+	"未找到相关文档",
+	"未在参考文档中直接定位锚点",
+	"参考文档不足",
+	"无法从参考文档",
+	"没有相关文档",
+	"无法回答",
+}
+
+func isNoEvidenceAnswer(answer string) bool {
+	for _, marker := range refusalMarkers {
+		if strings.Contains(answer, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalizeRefusal(answer string) string {
+	if isNoEvidenceAnswer(answer) {
+		return NoEvidenceAnswer
+	}
+	return answer
+}
 
 // maxTopK caps a client-requested top-K so it cannot scale the retrieval
 // candidate window or the LLM context without bound.
@@ -211,10 +303,12 @@ func clampTopK(topK int) int {
 }
 
 var (
-	ErrQuestionRequired = errors.New("question is required")
-	ErrUnauthorized     = errors.New("unauthorized")
-	ErrSearchFailed     = errors.New("search failed")
-	ErrGenerationFailed = errors.New("generation failed")
+	ErrQuestionRequired     = errors.New("question is required")
+	ErrUnauthorized         = errors.New("unauthorized")
+	ErrSearchFailed         = errors.New("search failed")
+	ErrGenerationFailed     = errors.New("generation failed")
+	ErrKnowledgeForbidden   = errors.New("knowledge space forbidden")
+	ErrKnowledgeUnavailable = errors.New("knowledge catalog unavailable")
 )
 
 var roleAllowedDocPermissions = map[string][]string{
@@ -235,18 +329,19 @@ func NewServiceWithObserver(cfg config.Config, observer LLMObserver) *Service {
 	}
 	prompt, promptVersion := loadSystemPrompt(cfg)
 	service := &Service{
-		cfg:           cfg,
-		llmEndpoint:   normalizeLLMEndpoint(config.EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
-		llmAPIKey:     config.EnvSecret("LLM_API_KEY", ""),
-		llmModel:      config.EnvStr("LLM_MODEL", "deepseek-v4-flash"),
-		llmMaxTokens:  config.EnvInt("LLM_MAX_TOKENS", 1024),
-		retriever:     retrieval.NewEngine(cfg),
-		httpClient:    &http.Client{Timeout: 30 * time.Second},
-		breaker:       circuit.New("llm-api", 5, 60*time.Second),
-		tracer:        tracing.Tracer("query"),
-		llmObserver:   observer,
-		systemPrompt:  prompt,
-		promptVersion: promptVersion,
+		cfg:                cfg,
+		llmEndpoint:        normalizeLLMEndpoint(config.EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
+		llmAPIKey:          config.EnvSecret("LLM_API_KEY", ""),
+		llmModel:           config.EnvStr("LLM_MODEL", "deepseek-v4-flash"),
+		llmMaxTokens:       config.EnvInt("LLM_MAX_TOKENS", 1024),
+		llmMaxContextChars: config.EnvInt("LLM_MAX_CONTEXT_CHARS", 20_000),
+		retriever:          retrieval.NewEngine(cfg),
+		httpClient:         &http.Client{Timeout: config.EnvDuration("LLM_TIMEOUT", 30*time.Second)},
+		breaker:            circuit.New("llm-api", 5, 60*time.Second),
+		tracer:             tracing.Tracer("query"),
+		llmObserver:        observer,
+		systemPrompt:       prompt,
+		promptVersion:      promptVersion,
 
 		promptPricePer1K:     config.EnvFloat("LLM_PRICE_PROMPT_PER_1K", 0),
 		completionPricePer1K: config.EnvFloat("LLM_PRICE_COMPLETION_PER_1K", 0),
@@ -320,6 +415,7 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.Ask(ctx, req, AccessContext{
 		TenantID: auth.GetTenantID(r.Context()),
+		UserID:   auth.GetUserID(r.Context()),
 		Role:     auth.GetPermission(r.Context()),
 	})
 	switch {
@@ -329,6 +425,12 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, ErrUnauthorized):
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	case errors.Is(err, ErrKnowledgeForbidden):
+		http.Error(w, "knowledge space forbidden", http.StatusForbidden)
+		return
+	case errors.Is(err, ErrKnowledgeUnavailable):
+		http.Error(w, "knowledge catalog unavailable", http.StatusServiceUnavailable)
 		return
 	case errors.Is(err, ErrSearchFailed):
 		span.RecordError(err)
@@ -376,6 +478,18 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	// the vector search and the LLM context.
 	req.TopK = clampTopK(req.TopK)
 	allowedPermissions := AllowedPermissionsForRole(access.Role)
+	var resolvedSpace knowledgecatalog.Space
+	if s.catalog != nil {
+		resolvedSpace, err = s.catalog.Resolve(ctx, knowledgecatalog.Principal{
+			TenantID: access.TenantID, UserID: access.UserID, Role: access.Role,
+		}, req.KnowledgeSpaceID, knowledgecatalog.CapabilityQuery)
+		if err != nil {
+			if errors.Is(err, knowledgecatalog.ErrForbidden) || errors.Is(err, knowledgecatalog.ErrNotFound) {
+				return Response{}, fmt.Errorf("%w: %v", ErrKnowledgeForbidden, err)
+			}
+			return Response{}, fmt.Errorf("%w: %v", ErrKnowledgeUnavailable, err)
+		}
+	}
 	span := trace.SpanFromContext(ctx)
 
 	span.SetAttributes(
@@ -389,10 +503,13 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	start := time.Now()
 
 	retrievalResult, err := s.retriever.Retrieve(ctx, retrieval.Request{
-		Question:           req.Question,
-		TopK:               req.TopK,
-		TenantID:           access.TenantID,
-		AllowedPermissions: allowedPermissions,
+		Question:                 req.Question,
+		TopK:                     req.TopK,
+		TenantID:                 access.TenantID,
+		AllowedPermissions:       allowedPermissions,
+		KnowledgeBaseID:          resolvedSpace.ID,
+		ApplicableScope:          strings.TrimSpace(req.ApplicableScope),
+		DiagnosticRequiredDocIDs: diagnosticRequiredDocIDs(s.cfg.RetrievalDiagnosticsEnabled, req.DiagnosticRequiredDocIDs),
 	})
 	if err != nil {
 		slog.Error("retrieval failed", "error", err)
@@ -419,27 +536,87 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		candidates = gated
 	}
 
+	var scope scopeDecision
+	if resolvedSpace.ID != "" {
+		scope.KnowledgeBaseID = resolvedSpace.ID
+	}
+
+	unpublishedFiltered := 0
+	if s.catalog != nil {
+		decision, catalogErr := s.catalog.FilterEvidence(ctx, access.TenantID, resolvedSpace.ID, uniqueDocIDs(candidates))
+		if catalogErr != nil {
+			return Response{}, fmt.Errorf("%w: %v", ErrKnowledgeUnavailable, catalogErr)
+		}
+		kept := make([]retrieval.Candidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			if decision.AllowedDocIDs[candidate.DocID] {
+				kept = append(kept, candidate)
+			}
+		}
+		candidates = kept
+		unpublishedFiltered = decision.UnpublishedFiltered
+	}
+
 	// Corpus governance: a document that has been superseded or archived must not
 	// be used as evidence even though its chunks are still indexed.
 	gov := s.applyGovernance(ctx, access.TenantID, candidates)
 	candidates = gov.candidates
+	annotateInfo := func(info *RetrievalInfo) *RetrievalInfo {
+		info = scope.annotate(gov.annotate(info))
+		if info != nil {
+			info.ResolvedKnowledgeSpaceID = resolvedSpace.ID
+			info.ResolvedKnowledgeSpaceName = resolvedSpace.Name
+			info.UnpublishedFiltered = unpublishedFiltered
+			info.ExactEvidenceRequired = retrieval.HasStrongExactTokens(req.Question)
+			info.ExactEvidenceMatched = retrieval.ExactEvidenceSufficient(req.Question, candidates)
+		}
+		return info
+	}
 	if gov.retiredFiltered > 0 {
 		slog.Info("retired documents excluded from evidence",
 			"tenant_id", access.TenantID, "dropped", gov.retiredFiltered, "kept", len(candidates))
 	}
 
-	sources := sourceContextsFromCandidates(candidates)
+	// Strong identifiers such as contract, order, and trace ids are not safely
+	// answerable from semantic similarity alone. After all authorization and
+	// lifecycle filters have run, require the requested identifier to appear in
+	// one surviving evidence candidate before calling the LLM.
+	if !retrieval.ExactEvidenceSufficient(req.Question, candidates) {
+		span.SetAttributes(attribute.Bool("retrieval.exact_evidence_insufficient", true))
+		return Response{
+			Answer:           NoEvidenceAnswer,
+			Sources:          []SourceContext{},
+			RetrievedSources: []SourceContext{},
+			Citations:        []SourceContext{},
+			Duration:         time.Since(start).String(),
+			Retrieval:        annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions)),
+		}, nil
+	}
+
+	sources := sourceContextsFromCandidates(candidates, gov.documents)
+	if s.cfg.RetrievalDiagnosticsEnabled && req.RetrievalOnly {
+		return Response{
+			Answer:           "",
+			Sources:          sources,
+			RetrievedSources: sources,
+			Citations:        []SourceContext{},
+			Duration:         time.Since(start).String(),
+			Retrieval:        annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions)),
+		}, nil
+	}
 
 	if len(sources) == 0 {
 		span.SetAttributes(attribute.Bool("retrieval.no_supporting_evidence", true))
 		return Response{
-			Answer:   NoEvidenceAnswer,
-			Sources:  []SourceContext{},
-			Duration: time.Since(start).String(),
+			Answer:           NoEvidenceAnswer,
+			Sources:          []SourceContext{},
+			RetrievedSources: []SourceContext{},
+			Citations:        []SourceContext{},
+			Duration:         time.Since(start).String(),
 			// Retrieval info is included so the demo can show WHY it refused
 			// (retrieval ran, but no sufficiently relevant evidence came back —
 			// possibly because every match was a retired document).
-			Retrieval: gov.annotate(retrievalInfoFromResult(retrievalResult, 0, access.Role, allowedPermissions)),
+			Retrieval: annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions)),
 		}, nil
 	}
 
@@ -455,17 +632,20 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		slog.Error("LLM generation failed", "error", err)
 		return Response{}, fmt.Errorf("%w: %v", ErrGenerationFailed, err)
 	}
+	answer = canonicalizeRefusal(answer)
 
 	// The model may refuse even when candidates passed the gate (rule 2 above).
 	// Return no sources in that case, so a refusal never ships with citations
 	// that could be mistaken for supporting evidence.
-	if strings.Contains(answer, NoEvidenceAnswer) {
+	if answer == NoEvidenceAnswer {
 		span.SetAttributes(attribute.Bool("llm.refused_for_lack_of_evidence", true))
 		return Response{
-			Answer:    NoEvidenceAnswer,
-			Sources:   []SourceContext{},
-			Duration:  time.Since(start).String(),
-			Retrieval: gov.annotate(retrievalInfoFromResult(retrievalResult, len(candidates), access.Role, allowedPermissions)),
+			Answer:           NoEvidenceAnswer,
+			Sources:          []SourceContext{},
+			RetrievedSources: []SourceContext{},
+			Citations:        []SourceContext{},
+			Duration:         time.Since(start).String(),
+			Retrieval:        annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions)),
 		}, nil
 	}
 
@@ -498,14 +678,16 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	}
 	if groundingChecked && !groundingPassed {
 		span.SetAttributes(attribute.Bool("llm.ungrounded_answer_blocked", true))
-		info := gov.annotate(retrievalInfoFromResult(retrievalResult, len(candidates), access.Role, allowedPermissions))
+		info := annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions))
 		info.GroundingChecked = true
 		info.GroundingPassed = false
 		return Response{
-			Answer:    NoEvidenceAnswer,
-			Sources:   []SourceContext{},
-			Duration:  time.Since(start).String(),
-			Retrieval: info,
+			Answer:           NoEvidenceAnswer,
+			Sources:          []SourceContext{},
+			RetrievedSources: []SourceContext{},
+			Citations:        []SourceContext{},
+			Duration:         time.Since(start).String(),
+			Retrieval:        info,
 		}, nil
 	}
 
@@ -518,18 +700,20 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		}
 	}
 
-	retrievalInfo := gov.annotate(retrievalInfoFromResult(retrievalResult, len(candidates), access.Role, allowedPermissions))
+	retrievalInfo := annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions))
 	retrievalInfo.GroundingChecked = groundingChecked
 	retrievalInfo.GroundingPassed = groundingPassed
 	retrievalInfo.GroundingUnavailable = groundingUnavailable
 
 	resp := Response{
-		Answer:        answer,
-		Sources:       sources,
-		Duration:      time.Since(start).String(),
-		TokenUsage:    tokenUsage,
-		PromptVersion: s.promptVersion,
-		Retrieval:     retrievalInfo,
+		Answer:           answer,
+		Sources:          sources,
+		RetrievedSources: sources,
+		Citations:        citationsFromAnswer(answer, sources),
+		Duration:         time.Since(start).String(),
+		TokenUsage:       tokenUsage,
+		PromptVersion:    s.promptVersion,
+		Retrieval:        retrievalInfo,
 	}
 
 	slog.Info("query completed",
@@ -576,92 +760,52 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := auth.GetPermission(r.Context())
-	req.TopK = clampTopK(req.TopK)
 
-	start := time.Now()
-	allowedPermissions := AllowedPermissionsForRole(role)
-	retrievalResult, err := s.retriever.Retrieve(r.Context(), retrieval.Request{
-		Question:           req.Question,
-		TopK:               req.TopK,
-		TenantID:           tenantID,
-		AllowedPermissions: allowedPermissions,
-	})
+	resp, err := s.Ask(r.Context(), req, AccessContext{TenantID: tenantID, UserID: auth.GetUserID(r.Context()), Role: role})
 	if err != nil {
-		writeSSEError(w, "search failed")
+		switch {
+		case errors.Is(err, ErrSearchFailed):
+			writeSSEError(w, "search failed")
+		case errors.Is(err, ErrGenerationFailed):
+			writeSSEError(w, "generation failed")
+		case errors.Is(err, ErrKnowledgeForbidden):
+			writeSSEError(w, "knowledge space forbidden")
+		case errors.Is(err, ErrKnowledgeUnavailable):
+			writeSSEError(w, "knowledge catalog unavailable")
+		default:
+			writeSSEError(w, "query failed")
+		}
 		return
 	}
-	candidates := retrievalResult.Sources
-	if gated, _ := gateByRelevance(candidates, s.cfg.RetrievalMinRelevance); len(gated) > 0 {
-		candidates = gated
-	}
-	gov := s.applyGovernance(r.Context(), tenantID, candidates)
-	candidates = gov.candidates
-	sources := sourceContextsFromCandidates(candidates)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher := http.NewResponseController(w)
 
-	// Sources event first, so the client can render citations immediately.
-	sourcesPayload, _ := json.Marshal(map[string]interface{}{"sources": sources})
+	// The answer is fully validated before the first event. This intentionally
+	// trades time-to-first-token for parity with the JSON path: an answer that is
+	// later rejected by relevance, governance, refusal, or grounding must never
+	// have already leaked provisional text or citations to the browser.
+	sourcesPayload, _ := json.Marshal(map[string]interface{}{
+		"sources":           resp.Citations,
+		"citations":         resp.Citations,
+		"retrieved_sources": resp.RetrievedSources,
+	})
 	fmt.Fprintf(w, "event: sources\ndata: %s\n\n", sourcesPayload)
 	flusher.Flush()
 
-	// No evidence: send a refusal delta then done (with retrieval info so the
-	// demo can show retrieval ran but no supporting evidence came back).
-	if len(sources) == 0 {
-		fmt.Fprintf(w, "event: delta\ndata: {\"text\":%q}\n\n", NoEvidenceAnswer)
-		donePayload, _ := json.Marshal(map[string]interface{}{
-			"duration":       time.Since(start).String(),
-			"prompt_version": s.promptVersion,
-			"retrieval":      gov.annotate(retrievalInfoFromResult(retrievalResult, 0, role, allowedPermissions)),
-		})
-		fmt.Fprintf(w, "event: done\ndata: %s\n\n", donePayload)
-		flusher.Flush()
-		return
-	}
-
-	// Build a streaming request (stream=true).
-	body, _, err := s.buildPrompt(req.Question, sources)
-	if err != nil {
-		writeSSEError(w, "prompt build failed")
-		return
-	}
-	var streamBody map[string]interface{}
-	if err := json.Unmarshal(body, &streamBody); err == nil {
-		streamBody["stream"] = true
-		body, _ = json.Marshal(streamBody)
-	}
-
-	var full strings.Builder
-	stats, err := s.streamChat(r.Context(), body, func(delta string) {
-		full.WriteString(delta)
-		escaped, _ := json.Marshal(delta)
-		fmt.Fprintf(w, "event: delta\ndata: {\"text\":%s}\n\n", escaped)
-		flusher.Flush()
-	})
-	if err != nil {
-		writeSSEError(w, "generation failed")
-		return
-	}
-
-	s.llmObserver.RecordLLMRequest(s.llmModel, llmOutcomeSuccess, time.Since(start))
-	if stats.PromptTokens > 0 || stats.CompletionTokens > 0 {
-		s.llmObserver.RecordLLMTokens(s.llmModel, stats.PromptTokens, stats.CompletionTokens)
-	}
+	answerPayload, _ := json.Marshal(resp.Answer)
+	fmt.Fprintf(w, "event: delta\ndata: {\"text\":%s}\n\n", answerPayload)
+	flusher.Flush()
 
 	done := map[string]interface{}{
-		"duration":       time.Since(start).String(),
-		"prompt_version": s.promptVersion,
-		"retrieval":      gov.annotate(retrievalInfoFromResult(retrievalResult, len(candidates), role, allowedPermissions)),
+		"duration":       resp.Duration,
+		"prompt_version": resp.PromptVersion,
+		"retrieval":      resp.Retrieval,
 	}
-	if stats.PromptTokens > 0 || stats.CompletionTokens > 0 {
-		done["token_usage"] = TokenUsage{
-			PromptTokens:     stats.PromptTokens,
-			CompletionTokens: stats.CompletionTokens,
-			EstimatedCostUSD: estimateLLMCost(llmCallResult{PromptTokens: stats.PromptTokens, CompletionTokens: stats.CompletionTokens}, s.promptPricePer1K, s.completionPricePer1K),
-		}
+	if resp.TokenUsage != nil {
+		done["token_usage"] = resp.TokenUsage
 	}
 	donePayload, _ := json.Marshal(done)
 	fmt.Fprintf(w, "event: done\ndata: %s\n\n", donePayload)
@@ -788,8 +932,18 @@ func (s *Service) generateAnswer(ctx context.Context, question string, sources [
 // treat everything inside <document> as data, not instructions.
 func (s *Service) buildPrompt(question string, sources []SourceContext) (data []byte, contextChars int, err error) {
 	var contextBuilder bytes.Buffer
+	remaining := s.llmMaxContextChars
 	for _, src := range sources {
-		fmt.Fprintf(&contextBuilder, "<document doc_id=%q>\n%s\n</document>\n\n", src.DocID, src.Content)
+		if remaining <= 0 {
+			break
+		}
+		contentRunes := []rune(promptContextExcerpt(src.Content, question, remaining))
+		if len(contentRunes) == 0 {
+			continue
+		}
+		fmt.Fprintf(&contextBuilder, "<document doc_id=%q>\n%s\n</document>\n\n", src.DocID, string(contentRunes))
+		remaining -= len(contentRunes)
+		contextChars += len(contentRunes)
 	}
 
 	// Rule 2 is the anti-hallucination gate: retrieval can return unrelated
@@ -819,7 +973,48 @@ func (s *Service) buildPrompt(question string, sources []SourceContext) (data []
 	if err != nil {
 		return nil, contextBuilder.Len(), fmt.Errorf("marshal prompt: %w", err)
 	}
-	return data, contextBuilder.Len(), nil
+	return data, contextChars, nil
+}
+
+func promptContextExcerpt(content, question string, limit int) string {
+	contentRunes := []rune(content)
+	if limit <= 0 || len(contentRunes) <= limit {
+		return content
+	}
+
+	questionRunes := []rune(question)
+	maxPhrase := min(12, len(questionRunes))
+	matchRune := -1
+	for size := maxPhrase; size >= 2 && matchRune < 0; size-- {
+		for start := 0; start+size <= len(questionRunes); start++ {
+			phraseRunes := questionRunes[start : start+size]
+			meaningful := true
+			for _, value := range phraseRunes {
+				if !unicode.IsLetter(value) && !unicode.IsNumber(value) {
+					meaningful = false
+					break
+				}
+			}
+			if !meaningful {
+				continue
+			}
+			byteIndex := strings.Index(content, string(phraseRunes))
+			if byteIndex >= 0 {
+				matchRune = utf8.RuneCountInString(content[:byteIndex])
+				break
+			}
+		}
+	}
+
+	if matchRune < 0 {
+		return string(contentRunes[:limit])
+	}
+	start := max(0, matchRune-limit/3)
+	end := min(len(contentRunes), start+limit)
+	if end-start < limit {
+		start = max(0, end-limit)
+	}
+	return string(contentRunes[start:end])
 }
 
 // llmStreamResult carries per-call streaming stats: token usage if the provider
@@ -1048,7 +1243,7 @@ func estimateLLMCost(usage llmCallResult, promptPrice, completionPrice float64) 
 		float64(usage.CompletionTokens)/1000*completionPrice
 }
 
-func retrievalInfoFromResult(r retrieval.Result, candidateCount int, role string, allowedPermissions []string) *RetrievalInfo {
+func retrievalInfoFromResult(r retrieval.Result, candidates []retrieval.Candidate, role string, allowedPermissions []string) *RetrievalInfo {
 	backends := make([]string, 0, 2)
 	if r.Route.UseQdrant {
 		backends = append(backends, "qdrant")
@@ -1057,17 +1252,54 @@ func retrievalInfoFromResult(r retrieval.Result, candidateCount int, role string
 		backends = append(backends, "elasticsearch")
 	}
 	maxRelevance := maxSourceRelevance(r.Sources)
+	candidateCount := len(candidates)
 	return &RetrievalInfo{
-		Strategy:           string(r.Route.Strategy),
-		CacheHit:           r.CacheHit,
-		Backends:           backends,
-		CandidateCount:     candidateCount,
-		DurationMs:         r.Duration.Milliseconds(),
-		MaxRelevance:       maxRelevance,
-		AllowedPermissions: allowedPermissions,
-		PermissionRole:     role,
-		PartialErrors:      r.PartialErrors,
+		Strategy:                   string(r.Route.Strategy),
+		CacheHit:                   r.CacheHit,
+		Backends:                   backends,
+		BackendCandidateCounts:     r.BackendCandidateCounts,
+		FusedCandidateCount:        r.FusedCandidateCount,
+		DeduplicatedCandidateCount: r.DeduplicatedCandidateCount,
+		StageDiagnostics:           r.StageDiagnostics,
+		SelectedContextCount:       candidateCount,
+		UniqueDocumentCount:        countUniqueDocuments(candidates),
+		CandidateCount:             candidateCount,
+		DurationMs:                 r.Duration.Milliseconds(),
+		MaxRelevance:               maxRelevance,
+		AllowedPermissions:         allowedPermissions,
+		PermissionRole:             role,
+		PartialErrors:              r.PartialErrors,
 	}
+}
+
+func diagnosticRequiredDocIDs(enabled bool, ids []string) []string {
+	if !enabled || len(ids) == 0 {
+		return nil
+	}
+	// Keep this boundary aggregate-safe: retrieval diagnostics only need
+	// document membership and should not retain caller-owned slices.
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func countUniqueDocuments(candidates []retrieval.Candidate) int {
+	documents := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		documents[candidate.DocID] = struct{}{}
+	}
+	return len(documents)
 }
 
 // maxSourceRelevance returns the highest Qdrant cosine score among candidates.
@@ -1165,16 +1397,47 @@ func parseGroundingVerdict(content string) (bool, error) {
 	return strings.EqualFold(m[1], "true"), nil
 }
 
-func sourceContextsFromCandidates(candidates []retrieval.Candidate) []SourceContext {
+func sourceContextsFromCandidates(candidates []retrieval.Candidate, documents map[string]docstore.Governance) []SourceContext {
 	sources := make([]SourceContext, 0, len(candidates))
 	for _, c := range candidates {
-		sources = append(sources, SourceContext{
-			ChunkID:  c.ChunkID,
-			DocID:    c.DocID,
-			Content:  c.Content,
-			Score:    c.Score,
-			TenantID: c.TenantID,
-		})
+		source := SourceContext{
+			ChunkID:         c.ChunkID,
+			DocID:           c.DocID,
+			Content:         c.Content,
+			Score:           c.Score,
+			TenantID:        c.TenantID,
+			KnowledgeBase:   c.Metadata["knowledge_base_id"],
+			ApplicableScope: c.Metadata["applicable_scope"],
+		}
+		if document, ok := documents[c.DocID]; ok {
+			source.FileName = document.FileName
+			source.EffectiveDate = effectiveDateString(document)
+		}
+		sources = append(sources, source)
 	}
 	return sources
+}
+
+func citationsFromAnswer(answer string, sources []SourceContext) []SourceContext {
+	marker := strings.LastIndex(answer, "来源:")
+	if unicodeMarker := strings.LastIndex(answer, "来源："); unicodeMarker > marker {
+		marker = unicodeMarker
+	}
+	if marker < 0 {
+		return []SourceContext{}
+	}
+	citationText := answer[marker:]
+	seenDocs := make(map[string]struct{})
+	citations := make([]SourceContext, 0)
+	for _, source := range sources {
+		if source.DocID == "" || !strings.Contains(citationText, source.DocID) {
+			continue
+		}
+		if _, exists := seenDocs[source.DocID]; exists {
+			continue
+		}
+		seenDocs[source.DocID] = struct{}{}
+		citations = append(citations, source)
+	}
+	return citations
 }

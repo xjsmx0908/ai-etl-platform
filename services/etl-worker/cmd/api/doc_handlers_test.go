@@ -39,7 +39,7 @@ func TestHandleDocuments_TenantScopedAndRoleFiltered(t *testing.T) {
 	seedDoc(store, "acme", "internal-1", "internal")
 	seedDoc(store, "acme", "confidential-1", "confidential")
 	seedDoc(store, "other", "public-other", "public")
-	handler := handleDocuments(store)
+	handler := handleDocuments(store, testQueryService())
 
 	// A user role sees public + internal, but not confidential, and never
 	// another tenant's docs.
@@ -62,7 +62,7 @@ func TestHandleDocuments_TenantScopedAndRoleFiltered(t *testing.T) {
 func TestHandleDocuments_RequestedPermissionIntersectsRole(t *testing.T) {
 	store := newFakeDocStore()
 	seedDoc(store, "acme", "internal-1", "internal")
-	handler := handleDocuments(store)
+	handler := handleDocuments(store, testQueryService())
 
 	// readonly cannot widen the filter to confidential via the query param.
 	rec := doRequest(handler, http.MethodGet, "/v1/documents?permission=confidential", nil, ctxWithRole("acme", "readonly", "query"))
@@ -97,6 +97,30 @@ func TestHandleDocument_GetRoleFiltered(t *testing.T) {
 	rec = doRequest(handler, http.MethodGet, "/v1/documents/doc-1", nil, ctxWithRole("acme", "readonly", "query"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("readonly should 404 on internal doc, got %d", rec.Code)
+	}
+}
+
+func TestHandleDocument_AdminPublishesCompletedDraft(t *testing.T) {
+	store := newFakeDocStore()
+	seedDoc(store, "acme", "doc-1", "internal")
+	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store, nil)
+	rec := doRequest(handler, http.MethodPatch, "/v1/documents/doc-1", map[string]string{"publication_status": "published"}, ctxWithRole("acme", "admin", "admin"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	doc, _, _ := store.Get(context.Background(), "acme", "doc-1")
+	if doc.PublicationStatus != "published" {
+		t.Fatalf("expected published, got %q", doc.PublicationStatus)
+	}
+}
+
+func TestHandleDocument_NonAdminCannotPublish(t *testing.T) {
+	store := newFakeDocStore()
+	seedDoc(store, "acme", "doc-1", "internal")
+	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store, nil)
+	rec := doRequest(handler, http.MethodPatch, "/v1/documents/doc-1", map[string]string{"publication_status": "published"}, ctxWithRole("acme", "user", "upload"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

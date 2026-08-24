@@ -30,6 +30,9 @@ func TestValidateUploadExtension(t *testing.T) {
 	}{
 		{name: "pdf allowed", filename: "report.pdf", wantExt: ".pdf"},
 		{name: "uppercase allowed", filename: "REPORT.DOCX", wantExt: ".docx"},
+		{name: "legacy spreadsheet allowed", filename: "accounts.xls", wantExt: ".xls"},
+		{name: "spreadsheet allowed", filename: "policy.xlsx", wantExt: ".xlsx"},
+		{name: "presentation allowed", filename: "training.pptx", wantExt: ".pptx"},
 		{name: "unsupported rejected", filename: "malware.exe", wantErr: true},
 		{name: "missing extension rejected", filename: "noext", wantErr: true},
 	}
@@ -50,6 +53,31 @@ func TestValidateUploadExtension(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tc.wantExt, got)
 			}
 		})
+	}
+}
+
+func TestApplyUploadScopeDefaultsAndPreservesExplicitValues(t *testing.T) {
+	got, err := applyUploadScope(map[string]string{}, "", "", "user")
+	if err != nil {
+		t.Fatalf("defaults: %v", err)
+	}
+	if got["knowledge_base_id"] != "user-uploads" || got["applicable_scope"] != "organization" {
+		t.Fatalf("unexpected defaults: %+v", got)
+	}
+
+	got, err = applyUploadScope(map[string]string{
+		"knowledge_base_id": "enterprise-demo",
+		"applicable_scope":  "demo",
+	}, "", "", "admin")
+	if err != nil {
+		t.Fatalf("explicit metadata: %v", err)
+	}
+	if got["knowledge_base_id"] != "enterprise-demo" || got["applicable_scope"] != "demo" {
+		t.Fatalf("explicit scope lost: %+v", got)
+	}
+
+	if _, err := applyUploadScope(map[string]string{}, "enterprise-demo", "demo", "user"); err == nil {
+		t.Fatal("expected non-admin custom scope to be rejected")
 	}
 }
 

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Card } from "@/components/ui/Card";
 import { AlertTriangle, ChevronDown, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/lib/auth";
-import type { AnswerMeta, Source } from "@/lib/types";
+import type { AnswerMeta, KnowledgeSpace, Source } from "@/lib/types";
 
 const STRATEGY_LABELS: Record<string, string> = {
   exact_keyword: "精确关键词",
@@ -60,10 +60,19 @@ function isHighConfidence(maxRelevance?: number): boolean {
 // refusal sentence because its claims were not traceable to the sources.
 function groundingLabel(retrieval?: AnswerMeta["retrieval"]): { value: string; highlight: boolean } {
   if (!retrieval) return { value: "—", highlight: false };
+  if (retrieval.grounding_unavailable) return { value: "不可用（回答未经校验）", highlight: true };
   if (!retrieval.grounding_checked) return { value: "未触发", highlight: false };
   return retrieval.grounding_passed
     ? { value: "通过（可溯源）", highlight: true }
     : { value: "拦截（无据拒答）", highlight: true };
+}
+
+function exactEvidenceLabel(retrieval?: AnswerMeta["retrieval"]): { value: string; highlight: boolean } {
+  if (!retrieval) return { value: "—", highlight: false };
+  if (!retrieval.exact_evidence_required) return { value: "不需要", highlight: false };
+  return retrieval.exact_evidence_matched
+    ? { value: "通过", highlight: true }
+    : { value: "未通过（已拒答）", highlight: false };
 }
 
 // Corpus governance applied to this answer's evidence: superseded/archived
@@ -73,6 +82,7 @@ function governanceLabel(retrieval?: AnswerMeta["retrieval"]): string {
   if (!retrieval) return "—";
   const parts: string[] = [];
   if ((retrieval.retired_filtered ?? 0) > 0) parts.push(`剔除作废 ${retrieval.retired_filtered} 条`);
+  if ((retrieval.unpublished_filtered ?? 0) > 0) parts.push(`剔除未发布 ${retrieval.unpublished_filtered} 条`);
   if (retrieval.conflict_detected) parts.push(`冲突 ${retrieval.conflicting_docs?.length ?? 0} 份`);
   return parts.length > 0 ? parts.join(" · ") : "无异常";
 }
@@ -95,8 +105,10 @@ function Row({ label, value, highlight }: { label: string; value: string; highli
 export default function QaPage() {
   const { role } = useAuth();
   const [question, setQuestion] = useState("");
+  const [knowledgeSpace, setKnowledgeSpace] = useState("");
+  const [knowledgeSpaces, setKnowledgeSpaces] = useState<KnowledgeSpace[]>([]);
   const [answer, setAnswer] = useState("");
-  const [sources, setSources] = useState<Source[]>([]);
+  const [citations, setCitations] = useState<Source[]>([]);
   const [meta, setMeta] = useState<AnswerMeta>({});
   const [status, setStatus] = useState<"idle" | "streaming" | "done" | "error">("idle");
   const [error, setError] = useState("");
@@ -107,7 +119,7 @@ export default function QaPage() {
     const controller = new AbortController();
     abortRef.current = controller;
     setAnswer("");
-    setSources([]);
+    setCitations([]);
     setMeta({});
     setStatus("streaming");
     setError("");
@@ -115,7 +127,7 @@ export default function QaPage() {
       await apiClient.querySSE(
         q,
         {
-          onSources: (s) => setSources(s),
+          onSources: (s) => setCitations(s),
           onDelta: (text) => setAnswer((prev) => prev + text),
           onDone: (m) => setMeta(m),
           onError: (msg) => {
@@ -123,7 +135,8 @@ export default function QaPage() {
             setError(msg);
           },
         },
-        controller.signal
+        controller.signal,
+        knowledgeSpace ? { knowledge_space_id: knowledgeSpace } : undefined
       );
       setStatus("done");
     } catch (e: unknown) {
@@ -131,9 +144,14 @@ export default function QaPage() {
       setStatus("error");
       setError((e as Error).message || "未知错误");
     }
-  }, []);
+  }, [knowledgeSpace]);
 
   useEffect(() => {
+    void apiClient.listKnowledgeSpaces().then(({ items }) => {
+      setKnowledgeSpaces(items);
+      const preferred = items.find((space) => space.is_default) || items[0];
+      if (preferred) setKnowledgeSpace(preferred.id);
+    }).catch((e: Error) => setError(e.message || "知识空间加载失败"));
     return () => abortRef.current?.abort();
   }, []);
 
@@ -156,6 +174,19 @@ export default function QaPage() {
           className="min-w-[280px] flex-1 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           disabled={status === "streaming"}
         />
+        <select
+          value={knowledgeSpace}
+          onChange={(e) => setKnowledgeSpace(e.target.value)}
+          disabled={status === "streaming"}
+          aria-label="知识空间"
+          className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          {knowledgeSpaces.map((space) => (
+            <option key={space.id} value={space.id}>
+              {space.name}{space.kind === "demo" ? "（演示）" : ""}
+            </option>
+          ))}
+        </select>
         <button
           type="submit"
           disabled={status === "streaming" || !question.trim()}
@@ -249,25 +280,37 @@ export default function QaPage() {
               )}
             </Card>
 
-            {sources.length > 0 && (
+            {citations.length > 0 && (
               <Card>
-                <h2 className="mb-3 text-sm font-semibold text-slate-500">引用来源（{sources.length}）</h2>
+                <h2 className="mb-3 text-sm font-semibold text-slate-500">实际引用（{citations.length}）</h2>
                 <div className="space-y-2">
-                  {sources.map((s, i) => (
+                  {citations.map((s, i) => (
                     <details key={s.chunk_id} className="group rounded-lg border border-slate-200">
                       <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm hover:bg-slate-50">
                         <span className="flex items-center gap-2">
                           <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-50 text-xs font-medium text-blue-600">
                             {i + 1}
                           </span>
-                          <span className="font-mono text-blue-600">{s.doc_id}</span>
+                          <span>
+                            <span className="font-medium text-slate-700">{s.file_name || s.doc_id}</span>
+                            {s.file_name && <span className="ml-2 font-mono text-xs text-blue-600">{s.doc_id}</span>}
+                          </span>
                         </span>
                         <span className="flex items-center gap-2 text-xs text-slate-400">
                           score {s.score.toFixed(4)}
                           <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
                         </span>
                       </summary>
-                      <p className="border-t border-slate-100 px-3 py-2 text-sm text-slate-600">{s.content}</p>
+                      <div className="border-t border-slate-100 px-3 py-2">
+                        {(s.effective_date || s.knowledge_base_id || s.applicable_scope) && (
+                          <p className="mb-1.5 text-xs text-slate-400">
+                            {[s.effective_date && `生效 ${s.effective_date}`, s.knowledge_base_id, s.applicable_scope]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </p>
+                        )}
+                        <p className="text-sm text-slate-600">{s.content}</p>
+                      </div>
                     </details>
                   ))}
                 </div>
@@ -301,11 +344,51 @@ export default function QaPage() {
                   highlight={meta.retrieval?.cache_hit}
                 />
                 <Row label="检索后端" value={meta.retrieval?.backends.join(" + ") || "—"} />
-                <Row label="候选数" value={meta.retrieval ? String(meta.retrieval.candidate_count) : "—"} />
+                <Row
+                  label="后端候选"
+                  value={
+                    meta.retrieval?.backend_candidate_counts
+                      ? Object.entries(meta.retrieval.backend_candidate_counts)
+                          .map(([name, count]) => `${name} ${count}`)
+                          .join(" · ")
+                      : meta.retrieval?.cache_hit
+                        ? "缓存命中（无后端请求）"
+                        : "—"
+                  }
+                />
+                <Row
+                  label="融合 / 去重"
+                  value={
+                    meta.retrieval
+                      ? `${meta.retrieval.fused_candidate_count ?? "—"} / ${meta.retrieval.deduplicated_candidate_count ?? "—"}`
+                      : "—"
+                  }
+                />
+                <Row
+                  label="最终上下文"
+                  value={
+                    meta.retrieval
+                      ? `${meta.retrieval.selected_context_count ?? meta.retrieval.candidate_count} 段 · ${meta.retrieval.unique_document_count ?? 0} 份文档`
+                      : "—"
+                  }
+                />
+                <Row
+                  label="知识空间"
+                  value={
+                    meta.retrieval?.resolved_knowledge_space_id
+                      ? `${meta.retrieval.resolved_knowledge_space_name || meta.retrieval.resolved_knowledge_space_id}`
+                      : "—"
+                  }
+                />
                 <Row
                   label="证据置信度"
                   value={confidenceLabel(meta.retrieval?.max_relevance)}
                   highlight={isHighConfidence(meta.retrieval?.max_relevance)}
+                />
+                <Row
+                  label="强标识校验"
+                  value={exactEvidenceLabel(meta.retrieval).value}
+                  highlight={exactEvidenceLabel(meta.retrieval).highlight}
                 />
                 <Row
                   label="忠实度校验"

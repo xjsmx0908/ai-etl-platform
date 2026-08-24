@@ -166,3 +166,16 @@ func TestProtectExactMatchesPinsExactCandidates(t *testing.T) {
 		t.Fatalf("expected exact candidate pinned before non-exact, got %+v", got)
 	}
 }
+
+func TestExactEvidenceSufficientRequiresMatchingIdentifier(t *testing.T) {
+	question := "请查合同 CN-2026-0001 的审批状态"
+	if ExactEvidenceSufficient(question, []Candidate{{Content: "合同审批的一般流程说明。"}}) {
+		t.Fatal("unrelated evidence must not satisfy a strong identifier query")
+	}
+	if !ExactEvidenceSufficient(question, []Candidate{{Content: "合同 CN-2026-0001 已完成审批。"}}) {
+		t.Fatal("candidate containing the requested identifier must satisfy the query")
+	}
+	if ExactEvidenceSufficient(question, []Candidate{{Content: "合同 CN-2026-00010 已完成审批。"}}) {
+		t.Fatal("identifier prefix collision must not satisfy exact evidence")
+	}
+}

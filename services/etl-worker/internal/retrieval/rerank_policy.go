@@ -78,6 +78,52 @@ func hasExactCandidateEvidence(question string, candidates []Candidate) bool {
 	return collectExactEvidence(question, candidates).HasMatches()
 }
 
+// ExactEvidenceSufficient reports whether a query containing strong business
+// identifiers has at least one candidate containing all of those identifiers.
+// This is stricter than rerank protection: a protected candidate may be useful
+// for ordering, but it is not sufficient evidence if the requested identifier
+// is absent after tenant, permission, and governance filters have run.
+func ExactEvidenceSufficient(question string, candidates []Candidate) bool {
+	tokens := maximalExactTokens(extractExactTokens(question))
+	if len(tokens) == 0 {
+		return true
+	}
+	for _, candidate := range candidates {
+		if len(candidateMatchedExactTokens(candidate, tokens)) == len(tokens) {
+			return true
+		}
+	}
+	return false
+}
+
+func maximalExactTokens(tokens []string) []string {
+	maximal := make([]string, 0, len(tokens))
+	for i, token := range tokens {
+		normalized := normalizeExactToken(token)
+		contained := false
+		for j, other := range tokens {
+			if i == j {
+				continue
+			}
+			otherNormalized := normalizeExactToken(other)
+			if len(otherNormalized) > len(normalized) && strings.Contains(otherNormalized, normalized) {
+				contained = true
+				break
+			}
+		}
+		if !contained {
+			maximal = append(maximal, token)
+		}
+	}
+	return maximal
+}
+
+// HasStrongExactTokens reports whether the query requires exact-evidence
+// validation. It exposes classification without leaking the identifiers.
+func HasStrongExactTokens(question string) bool {
+	return len(extractExactTokens(question)) > 0
+}
+
 func collectExactEvidence(question string, candidates []Candidate) exactEvidence {
 	tokens := extractExactTokens(question)
 	evidence := exactEvidence{
@@ -178,13 +224,61 @@ func candidateExactContent(candidate Candidate) string {
 }
 
 func exactTokenMatches(content, token string) bool {
-	if token == "" {
+	normalized := normalizeExactToken(token)
+	if normalized == "" {
 		return false
 	}
-	if strings.Contains(content, token) {
+	var pattern strings.Builder
+	pattern.WriteString(`(?i)`)
+	for index, character := range []rune(normalized) {
+		if index > 0 {
+			pattern.WriteString(`[- ._:/]*`)
+		}
+		pattern.WriteString(regexp.QuoteMeta(string(character)))
+	}
+	matcher, err := regexp.Compile(pattern.String())
+	if err != nil {
+		return false
+	}
+	for _, match := range matcher.FindAllStringIndex(content, -1) {
+		if exactTokenHasPrefixCollision(content[:match[0]]) || exactTokenHasSuffixCollision(content[match[1]:]) {
+			continue
+		}
 		return true
 	}
-	return strings.Contains(normalizeExactToken(content), normalizeExactToken(token))
+	return false
+}
+
+func exactTokenHasPrefixCollision(prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	runes := []rune(prefix)
+	return isASCIIIdentifierRune(runes[len(runes)-1])
+}
+
+func exactTokenHasSuffixCollision(suffix string) bool {
+	if suffix == "" {
+		return false
+	}
+	runes := []rune(suffix)
+	if isASCIIIdentifierRune(runes[0]) {
+		return true
+	}
+	if !strings.ContainsRune("._:/-", runes[0]) {
+		return false
+	}
+	for _, next := range runes[1:] {
+		if strings.ContainsRune("._:/-", next) {
+			continue
+		}
+		return isASCIIIdentifierRune(next)
+	}
+	return false
+}
+
+func isASCIIIdentifierRune(r rune) bool {
+	return r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
 }
 
 func isStrongExactToken(token string) bool {

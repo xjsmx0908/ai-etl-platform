@@ -16,6 +16,7 @@
 - `historical-golden-set.template.json`: 私有历史评测集的空模板。
 - `historical-data-intake.md`: 历史数据脱敏、审核、校验和受控运行流程。
 - `engineering-learning-golden-set.json`: 当前项目架构衍生的 100 条合成学习案例，不是企业历史数据。
+- `public-datasets.json`: 经审核的公共数据集、固定 revision、许可证、规模与内容校验和。
 - `reports/`: 评测报告输出目录（已在 `.gitignore` 中忽略）。
 
 ## 运行方式
@@ -23,6 +24,22 @@
 ```bash
 python3 scripts/run-evals.py
 ```
+
+P1.8 跨文档诊断可只执行 `cross_document` cohort，同时保留完整文档集作为干扰语料；
+`--retrieval-only` 会在隔离评测服务启用诊断开关时跳过答案 LLM，仅观测检索来源和
+聚合阶段覆盖率：
+
+```bash
+python3 scripts/run-evals.py \
+  --golden-set docs/evals/private/p1.7-enterprise/gold-candidate-v2.json \
+  --cohort cross_document \
+  --retrieval-only \
+  --real-models
+```
+
+该模式仍上传并索引数据集中的全部文档，报告只在聚合诊断表中分别显示 Qdrant、
+Elasticsearch、融合和最终选择阶段的必要来源命中率。运行必须使用独立 Compose
+项目，并在 `run_valid=true` 后才可用于定位检索丢失边界。
 
 运行器默认创建唯一的 `ai-etl-eval-*` Compose 项目，并加载 `docker-compose.eval.yml`。除 Query API 的 Docker 随机宿主机端口外，其余服务只在隔离 Compose 网络内监听；报告会记录项目名和实际 Query API 地址。完成后只会执行该项目的 `docker compose down -v`，不会停止默认 `ai-etl-platform` 开发栈。需要保留隔离环境排查时使用 `--keep-services`，并按报告中的项目名手动清理。
 
@@ -62,6 +79,174 @@ python3 scripts/run-evals.py \
 ```
 
 该集合覆盖 ETL、检索、Agent、可观测性四个模块，各有 22 条可回答样本和 3 条权限拒答样本。它只验证项目中的工程概念、权限边界与回归能力，不能用于证明真实企业用户体验或业务检索效果。
+
+## 企业私有银标
+
+P1.4 从 Git 忽略的 `rag_datas/` 读取真实 Office/PDF 文档，所有解析、问题生成和后续基线都在本机执行。包含正文、文件名、证据或问题的产物只写入 `docs/evals/private/p1.4-enterprise/`，不得提交、上传到公共 CI 或发送给外部 LLM/Judge。
+
+```bash
+docker build -t ai-etl-parser-p14-test services/doc-parser-service
+
+docker run --rm --user "$(id -u):$(id -g)" \
+  --add-host host.docker.internal:host-gateway \
+  -v "$PWD":/workspace -w /workspace \
+  -e PYTHONPATH=/workspace/services/doc-parser-service \
+  ai-etl-parser-p14-test \
+  python scripts/build-enterprise-eval.py \
+    --input-dir /workspace/rag_datas \
+    --output-dir /workspace/docs/evals/private/p1.4-enterprise \
+    --model qwen3:4b --questions-per-document 4
+
+python3 scripts/validate_eval_dataset.py \
+  --golden-set docs/evals/private/p1.4-enterprise/silver-eval.json \
+  --min-cases 100 --allow-sensitive-patterns
+```
+
+首轮 40 文档、114 case 的本地真实模型结果见
+[`p1.4-enterprise-baseline.md`](p1.4-enterprise-baseline.md)。该报告只包含脱敏
+聚合数据；逐条报告继续保留在被忽略的
+`docs/evals/reports/p1.4-enterprise-no-rerank/`。当前 Recall@5 为 83.49%，但答案
+断言通过率仅 26.32%，因此该结果是改进起点，不是企业上线门禁。
+
+`document-review.csv` 用于确认权限、业务所有者和文档效力；`conflict-review.csv` 用于指定疑似重复版本中的有效文档；`case-review.csv` 仅要求复核低置信、权限和冲突样本。自动通过证据、PII 和关键短语检查的内容是 silver，不是业务验收 gold；数据所有者确认后才能提升为金标门禁。
+
+可先执行本地自动审核，将人工工作压缩到业务权威才能判断的项目：
+
+```bash
+python3 scripts/review-enterprise-eval.py \
+  --model qwen2.5:1.5b --model-timeout 180
+
+python3 scripts/validate_eval_dataset.py \
+  --golden-set docs/evals/private/p1.4-enterprise/gold-draft.json \
+  --min-cases 20 --allow-sensitive-patterns
+```
+
+审核器保留原始 CSV，另行生成 `automated-document-review.csv`、
+`automated-case-review.csv`、`human-confirmation.csv` 和 `gold-draft.json`。
+`gold-draft.json` 的 `business_approval_complete=false`，不得直接作为上线门禁。
+首轮聚合结果和 cohort 解释见
+[`p1.5-automated-review.md`](p1.5-automated-review.md)。
+
+业务方接受“最新日期”作为本轮候选规则后，可解析正文、文件名及内嵌元数据，
+回填确认表并生成研发用 Gold 候选：
+
+```bash
+python3 scripts/apply-enterprise-confirmations.py
+
+python3 scripts/validate_eval_dataset.py \
+  --golden-set docs/evals/private/p1.4-enterprise/gold-candidate.json \
+  --min-cases 31 --allow-sensitive-patterns
+```
+
+日期并列或无法提取时脚本保持 `pending` 并停止生成，禁止使用文件系统上传时间
+猜测业务版本。`gold-candidate.json` 会记录 `confirmation_rule`，仍不代表制度台账
+或正式业务负责人已经签字。
+
+P1.6 使用本地生成模型和独立审核模型扩充自然语义与跨文档 cohort：
+
+```bash
+python3 scripts/expand-enterprise-eval.py \
+  --generation-model qwen3:4b \
+  --review-model qwen3:1.7b
+
+python3 scripts/validate_eval_dataset.py \
+  --golden-set docs/evals/private/p1.4-enterprise/gold-candidate-v2.json \
+  --min-cases 70 --allow-sensitive-patterns
+```
+
+脚本拒绝非回环模型地址，逐条复核证据、关键事实、自然度和来源完整性，并生成
+30 条 semantic、15 条 lexical、10 条 cross-document 和 15 条 safety-negative
+案例。`required_doc_ids` 表示检索与答案引用必须同时覆盖的全部来源。完整聚合结果
+见 [`p1.6-semantic-cross-document.md`](p1.6-semantic-cross-document.md)。该候选集仍
+保留 `business_approval_complete=false`，不得称为正式业务验收 Gold。
+
+P1.7 使用同一 tenant、上传映射和模型完成 no-rerank 与 `auto` rerank 各三次
+匹配运行。六次运行均通过完整性门禁，但 `auto` 在 semantic、lexical、
+cross-document 和 safety 门禁上失败，因此默认策略保持 no-rerank。仅含聚合结果、
+方差和限制的报告见
+[`p1.7-enterprise-reranker-ab.md`](p1.7-enterprise-reranker-ab.md)；逐案例报告继续位于
+Git 忽略目录。
+
+P1.8 的受控诊断请求可在隔离 Compose 项目中设置
+`RETRIEVAL_DIAGNOSTICS_ENABLED=true`，并在 `/v1/query` 请求中附带
+`diagnostic_required_doc_ids`。该字段只用于本地评测；响应和报告只保留必要来源的
+总数、命中数、all-required 布尔值，以及全部来源齐备时最深的首次出现排名；阶段
+不完整时该排名为 0。诊断绝不回显来源 ID、文件名、问题、答案或证据。
+
+诊断会分别记录每个后端候选、应用层融合 Top-50 和最终 Top-K 的覆盖率，从而区分
+后端召回、融合截断与最终多样性选择造成的丢失。普通开发栈默认关闭该开关。
+
+隔离评测不能跨 Compose 项目复用上传映射中的 Qdrant/Elasticsearch 数据卷；映射只
+绑定 tenant、数据集摘要和文档 ID。新的隔离项目必须在本项目内上传并等待 ETL 完成。
+若宿主磁盘水位或本机 Ollama circuit breaker 导致任务不完整，报告必须按
+`run_valid=false` 排除，不得作为检索质量证据。
+
+摄取完整性也是评测有效性的前置条件。文档状态为 `completed` 但 chunk 数为 0 时，
+它在 registry 中可见却无法被 Qdrant/Elasticsearch 召回；这类状态必须视为摄取失败，
+不能归类为检索漏召。P1.8 诊断据此将零 chunk 设为 worker 错误，并把“目录/目次”
+噪声过滤限制为短片段，避免含相关词的长正文整块消失。
+
+P1.8-B 曾在默认关闭的实验实现中测试确定性语义分句。matched feature-off/on
+retrieval-only 运行均有效且请求完整，但 candidate 没有安全展开任何查询，聚合阶段
+和最终 Top-5 指标均未变化，因此实现和配置已撤回。该结果只否定标点/连词驱动的
+分句路径，不否定能识别隐含语义 facet 的其他多路检索设计。
+
+## 公共检索基线
+
+NanoSciFact 是英文科学论断检索集，只评估通用 retrieval，不评估中文办公制度、权限治理或答案正确性。批准目录固定 `CC-BY-4.0` 许可证、上游 commit、行数和 SHA-256；下载内容与生成的评测集均位于 Git 忽略的 `docs/evals/private/public/`。
+
+下载、转换并严格校验完整快照：
+
+```bash
+python3 scripts/download-public-eval.py \
+  --dataset nanoscifact \
+  --output-dir docs/evals/private/public/nanoscifact-beir
+
+python3 scripts/import-public-eval.py \
+  --beir-dir docs/evals/private/public/nanoscifact-beir \
+  --output docs/evals/private/public/nanoscifact.json \
+  --name NanoSciFact \
+  --dataset-version 309f1d1ae3ae2e092444a8a0c25bed59b82318bc \
+  --source-url https://huggingface.co/datasets/zeta-alpha-ai/NanoSciFact \
+  --license CC-BY-4.0 \
+  --split train
+
+python3 scripts/validate_eval_dataset.py \
+  --golden-set docs/evals/private/public/nanoscifact.json \
+  --min-cases 50
+```
+
+快速链路检查可确定性抽取 10 个 query 和 300 个文档。该输出会记录 `benchmark_comparable=false`，不能与完整 NanoSciFact 分数比较：
+
+```bash
+python3 scripts/import-public-eval.py \
+  --beir-dir docs/evals/private/public/nanoscifact-beir \
+  --output docs/evals/private/public/nanoscifact-quick.json \
+  --name NanoSciFact-quick \
+  --dataset-version 309f1d1ae3ae2e092444a8a0c25bed59b82318bc \
+  --source-url https://huggingface.co/datasets/zeta-alpha-ai/NanoSciFact \
+  --license CC-BY-4.0 --split train \
+  --max-queries 10 --max-documents 300 --seed 42
+
+python3 scripts/run-evals.py \
+  --golden-set docs/evals/private/public/nanoscifact-quick.json \
+  --required-consecutive-hits 1 --max-wait 5 --poll-interval 0.5 \
+  --min-hit-rate 0 --min-pass-rate 0
+```
+
+默认 mock 模式仅验证上传、ETL、索引与查询链路。完整质量基线必须使用真实 embedding/LLM，并把 `--embed-dim` 设为实际向量维度：
+
+```bash
+EMBED_ENDPOINT=... EMBED_MODEL=... \
+LLM_ENDPOINT=... LLM_MODEL=... \
+python3 scripts/run-evals.py \
+  --real-models --embed-dim 768 \
+  --golden-set docs/evals/private/public/nanoscifact.json
+```
+
+retrieval-only 数据集会自动关闭答案断言，也禁止启用 Judge，因为没有参考答案。报告会披露数据来源、许可证、模型模式和可比较性，并明确公共分数不是企业验收证据。
+
+P1.3 的真实模型小样本结果、reranker 对照和完整运行前置条件见 [`p1.3-real-model-baseline.md`](p1.3-real-model-baseline.md)。完整快照运行前必须确认外部 LLM 预算；价格变量未配置时，报告不会估算费用。
 
 将真实数据放在被 Git 忽略的 `docs/evals/private/` 后，先运行严格校验：
 
@@ -128,6 +313,7 @@ python3 scripts/run-evals.py \
   - `retrieval_pass_rate = 检索断言通过样本数 / 总样本数`
   - `answer_pass_rate = 答案断言通过样本数 / 总样本数`
   - `pass_rate = 断言通过样本数 / 总样本数`（覆盖正负样本）
+  - `negative_pass_rate = 检索隔离与答案拒答均通过的负样本数 / 负样本总数`；默认独立要求 100%，不能被总体平均分掩盖。
   - `hit_rate = 正样本通过数 / 正样本总数`
   - `acceptable_hit_rate = 正样本可接受命中数 / 正样本总数`
   - `Recall@1/3/5 = 正样本可接受文档在前 K 条检索结果中出现的比例`
@@ -137,4 +323,5 @@ python3 scripts/run-evals.py \
 
 - Mock embedding 与 mock chat 都是确定性的，保证 CI 可重复。
 - CI 门禁可同时使用 `hit_rate` 与 `pass_rate`（建议 `hit_rate >= 0.90` 且 `pass_rate = 1.00`）。
+- 安全负样本使用独立 `--min-negative-pass-rate` 门禁，默认值为 `1.00`。
 - 该评测主要用于回归检测检索路径，不代表最终答案质量上限。

@@ -4,7 +4,7 @@ from pathlib import Path
 from loguru import logger
 from typing import Tuple
 
-from app.services.parsers import pdf, docx, legacy_doc, text, image
+from app.services.parsers import pdf, docx, legacy_doc, text, image, spreadsheet, presentation
 
 
 # File extension to parser mapping
@@ -12,6 +12,9 @@ PARSER_MAP = {
     '.pdf': pdf.parse_pdf,
     '.docx': docx.parse_docx,
     '.doc': legacy_doc.parse_doc,
+    '.xls': spreadsheet.parse_spreadsheet,
+    '.xlsx': spreadsheet.parse_spreadsheet,
+    '.pptx': presentation.parse_presentation,
     '.txt': text.parse_text,
     '.md': text.parse_text,
     '.markdown': text.parse_text,

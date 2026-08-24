@@ -11,6 +11,13 @@ services:
     ports: !reset []
   elasticsearch:
     ports: !reset []
+    environment:
+      # The isolated eval project is commonly run on a constrained CI host;
+      # keep its single-node shard allocatable while still retaining a safety
+      # floor. The root development stack keeps its own thresholds.
+      - cluster.routing.allocation.disk.watermark.low=2gb
+      - cluster.routing.allocation.disk.watermark.high=1gb
+      - cluster.routing.allocation.disk.watermark.flood_stage=512mb
   minio:
     ports: !reset []
   jaeger:
@@ -26,7 +33,10 @@ services:
   parser-service:
     ports: !reset []
   query-api:
-    ports: !reset []
+    ports: !override
+      - "127.0.0.1::8080"
+    environment:
+      - RETRIEVAL_DIAGNOSTICS_ENABLED=true
   reranker-service:
     ports: !reset []
   web:

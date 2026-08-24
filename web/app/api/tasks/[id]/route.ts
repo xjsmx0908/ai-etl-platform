@@ -1,10 +1,11 @@
 import { NextRequest } from "next/server";
 
 // Fetch async processing status for a document. Auth from HttpOnly cookie.
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const backend = process.env.BACKEND_URL || "http://query-api:8080";
   const token = req.cookies.get("ai_etl_token")?.value || "";
-  const upstream = await fetch(`${backend}/v1/tasks/${encodeURIComponent(params.id)}`, {
+  const { id } = await params;
+  const upstream = await fetch(`${backend}/v1/tasks/${encodeURIComponent(id)}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     cache: "no-store",
   });

@@ -39,6 +39,11 @@ type Request struct {
 	TopK               int
 	TenantID           string
 	AllowedPermissions []string
+	KnowledgeBaseID    string
+	ApplicableScope    string
+	// DiagnosticRequiredDocIDs is populated only by controlled local
+	// evaluations. Results expose aggregate stage coverage, never these ids.
+	DiagnosticRequiredDocIDs []string
 }
 
 // SearchRequest is passed to individual retrieval backends.
@@ -50,6 +55,8 @@ type SearchRequest struct {
 	TenantID           string
 	AllowedPermissions []string
 	ExactSchemaFields  []string
+	KnowledgeBaseID    string
+	ApplicableScope    string
 }
 
 // Candidate is one retrieved chunk candidate from one or more backends.
@@ -78,11 +85,17 @@ type Candidate struct {
 
 // Result is the output consumed by the RAG answer-generation layer.
 type Result struct {
-	Sources       []Candidate `json:"sources"`
-	Route         Route       `json:"route"`
-	CacheHit      bool        `json:"cache_hit"`
-	PartialErrors []string    `json:"partial_errors,omitempty"`
-	Duration      time.Duration
+	Sources                    []Candidate       `json:"sources"`
+	Route                      Route             `json:"route"`
+	CacheHit                   bool              `json:"cache_hit"`
+	BackendCandidateCounts     map[string]int    `json:"backend_candidate_counts,omitempty"`
+	FusedCandidateCount        int               `json:"fused_candidate_count,omitempty"`
+	DeduplicatedCandidateCount int               `json:"deduplicated_candidate_count,omitempty"`
+	SelectedContextCount       int               `json:"selected_context_count"`
+	UniqueDocumentCount        int               `json:"unique_document_count"`
+	StageDiagnostics           *StageDiagnostics `json:"stage_diagnostics,omitempty"`
+	PartialErrors              []string          `json:"partial_errors,omitempty"`
+	Duration                   time.Duration
 }
 
 // Retriever is implemented by Qdrant and Elasticsearch backends.

@@ -54,7 +54,7 @@ func TestHandleDocumentChunks_Success(t *testing.T) {
 			{ChunkID: "c2", DocID: "d1", TenantID: "acme", Content: "second", Index: 1, Permission: "internal", Metadata: map[string]string{"order": "A"}},
 		},
 	}}
-	handler := handleDocumentChunks(docs, lister)
+	handler := handleDocumentChunks(docs, lister, testQueryService())
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/documents/d1/chunks", nil)
 	req = req.WithContext(ctxWithRole("acme", "user"))
@@ -93,7 +93,7 @@ func TestHandleDocumentChunks_NotFoundForCrossTenantRoleOrMissing(t *testing.T) 
 	docs := newFakeDocStore()
 	seedDoc(docs, "acme", "d1", "internal")
 	lister := &fakeChunkLister{}
-	handler := handleDocumentChunks(docs, lister)
+	handler := handleDocumentChunks(docs, lister, testQueryService())
 
 	cases := []struct {
 		name   string
@@ -122,7 +122,7 @@ func TestHandleDocumentChunks_NotFoundForCrossTenantRoleOrMissing(t *testing.T) 
 func TestHandleDocumentChunks_StoreError500(t *testing.T) {
 	docs := newFakeDocStore()
 	seedDoc(docs, "acme", "d1", "internal")
-	handler := handleDocumentChunks(docs, &fakeChunkLister{err: context.DeadlineExceeded})
+	handler := handleDocumentChunks(docs, &fakeChunkLister{err: context.DeadlineExceeded}, testQueryService())
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/documents/d1/chunks", nil)
 	req = req.WithContext(ctxWithRole("acme", "user"))
@@ -143,7 +143,7 @@ func TestHandleDocumentSearch_SuccessAggregatesAndEnriches(t *testing.T) {
 		{DocID: "docA", Content: "pipeline chunk two", Score: 0.5},
 		{DocID: "docB", Content: "unrelated", Score: 0.7},
 	}}
-	handler := handleDocumentSearch(config.Config{RetrievalEnableES: true}, docs, searcher)
+	handler := handleDocumentSearch(config.Config{RetrievalEnableES: true}, docs, searcher, testQueryService())
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/documents/search?q=pipeline", nil)
 	req = req.WithContext(ctxWithRole("acme", "user"))
@@ -188,7 +188,7 @@ func TestHandleDocumentSearch_SuccessAggregatesAndEnriches(t *testing.T) {
 }
 
 func TestHandleDocumentSearch_EmptyQuery400(t *testing.T) {
-	handler := handleDocumentSearch(config.Config{RetrievalEnableES: true}, newFakeDocStore(), &fakeDocumentSearcher{})
+	handler := handleDocumentSearch(config.Config{RetrievalEnableES: true}, newFakeDocStore(), &fakeDocumentSearcher{}, testQueryService())
 	req := httptest.NewRequest(http.MethodGet, "/v1/documents/search?q=", nil)
 	req = req.WithContext(ctxWithRole("acme", "user"))
 	rec := httptest.NewRecorder()
@@ -199,7 +199,7 @@ func TestHandleDocumentSearch_EmptyQuery400(t *testing.T) {
 }
 
 func TestHandleDocumentSearch_ESDisabled503(t *testing.T) {
-	handler := handleDocumentSearch(config.Config{RetrievalEnableES: false}, newFakeDocStore(), &fakeDocumentSearcher{})
+	handler := handleDocumentSearch(config.Config{RetrievalEnableES: false}, newFakeDocStore(), &fakeDocumentSearcher{}, testQueryService())
 	req := httptest.NewRequest(http.MethodGet, "/v1/documents/search?q=pipeline", nil)
 	req = req.WithContext(ctxWithRole("acme", "user"))
 	rec := httptest.NewRecorder()

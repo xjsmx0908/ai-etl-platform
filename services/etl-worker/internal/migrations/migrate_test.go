@@ -2,10 +2,52 @@ package migrations
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/pashagolub/pgxmock/v5"
 )
+
+func TestKnowledgeSpacesMigrationCarriesEnterpriseInvariants(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0005_knowledge_spaces.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE TABLE knowledge_spaces",
+		"CREATE TABLE knowledge_space_members",
+		"ADD COLUMN knowledge_space_id",
+		"ADD COLUMN publication_status",
+		"FOREIGN KEY (tenant_id, knowledge_space_id)",
+		"publication_status IN ('draft','published','retired')",
+		"metadata->>'knowledge_base_id'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("migration missing invariant %q", required)
+		}
+	}
+}
+
+func TestNewTenantMigrationCreatesDefaultKnowledgeSpace(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0006_tenant_default_knowledge_space.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"AFTER INSERT ON tenants",
+		"INSERT INTO knowledge_spaces",
+		"NEW.id",
+		"'user-uploads'",
+		"'production'",
+		"ON CONFLICT (tenant_id, id) DO NOTHING",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("migration missing new-tenant invariant %q", required)
+		}
+	}
+}
 
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction

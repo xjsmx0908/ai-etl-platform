@@ -38,6 +38,9 @@ docs/evals/reports/
 docs/evals/private/*
 !docs/evals/private/.gitkeep
 
+# Real enterprise documents supplied for local-only evaluation
+rag_datas/
+
 # Rendered corpus files (PDF/PNG from generate-corpus-files.py, regenerable)
 docs/corpora/generated/
 

@@ -18,7 +18,7 @@ func docRowColumns() []string {
 	return []string{"tenant_id", "doc_id", "file_name", "object_key", "file_hash", "file_size",
 		"content_type", "permission", "status", "stage", "chunks_done", "chunks_total", "error",
 		"metadata", "uploaded_by", "created_at", "updated_at", "completed_at",
-		"doc_status", "effective_date", "supersedes", "owner"}
+		"doc_status", "effective_date", "supersedes", "owner", "knowledge_space_id", "publication_status"}
 }
 
 func docRow() *pgxmock.Rows {
@@ -26,7 +26,7 @@ func docRow() *pgxmock.Rows {
 		AddRow("acme", "doc-1", "a.pdf", "acme/doc-1.pdf", "abc123", int64(1024), "application/pdf",
 			"internal", "completed", "completed", 4, 4, "", map[string]string{"k": "v"},
 			"u-1", time.Now(), time.Now(), tPtr(time.Now()),
-			"active", tPtr(time.Now()), "", "owner-hr")
+			"active", tPtr(time.Now()), "", "owner-hr", "user-uploads", "published")
 }
 
 func TestUpsert(t *testing.T) {
@@ -35,7 +35,7 @@ func TestUpsert(t *testing.T) {
 		t.Fatalf("new pool: %v", err)
 	}
 	defer mock.Close()
-	args := make([]any, 22)
+	args := make([]any, 24)
 	for i := range args {
 		args[i] = pgxmock.AnyArg()
 	}
@@ -104,7 +104,7 @@ func TestList_WithFilters(t *testing.T) {
 		WillReturnRows(docRow().AddRow("acme", "doc-2", "b.docx", "acme/doc-2.docx", "def", int64(2048),
 			"application/docx", "internal", "completed", "completed", 2, 2, "", map[string]string{},
 			"u-1", time.Now(), time.Now(), tPtr(time.Now()),
-			"superseded", tPtr(time.Now()), "doc-1", ""))
+			"superseded", tPtr(time.Now()), "doc-1", "", "user-uploads", "retired"))
 	mock.ExpectQuery("SELECT count").WithArgs("acme", "completed", []string{"internal"}, "%contract%").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 
@@ -142,11 +142,11 @@ func TestGetByHash(t *testing.T) {
 	}
 	defer mock.Close()
 	mock.ExpectQuery("SELECT "+docCols).
-		WithArgs("acme", "abc123").
+		WithArgs("acme", "user-uploads", "abc123").
 		WillReturnRows(docRow())
 
 	s := New(mock)
-	d, found, err := s.GetByHash(context.Background(), "acme", "abc123")
+	d, found, err := s.GetByHash(context.Background(), "acme", "user-uploads", "abc123")
 	if err != nil {
 		t.Fatalf("GetByHash: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestGetByHash_EmptyHashSkipsQuery(t *testing.T) {
 	defer mock.Close()
 
 	s := New(mock)
-	_, found, err := s.GetByHash(context.Background(), "acme", "  ")
+	_, found, err := s.GetByHash(context.Background(), "acme", "user-uploads", "  ")
 	if err != nil {
 		t.Fatalf("GetByHash: %v", err)
 	}
