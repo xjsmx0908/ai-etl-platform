@@ -1,0 +1,104 @@
+{
+  "version": "1.0",
+  "description": "Synthetic public-safe activation benchmark for implicit multi-facet query planning.",
+  "cases": [
+    {
+      "id": "cross-remote-work",
+      "cohort": "cross_document",
+      "question": "员工改为长期异地办公前需要了解哪些制度要求？",
+      "expected_facets": [["设备"], ["访问"]]
+    },
+    {
+      "id": "cross-first-trip",
+      "cohort": "cross_document",
+      "question": "新员工准备第一次出差时，完整准备和收尾流程包括什么？",
+      "expected_facets": [["审批"], ["报销"]]
+    },
+    {
+      "id": "cross-vendor-onboarding",
+      "cohort": "cross_document",
+      "question": "新供应商开始合作前，公司需要完成哪些准备？",
+      "expected_facets": [["采购"], ["安全"]]
+    },
+    {
+      "id": "cross-offboarding",
+      "cohort": "cross_document",
+      "question": "员工离职交接需要覆盖哪些方面？",
+      "expected_facets": [["资产"], ["权限"]]
+    },
+    {
+      "id": "cross-external-delivery",
+      "cohort": "cross_document",
+      "question": "项目准备向外部客户交付前应该完成哪些检查？",
+      "expected_facets": [["验收"], ["保密"]]
+    },
+    {
+      "id": "cross-ai-use",
+      "cohort": "cross_document",
+      "question": "员工使用生成式 AI 处理工作资料时应关注哪些要求？",
+      "expected_facets": [["授权"], ["数据"]]
+    },
+    {
+      "id": "cross-security-incident",
+      "cohort": "cross_document",
+      "question": "办公室发生信息安全事件后，完整的处置闭环是什么？",
+      "expected_facets": [["报告"], ["恢复"]]
+    },
+    {
+      "id": "cross-month-end",
+      "cohort": "cross_document",
+      "question": "财务月末关账前，各业务团队需要确认哪些事项？",
+      "expected_facets": [["发票"], ["采购"]]
+    },
+    {
+      "id": "semantic-expense",
+      "cohort": "semantic",
+      "question": "请说明差旅费用报销的基本原则。"
+    },
+    {
+      "id": "semantic-password",
+      "cohort": "semantic",
+      "question": "公司的账号密码管理原则是什么？"
+    },
+    {
+      "id": "semantic-retention",
+      "cohort": "semantic",
+      "question": "解释业务记录保存期限的管理规则。"
+    },
+    {
+      "id": "semantic-leave",
+      "cohort": "semantic",
+      "question": "员工年假申请流程是怎样的？"
+    },
+    {
+      "id": "semantic-backup",
+      "cohort": "semantic",
+      "question": "请说明数据库备份的频率要求。"
+    },
+    {
+      "id": "semantic-training",
+      "cohort": "semantic",
+      "question": "新员工安全培训需要在何时完成？"
+    },
+    {
+      "id": "lexical-contract",
+      "cohort": "lexical",
+      "question": "查找合同 CN-2026-0042。"
+    },
+    {
+      "id": "lexical-order",
+      "cohort": "lexical",
+      "question": "订单号 ORD-88421 的状态是什么？"
+    },
+    {
+      "id": "lexical-ticket",
+      "cohort": "lexical",
+      "question": "工单 TKT-7719 的处理记录在哪里？"
+    },
+    {
+      "id": "lexical-trace",
+      "cohort": "lexical",
+      "question": "查询 trace_id=7f3a9c12 的调用信息。"
+    }
+  ]
+}

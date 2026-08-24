@@ -170,6 +170,77 @@ query planner that can infer implicit facets without runtime required ids. Any
 new candidate needs a public-safe activation/coverage benchmark before another
 private run; punctuation splitting must not be reintroduced as the main path.
 
+### P1.8-C Constrained Local Query Planner
+
+Status: completed; public gate failed and the runtime candidate was reverted
+
+Approved test-driven plan and predeclared gates:
+
+1. Keep the external `retrieval.Engine.Retrieve` interface unchanged. Place the
+   planner seam inside the retrieval module, with one production HTTP adapter
+   for loopback Ollama and deterministic in-memory adapters at the engine test
+   seam.
+2. Add a tracked, public-safe benchmark containing cross-document implicit-facet,
+   single-semantic, and lexical/exact cohorts. Run it three times before any
+   private evaluation. Require 100% valid structured responses, at least 80%
+   cross-document activation, at least 80% expected-facet coverage, no lexical
+   or exact-query activation, and at most 10% activation on single-semantic
+   controls.
+3. Accept only a strict JSON object with an explicit activation decision and two
+   or three bounded, distinct facet queries. Reject markdown, unknown fields,
+   blank/duplicate facets, copied whole questions, and output that introduces
+   exact identifiers absent from the input. Invalid output, timeout, planner
+   error, or a non-local endpoint must fail closed to the original retrieval
+   path.
+4. Never plan strong exact-token queries. For eligible semantic/hybrid queries,
+   search the original query plus validated facets under the same tenant,
+   permissions, knowledge-space, applicable-scope, timeout, and candidate
+   limits. Do not pass evaluation-required document ids to planning or ranking.
+5. Fuse query rankings deterministically behind the retrieval interface, dedupe
+   chunks, keep final Top-K unchanged, and expose only aggregate planner
+   activation/facet counts in retrieval provenance. Preserve existing cache,
+   rerank, relevance, governance, grounding, and authorization behavior.
+6. Add vertical-slice tests at the benchmark and engine seams for default-off,
+   multi-source promotion, exact-query bypass, scope propagation, malformed
+   output, timeout/error fallback, deterministic order, and provenance privacy.
+7. Only after the public gate passes, run one matched isolated retrieval-only
+   baseline/candidate comparison with no reranker. Reject and revert if selected
+   Top-5 cross-document coverage does not improve materially or semantic/lexical
+   controls regress. A promising candidate then proceeds to the existing
+   three-run no-rerank acceptance gate.
+8. Run complete Go/Python/scripts/Web/Compose verification and update aggregate-
+   only evaluation documentation plus `LEARNINGS.codex.md`. Keep private inputs,
+   identifiers, questions, evidence, and detailed reports Git ignored.
+
+Acceptance: the public benchmark passes every predeclared activation and
+coverage gate; engine-interface tests show both implicit facets entering the
+unchanged Top-5 without weakening scope or exact-query behavior; and no private
+evaluation begins until those conditions hold.
+
+Outcome:
+
+- Added an 18-case public-safe benchmark with 8 implicit cross-document cases,
+  6 single-semantic controls, and 4 lexical/exact controls. Its parser and gate
+  tests pass, and detailed local model reports remain Git ignored.
+- `qwen2.5:1.5b` first produced no valid strict responses. After a generic
+  schema-consistency prompt correction it produced 100% valid responses, but
+  activated every cohort and covered only 6.25% of expected facets: cross-
+  document activation 100%, semantic false activation 100%, and lexical
+  activation 100%.
+- The already-installed `qwen3:4b` failed the one-run screen with 0% valid
+  responses, 0% cross-document activation, and 0% expected-facet coverage.
+  The formal three-run gate was therefore not started.
+- The test-first runtime candidate had covered local-only access, strict output,
+  exact-query bypass, governed scope propagation, deterministic fusion, fallback,
+  and aggregate-only provenance. Because no model passed the public gate, all
+  runtime/configuration behavior and candidate Go tests were reverted. No private
+  enterprise evaluation was run and the production retrieval path is unchanged.
+- Complete verification passed: 105 script tests, Go formatting/vet/full/race
+  tests, 32 parser tests, one lexical reranker test, Web audit/lint/typecheck/
+  production build, both Compose configurations, and diff/residual checks. The
+  two dedicated Go cache volumes were removed; all 17 root services remained
+  running without an unhealthy service.
+
 ## 2026-08-21 - P1.7 Enterprise Reranker Repeated A/B Evaluation
 
 Status: completed; `auto` rerank failed the predeclared release gates

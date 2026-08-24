@@ -191,6 +191,31 @@ retrieval-only 运行均有效且请求完整，但 candidate 没有安全展开
 和最终 Top-5 指标均未变化，因此实现和配置已撤回。该结果只否定标点/连词驱动的
 分句路径，不否定能识别隐含语义 facet 的其他多路检索设计。
 
+### P1.8-C 本地 Query Planner 公共门槛
+
+`query-planner-public.json` 是不含企业内容的 18 条合成门槛集，包含 8 条隐含跨文档
+问题、6 条单语义对照和 4 条 lexical/exact 对照。评测器只允许回环模型端点，并且
+只输出聚合指标：
+
+```bash
+python3 scripts/benchmark-query-planner.py \
+  --dataset docs/evals/query-planner-public.json \
+  --endpoint http://127.0.0.1:11434/v1/chat/completions \
+  --model MODEL_NAME \
+  --repetitions 3 \
+  --timeout 45 \
+  --report docs/evals/private/query-planner-report.json
+```
+
+正式门槛要求三轮合计达到：结构响应 100% 有效、跨文档激活率至少 80%、预期 facet
+覆盖率至少 80%、单语义误激活率不超过 10%，以及 lexical/exact 激活率为 0%。模型
+应先通过单轮筛选；任一指标失败时不得运行私有企业评测。
+
+本轮 `qwen2.5:1.5b` 在结构提示修正后虽达到 100% 有效响应，但跨文档、单语义和
+lexical/exact 均 100% 激活，预期 facet 覆盖率仅 6.25%。`qwen3:4b` 的单轮筛选
+结构有效率、跨文档激活率和 facet 覆盖率均为 0%。两者均未进入正式三轮门槛；运行时
+候选已撤回，且未运行私有评测。逐条模型输出和本地报告继续保持 Git ignored。
+
 ## 公共检索基线
 
 NanoSciFact 是英文科学论断检索集，只评估通用 retrieval，不评估中文办公制度、权限治理或答案正确性。批准目录固定 `CC-BY-4.0` 许可证、上游 commit、行数和 SHA-256；下载内容与生成的评测集均位于 Git 忽略的 `docs/evals/private/public/`。

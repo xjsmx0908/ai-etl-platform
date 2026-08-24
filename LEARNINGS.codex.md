@@ -390,3 +390,26 @@ This file is an append-only record of completed PRAR cycles.
   loosen deterministic string splitting until it guesses latent intent; move the
   next design toward document-side semantic units or a constrained local planner,
   with a public-safe activation benchmark before private evaluation.
+
+## 2026-08-24 - P1.8-C Constrained Local Query Planner Rejection
+
+- **Perceive:** Implicit cross-document questions need latent facet inference,
+  but a planner can also expand ordinary semantic questions or exact lookups and
+  silently damage retrieval precision.
+- **Reason:** Planner capability must be proven on public-safe activation and
+  facet-coverage controls before it sees private evaluation data. Strict output,
+  local-only access, governed scope propagation, deterministic fusion, and safe
+  fallback are necessary but do not compensate for a model that fails the
+  behavioral gate.
+- **Act:** Added an 18-case synthetic benchmark and parser/gate tests. Built the
+  runtime candidate test-first, then screened local `qwen2.5:1.5b` and
+  `qwen3:4b` models using aggregate-only reports.
+- **Refine:** The corrected 1.5B prompt over-activated all cohorts and covered
+  only 6.25% of expected facets. The 4B model produced 0% valid responses in its
+  one-run screen. The formal three-run and private gates were not started, and
+  all runtime/configuration candidate behavior was reverted. Complete Go,
+  Python, scripts, Web, Compose, and residual verification then passed.
+- **Prevention:** Separate interface correctness from model capability, screen
+  cheaply before repeated or private evaluation, and retain no ranking behavior
+  when the predeclared public gate fails. Future work should improve the public
+  planner capability or evaluate document-side semantic units first.
