@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "decision": "pending",
+  "approval_id": "",
+  "candidate_sha256": "",
+  "signed_approval_sha256": "",
+  "approved_by": "",
+  "approver_role": "",
+  "approved_at": "",
+  "approval_scope": "entire_dataset",
+  "approved_document_ids": [],
+  "approved_case_ids": [],
+  "attestations": {
+    "document_authority_confirmed": false,
+    "permissions_confirmed": false,
+    "effective_versions_confirmed": false,
+    "questions_and_reference_answers_confirmed": false
+  }
+}

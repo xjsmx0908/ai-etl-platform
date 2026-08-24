@@ -25,7 +25,8 @@ upload, query, and HTTP handlers cannot diverge.
 2. Resolve an explicit or default knowledge space.
 3. Retrieve with tenant, permission, and space filters.
 4. Fail-closed batch validation retains only published, active documents.
-5. Apply relevance and grounding checks, then generate and cite the answer.
+5. Generate the answer, then verify both evidence support and responsiveness to
+   the question before returning citations.
 
 The resolved space is selected before retrieval. Search scores have no role in
 authorization or scope selection.

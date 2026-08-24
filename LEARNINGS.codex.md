@@ -413,3 +413,29 @@ This file is an append-only record of completed PRAR cycles.
   cheaply before repeated or private evaluation, and retain no ranking behavior
   when the predeclared public gate fails. Future work should improve the public
   planner capability or evaluate document-side semantic units first.
+
+## 2026-08-24 - P1.9 Business Gold Gate and Responsive Refusal
+
+- **Perceive:** P1.7 permission-negative failures did not retrieve forbidden
+  documents. The model instead answered from permitted but tangential evidence,
+  and the existing verifier accepted that answer because it checked support but
+  not whether the response answered the user's question. Separately, the private
+  technical candidate still lacked an authorized business approval artifact.
+- **Reason:** Evidence support and question responsiveness are independent
+  conditions. The answer boundary must require both, while Gold promotion must
+  bind an exact candidate and complete approval scope to independently retained
+  signed evidence rather than treating technical review as business authority.
+- **Act:** Extended ambiguous-band answer verification with the required
+  `answers_question` verdict and a public grounded/non-responsive regression.
+  Added a fail-closed Gold finalization CLI, synthetic tests, and an approval
+  template with candidate and signed-artifact digests, full ID scope, approver
+  metadata, and four mandatory attestations.
+- **Refine:** Focused and full engineering verification passed. One real-model
+  screen and three configuration-matched formal safety runs were all valid, each
+  completing 15/15 queries with zero unavailable grounding checks and 100%
+  safety refusal. The isolated evaluation project and its dedicated storage and
+  images were removed afterward; the root development stack stayed healthy.
+- **Prevention:** Do not equate grounded text with a responsive answer, and do
+  not infer business approval from automated or technical checks. Keep detailed
+  enterprise cases private, require three exact-gate repetitions for safety, and
+  leave promotion blocked until an authorized signed artifact is present.

@@ -17,14 +17,15 @@ func TestParseGroundingVerdict(t *testing.T) {
 		want    bool
 		wantErr bool
 	}{
-		{"plain true", `{"supported": true}`, true, false},
-		{"plain false", `{"supported": false}`, false, false},
-		{"no spaces", `{"supported":false}`, false, false},
-		{"markdown fence", "```json\n{\"supported\": true}\n```", true, false},
-		{"prose prefix", `思考后判定：{"supported": false}，因为答案引入了文档外的数字`, false, false},
-		{"case insensitive", `{"SUPPORTED": TRUE}`, true, false},
+		{"both pass", `{"supported": true, "answers_question": true}`, true, false},
+		{"unsupported", `{"supported": false, "answers_question": true}`, false, false},
+		{"does not answer question", `{"supported":true,"answers_question":false}`, false, false},
+		{"markdown fence", "```json\n{\"supported\": true, \"answers_question\": true}\n```", true, false},
+		{"prose prefix", `思考后判定：{"supported": false, "answers_question": true}，因为答案引入了文档外的数字`, false, false},
+		{"case insensitive", `{"SUPPORTED": TRUE, "ANSWERS_QUESTION": TRUE}`, true, false},
 		{"string instead of bool", `{"supported": "yes"}`, false, true},
-		{"missing field", `{"ok": true}`, false, true},
+		{"missing answer relevance", `{"supported": true}`, false, true},
+		{"missing fields", `{"ok": true}`, false, true},
 		{"empty", ``, false, true},
 	}
 	for _, tt := range tests {
@@ -73,7 +74,7 @@ func TestGroundingCheck(t *testing.T) {
 	sources := []SourceContext{{DocID: "d1", Content: "文档上传支持 PDF、Word 和 Markdown 三种格式。"}}
 
 	t.Run("verifier says supported", func(t *testing.T) {
-		srv := llmStub(`{"supported": true}`, http.StatusOK)
+		srv := llmStub(`{"supported": true, "answers_question": true}`, http.StatusOK)
 		defer srv.Close()
 		t.Setenv("LLM_ENDPOINT", srv.URL)
 		t.Setenv("LLM_API_KEY", "test-key")
@@ -88,7 +89,7 @@ func TestGroundingCheck(t *testing.T) {
 	})
 
 	t.Run("verifier says unsupported", func(t *testing.T) {
-		srv := llmStub(`{"supported": false}`, http.StatusOK)
+		srv := llmStub(`{"supported": false, "answers_question": true}`, http.StatusOK)
 		defer srv.Close()
 		t.Setenv("LLM_ENDPOINT", srv.URL)
 		t.Setenv("LLM_API_KEY", "test-key")

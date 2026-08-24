@@ -1,9 +1,70 @@
 # Backlog
 
+## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
+
+Status: engineering implementation completed; business promotion remains
+blocked on an external signed artifact from an authorized policy owner
+
+Goal: close the open-ended P1.8 implementation search, provide a fail-closed path
+from the private technical candidate to business-approved Gold, and make
+permission-negative answers refuse when visible evidence is grounded but does
+not answer the user's actual question.
+
+Approved seams and acceptance criteria:
+
+1. Close P1.8 without starting P1.8-D. Retain diagnostics and public benchmarks,
+   but make no further cross-document production ranking changes.
+2. At the Query Service `Ask` seam, require ambiguous-band answer verification
+   to establish both evidence support and responsiveness. Either false verdict
+   returns the canonical refusal with no sources or citations; supported,
+   responsive answers retain current behavior.
+3. At the Gold finalize CLI seam, bind approval to the exact candidate and an
+   independently retained signed artifact by SHA-256. Require an authorized
+   approver identity/role/time, complete document and case ID sets, and explicit
+   document-authority, permission, effective-version, and answer attestations.
+4. Missing artifacts, mismatched digests, incomplete scope, pending decisions,
+   or false attestations must fail without writing output. Only a complete
+   approval may create a private `enterprise_private_gold` dataset with
+   `business_approval_complete=true` and auditable approval provenance.
+5. Run focused and complete engineering verification. Screen the 15-case
+   safety-negative cohort once; only a 100% valid result proceeds to three formal
+   runs, each of which must retain 100% safety refusal.
+
+Progress:
+
+- The public Query Service test now reproduces a grounded but non-responsive
+  answer using synthetic data. The verifier requires `supported=true` and
+  `answers_question=true`; a false verdict uses the existing source-free refusal
+  path without changing the Query API interface.
+- Added a public-safe Gold approval template and a finalize CLI tested against
+  missing signed evidence, digest mismatch, incomplete case scope, false
+  attestations, and a fully approved synthetic candidate. Real private Gold
+  remains `ready_for_business_approval` until an authorized owner supplies the
+  signed artifact and completed manifest.
+- Completed one real-model safety screen followed by three formal runs against
+  the same private candidate digest, tenant, upload map, and configuration hash.
+  Every run was valid with 15/15 successful queries, zero unavailable grounding
+  checks, and 100% safety-refusal rate. Detailed reports remain local and Git
+  ignored.
+- Removed the dedicated P1.9 evaluation project's containers, volumes, network,
+  and project-tagged images after the formal gate passed. The root 17-service
+  development stack remained running with no unhealthy service.
+
+Delivered:
+
+1. P1.8 is closed without P1.8-D or additional ranking behavior.
+2. Grounded but non-responsive ambiguous-band answers fail closed to the
+   canonical source-free refusal; supported and responsive answers retain the
+   existing API behavior.
+3. The private Gold finalization path is implemented and verified, but no real
+   candidate has been promoted because no authorized signed approval artifact
+   has been supplied.
+4. The safety refusal release gate passed three configuration-matched formal
+   runs at 100%.
+
 ## 2026-08-23 - P1.8 Cross-Document Retrieval Diagnosis and Repair
 
-Status: in progress; implementation approved after P1.7 showed 0% all-required-
-document hit rate in both no-rerank and `auto` arms
+Status: closed; diagnosis retained, automatic ranking implementation discontinued
 
 Goal: identify the exact retrieval stage where a necessary source is lost, add
 aggregate-only diagnostics and deterministic regression coverage, then apply the
@@ -94,17 +155,17 @@ Progress update:
 - Removed 56 reviewed historical evaluation/test images and pruned only build
   cache older than seven days. The root development stack remains running.
 
-Next diagnostic step:
+Closure decision:
 
-1. Keep the zero-chunk and conservative TOC-filter fixes; run complete project
-   verification and a full ingestion regression before release.
-2. Design a deterministic cross-document retrieval strategy that can promote a
-   second semantic facet from ranks up to 216 without using private required IDs
-   at runtime. Do not merely increase final context size or candidate K.
-3. Add an offline, public-safe benchmark for that strategy across semantic,
-   lexical, and cross-document cohorts before changing production ranking.
-4. Only after a candidate improves Top-5, run matched isolated no-rerank trials
-   and confirm permission, grounding, safety, latency, and token gates.
+1. Keep the zero-chunk and conservative TOC-filter correctness fixes plus the
+   aggregate diagnostics and public Query Planner benchmark.
+2. Retain no P1.8-B or P1.8-C ranking behavior; do not start a P1.8-D document-
+   enrichment implementation.
+3. Treat automatic implicit cross-document planning as unsupported rather than
+   extending the production retrieval path without a business-approved need and
+   acceptance set.
+4. Move active work to business Gold approval and the independent 100% safety-
+   refusal gate in P1.9.
 
 ### P1.8-B Deterministic Multi-Semantic Retrieval
 

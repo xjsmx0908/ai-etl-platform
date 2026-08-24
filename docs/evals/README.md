@@ -124,6 +124,29 @@ python3 scripts/validate_eval_dataset.py \
 审核器保留原始 CSV，另行生成 `automated-document-review.csv`、
 `automated-case-review.csv`、`human-confirmation.csv` 和 `gold-draft.json`。
 `gold-draft.json` 的 `business_approval_complete=false`，不得直接作为上线门禁。
+
+### 业务 Gold 最终批准
+
+技术确认、自动审核或“取最新日期”规则都不能替代业务负责人批准。最终批准使用
+`business-gold-approval.template.json` 建立私有审批记录，并绑定候选文件与独立保存
+的签署材料 SHA-256。审批记录和签署材料必须保存在 `docs/evals/private/` 或其他受控
+私有位置，不得提交。
+
+审批人必须确认完整的文档 ID 和案例 ID 范围，并逐项确认文档权威性、权限、有效
+版本以及问题与标准答案。任何缺失、`pending`、摘要不匹配或 false 声明都会停止，
+且不会创建输出：
+
+```bash
+python3 scripts/finalize-enterprise-gold.py \
+  --candidate docs/evals/private/p1.4-enterprise/gold-candidate-v2.json \
+  --approval docs/evals/private/p1.4-enterprise/business-gold-approval.json \
+  --signed-approval docs/evals/private/p1.4-enterprise/signed-business-approval.pdf \
+  --output docs/evals/private/p1.4-enterprise/gold-approved.json
+```
+
+成功输出使用 `enterprise_private_gold` 类型，并在 provenance 中记录候选、审批记录和
+签署材料摘要。`business_approval_complete=true` 只表示该精确数据集已经通过所附业务
+批准，不代表后续新增或修改内容自动获批。
 首轮聚合结果和 cohort 解释见
 [`p1.5-automated-review.md`](p1.5-automated-review.md)。
 

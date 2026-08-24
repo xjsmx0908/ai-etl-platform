@@ -196,12 +196,13 @@ type RetrievalInfo struct {
 	// embedding (distributions overlap heavily — see ADR 0006), so the demo shows
 	// this as evidence confidence instead of silently gating on it.
 	MaxRelevance float64 `json:"max_relevance,omitempty"`
-	// GroundingChecked reports whether the post-generation faithfulness check ran
+	// GroundingChecked reports whether post-generation answer verification ran
 	// on this answer (only queries in the ambiguous relevance band).
 	GroundingChecked bool `json:"grounding_checked,omitempty"`
 	// GroundingPassed reports whether the verifier found the answer supported by
-	// the retrieved sources. False with GroundingChecked true means the answer
-	// was blocked and replaced with the fixed refusal sentence.
+	// the retrieved sources and responsive to the question. False with
+	// GroundingChecked true means the answer was blocked and replaced with the
+	// fixed refusal sentence.
 	GroundingPassed bool `json:"grounding_passed,omitempty"`
 	// GroundingUnavailable reports that the check was due to run but the verifier
 	// itself failed, so the answer shipped unverified (the gate fails open). This
@@ -649,11 +650,11 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		}, nil
 	}
 
-	// Post-generation faithfulness check. The relevance band is ambiguous: on
+	// Post-generation answer verification. The relevance band is ambiguous: on
 	// bge-m3, 26/38 real positives hit at max_relevance=0.5 and the failing
 	// negative also scores 0.5, so no threshold separates them. When the top
-	// candidate sits in the ambiguous band, ask a verifier whether the answer
-	// is actually supported by the retrieved sources before shipping it.
+	// candidate sits in the ambiguous band, ask a verifier whether the answer is
+	// supported by the retrieved sources and actually answers the question.
 	groundingChecked := false
 	groundingPassed := true
 	groundingUnavailable := false
@@ -1327,20 +1328,25 @@ const maxGroundingContextChars = 8000
 const groundingMaxTokens = 512
 
 // groundingSystemPrompt instructs the verifier to judge whether an answer's
-// claims are traceable to the retrieved documents. It is deliberately strict
-// about numbers and novel facts, and lenient about paraphrase and translation.
-const groundingSystemPrompt = `你是严格的证据校验器。判断「回答」中的关键断言（事实、数字、专有名词、具体结论）是否都能在「参考文档」中找到明确支持。
+// claims are traceable to the retrieved documents and whether it answers the
+// user's actual question. It is deliberately strict about numbers and novel
+// facts, and lenient about paraphrase and translation.
+const groundingSystemPrompt = `你是严格的回答校验器。分别判断：
+1. 「回答」中的关键断言（事实、数字、专有名词、具体结论）是否都能在「参考文档」中找到明确支持；
+2. 「回答」是否直接回答了「用户问题」，而不是只陈述相关但不同的事实。
 严禁使用你对世界的常识——即使回答在常识上合理，只要文档中没有明确出现，就必须判 false。
 判定规则：
 - 文档中明确存在该事实或数字 → supported=true
 - 回答是对文档的忠实概括或翻译，且不新增文档外信息 → supported=true
 - 回答包含文档中没有的数字、事实或结论（哪怕看似合理）→ supported=false
 - 回答基于常识补充了文档没有的内容 → supported=false
+- 回答解决了问题所询问的对象和事项 → answers_question=true
+- 回答只提供背景、相邻制度或其他对象的信息 → answers_question=false
 示例：
-文档：「系统每天最多查询 200 次」 回答：「每天最多可查询 200 次」→ true
-文档：「系统每天最多查询 200 次」 回答：「查询上限是 500 次」→ false（数字 500 不在文档）
-文档：「支持 PDF 格式上传」 回答：「用户需要管理员审批才能上传」→ false（审批不在文档）
-只输出 JSON：{"supported": true} 或 {"supported": false}`
+问题：「每天最多查询多少次？」 文档：「系统每天最多查询 200 次」 回答：「每天最多可查询 200 次」→ {"supported":true,"answers_question":true}
+问题：「谁可以审批上传？」 文档：「支持 PDF 格式上传」 回答：「支持 PDF 格式上传」→ {"supported":true,"answers_question":false}
+问题：「每天最多查询多少次？」 文档：「系统每天最多查询 200 次」 回答：「查询上限是 500 次」→ {"supported":false,"answers_question":true}
+只输出 JSON：{"supported": true, "answers_question": true}，两个字段都必须出现。`
 
 // groundingCheck asks a verifier model whether answer is supported by sources.
 // It returns (true, nil) when supported, (false, nil) when the answer contains
@@ -1387,14 +1393,17 @@ func (s *Service) groundingCheck(ctx context.Context, question, answer string, s
 	return parseGroundingVerdict(result.Content)
 }
 
-// parseGroundingVerdict extracts the supported boolean from a verifier response
-// that may include markdown fences or surrounding prose.
+// parseGroundingVerdict extracts both required booleans from a verifier response
+// that may include markdown fences or surrounding prose. A passing verdict
+// requires evidence support and a direct answer to the user's question.
 func parseGroundingVerdict(content string) (bool, error) {
-	m := regexp.MustCompile(`(?i)"supported"\s*:\s*(true|false)`).FindStringSubmatch(content)
-	if len(m) != 2 {
-		return false, fmt.Errorf("no supported verdict in verifier response: %.200s", content)
+	supportedMatch := regexp.MustCompile(`(?i)"supported"\s*:\s*(true|false)`).FindStringSubmatch(content)
+	answersQuestionMatch := regexp.MustCompile(`(?i)"answers_question"\s*:\s*(true|false)`).FindStringSubmatch(content)
+	if len(supportedMatch) != 2 || len(answersQuestionMatch) != 2 {
+		return false, fmt.Errorf("incomplete answer-verification verdict: %.200s", content)
 	}
-	return strings.EqualFold(m[1], "true"), nil
+	return strings.EqualFold(supportedMatch[1], "true") &&
+		strings.EqualFold(answersQuestionMatch[1], "true"), nil
 }
 
 func sourceContextsFromCandidates(candidates []retrieval.Candidate, documents map[string]docstore.Governance) []SourceContext {

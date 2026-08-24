@@ -369,7 +369,7 @@ func TestHandleQueryStreamingReportsGroundingVerdict(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		content := "办公用品通过 OA 申领。来源: policy"
 		if strings.Contains(string(body), "回答：") {
-			content = `{"supported": true}`
+			content = `{"supported": true, "answers_question": true}`
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -401,6 +401,69 @@ func TestHandleQueryStreamingReportsGroundingVerdict(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `"grounding_checked":true`) || !strings.Contains(body, `"grounding_passed":true`) {
 		t.Fatalf("expected SSE grounding verdict, got %s", body)
+	}
+}
+
+func TestHandleQueryRefusesGroundedAnswerThatDoesNotAnswerQuestion(t *testing.T) {
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+	}))
+	defer embedSrv.Close()
+
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"points":[{"score":0.52,"payload":{"chunk_id":"training-1","doc_id":"training","content":"项目成员必须每季度完成安全培训。","tenant_id":"tenant-a"}}]}}`))
+	}))
+	defer qdrantSrv.Close()
+
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		content := "项目成员必须每季度完成安全培训。来源: training"
+		if strings.Contains(string(body), "回答：") {
+			content = `{"supported":true,"answers_question":false}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": content}}},
+		})
+	}))
+	defer llmSrv.Close()
+	t.Setenv("LLM_ENDPOINT", llmSrv.URL)
+
+	svc := NewService(config.Config{
+		EmbedEndpoint:               embedSrv.URL,
+		EmbedModel:                  "test-embed",
+		StoreEndpoint:               qdrantSrv.URL,
+		StoreCollection:             "docs",
+		RetrievalGroundingCheck:     true,
+		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingHighBound: 0.7,
+		SparseK1:                    1.2,
+		SparseB:                     0.75,
+		SparseAvgDL:                 256,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/query", strings.NewReader(
+		`{"question":"机密项目的成员名单是什么？","top_k":5}`,
+	))
+	ctx := context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a")
+	ctx = context.WithValue(ctx, auth.CtxPermission, "user")
+	w := httptest.NewRecorder()
+
+	svc.HandleQuery(w, req.WithContext(ctx))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var response Response
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Answer != NoEvidenceAnswer || len(response.Sources) != 0 || len(response.Citations) != 0 {
+		t.Fatalf("expected canonical source-free refusal, got %+v", response)
+	}
+	if response.Retrieval == nil || !response.Retrieval.GroundingChecked || response.Retrieval.GroundingPassed {
+		t.Fatalf("expected failed answer verification, got %+v", response.Retrieval)
 	}
 }
 
