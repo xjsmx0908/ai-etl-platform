@@ -779,13 +779,17 @@ def create_eval_user(api_base: str, admin_token: str, username: str, password: s
         raise EvalRunnerError(f"create user failed for {username}, status={code}, payload={payload}")
 
 
-def publish_document(api_base: str, admin_token: str, doc_id: str) -> None:
-    body = json.dumps({"publication_status": "published"}).encode("utf-8")
-    code, payload = http_json("PATCH", f"{api_base}/v1/documents/{doc_id}", headers={
-        "Authorization": f"Bearer {admin_token}", "Content-Type": "application/json",
-    }, body=body)
-    if code != 200:
-        raise EvalRunnerError(f"publish failed for {doc_id}, status={code}, payload={payload}")
+def verify_document_published(api_base: str, admin_token: str, doc_id: str) -> None:
+    code, document = http_json(
+        "GET",
+        f"{api_base}/v1/documents/{quote(doc_id, safe='')}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    if code != 200 or document.get("publication_status") != "published":
+        raise EvalRunnerError(
+            f"document was not auto-published after completed ETL: {doc_id}, "
+            f"status={code}, payload={document}"
+        )
 
 
 def wait_for_document_tasks(
@@ -2130,9 +2134,9 @@ def main() -> int:
                 timeout_sec=args.processing_timeout,
                 poll_sec=2,
             )
-            print("[eval] publishing completed documents")
+            print("[eval] verifying completed documents were auto-published")
             for doc_id in uploaded_doc_ids.values():
-                publish_document(api_base, admin_token, doc_id)
+                verify_document_published(api_base, admin_token, doc_id)
             upload_map_path = report_dir / "upload-map.json"
             write_upload_map(
                 upload_map_path,

@@ -1255,3 +1255,29 @@ Outcome:
 - Full Go tests, Race/coverage, vet, Web lint/typecheck/build, Compose config,
   and diff checks pass. Live deployment verified both blocker and ready paths;
   self-approval returned 403 and the test run was cancelled without publication.
+
+## 2026-08-25 - P2.1 Acceptance and Deterministic Eval Compatibility
+
+Status: implemented
+
+Goal: complete a real two-administrator publication acceptance and keep the
+deterministic CI evaluator compatible with completed `user-uploads`
+auto-publication.
+
+Plan:
+
+1. Run one synthetic managed draft through requester assessment, self-approval
+   rejection, independent administrator approval, publication, retrieval, and
+   PostgreSQL approval/audit verification.
+2. Treat the default evaluation corpus as `user-uploads`: after completed ETL,
+   verify its publication state instead of issuing a duplicate direct PATCH.
+3. Add regression tests for the published and unpublished verification paths,
+   then rerun the exact deterministic CI command.
+
+Outcome:
+
+- The live workflow completed with distinct requester and approver identities;
+  the document became searchable and durable approval/audit rows matched the
+  second administrator.
+- Replaced the evaluator's obsolete publication PATCH with a read-only state
+  assertion. The full 47-case mock evaluation passed all release thresholds.

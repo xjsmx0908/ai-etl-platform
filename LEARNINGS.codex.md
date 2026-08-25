@@ -508,3 +508,25 @@ This file is an append-only record of completed PRAR cycles.
 - **Prevention:** Keep `user-uploads` completion publication independent from
   managed governance, reject direct managed publication, and fail closed when
   either search index cannot prove document completeness.
+
+## 2026-08-25 - P2.1 Acceptance and Eval Publication Compatibility
+
+- **Perceive:** A live two-administrator acceptance completed publication, but
+  the deterministic CI job failed after ETL because its legacy helper issued a
+  direct `published` PATCH for every evaluation document. Those fixtures enter
+  `user-uploads` and were already published by the completed-status transition.
+- **Reason:** Managed publication must continue through the Agent, while default
+  uploads must not be pushed through that workflow or redundantly republished.
+  The evaluator only needs to assert the state established by production logic.
+- **Act:** Completed the four-eyes live acceptance, repaired one stale synthetic
+  vector payload that predated knowledge-space metadata, and replaced the eval
+  publication mutation with a tenant-scoped document GET assertion. Added
+  positive and fail-closed regression tests.
+- **Refine:** All 113 script tests and Python syntax checks passed. The exact CI
+  deterministic evaluation completed 47/47 documents and queries with 100% hit,
+  pass, answer, negative, acceptable-hit, and Recall@5 rates; its isolated images
+  were removed and the 17-service root stack remained healthy.
+- **Prevention:** When a lifecycle transition gains an automatic side effect,
+  audit operational scripts for duplicate mutations. Prefer verifying the
+  resulting state over replaying a transition, and keep managed and default
+  publication paths explicit in tests.

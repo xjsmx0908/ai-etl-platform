@@ -7,6 +7,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1185,6 +1186,60 @@ class JudgeReportTest(unittest.TestCase):
         self.assertEqual(payload["summary"]["successful_query_cases"], 1)
         self.assertEqual(payload["summary"]["grounding_unavailable_cases"], 1)
         self.assertFalse(payload["summary"]["run_valid"])
+
+
+class PublicationReadinessTest(unittest.TestCase):
+    def test_verify_document_published_reads_auto_publication_state(self):
+        module_path = Path(__file__).resolve().parents[1] / "run-evals.py"
+        spec = importlib.util.spec_from_file_location("run_evals_publication", module_path)
+        if spec is None or spec.loader is None:
+            self.fail("failed to load run-evals module")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        with mock.patch.object(
+            module,
+            "http_json",
+            return_value=(200, {"publication_status": "published"}),
+        ) as http_json:
+            module.verify_document_published(
+                "http://api.invalid",
+                "admin-token",
+                "doc-1",
+            )
+
+        http_json.assert_called_once()
+        publication_call = http_json.call_args
+        self.assertEqual(
+            publication_call.args[:2],
+            ("GET", "http://api.invalid/v1/documents/doc-1"),
+        )
+        self.assertEqual(
+            publication_call.kwargs["headers"]["Authorization"],
+            "Bearer admin-token",
+        )
+
+    def test_verify_document_published_rejects_unpublished_document(self):
+        module_path = Path(__file__).resolve().parents[1] / "run-evals.py"
+        spec = importlib.util.spec_from_file_location("run_evals_unpublished", module_path)
+        if spec is None or spec.loader is None:
+            self.fail("failed to load run-evals module")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        with mock.patch.object(
+            module,
+            "http_json",
+            return_value=(200, {"publication_status": "draft"}),
+        ):
+            with self.assertRaisesRegex(module.EvalRunnerError, "not auto-published"):
+                module.verify_document_published(
+                    "http://api.invalid",
+                    "admin-token",
+                    "doc-1",
+                )
 
 
 if __name__ == "__main__":
