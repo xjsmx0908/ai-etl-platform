@@ -439,3 +439,28 @@ This file is an append-only record of completed PRAR cycles.
   not infer business approval from automated or technical checks. Keep detailed
   enterprise cases private, require three exact-gate repetitions for safety, and
   leave promotion blocked until an authorized signed artifact is present.
+
+## 2026-08-25 - Completed Upload Publication and Elasticsearch Recovery
+
+- **Perceive:** The reported upload had completed ETL and all vector chunks were
+  present, but governance excluded it because its registry state remained
+  `draft`. Elasticsearch had also crossed its flood-stage threshold, applied a
+  read-only block, and initially accepted none of the document's text chunks.
+- **Reason:** Searchability requires both publication eligibility and healthy
+  indexes. The narrow product rule is to auto-publish only completed documents
+  in the default user upload space; other spaces must retain manual publication
+  control. A local single-node search service also needs absolute watermarks that
+  reflect the host's intentionally small remaining disk budget.
+- **Act:** Added the conditional publication transition to the existing status
+  update, covered the SQL contract test-first, configured overridable absolute
+  disk watermarks, cleared the read-only block, and replayed only the affected
+  retry records. Rebuilt and redeployed only the worker.
+- **Refine:** PostgreSQL reports the upload as completed and published; Qdrant
+  and Elasticsearch each contain all 23 chunks; retry and dead-letter queues are
+  empty; and a real governed query returns the target among five sources with no
+  unpublished filtering. Full Go tests, race coverage, vet, formatting, root and
+  eval Compose validation, API readiness, stack health, and diff checks passed.
+- **Prevention:** Diagnose “not found” across registry governance, vector index,
+  text index, and queue state before changing retrieval. Publish only at the
+  completed transition, and prefer explicit service watermarks over repeatedly
+  clearing a disk-protection block without fixing its trigger.

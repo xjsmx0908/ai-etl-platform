@@ -309,7 +309,11 @@ func (s *PgStore) UpsertStatus(ctx context.Context, tenantID, docID string, d Do
 		UPDATE documents SET
 			status = $3, stage = $4, chunks_done = $5, chunks_total = $6,
 			error = $7, updated_at = now(),
-			completed_at = CASE WHEN $8::text = '' THEN completed_at ELSE $8::timestamptz END
+			completed_at = CASE WHEN $8::text = '' THEN completed_at ELSE $8::timestamptz END,
+			publication_status = CASE
+				WHEN $3 = 'completed' AND knowledge_space_id = 'user-uploads' THEN 'published'
+				ELSE publication_status
+			END
 		WHERE tenant_id = $1 AND doc_id = $2`,
 		tenantID, docID, d.Status, d.Stage, d.ChunksDone, d.ChunksTotal, d.Error,
 		completedAtParam(d.CompletedAt))

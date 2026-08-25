@@ -248,7 +248,7 @@ func TestUpsertStatus(t *testing.T) {
 		t.Fatalf("new pool: %v", err)
 	}
 	defer mock.Close()
-	mock.ExpectExec("UPDATE documents SET").
+	mock.ExpectExec(`publication_status = CASE WHEN \$3 = 'completed' AND knowledge_space_id = 'user-uploads' THEN 'published' ELSE publication_status END`).
 		WithArgs("acme", "doc-1", "processing", "embedding", 3, 5, "", "").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 

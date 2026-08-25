@@ -1169,3 +1169,25 @@ Plan:
 3. Build and redeploy the Web service, then verify the reported Chinese query through the live proxy.
 4. Run TypeScript, Compose, unit, and isolated end-to-end verification.
 5. Update the learning log and commit the focused fix.
+
+## 2026-08-25 - Completed User Upload Publication and Search Recovery
+
+Status: implemented
+
+Goal: make a successfully ingested document in the default user upload space
+immediately searchable, and prevent the local single-node Elasticsearch service
+from becoming read-only while usable disk headroom remains.
+
+Plan:
+
+1. Publish documents in `user-uploads` only when their ETL status becomes
+   `completed`; preserve manual publication state for every other knowledge
+   space and for processing or failed uploads.
+2. Add a regression assertion at the document-store update boundary.
+3. Configure absolute Elasticsearch disk watermarks suitable for this local
+   single-node stack and document their environment overrides.
+4. Clear the existing read-only block, replay only the affected indexing retry
+   records, and verify both indexes contain the complete chunk set.
+5. Rebuild and redeploy only the ETL worker, then verify a real governed query,
+   full Go tests with race coverage, `go vet`, Compose configuration, stack
+   health, and diff integrity.

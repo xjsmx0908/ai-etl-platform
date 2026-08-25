@@ -127,6 +127,9 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.routing.allocation.disk.watermark.low=${ES_DISK_WATERMARK_LOW:-8gb}
+      - cluster.routing.allocation.disk.watermark.high=${ES_DISK_WATERMARK_HIGH:-6gb}
+      - cluster.routing.allocation.disk.watermark.flood_stage=${ES_DISK_WATERMARK_FLOOD_STAGE:-4gb}
     volumes:
       - es_data:/usr/share/elasticsearch/data
     healthcheck:
