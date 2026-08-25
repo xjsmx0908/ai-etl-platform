@@ -114,6 +114,26 @@ func TestHandleDocument_AdminPublishesCompletedDraft(t *testing.T) {
 	}
 }
 
+func TestHandleDocument_ManagedDraftRequiresGovernanceWorkflow(t *testing.T) {
+	store := newFakeDocStore()
+	if err := store.Upsert(context.Background(), docstore.Document{
+		TenantID: "acme", DocID: "doc-1", FileName: "policy.pdf", Permission: "internal",
+		Status: docstore.StatusCompleted, DocStatus: docstore.DocStatusActive,
+		KnowledgeSpaceID: "policies", PublicationStatus: "draft",
+	}); err != nil {
+		t.Fatalf("seed managed document: %v", err)
+	}
+	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store, nil)
+	rec := doRequest(handler, http.MethodPatch, "/v1/documents/doc-1", map[string]string{"publication_status": "published"}, ctxWithRole("acme", "admin", "admin"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	doc, _, _ := store.Get(context.Background(), "acme", "doc-1")
+	if doc.PublicationStatus != "draft" {
+		t.Fatalf("managed document bypassed governance: %q", doc.PublicationStatus)
+	}
+}
+
 func TestHandleDocument_NonAdminCannotPublish(t *testing.T) {
 	store := newFakeDocStore()
 	seedDoc(store, "acme", "doc-1", "internal")

@@ -238,6 +238,10 @@ func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjec
 				writeError(w, http.StatusBadRequest, "invalid publication_status")
 				return
 			}
+			if input.PublicationStatus == "published" && doc.KnowledgeSpaceID != "" && doc.KnowledgeSpaceID != "user-uploads" {
+				writeError(w, http.StatusConflict, "managed documents require the publication governance workflow")
+				return
+			}
 			updater, ok := docs.(interface {
 				UpdatePublication(context.Context, string, string, string) error
 			})

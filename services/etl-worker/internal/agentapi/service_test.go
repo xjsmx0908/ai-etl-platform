@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/taskstatus"
 )
@@ -20,6 +22,32 @@ type fakeQueryService struct {
 	calls      int
 	lastReq    query.Request
 	lastAccess query.AccessContext
+}
+
+type fixedPlanner struct {
+	decision agent.PlanDecision
+	calls    int
+}
+
+func (p *fixedPlanner) Plan(context.Context, agent.Run) (agent.PlanDecision, error) {
+	p.calls++
+	return p.decision, nil
+}
+
+type fakePublicationWorkflow struct {
+	assessment   publicationworkflow.Assessment
+	publishCalls int
+	lastActor    publicationworkflow.Actor
+}
+
+func (f *fakePublicationWorkflow) Assess(context.Context, publicationworkflow.Actor, string) (publicationworkflow.Assessment, error) {
+	return f.assessment, nil
+}
+
+func (f *fakePublicationWorkflow) PublishApproved(_ context.Context, actor publicationworkflow.Actor, docID, _ string) (publicationworkflow.PublicationResult, error) {
+	f.publishCalls++
+	f.lastActor = actor
+	return publicationworkflow.PublicationResult{DocumentID: docID, PublicationStatus: "published"}, nil
 }
 
 func (f *fakeQueryService) Ask(_ context.Context, req query.Request, access query.AccessContext) (query.Response, error) {
@@ -126,6 +154,150 @@ func TestHandleRunsCreatesAndExecutesRAGRun(t *testing.T) {
 	svc.HandleRun(getRR, getReq)
 	if getRR.Code != http.StatusOK {
 		t.Fatalf("expected get status %d, got %d body=%s", http.StatusOK, getRR.Code, getRR.Body.String())
+	}
+}
+
+func TestDocumentGovernanceRunWaitsForApprovalThenPublishes(t *testing.T) {
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{
+		DocumentID: "doc-1", KnowledgeSpaceID: "policies", Ready: true,
+		Blockers: []string{}, IndexCounts: publicationworkflow.IndexCounts{Vector: 4, Text: 4},
+	}}
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerPublicationWorkflowTools(registry, workflow); err != nil {
+		t.Fatalf("register governance tools: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, GovernancePlanner{}, 6)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"workflow":"document_publication","document_id":"doc-1"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.State != agent.StatePendingApproval || len(run.Steps) != 2 || run.Steps[0].ToolName != assessPublicationToolName || run.Steps[1].ToolName != publishDocumentToolName {
+		t.Fatalf("expected assessed pending publication, got %+v", run)
+	}
+	if workflow.publishCalls != 0 {
+		t.Fatalf("publish ran before approval")
+	}
+
+	approvals, err := svc.approvalStore.ListRunApprovals(context.Background(), "tenant-a", run.ID)
+	if err != nil || len(approvals) != 1 {
+		t.Fatalf("approvals=%+v err=%v", approvals, err)
+	}
+	approveReq := adminRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/approve", []byte(`{"reason":"checks passed"}`))
+	approveRR := httptest.NewRecorder()
+	svc.HandleRun(approveRR, approveReq)
+	if approveRR.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approveRR.Code, approveRR.Body.String())
+	}
+	if err := json.NewDecoder(approveRR.Body).Decode(&run); err != nil {
+		t.Fatalf("decode approved run: %v", err)
+	}
+	if run.State != agent.StateCompleted || workflow.publishCalls != 1 || workflow.lastActor.UserID != "admin-a" {
+		t.Fatalf("run=%+v calls=%d actor=%+v", run, workflow.publishCalls, workflow.lastActor)
+	}
+}
+
+func TestDocumentGovernanceRunStopsWhenAssessmentIsBlocked(t *testing.T) {
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{
+		DocumentID: "doc-1", KnowledgeSpaceID: "policies", Ready: false,
+		Blockers:    []string{"owner_required", "text_index_missing"},
+		IndexCounts: publicationworkflow.IndexCounts{Vector: 4, Text: 0},
+	}}
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerPublicationWorkflowTools(registry, workflow); err != nil {
+		t.Fatalf("register governance tools: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, GovernancePlanner{}, 6)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := authenticatedRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"workflow":"document_publication","document_id":"doc-1"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.State != agent.StateCompleted || len(run.Steps) != 2 || run.Steps[0].ToolName != assessPublicationToolName {
+		t.Fatalf("expected blocked assessment to complete without publication, got %+v", run)
+	}
+	if !strings.Contains(run.Final, "owner_required") || !strings.Contains(run.Final, "text_index_missing") {
+		t.Fatalf("expected blockers in final result, got %q", run.Final)
+	}
+	approvals, err := svc.approvalStore.ListRunApprovals(context.Background(), "tenant-a", run.ID)
+	if err != nil || len(approvals) != 0 || workflow.publishCalls != 0 {
+		t.Fatalf("approvals=%+v err=%v publish_calls=%d", approvals, err, workflow.publishCalls)
+	}
+}
+
+func TestDocumentGovernanceRunRejectsSelfApproval(t *testing.T) {
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{
+		DocumentID: "doc-1", KnowledgeSpaceID: "policies", Ready: true,
+		Blockers: []string{}, IndexCounts: publicationworkflow.IndexCounts{Vector: 4, Text: 4},
+	}}
+	store := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerPublicationWorkflowTools(registry, workflow); err != nil {
+		t.Fatalf("register governance tools: %v", err)
+	}
+	orchestrator := newTestOrchestrator(t, store, registry, GovernancePlanner{}, 6)
+	svc := newServiceWithComponents(orchestrator, store)
+
+	req := adminRequest(http.MethodPost, "/v1/agent/runs", []byte(`{"workflow":"document_publication","document_id":"doc-1"}`))
+	rr := httptest.NewRecorder()
+	svc.HandleRuns(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var run agent.Run
+	if err := json.NewDecoder(rr.Body).Decode(&run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+
+	approveReq := adminRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/approve", []byte(`{"reason":"self approval"}`))
+	approveRR := httptest.NewRecorder()
+	svc.HandleRun(approveRR, approveReq)
+	if approveRR.Code != http.StatusForbidden {
+		t.Fatalf("approve status=%d body=%s", approveRR.Code, approveRR.Body.String())
+	}
+	if workflow.publishCalls != 0 {
+		t.Fatalf("publish ran after self approval")
+	}
+	approvals, err := svc.approvalStore.ListRunApprovals(context.Background(), "tenant-a", run.ID)
+	if err != nil || len(approvals) != 1 || approvals[0].Status != agent.ApprovalPending {
+		t.Fatalf("approvals=%+v err=%v", approvals, err)
+	}
+}
+
+func TestRoutingPlannerUsesGovernanceOnlyForPublicationTasks(t *testing.T) {
+	fallback := &fixedPlanner{decision: agent.PlanDecision{Type: agent.DecisionFinal, Final: "fallback"}}
+	planner := routingPlanner{fallback: fallback, governance: GovernancePlanner{}}
+
+	decision, err := planner.Plan(context.Background(), agent.Run{Task: "document_publication:doc-1"})
+	if err != nil {
+		t.Fatalf("plan governance task: %v", err)
+	}
+	if decision.ToolName != assessPublicationToolName || fallback.calls != 0 {
+		t.Fatalf("unexpected governance decision=%+v fallback_calls=%d", decision, fallback.calls)
+	}
+
+	decision, err = planner.Plan(context.Background(), agent.Run{Task: "回答报销问题"})
+	if err != nil {
+		t.Fatalf("plan fallback task: %v", err)
+	}
+	if decision.Final != "fallback" || fallback.calls != 1 {
+		t.Fatalf("unexpected fallback decision=%+v calls=%d", decision, fallback.calls)
 	}
 }
 

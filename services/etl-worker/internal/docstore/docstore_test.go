@@ -260,3 +260,22 @@ func TestUpsertStatus(t *testing.T) {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 }
+
+func TestUpdatePublicationPublishesOnlyCurrentDraft(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer mock.Close()
+	mock.ExpectExec(`status='completed' AND doc_status='active' AND publication_status='draft'`).
+		WithArgs("acme", "doc-1", "published").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	s := New(mock)
+	if err := s.UpdatePublication(context.Background(), "acme", "doc-1", "published"); err != nil {
+		t.Fatalf("UpdatePublication: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

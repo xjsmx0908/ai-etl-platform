@@ -205,6 +205,10 @@ export type AgentStep = {
   thought?: string;
   tool_name?: string;
   tool_arguments?: unknown;
+  tool_result?: {
+    content: string;
+    data?: Record<string, unknown>;
+  };
   observation?: string;
   error?: string;
   duration?: number;
@@ -212,11 +216,25 @@ export type AgentStep = {
 
 export type AgentRun = {
   id: string;
+  user_id?: string;
   task: string;
   state: string;
   final?: string;
   error?: string;
   steps: AgentStep[];
+};
+
+export type AgentApproval = {
+  id: string;
+  run_id: string;
+  step_index: number;
+  tool_name: string;
+  status: "pending" | "approved" | "rejected";
+  requested_by: string;
+  requested_at: string;
+  decided_by?: string;
+  decided_at?: string;
+  reason?: string;
 };
 
 export type HealthService = { status: string; latency_ms: number };

@@ -1,8 +1,7 @@
 import { NextRequest } from "next/server";
 
-// Create an Agent run. auto_execute defaults to true on the backend, so the
-// response is the completed run with its step timeline. Auth from HttpOnly
-// cookie, injected server-side as a Bearer header.
+// Create an Agent run. Governance runs may stop at pending approval, so the
+// browser follows up through the run action routes. Auth stays in HttpOnly cookie.
 export async function POST(req: NextRequest) {
   const backend = process.env.BACKEND_URL || "http://query-api:8080";
   const body = await req.text();

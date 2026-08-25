@@ -205,7 +205,8 @@ python3 scripts/load-corpus.py --api-base http://localhost:8080 --username admin
 前端在 `WEB_HOST_PORT`（默认 3100，3000 被其他项目占用时用 3100）。浏览器只访问前端端口，
 `/api/*` 由 Next route handler 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。
 功能：问答（SSE 流式 + 引用展开）、文档管理（列表/搜索/删除）、用户管理（admin）、
-数据接入、系统可观测、检索质量、Agent 编排。
+数据接入、系统可观测、检索质量、Agent 文档发布治理（受管草稿检查、四眼审批、
+幂等发布与审计）。
 
 公网 HTTPS 入口为 `https://rag.ipuau.com`。宿主机 Nginx 配置模板位于
 `deploy/nginx/rag.ipuau.com.conf`，反向代理到 Web Compose 服务的宿主机端口
@@ -257,7 +258,7 @@ python -m app.main
 | Reranker Service | 8091 | 可选 Cross-Encoder 重排服务（`rerank` profile） |
 | Kafka | 9092 | 消息队列 |
 | Redis Cache | 6379 | 语义检索缓存（`allkeys-lru`，可淘汰） |
-| Redis State | 6380 | Agent run / 审批审计 / fencing token / 幂等 / Checkpoint（`noeviction` + AOF） |
+| Redis State | 6380 | Agent run / fencing token / 幂等 / Checkpoint（`noeviction` + AOF）；Agent 审批记录存 PostgreSQL |
 | Qdrant | 6333 | 向量数据库 |
 | MinIO | 9000/9001 | 对象存储（API/Console） |
 | Prometheus | 9090 | 指标监控 |
@@ -393,9 +394,9 @@ docker compose --profile rerank up -d --build reranker-service query-api
 | 实例 | 淘汰策略 | 存放内容 | 丢数据的后果 |
 | --- | --- | --- | --- |
 | `redis-cache` | `allkeys-lru` | 语义检索缓存 | 多做一次检索，无正确性影响 |
-| `redis-state` | `noeviction` + AOF | Agent run 状态、审批审计、fencing token、幂等键、Checkpoint、任务状态、ES 重试队列 | **破坏正确性** |
+| `redis-state` | `noeviction` + AOF | Agent run 状态、fencing token、幂等键、Checkpoint、任务状态、ES 重试队列 | **破坏正确性** |
 
-分离的原因是正确性而非容量：`allkeys-lru` 会淘汰任意 key。若 fencing token 被淘汰后重置，`agent.Orchestrator` 依赖的 `lease.FencingToken > run.FencingToken` 判断将无法再拒绝陈旧写入，durable run 的并发安全保证失效；审批记录被淘汰则直接销毁合规凭证。因此状态实例必须 `noeviction`——宁可写入失败并显式报错，也不能静默丢状态。
+分离的原因是正确性而非容量：`allkeys-lru` 会淘汰任意 key。若 fencing token 被淘汰后重置，`agent.Orchestrator` 依赖的 `lease.FencingToken > run.FencingToken` 判断将无法再拒绝陈旧写入，durable run 的并发安全保证失效。审批记录已独立持久化到 PostgreSQL；Redis 状态实例仍必须 `noeviction`，宁可写入失败并显式报错，也不能静默丢运行状态。
 
 配置优先级：`REDIS_CACHE_*` / `REDIS_STATE_*` > `REDIS_*`（共享回退，便于本地单实例调试）。生产环境启动校验会拒绝两者指向同一实例与 DB。
 

@@ -1210,3 +1210,48 @@ Plan:
    enable the Web session cookie's Secure flag.
 4. Verify public and origin HTTPS, login and protected-route boundaries, the
    upload size limit, certificate renewal, the existing blog, and stack health.
+
+## 2026-08-25 - P2.1 Document Publication Governance Agent
+
+Status: implemented
+
+Goal: replace the duplicate query Agent page with one bounded enterprise
+workflow that assesses a managed-space draft, requests human approval, publishes
+through shared governance rules, and verifies the outcome.
+
+Plan:
+
+1. Add a deep publication-workflow module whose interface owns deterministic
+   readiness assessment, durable review records, approved publication, cache
+   invalidation, and audit behavior.
+2. Keep `user-uploads` auto-publication unchanged; governance runs apply only to
+   managed knowledge spaces and fail closed on incomplete ETL, inactive state,
+   missing indexes, or unresolved version metadata.
+3. Register bounded Agent tools for document inspection, readiness assessment,
+   and approval-required idempotent publication; never let planner output bypass
+   module policy.
+4. Add PostgreSQL-backed publication review records and enforce tenant scope,
+   administrator approval, and requester/approver separation.
+5. Replace the free-form Agent UI with a draft-document governance workbench,
+   run timeline, blockers, approval actions, cancellation, and durable results.
+6. Test the workflow at the publication module interface, Agent HTTP interface,
+   and Web interface, including negative authorization, replay, rejection,
+   recovery, and unchanged `user-uploads` behavior.
+
+Outcome:
+
+- Added deterministic `assess_document_publication` and approval-required
+  `publish_document` tools. Free-form planner output cannot select or reorder
+  the managed publication path.
+- Readiness now fails closed on document lifecycle/metadata and exact Qdrant +
+  Elasticsearch tenant/document chunk counts. `user-uploads` auto-publication
+  remains unchanged.
+- Approval records are stored in PostgreSQL and requester self-approval is
+  rejected. Publication is idempotent, flushes semantic cache, and appends the
+  existing immutable document audit event.
+- Replaced the duplicate query Agent page with a managed-draft workbench showing
+  checks, blockers, action history, human approval, rejection, and cancellation
+  without exposing planner thoughts.
+- Full Go tests, Race/coverage, vet, Web lint/typecheck/build, Compose config,
+  and diff checks pass. Live deployment verified both blocker and ready paths;
+  self-approval returned 403 and the test run was cancelled without publication.

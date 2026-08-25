@@ -487,3 +487,24 @@ This file is an append-only record of completed PRAR cycles.
 - **Prevention:** Query authoritative nameservers before changing DNS, keep
   per-domain proxy configuration versioned, and test certificate renewal plus
   application cookie policy as part of HTTPS delivery.
+
+## 2026-08-25 - P2.1 Document Publication Governance Agent
+
+- **Perceive:** The Agent page duplicated normal RAG question answering, while
+  managed drafts could still be published directly without deterministic index
+  checks or requester/approver separation.
+- **Reason:** Publication policy belongs in one deep business module and a
+  deterministic workflow. An LLM may assist elsewhere, but must not choose,
+  skip, or reorder readiness and approval gates for a side effect.
+- **Act:** Added managed-document readiness assessment, exact Qdrant/Elasticsearch
+  counts, PostgreSQL approvals, four-eyes enforcement, idempotent audited
+  publication, planner routing, browser proxy actions, and a governance
+  workbench that exposes checks and actions without chain-of-thought.
+- **Refine:** Module and HTTP tests cover blockers, approval, self-approval,
+  replay, and index failures. Full Go tests, Race/coverage, vet, Web
+  lint/typecheck/build, Compose validation, and diff checks pass. Live managed
+  drafts verified both deterministic blockers and the ready/pending path; a
+  self-approval returned 403, then cancellation left the document as draft.
+- **Prevention:** Keep `user-uploads` completion publication independent from
+  managed governance, reject direct managed publication, and fail closed when
+  either search index cannot prove document completeness.

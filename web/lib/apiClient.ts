@@ -1,4 +1,5 @@
 import type {
+  AgentApproval,
   AgentRun,
   AnswerMeta,
   AuditListResponse,
@@ -8,7 +9,7 @@ import type {
   DocumentsResponse,
   Health,
   LoginResponse,
-	KnowledgeSpace,
+  KnowledgeSpace,
   Source,
   TaskStatus,
   UploadResult,
@@ -227,6 +228,46 @@ export async function createAgentRun(task: string): Promise<AgentRun> {
   });
 }
 
+export async function createDocumentPublicationRun(documentId: string): Promise<AgentRun> {
+  return request<AgentRun>("/agent/runs", {
+    method: "POST",
+    body: JSON.stringify({ workflow: "document_publication", document_id: documentId }),
+  });
+}
+
+export async function getAgentRun(id: string): Promise<AgentRun> {
+  return request<AgentRun>(`/agent/runs/${encodeURIComponent(id)}`);
+}
+
+export async function listAgentApprovals(id: string): Promise<AgentApproval[]> {
+  return request<AgentApproval[]>(`/agent/runs/${encodeURIComponent(id)}/approvals`);
+}
+
+export async function approveAgentRun(id: string, reason: string): Promise<AgentRun> {
+  return request<AgentRun>(`/agent/runs/${encodeURIComponent(id)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function rejectAgentRun(id: string, reason: string): Promise<AgentRun> {
+  return request<AgentRun>(`/agent/runs/${encodeURIComponent(id)}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function resumeAgentRun(id: string): Promise<AgentRun> {
+  return request<AgentRun>(`/agent/runs/${encodeURIComponent(id)}/resume`, { method: "POST", body: "{}" });
+}
+
+export async function cancelAgentRun(id: string, reason: string): Promise<AgentRun> {
+  return request<AgentRun>(`/agent/runs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export type QuerySSEHandlers = {
   onSources?: (sources: Source[]) => void;
   onDelta?: (text: string) => void;
@@ -327,5 +368,12 @@ export const apiClient = {
   listAudit,
   getHealth,
   createAgentRun,
+  createDocumentPublicationRun,
+  getAgentRun,
+  listAgentApprovals,
+  approveAgentRun,
+  rejectAgentRun,
+  resumeAgentRun,
+  cancelAgentRun,
   querySSE,
 };

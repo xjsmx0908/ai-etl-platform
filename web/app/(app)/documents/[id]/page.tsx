@@ -9,7 +9,7 @@ import { Modal } from "@/components/ui/Modal";
 import { useAuth } from "@/lib/auth";
 import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
 import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
-import { Upload } from "lucide-react";
+import { Bot, Upload } from "lucide-react";
 import type { Document, DocumentChunk } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -287,9 +287,16 @@ export default function DocumentDetailPage() {
         </dl>
         {isAdmin && (
           <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
-            <Button size="sm" onClick={() => void updatePublication("published")} loading={updatingPublication} disabled={doc.publication_status === "published" || doc.status !== "completed"}>
-              发布
-            </Button>
+            {doc.knowledge_space_id !== "user-uploads" && doc.publication_status === "draft" ? (
+              <Link href="/agent" className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700">
+                <Bot className="h-4 w-4" />
+                发布治理
+              </Link>
+            ) : (
+              <Button size="sm" onClick={() => void updatePublication("published")} loading={updatingPublication} disabled={doc.publication_status === "published" || doc.status !== "completed"}>
+                发布
+              </Button>
+            )}
             <Button size="sm" variant="secondary" onClick={() => void updatePublication("draft")} disabled={updatingPublication || doc.publication_status === "draft"}>
               退回草稿
             </Button>

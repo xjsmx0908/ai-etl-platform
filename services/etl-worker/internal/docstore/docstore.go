@@ -329,7 +329,7 @@ func (s *PgStore) UpsertStatus(ctx context.Context, tenantID, docID string, d Do
 func (s *PgStore) UpdatePublication(ctx context.Context, tenantID, docID, status string) error {
 	tag, err := s.q.Exec(ctx, `UPDATE documents SET publication_status=$3, updated_at=now()
 		WHERE tenant_id=$1 AND doc_id=$2
-		  AND ($3 <> 'published' OR (status='completed' AND doc_status='active'))`,
+		  AND ($3 <> 'published' OR (status='completed' AND doc_status='active' AND publication_status='draft'))`,
 		tenantID, docID, status)
 	if err != nil {
 		return fmt.Errorf("update publication: %w", err)

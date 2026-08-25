@@ -59,8 +59,8 @@ in production, rather than relying on operators reading documentation.
   fail loudly with an OOM error instead of state disappearing silently — the correct
   trade-off for data whose loss breaks correctness.
 - AOF with `everysec` bounds crash loss to roughly one second. Full `appendfsync always`
-  was not chosen: the fencing-token and approval paths are not hot enough to justify a
-  per-write fsync, and one second of exposure is acceptable for a dev/staging profile.
+  was not chosen: the fencing-token path is not hot enough to justify a per-write fsync,
+  and one second of exposure is acceptable for a dev/staging profile.
 - Two instances instead of one: slightly more memory overhead and one more container.
   Accepted — the alternative is a correctness bug.
 - `REDIS_STATE_HOST_PORT` defaults to 6380 to avoid colliding with the cache instance on 6379.
@@ -77,8 +77,6 @@ solve an eviction-policy problem.
 **Keep one instance, switch to `noeviction`.** Rejected: the cache then fills memory and
 blocks state writes. Cache growth is unbounded by nature; that is exactly why it needs LRU.
 
-**Move state to PostgreSQL now.** Deferred to roadmap T-14b/T-15. It is the right long-term
-home for approval audit (which additionally should be append-only and is currently subject
-to a 24-hour TTL — a separate defect tracked as T-15), but it is a multi-day change. Splitting
-the Redis instances removes the correctness bug in half a day and does not conflict with the
-later migration.
+**Move all state to PostgreSQL.** Still deferred for Agent runs, locks, fencing tokens, and
+active recovery state. P2.1 moved durable approval records to PostgreSQL and removed their
+former 24-hour Redis TTL; Redis State continues to own the remaining state-machine data.

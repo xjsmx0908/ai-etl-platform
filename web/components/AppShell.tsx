@@ -27,7 +27,7 @@ const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/data", label: "数据接入", icon: UploadCloud },
   { href: "/observe", label: "系统可观测", icon: Activity },
   { href: "/quality", label: "检索质量", icon: GaugeCircle },
-  { href: "/agent", label: "Agent 编排", icon: Bot },
+  { href: "/agent", label: "Agent 发布治理", icon: Bot },
 ];
 
 const ADMIN_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [

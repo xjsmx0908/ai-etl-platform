@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/agentapi"
 	"ai-etl-pipeline/internal/audit"
 	"ai-etl-pipeline/internal/auth"
@@ -36,6 +37,7 @@ import (
 	"ai-etl-pipeline/internal/middleware"
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/prometheus"
+	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/s3"
@@ -258,7 +260,20 @@ func main() {
 	}
 	defer taskStatusStore.Close()
 
-	agentSvc, err := agentapi.NewServiceWithObserver(cfg, qs, taskStatusStore, prom)
+	publicationInspector := publicationworkflow.NewHTTPIndexInspector(publicationworkflow.IndexInspectorOptions{
+		QdrantEndpoint:       cfg.StoreEndpoint,
+		QdrantAPIKey:         cfg.StoreAPIKey,
+		QdrantCollection:     cfg.StoreCollection,
+		ElasticsearchAddress: cfg.ESAddress,
+		ElasticsearchAPIKey:  cfg.ESAPIKey,
+		ElasticsearchIndex:   cfg.ESIndex,
+	})
+	publicationWorkflow := publicationworkflow.New(docStore, publicationInspector).
+		WithPublisher(newDocumentPublisher(docStore, qs, auditStore))
+	agentSvc, err := agentapi.NewServiceWithDependencies(cfg, qs, taskStatusStore, prom, agentapi.Dependencies{
+		ApprovalStore:       agent.NewPostgresApprovalStore(pgPool),
+		PublicationWorkflow: publicationWorkflow,
+	})
 	if err != nil {
 		slog.Error("failed to create agent api service", "error", err)
 		os.Exit(1)

@@ -20,7 +20,7 @@ The MVP focuses on the enterprise control plane:
 - optimistic version checks for stale write rejection
 - Redis-backed run persistence
 - pending-approval state for high-risk tools
-- durable approval records with approve/reject audit
+- PostgreSQL-backed approval records with approve/reject audit
 - compensation handlers for failed side-effecting tools
 - public `/v1/agent/runs` API for create, inspect, resume, approve, reject, approval listing, and cancel
 - real read-only tools: `rag_query` and `etl_task_status`
@@ -29,6 +29,7 @@ The MVP focuses on the enterprise control plane:
 - Redis-backed distributed locks outside dev
 - run timeout, approval timeout, and explicit cancellation
 - Prometheus metrics for Agent run outcomes, tool steps, approval decisions, and lifecycle latency
+- bounded managed-document publication workflow with deterministic routing
 
 Out of scope for this cut:
 
@@ -318,6 +319,30 @@ orchestrator still persists the step first, then the Registry validates
 arguments, RBAC, approval, timeout, idempotency, and compensation before
 executing any tool.
 
+## Document Publication Governance
+
+Structured requests use `{workflow: "document_publication", document_id}`. A
+router sends only these tasks to a deterministic planner; all other Agent tasks
+continue through the configured planner.
+
+```text
+assess_document_publication
+  -> managed space, completed ETL, active draft, owner, effective date
+  -> exact tenant/document counts in Qdrant and Elasticsearch
+  -> blocker result or publish step
+
+publish_document
+  -> requires administrator approval
+  -> rejects requester self-approval
+  -> rechecks readiness with the approving actor
+  -> publishes once, flushes semantic cache, appends document audit
+```
+
+Approval rows are stored in PostgreSQL (`agent_approvals`). Agent runs and
+distributed locks remain in Redis State. Direct PATCH publication is rejected
+for managed spaces, so callers cannot bypass the workflow. The completed-upload
+auto-publication rule for `user-uploads` is unchanged.
+
 ## Task Status Read Model
 
 The task status read model records upload and worker lifecycle state:
@@ -382,6 +407,14 @@ etl_task_status
   -> reads tenant-scoped TaskStatusStore
   -> returns queued, processing, completed, failed, or not_found
   -> does not reveal whether another tenant owns a task id
+
+assess_document_publication
+  -> evaluates one tenant-scoped managed draft against publication invariants
+  -> returns deterministic blockers and vector/text index counts
+
+publish_document
+  -> requires explicit approval and agent permission
+  -> rechecks readiness and performs idempotent publication
 ```
 
 Additional tools should be registered through the same Registry path so the LLM
@@ -426,3 +459,7 @@ Current tests cover:
 - approval timeout fails stale pending approvals before tool execution
 - pending approval audit records are rejected when lifecycle timeout closes the run
 - Prometheus exposes Agent run, step, and approval metrics
+- managed drafts stop with deterministic blockers when not ready
+- ready managed drafts wait for approval and publish exactly once
+- requester self-approval is rejected without executing publication
+- Qdrant and Elasticsearch count requests are tenant/document scoped

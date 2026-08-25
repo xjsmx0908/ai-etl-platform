@@ -177,7 +177,7 @@ func (f *fakeDocStore) UpdatePublication(_ context.Context, tenantID, docID, sta
 	defer f.mu.Unlock()
 	key := f.key(tenantID, docID)
 	doc, ok := f.docs[key]
-	if !ok || (status == "published" && (doc.Status != docstore.StatusCompleted || doc.DocStatus != docstore.DocStatusActive)) {
+	if !ok || (status == "published" && (doc.Status != docstore.StatusCompleted || doc.DocStatus != docstore.DocStatusActive || doc.PublicationStatus != "draft")) {
 		return docstore.ErrNotFound
 	}
 	doc.PublicationStatus = status

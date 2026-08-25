@@ -45,9 +45,17 @@ type Service struct {
 	closers       []io.Closer
 }
 
+// Dependencies are optional durable adapters used by bounded production workflows.
+type Dependencies struct {
+	ApprovalStore       agent.ApprovalStore
+	PublicationWorkflow PublicationWorkflow
+}
+
 type createRunRequest struct {
 	Task        string `json:"task"`
 	AutoExecute *bool  `json:"auto_execute,omitempty"`
+	Workflow    string `json:"workflow,omitempty"`
+	DocumentID  string `json:"document_id,omitempty"`
 }
 
 type approveRunRequest struct {
@@ -73,6 +81,11 @@ func NewService(cfg config.Config, qs QueryService, taskStatusStore model.TaskSt
 
 // NewServiceWithObserver wires the Agent API and emits lifecycle events to observer when provided.
 func NewServiceWithObserver(cfg config.Config, qs QueryService, taskStatusStore model.TaskStatusStore, observer Observer) (*Service, error) {
+	return NewServiceWithDependencies(cfg, qs, taskStatusStore, observer, Dependencies{})
+}
+
+// NewServiceWithDependencies wires optional durable approval and publication adapters.
+func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusStore model.TaskStatusStore, observer Observer, dependencies Dependencies) (*Service, error) {
 	if qs == nil {
 		return nil, fmt.Errorf("query service is required")
 	}
@@ -81,12 +94,14 @@ func NewServiceWithObserver(cfg config.Config, qs QueryService, taskStatusStore 
 	}
 
 	var store agent.Store
-	var approvalStore agent.ApprovalStore
+	approvalStore := dependencies.ApprovalStore
 	var lockManager agent.LockManager
 	var closers []io.Closer
 	if cfg.IsDev() {
 		store = agent.NewMemoryStore()
-		approvalStore = agent.NewMemoryApprovalStore()
+		if approvalStore == nil {
+			approvalStore = agent.NewMemoryApprovalStore()
+		}
 		lockManager = agent.NewMemoryLockManager()
 	} else {
 		redisStore, err := agent.NewRedisStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.AgentRunTTL)
@@ -96,13 +111,15 @@ func NewServiceWithObserver(cfg config.Config, qs QueryService, taskStatusStore 
 		store = redisStore
 		closers = append(closers, redisStore)
 
-		redisApprovalStore, err := agent.NewRedisApprovalStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.AgentRunTTL)
-		if err != nil {
-			_ = redisStore.Close()
-			return nil, err
+		if approvalStore == nil {
+			redisApprovalStore, err := agent.NewRedisApprovalStore(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.AgentRunTTL)
+			if err != nil {
+				_ = redisStore.Close()
+				return nil, err
+			}
+			approvalStore = redisApprovalStore
+			closers = append(closers, redisApprovalStore)
 		}
-		approvalStore = redisApprovalStore
-		closers = append(closers, redisApprovalStore)
 
 		redisLockManager, err := agent.NewRedisLockManager(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.AgentRunTTL)
 		if err != nil {
@@ -120,9 +137,19 @@ func NewServiceWithObserver(cfg config.Config, qs QueryService, taskStatusStore 
 	if err := registerTaskStatusTool(registry, taskStatusStore); err != nil {
 		return nil, err
 	}
+	if dependencies.PublicationWorkflow != nil {
+		if err := registerPublicationWorkflowTools(registry, dependencies.PublicationWorkflow); err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+	}
 	planner, err := newPlanner(cfg, registry)
 	if err != nil {
+		closeAll(closers)
 		return nil, err
+	}
+	if dependencies.PublicationWorkflow != nil {
+		planner = routingPlanner{fallback: planner, governance: GovernancePlanner{}}
 	}
 	orchestrator, err := agent.NewOrchestrator(store, lockManager, registry, planner, agent.Options{
 		NodeID:          cfg.AgentNodeID,
@@ -211,6 +238,13 @@ func (s *Service) HandleRuns(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+	if strings.TrimSpace(req.Workflow) != "" {
+		if req.Workflow != documentPublicationWorkflow || strings.TrimSpace(req.DocumentID) == "" {
+			http.Error(w, "invalid workflow request", http.StatusBadRequest)
+			return
+		}
+		req.Task = governanceTaskPrefix + strings.TrimSpace(req.DocumentID)
 	}
 
 	run, err := s.orchestrator.Start(r.Context(), actor, req.Task)
@@ -380,6 +414,10 @@ func (s *Service) handleApprove(w http.ResponseWriter, r *http.Request, runID st
 	approval, toolName, err := s.currentApproval(r.Context(), actor.TenantID, run, req.ApprovalID, req.ToolName)
 	if err != nil {
 		writeAgentError(w, err)
+		return
+	}
+	if approval.RequestedBy == actor.UserID {
+		http.Error(w, "approval requires a different administrator", http.StatusForbidden)
 		return
 	}
 	if approval.Status == agent.ApprovalRejected {
