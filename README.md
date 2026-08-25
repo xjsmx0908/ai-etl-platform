@@ -207,6 +207,11 @@ python3 scripts/load-corpus.py --api-base http://localhost:8080 --username admin
 功能：问答（SSE 流式 + 引用展开）、文档管理（列表/搜索/删除）、用户管理（admin）、
 数据接入、系统可观测、检索质量、Agent 编排。
 
+公网 HTTPS 入口为 `https://rag.ipuau.com`。宿主机 Nginx 配置模板位于
+`deploy/nginx/rag.ipuau.com.conf`，反向代理到 Web Compose 服务的宿主机端口
+`3100`。HTTPS 部署必须在本地 `.env` 设置 `COOKIE_SECURE=true`；证书由宿主机
+Certbot 管理并通过 systemd timer 自动续期。
+
 ### Go 服务开发
 
 ```bash

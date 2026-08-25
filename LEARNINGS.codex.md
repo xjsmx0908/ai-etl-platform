@@ -464,3 +464,26 @@ This file is an append-only record of completed PRAR cycles.
   text index, and queue state before changing retrieval. Publish only at the
   completed transition, and prefer explicit service watermarks over repeatedly
   clearing a disk-protection block without fixing its trigger.
+
+## 2026-08-25 - Public HTTPS Domain
+
+- **Perceive:** The domain was registered at one provider while its authoritative
+  nameservers were hosted by another. Records added only at the registrar were
+  invisible to public resolvers. The host already ran Nginx for another site and
+  the RAG Web service was healthy on port 3100.
+- **Reason:** Registrar ownership and authoritative DNS hosting are separate.
+  The lowest-risk deployment adds one isolated Nginx virtual host, keeps the
+  application and existing sites unchanged, and enables Secure cookies only
+  after HTTPS is operational.
+- **Act:** Added the authoritative DNS record, deployed a versioned Nginx proxy,
+  issued a Let's Encrypt certificate, enabled HTTP-to-HTTPS redirection, set the
+  local Web deployment to `COOKIE_SECURE=true`, and recreated only the Web
+  container.
+- **Refine:** Public HTTPS homepage and login return 200, unauthenticated
+  protected access returns 401, the origin presents the expected certificate,
+  HTTP redirects to HTTPS, oversized uploads return 413 before transfer, and a
+  Certbot renewal dry run succeeds. The existing blog remains reachable and all
+  17 root services remain running with no unhealthy service.
+- **Prevention:** Query authoritative nameservers before changing DNS, keep
+  per-domain proxy configuration versioned, and test certificate renewal plus
+  application cookie policy as part of HTTPS delivery.

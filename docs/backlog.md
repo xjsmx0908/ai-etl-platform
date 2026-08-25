@@ -1191,3 +1191,22 @@ Plan:
 5. Rebuild and redeploy only the ETL worker, then verify a real governed query,
    full Go tests with race coverage, `go vet`, Compose configuration, stack
    health, and diff integrity.
+
+## 2026-08-25 - Public HTTPS Domain
+
+Status: implemented
+
+Goal: expose the existing Web application at `https://rag.ipuau.com` without
+changing application routes or disrupting the existing host Nginx sites.
+
+Plan:
+
+1. Confirm the authoritative DNS provider and point the `rag` record at the
+   current server.
+2. Add a versioned Nginx virtual host that proxies to the existing Web service,
+   preserves forwarding headers and long-lived responses, and enforces the
+   upload boundary before forwarding.
+3. Issue and deploy a Let's Encrypt certificate, redirect HTTP to HTTPS, and
+   enable the Web session cookie's Secure flag.
+4. Verify public and origin HTTPS, login and protected-route boundaries, the
+   upload size limit, certificate renewal, the existing blog, and stack health.
