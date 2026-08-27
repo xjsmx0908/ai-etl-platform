@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/model"
 )
@@ -156,6 +157,30 @@ type fullTextSinkStub struct {
 	err   error
 }
 
+type ingestionJobStub struct {
+	claim       ingestion.ClaimResult
+	completeErr error
+	failErr     error
+	events      *[]string
+}
+
+func (s *ingestionJobStub) Claim(context.Context, model.Task, time.Duration) (ingestion.ClaimResult, error) {
+	return s.claim, nil
+}
+
+func (s *ingestionJobStub) Complete(context.Context, model.Task, time.Time) error {
+	if s.events != nil {
+		*s.events = append(*s.events, "complete")
+	}
+	return s.completeErr
+}
+func (s *ingestionJobStub) Fail(context.Context, model.Task, string, time.Time) error {
+	if s.events != nil {
+		*s.events = append(*s.events, "fail")
+	}
+	return s.failErr
+}
+
 func (s *fullTextSinkStub) Enqueue(_ context.Context, _ model.Chunk) error {
 	s.calls++
 	return s.err
@@ -241,6 +266,92 @@ func TestHandleTask_CommitsOffsetOnlyAfterDLQSuccess(t *testing.T) {
 	}
 	if statuses.statuses[0].Status != model.TaskStatusProcessing || statuses.statuses[len(statuses.statuses)-1].Status != model.TaskStatusFailed {
 		t.Fatalf("unexpected status sequence: %+v", statuses.statuses)
+	}
+}
+
+func TestHandleTask_AcksCompletedDuplicateWithoutProcessing(t *testing.T) {
+	storer := &captureStorer{}
+	dlq := &dlqStub{}
+	jobs := &ingestionJobStub{claim: ingestion.ClaimTerminal}
+	p := New(baseTestConfig(), vectorEmbedder{}, storer, metrics.NewCollector(10), noopCheckpoint{}, dlq).
+		WithIngestionJobs(jobs)
+	acked, nacked := 0, 0
+
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1", FilePath: "missing"},
+		Ack:  func() { acked++ }, Nack: func(error) { nacked++ },
+	})
+
+	if acked != 1 || nacked != 0 {
+		t.Fatalf("duplicate acknowledgements = ack:%d nack:%d", acked, nacked)
+	}
+	if len(storer.chunks) != 0 || dlq.pushes != 0 {
+		t.Fatalf("completed duplicate was processed: chunks=%d dlq=%d", len(storer.chunks), dlq.pushes)
+	}
+}
+
+func TestHandleTask_PersistsCompletionBeforeAcknowledging(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.Environment = "dev"
+	tmp, err := os.CreateTemp(t.TempDir(), "durable-*.txt")
+	if err != nil {
+		t.Fatalf("create input: %v", err)
+	}
+	if _, err := tmp.WriteString("durable consumer content"); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("close input: %v", err)
+	}
+
+	events := []string{}
+	jobs := &ingestionJobStub{claim: ingestion.ClaimAcquired, events: &events}
+	p := New(cfg, vectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).
+		WithIngestionJobs(jobs)
+	task := model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1", FilePath: tmp.Name()}
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: task, Ack: func() { events = append(events, "ack") }, Nack: func(error) { events = append(events, "nack") },
+	})
+	if got, want := strings.Join(events, ","), "complete,ack"; got != want {
+		t.Fatalf("terminal order = %q, want %q", got, want)
+	}
+
+	events = nil
+	jobs.completeErr = errors.New("postgres unavailable")
+	task.JobID, task.EventID, task.DocID = "job-2", "event-2", "doc-2"
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: task, Ack: func() { events = append(events, "ack") }, Nack: func(error) { events = append(events, "nack") },
+	})
+	if got, want := strings.Join(events, ","), "complete,nack"; got != want {
+		t.Fatalf("failed terminal order = %q, want %q", got, want)
+	}
+}
+
+func TestHandleTask_PersistsFailureAfterDLQBeforeAcknowledging(t *testing.T) {
+	events := []string{}
+	jobs := &ingestionJobStub{claim: ingestion.ClaimAcquired, events: &events}
+	dlq := &dlqStub{}
+	p := New(baseTestConfig(), noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, dlq).
+		WithIngestionJobs(jobs)
+	task := model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1", FilePath: "missing"}
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: task, Ack: func() { events = append(events, "ack") }, Nack: func(error) { events = append(events, "nack") },
+	})
+	if dlq.pushes != 1 {
+		t.Fatalf("DLQ pushes = %d, want 1", dlq.pushes)
+	}
+	if got, want := strings.Join(events, ","), "fail,ack"; got != want {
+		t.Fatalf("failure terminal order = %q, want %q", got, want)
+	}
+
+	events = nil
+	jobs.failErr = errors.New("postgres unavailable")
+	task.JobID, task.EventID, task.DocID = "job-2", "event-2", "doc-2"
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: task, Ack: func() { events = append(events, "ack") }, Nack: func(error) { events = append(events, "nack") },
+	})
+	if got, want := strings.Join(events, ","), "fail,nack"; got != want {
+		t.Fatalf("failed persistence order = %q, want %q", got, want)
 	}
 }
 

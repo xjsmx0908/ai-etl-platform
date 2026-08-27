@@ -70,6 +70,22 @@ func TestIngestionOutboxMigrationCarriesDurabilityInvariants(t *testing.T) {
 	}
 }
 
+func TestIngestionJobLifecycleMigrationCarriesConsumerInvariants(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0009_ingestion_job_lifecycle.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"'processing'", "processing_started_at", "lease_until", "completed_at",
+		"WHERE status = 'processing'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("migration missing invariant %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.

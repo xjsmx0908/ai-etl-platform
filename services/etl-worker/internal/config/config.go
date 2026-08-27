@@ -149,6 +149,7 @@ type Config struct {
 	OutboxRelayBatchSize    int
 	OutboxRelayPollInterval time.Duration
 	OutboxRelayLease        time.Duration
+	IngestionJobLease       time.Duration
 
 	// Redis (shared default; used as fallback for cache/state below)
 	RedisAddr     string
@@ -318,6 +319,7 @@ func Load() Config {
 		OutboxRelayBatchSize:    EnvInt("OUTBOX_RELAY_BATCH_SIZE", 50),
 		OutboxRelayPollInterval: EnvDuration("OUTBOX_RELAY_POLL_INTERVAL", 500*time.Millisecond),
 		OutboxRelayLease:        EnvDuration("OUTBOX_RELAY_LEASE", 30*time.Second),
+		IngestionJobLease:       EnvDuration("INGESTION_JOB_LEASE", 30*time.Minute),
 
 		// Redis: REDIS_* is the shared default; REDIS_CACHE_*/REDIS_STATE_*
 		// override it so evictable cache and durable state can be separated.
@@ -404,6 +406,12 @@ func (c Config) Validate() error {
 	if c.MaxWorkers < 1 || c.MaxWorkers > 100 {
 		return fmt.Errorf("PIPELINE_MAX_WORKERS must be between 1 and 100, got %d", c.MaxWorkers)
 	}
+	if c.MaxRetries < 0 || c.MaxRetries > 10 {
+		return fmt.Errorf("PIPELINE_MAX_RETRIES must be between 0 and 10, got %d", c.MaxRetries)
+	}
+	if c.PipelineTimeout <= 0 || c.RetryBackoff <= 0 {
+		return fmt.Errorf("PIPELINE_TIMEOUT and PIPELINE_RETRY_BACKOFF must be > 0")
+	}
 	if c.BatchSize < 1 || c.BatchSize > 100 {
 		return fmt.Errorf("PIPELINE_BATCH_SIZE must be between 1 and 100, got %d", c.BatchSize)
 	}
@@ -472,8 +480,15 @@ func (c Config) Validate() error {
 	if c.TaskStatusTTL <= 0 {
 		return fmt.Errorf("TASK_STATUS_TTL must be > 0, got %s", c.TaskStatusTTL)
 	}
-	if c.OutboxRelayBatchSize <= 0 || c.OutboxRelayPollInterval <= 0 || c.OutboxRelayLease <= 0 {
-		return fmt.Errorf("outbox relay batch size, poll interval, and lease must be > 0")
+	if c.OutboxRelayBatchSize <= 0 || c.OutboxRelayPollInterval <= 0 || c.OutboxRelayLease <= 0 || c.IngestionJobLease <= 0 {
+		return fmt.Errorf("outbox relay settings and ingestion job lease must be > 0")
+	}
+	worstCaseProcessing := c.PipelineTimeout * time.Duration(c.MaxRetries+1)
+	for attempt := 1; attempt <= c.MaxRetries; attempt++ {
+		worstCaseProcessing += c.RetryBackoff * time.Duration(1<<(attempt-1))
+	}
+	if c.IngestionJobLease <= worstCaseProcessing {
+		return fmt.Errorf("INGESTION_JOB_LEASE must exceed the worst-case pipeline retry window %s", worstCaseProcessing)
 	}
 	switch strings.ToLower(strings.TrimSpace(c.TaskStatusStore)) {
 	case TaskStatusStoreAuto, TaskStatusStoreMemory, TaskStatusStoreRedis:

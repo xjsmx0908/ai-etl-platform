@@ -571,3 +571,19 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: deterministic identities must include tenant and idempotency key, and
   immutable keys must also include the content digest so a conflicting retry
   cannot overwrite a previously accepted object before conflict detection.
+
+## 2026-08-27 - P2.2 consumer idempotency and terminal state
+
+- Perceive: at-least-once outbox publication supplies stable event/job IDs, but
+  the worker previously had no durable claim or terminal record and concurrent
+  workers could commit a later partition offset past an earlier NACK.
+- Reason: deduplication requires a lease, not a permanent "seen" flag. Job and
+  document terminal state must commit together before Kafka ACK; partition
+  commits must advance only across the fetched prefix that reached terminal
+  handling.
+- Act: added processing leases, terminal compare-and-set transitions, duplicate
+  ACK/busy retry behavior, local NACK redelivery, and ordered partition commit
+  tracking that also supports compacted offset gaps.
+- Refine: relay publication state is a one-way transition and must never regress
+  a fast worker's processing or terminal state back to published. Lease duration
+  must exceed the configured worst-case pipeline retry window.

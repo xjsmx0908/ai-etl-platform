@@ -15,6 +15,7 @@ import (
 
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/parser"
@@ -41,11 +42,17 @@ type Pipeline struct {
 	dlq           model.DLQStore
 	taskStatus    model.TaskStatusStore
 	docStatus     docStatusWriter
+	ingestionJobs ingestion.JobStore
 	sparseEncoder *sparse.Encoder
 
 	taskCh  chan model.TaskWithAck
 	wg      sync.WaitGroup
 	running atomic.Bool
+}
+
+func (p *Pipeline) WithIngestionJobs(store ingestion.JobStore) *Pipeline {
+	p.ingestionJobs = store
+	return p
 }
 
 // New creates a Pipeline with all dependencies injected.
@@ -159,6 +166,30 @@ func (p *Pipeline) workerLoop(ctx context.Context, id int) (normalExit bool) {
 // handleTask processes a task with exponential backoff retry.
 func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskWithAck) {
 	var lastErr error
+	if twa.Task.EventID != "" {
+		if p.ingestionJobs == nil {
+			err := errors.New("durable ingestion job store unavailable")
+			twa.Nack(err)
+			return
+		}
+		claim, err := p.ingestionJobs.Claim(ctx, twa.Task, p.cfg.IngestionJobLease)
+		if err != nil {
+			twa.Nack(err)
+			return
+		}
+		switch claim {
+		case ingestion.ClaimAcquired:
+		case ingestion.ClaimTerminal:
+			twa.Ack()
+			return
+		case ingestion.ClaimBusy:
+			twa.Nack(errors.New("ingestion job is already processing"))
+			return
+		default:
+			twa.Nack(fmt.Errorf("unknown ingestion claim result %q", claim))
+			return
+		}
+	}
 
 	p.saveTaskStatus(ctx, twa.Task, model.TaskStatusProcessing, "processing", "")
 
@@ -181,7 +212,15 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 			continue
 		}
 
-		// Success → Ack + clear checkpoint
+		// Durable completion must commit before the Kafka offset. If PostgreSQL is
+		// temporarily unavailable the message remains uncommitted and may resume
+		// after its processing lease expires.
+		if twa.Task.EventID != "" {
+			if err := p.ingestionJobs.Complete(ctx, twa.Task, time.Now().UTC()); err != nil {
+				twa.Nack(err)
+				return
+			}
+		}
 		twa.Ack()
 		if err := p.checkpoint.Delete(ctx, twa.Task.DocID); err != nil {
 			slog.Warn("checkpoint delete failed", "doc_id", twa.Task.DocID, "error", err)
@@ -198,6 +237,12 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 		return
 	}
 
+	if twa.Task.EventID != "" {
+		if err := p.ingestionJobs.Fail(ctx, twa.Task, lastErr.Error(), time.Now().UTC()); err != nil {
+			twa.Nack(err)
+			return
+		}
+	}
 	twa.Ack()
 	p.saveTaskStatus(ctx, twa.Task, model.TaskStatusFailed, "failed", lastErr.Error())
 	slog.Error("task exhausted retries and moved to DLQ", "doc_id", twa.Task.DocID, "error", lastErr)
@@ -242,7 +287,7 @@ func (p *Pipeline) saveTaskStatusProgress(ctx context.Context, task model.Task, 
 
 	// Write-through to the document registry so the inventory mirrors durable
 	// task status. Best-effort: never blocks or fails ingestion.
-	if p.docStatus != nil {
+	if p.docStatus != nil && task.EventID == "" {
 		if err := p.docStatus.UpsertStatus(ctx, task.TenantID, task.DocID, docstore.Document{
 			Status:      string(state),
 			Stage:       stage,

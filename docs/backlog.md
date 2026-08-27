@@ -73,8 +73,12 @@ P2.2 progress (2026-08-27):
   committed admission after a gateway crash without creating a second job.
 - A leased, multi-replica-safe relay publishes committed events at least once;
   Kafka outages leave events pending with bounded retry backoff.
-- Remaining: consumer terminal-state/deduplication handling, scheduled orphan
-  collection, outbox lag/retry metrics and alerts, isolated crash-point E2E,
+- Implemented consumer terminal-state/deduplication: durable jobs use processing
+  leases, atomically update job/document terminal state before Kafka ACK, skip
+  terminal redelivery, and recover expired work. Kafka commits now advance only
+  over the fetched partition prefix whose tasks reached terminal handling.
+- Remaining: scheduled orphan collection, outbox/job lag and retry metrics with
+  alerts, isolated crash-point E2E,
   and generation activation before failed mid-index replacements can be called
   atomically safe.
 

@@ -16,6 +16,16 @@ import (
 var (
 	ErrInvalidSubmission = errors.New("ingestion: invalid submission")
 	ErrAdmissionConflict = errors.New("ingestion: admission key reused with different request")
+	ErrJobNotFound       = errors.New("ingestion: job not found")
+	ErrInvalidTransition = errors.New("ingestion: invalid job transition")
+)
+
+type ClaimResult string
+
+const (
+	ClaimAcquired ClaimResult = "acquired"
+	ClaimBusy     ClaimResult = "busy"
+	ClaimTerminal ClaimResult = "terminal"
 )
 
 // Submission contains the already validated object metadata and the exact task
@@ -57,6 +67,14 @@ type Store interface {
 	Release(context.Context, string, time.Time) error
 }
 
+// JobStore is the worker-facing durable lifecycle surface. Claim grants one
+// processing lease; terminal jobs make duplicate Kafka deliveries safe to ACK.
+type JobStore interface {
+	Claim(context.Context, model.Task, time.Duration) (ClaimResult, error)
+	Complete(context.Context, model.Task, time.Time) error
+	Fail(context.Context, model.Task, string, time.Time) error
+}
+
 // MemoryStore is a deterministic adapter used by unit tests and development
 // mode. Production uses the PostgreSQL adapter in postgres.go.
 type MemoryStore struct {
@@ -65,12 +83,15 @@ type MemoryStore struct {
 	byEvent    map[string]OutboxEvent
 	claimed    map[string]bool
 	signatures map[string]string
+	states     map[string]string
+	leases     map[string]time.Time
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		jobs: make(map[string]Receipt), byEvent: make(map[string]OutboxEvent),
 		claimed: make(map[string]bool), signatures: make(map[string]string),
+		states: make(map[string]string), leases: make(map[string]time.Time),
 	}
 }
 
@@ -89,6 +110,7 @@ func (s *MemoryStore) Admit(_ context.Context, sub Submission) (Receipt, error) 
 	receipt := Receipt{JobID: sub.JobID, EventID: sub.EventID, DocID: sub.Document.DocID, TenantID: sub.Document.TenantID}
 	s.jobs[sub.JobID] = receipt
 	s.signatures[sub.JobID] = sub.RequestSignature
+	s.states[sub.JobID] = "queued"
 	s.byEvent[sub.EventID] = OutboxEvent{
 		JobID: sub.JobID, EventID: sub.EventID, TenantID: sub.Document.TenantID,
 		DocID: sub.Document.DocID, Task: sub.Task, CreatedAt: time.Now().UTC(),
@@ -123,6 +145,63 @@ func (s *MemoryStore) MarkPublished(_ context.Context, eventID string, _ time.Ti
 	defer s.mu.Unlock()
 	delete(s.byEvent, eventID)
 	delete(s.claimed, eventID)
+	for jobID, receipt := range s.jobs {
+		if receipt.EventID == eventID && s.states[jobID] == "queued" {
+			s.states[jobID] = "published"
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStore) Claim(_ context.Context, task model.Task, lease time.Duration) (ClaimResult, error) {
+	if task.JobID == "" || task.EventID == "" || task.FilePath == "" {
+		return "", ErrInvalidSubmission
+	}
+	if lease <= 0 {
+		lease = 10 * time.Minute
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	receipt, ok := s.jobs[task.JobID]
+	if !ok || receipt.EventID != task.EventID || receipt.TenantID != task.TenantID || receipt.DocID != task.DocID {
+		return "", ErrJobNotFound
+	}
+	switch s.states[task.JobID] {
+	case "completed", "failed":
+		return ClaimTerminal, nil
+	case "processing":
+		if time.Now().UTC().Before(s.leases[task.JobID]) {
+			return ClaimBusy, nil
+		}
+	}
+	s.states[task.JobID] = "processing"
+	s.leases[task.JobID] = time.Now().UTC().Add(lease)
+	return ClaimAcquired, nil
+}
+
+func (s *MemoryStore) Complete(_ context.Context, task model.Task, _ time.Time) error {
+	return s.markTerminal(task, "completed")
+}
+
+func (s *MemoryStore) Fail(_ context.Context, task model.Task, _ string, _ time.Time) error {
+	return s.markTerminal(task, "failed")
+}
+
+func (s *MemoryStore) markTerminal(task model.Task, state string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	receipt, ok := s.jobs[task.JobID]
+	if !ok || receipt.EventID != task.EventID || receipt.TenantID != task.TenantID || receipt.DocID != task.DocID {
+		return ErrJobNotFound
+	}
+	if s.states[task.JobID] == state {
+		return nil
+	}
+	if s.states[task.JobID] != "processing" {
+		return ErrInvalidTransition
+	}
+	s.states[task.JobID] = state
+	delete(s.leases, task.JobID)
 	return nil
 }
 
@@ -140,3 +219,4 @@ func (s *MemoryStore) PendingCount() int {
 }
 
 var _ Store = (*MemoryStore)(nil)
+var _ JobStore = (*MemoryStore)(nil)

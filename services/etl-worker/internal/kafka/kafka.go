@@ -66,8 +66,11 @@ func (p *Producer) Close() error {
 
 // Source consumes tasks from Kafka with manual offset commit (At-Least-Once).
 type Source struct {
-	reader *kafkago.Reader
-	dlq    model.DLQStore
+	reader   *kafkago.Reader
+	dlq      model.DLQStore
+	offsets  *offsetTracker
+	commitMu sync.Mutex
+	pending  chan struct{}
 }
 
 // NewSource creates a Kafka consumer connected to the given topic and group.
@@ -90,17 +93,63 @@ func NewSource(brokers, topic, groupID string, dlq model.DLQStore) (*Source, err
 	slog.Info("kafka source connected",
 		"brokers", brokers, "topic", topic, "group", groupID)
 
-	return &Source{reader: reader, dlq: dlq}, nil
+	return &Source{reader: reader, dlq: dlq, offsets: newOffsetTracker(), pending: make(chan struct{}, 100)}, nil
 }
 
 // Consume returns a channel of tasks. Ack commits the offset; Nack sends to DLQ.
 func (ks *Source) Consume(ctx context.Context) <-chan model.TaskWithAck {
 	ch := make(chan model.TaskWithAck, 10)
 	go func() {
-		defer close(ch)
+		var retries sync.WaitGroup
+		var retryMu sync.Mutex
+		closing := false
+		defer func() {
+			retryMu.Lock()
+			closing = true
+			retryMu.Unlock()
+			retries.Wait()
+			close(ch)
+		}()
+		var deliver func(kafkago.Message, model.Task, int)
+		deliver = func(msg kafkago.Message, task model.Task, retry int) {
+			twa := model.TaskWithAck{Task: task}
+			twa.Ack = func() {
+				ks.commitCompleted(ctx, msg)
+			}
+			twa.Nack = func(err error) {
+				slog.Warn("message nacked; scheduling local redelivery", "partition", msg.Partition, "offset", msg.Offset, "doc_id", task.DocID, "error", err)
+				retryMu.Lock()
+				if closing || ctx.Err() != nil {
+					retryMu.Unlock()
+					return
+				}
+				retries.Add(1)
+				retryMu.Unlock()
+				go func() {
+					defer retries.Done()
+					delay := time.Second * time.Duration(1<<min(retry, 5))
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(delay):
+					}
+					deliver(msg, task, retry+1)
+				}()
+			}
+			select {
+			case ch <- twa:
+			case <-ctx.Done():
+			}
+		}
 		for {
+			select {
+			case ks.pending <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			msg, err := ks.reader.FetchMessage(ctx)
 			if err != nil {
+				<-ks.pending
 				if ctx.Err() != nil {
 					return
 				}
@@ -110,38 +159,45 @@ func (ks *Source) Consume(ctx context.Context) <-chan model.TaskWithAck {
 			}
 
 			var task model.Task
+			ks.offsets.Register(msg)
 			if err := json.Unmarshal(msg.Value, &task); err != nil {
 				slog.Error("kafka message decode error",
 					"offset", msg.Offset, "error", err)
-				_ = ks.reader.CommitMessages(ctx, msg)
+				ks.commitCompleted(ctx, msg)
 				continue
 			}
-
-			twa := model.TaskWithAck{
-				Task: task,
-				Ack: func() {
-					if err := ks.reader.CommitMessages(ctx, msg); err != nil {
-						slog.Error("kafka commit failed",
-							"offset", msg.Offset, "error", err)
-					} else {
-						slog.Debug("kafka offset committed",
-							"offset", msg.Offset, "doc_id", task.DocID)
-					}
-				},
-				Nack: func(err error) {
-					slog.Warn("message not committed due to nack, will be retried",
-						"offset", msg.Offset, "doc_id", task.DocID, "error", err)
-				},
-			}
-
-			select {
-			case ch <- twa:
-			case <-ctx.Done():
-				return
-			}
+			deliver(msg, task, 0)
 		}
 	}()
 	return ch
+}
+
+func (ks *Source) commitCompleted(ctx context.Context, msg kafkago.Message) {
+	ks.commitMu.Lock()
+	defer ks.commitMu.Unlock()
+	ks.offsets.Complete(msg)
+	candidate, ok := ks.offsets.Candidate(msg)
+	if !ok {
+		return
+	}
+	for attempt := 0; ; attempt++ {
+		if err := ks.reader.CommitMessages(ctx, candidate); err == nil {
+			break
+		} else {
+			slog.Error("kafka commit failed; retrying", "partition", candidate.Partition, "offset", candidate.Offset, "attempt", attempt+1, "error", err)
+		}
+		delay := time.Second * time.Duration(1<<min(attempt, 5))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+	}
+	confirmed := ks.offsets.Confirm(candidate)
+	for range confirmed {
+		<-ks.pending
+	}
+	slog.Debug("kafka contiguous offset committed", "partition", candidate.Partition, "offset", candidate.Offset)
 }
 
 // Close shuts down the Kafka reader.
