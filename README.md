@@ -411,6 +411,8 @@ docker compose --profile rerank up -d --build reranker-service query-api
 - Query API 会继承 W3C `traceparent`，并通过响应头 `X-Trace-ID` 返回当前 TraceID。
 - Jaeger Query 链路包含 HTTP、Query、Embedding、Cache、Route、Qdrant/Elasticsearch、Fusion、Rerank、Prompt 与 LLM 阶段 Span。
 - Prometheus 暴露 LLM 请求结果、延迟和进程级连续失败次数；Query API 启动时会先暴露配置模型的连续失败值 `0`，连续 5 次失败、错误率和 p95 延迟由 Alertmanager 告警。
+- PostgreSQL 持久化摄取状态会定期映射为低基数指标：待发布/已重试 outbox 数量、最老事件年龄、各 job 状态数量和过期 processing lease；持续积压、重试或过期 lease 会触发 Alertmanager。采样周期由 `INGESTION_METRICS_INTERVAL` 控制。
+- Query API 定期清理超过 `ORPHAN_CLEANUP_GRACE_PERIOD` 的 versioned 对象，但只有 PostgreSQL 能证明其既不在当前目录、也不属于任何已接纳 job 时才删除；批次和周期分别由 `ORPHAN_CLEANUP_BATCH_SIZE`、`ORPHAN_CLEANUP_INTERVAL` 控制。
 - 每次成功的 LLM 调用会记录 token 消耗（`ai_etl_llm_tokens_total{model,kind}`）。配置 `LLM_PRICE_PROMPT_PER_1K` / `LLM_PRICE_COMPLETION_PER_1K` 后，还会累计估算成本（`ai_etl_llm_cost_usd_total{model}`）；未配置价格时成本指标保持 0，避免误报。
 - 企业微信/钉钉 webhook 放在 `secrets/dev/`，由内部 `alert-webhook-service` 转换消息并发送；不要把真实 webhook 提交到 Git。
 - Query API 的 `/v1/query` 支持 SSE 流式输出（客户端发送 `Accept: text/event-stream` 即触发）。事件流：先发 `sources` 事件（引用可即时渲染），再逐段发 `delta` 事件，最后 `done` 事件携带 token 用量。流式调用会记录首 Token 时间（TTFT）到 trace span，为未来 TTFT 告警提供数据基础。非流式调用（默认）行为不变。

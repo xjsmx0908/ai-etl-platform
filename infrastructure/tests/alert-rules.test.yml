@@ -39,3 +39,46 @@ tests:
       - eval_time: 1m
         alertname: LLMConsecutiveFailures
         exp_alerts: []
+
+  - name: sustained ingestion outbox backlog triggers operational alerts
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_ingestion_outbox_oldest_age_seconds{instance="query-api:8080"}'
+        values: '360 360 360 360 360 360 360 360 360 360 360'
+      - series: 'ai_etl_ingestion_outbox_retried{instance="query-api:8080"}'
+        values: '2 2 2 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: IngestionOutboxStalled
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: IngestionOutboxStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Ingestion outbox publication has been stalled for 10 minutes
+      - eval_time: 10m
+        alertname: IngestionOutboxRetrying
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Ingestion outbox events continue to require publication retries
+
+  - name: expired processing lease triggers recovery alert
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_ingestion_expired_processing_leases{instance="query-api:8080"}'
+        values: '1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: IngestionProcessingLeaseExpired
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: IngestionProcessingLeaseExpired
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Durable ingestion work is waiting for lease recovery

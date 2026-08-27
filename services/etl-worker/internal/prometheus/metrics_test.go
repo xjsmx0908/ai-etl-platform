@@ -157,6 +157,30 @@ func TestHandlerForUsesProvidedGatherer(t *testing.T) {
 	}
 }
 
+func TestSetIngestionOperationsExposesDurableBacklogSnapshot(t *testing.T) {
+	m := New("test_ai_etl_ingestion")
+
+	m.SetIngestionOperations(7, 3, 95*time.Second, map[string]int{
+		"queued": 2, "published": 1, "processing": 4, "completed": 9, "failed": 2,
+	}, 1)
+
+	if got := gaugeValue(t, m.IngestionOutboxPending); got != 7 {
+		t.Fatalf("pending outbox = %v, want 7", got)
+	}
+	if got := gaugeValue(t, m.IngestionOutboxRetried); got != 3 {
+		t.Fatalf("retried outbox = %v, want 3", got)
+	}
+	if got := gaugeValue(t, m.IngestionOutboxOldestAge); got != 95 {
+		t.Fatalf("oldest outbox age = %v, want 95", got)
+	}
+	if got := gaugeValue(t, m.IngestionJobs.WithLabelValues("processing")); got != 4 {
+		t.Fatalf("processing jobs = %v, want 4", got)
+	}
+	if got := gaugeValue(t, m.IngestionExpiredLeases); got != 1 {
+		t.Fatalf("expired leases = %v, want 1", got)
+	}
+}
+
 func histogramCount(t *testing.T, metric prometheus.Metric) uint64 {
 	t.Helper()
 

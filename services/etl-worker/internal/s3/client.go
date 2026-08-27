@@ -7,7 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
+
+	"ai-etl-pipeline/internal/ingestion"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -15,10 +19,13 @@ import (
 
 // Client wraps MinIO client for document storage.
 type Client struct {
-	client     *minio.Client
-	bucket     string
-	region     string
-	autoCreate bool
+	client      *minio.Client
+	bucket      string
+	region      string
+	autoCreate  bool
+	listObjects func(context.Context, string, minio.ListObjectsOptions) <-chan minio.ObjectInfo
+	listMu      sync.Mutex
+	listCursor  string
 }
 
 // Config holds MinIO connection settings.
@@ -57,10 +64,11 @@ func New(cfg Config) (*Client, error) {
 
 	slog.Info("minio connected", "endpoint", cfg.Endpoint, "bucket", cfg.Bucket)
 	return &Client{
-		client:     mc,
-		bucket:     cfg.Bucket,
-		region:     cfg.Region,
-		autoCreate: cfg.AutoCreate,
+		client:      mc,
+		bucket:      cfg.Bucket,
+		region:      cfg.Region,
+		autoCreate:  cfg.AutoCreate,
+		listObjects: mc.ListObjects,
 	}, nil
 }
 
@@ -91,6 +99,53 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("delete %s: %w", key, err)
 	}
 	return nil
+}
+
+// ListOlderThan returns at most limit object candidates older than cutoff.
+// The collector rechecks timestamps and PostgreSQL references before deletion.
+func (c *Client) ListOlderThan(ctx context.Context, cutoff time.Time, limit int) ([]ingestion.ObjectCandidate, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	listObjects := c.listObjects
+	if listObjects == nil {
+		listObjects = c.client.ListObjects
+	}
+	c.listMu.Lock()
+	defer c.listMu.Unlock()
+
+	out, err := c.listOlderThanFrom(ctx, listObjects, cutoff, limit, c.listCursor)
+	if err != nil {
+		return nil, err
+	}
+	// Reaching the end after a previous bounded batch resets the cursor. Retry
+	// once from the start so a collector interval is not wasted on an empty page.
+	if len(out) == 0 && c.listCursor != "" {
+		c.listCursor = ""
+		return c.listOlderThanFrom(ctx, listObjects, cutoff, limit, "")
+	}
+	return out, nil
+}
+
+func (c *Client) listOlderThanFrom(ctx context.Context, listObjects func(context.Context, string, minio.ListObjectsOptions) <-chan minio.ObjectInfo, cutoff time.Time, limit int, startAfter string) ([]ingestion.ObjectCandidate, error) {
+	listCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	objects := listObjects(listCtx, c.bucket, minio.ListObjectsOptions{Recursive: true, StartAfter: startAfter})
+	out := make([]ingestion.ObjectCandidate, 0, limit)
+	for object := range objects {
+		if object.Err != nil {
+			return nil, fmt.Errorf("list object candidates: %w", object.Err)
+		}
+		if !strings.Contains(object.Key, "/versions/") || !object.LastModified.Before(cutoff) {
+			continue
+		}
+		out = append(out, ingestion.ObjectCandidate{Key: object.Key, ModifiedAt: object.LastModified})
+		c.listCursor = object.Key
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // DeleteByPrefix removes every object whose key starts with prefix. Used for

@@ -58,6 +58,16 @@ type OutboxEvent struct {
 	Attempts  int
 }
 
+// OperationsSnapshot is a bounded-cardinality view of durable ingestion state
+// for metrics and alerting. It contains no tenant or document identifiers.
+type OperationsSnapshot struct {
+	PendingOutbox           int
+	RetriedOutbox           int
+	OldestOutboxAge         time.Duration
+	Jobs                    map[string]int
+	ExpiredProcessingLeases int
+}
+
 // Store atomically admits a document and its outbox event. Implementations must
 // return the existing receipt when JobID has already been admitted.
 type Store interface {

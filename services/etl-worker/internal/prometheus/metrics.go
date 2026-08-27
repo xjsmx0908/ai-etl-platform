@@ -49,7 +49,12 @@ type Metrics struct {
 	DLQMessages     *prometheus.CounterVec
 	// ESDeadLetter counts chunks that permanently failed ES indexing. Non-zero
 	// means Qdrant and ES are silently diverging — alert on it.
-	ESDeadLetter *prometheus.CounterVec
+	ESDeadLetter             *prometheus.CounterVec
+	IngestionOutboxPending   prometheus.Gauge
+	IngestionOutboxRetried   prometheus.Gauge
+	IngestionOutboxOldestAge prometheus.Gauge
+	IngestionJobs            *prometheus.GaugeVec
+	IngestionExpiredLeases   prometheus.Gauge
 
 	// Query metrics
 	QueryDuration          *prometheus.HistogramVec
@@ -164,6 +169,26 @@ func New(namespace string) *Metrics {
 			},
 			[]string{"reason"},
 		),
+		IngestionOutboxPending: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "ingestion", Name: "outbox_pending",
+			Help: "Committed ingestion outbox events not yet published to Kafka",
+		}),
+		IngestionOutboxRetried: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "ingestion", Name: "outbox_retried",
+			Help: "Pending ingestion outbox events with at least one publication attempt",
+		}),
+		IngestionOutboxOldestAge: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "ingestion", Name: "outbox_oldest_age_seconds",
+			Help: "Age in seconds of the oldest pending ingestion outbox event",
+		}),
+		IngestionJobs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "ingestion", Name: "jobs",
+			Help: "Durable ingestion jobs by lifecycle state",
+		}, []string{"status"}),
+		IngestionExpiredLeases: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "ingestion", Name: "expired_processing_leases",
+			Help: "Processing ingestion jobs whose recovery lease has expired",
+		}),
 		QueryDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: namespace,
@@ -316,6 +341,11 @@ func New(namespace string) *Metrics {
 		m.StoreFailures,
 		m.DLQMessages,
 		m.ESDeadLetter,
+		m.IngestionOutboxPending,
+		m.IngestionOutboxRetried,
+		m.IngestionOutboxOldestAge,
+		m.IngestionJobs,
+		m.IngestionExpiredLeases,
 		m.QueryDuration,
 		m.QueryFailures,
 		m.RetrievalCount,
@@ -334,6 +364,18 @@ func New(namespace string) *Metrics {
 	)
 
 	return m
+}
+
+// SetIngestionOperations publishes one bounded-cardinality snapshot of durable
+// admission and worker state. Callers should refresh it from PostgreSQL.
+func (m *Metrics) SetIngestionOperations(pending, retried int, oldestAge time.Duration, jobs map[string]int, expiredLeases int) {
+	m.IngestionOutboxPending.Set(float64(pending))
+	m.IngestionOutboxRetried.Set(float64(retried))
+	m.IngestionOutboxOldestAge.Set(nonNegativeDuration(oldestAge).Seconds())
+	for _, status := range []string{"queued", "published", "processing", "completed", "failed"} {
+		m.IngestionJobs.WithLabelValues(status).Set(float64(jobs[status]))
+	}
+	m.IngestionExpiredLeases.Set(float64(expiredLeases))
 }
 
 // Handler returns an HTTP handler for the /metrics endpoint.

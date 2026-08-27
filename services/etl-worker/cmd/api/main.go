@@ -256,6 +256,29 @@ func main() {
 			BatchSize: cfg.OutboxRelayBatchSize, Lease: cfg.OutboxRelayLease,
 		}, cfg.OutboxRelayPollInterval)
 	}()
+	metricsCtx, stopIngestionMetrics := context.WithCancel(context.Background())
+	metricsDone := make(chan struct{})
+	defer func() {
+		stopIngestionMetrics()
+		<-metricsDone
+	}()
+	go func() {
+		defer close(metricsDone)
+		runIngestionOperationsMonitor(metricsCtx, admissionStore, prom, cfg.IngestionMetricsInterval)
+	}()
+	orphanCtx, stopOrphanCollector := context.WithCancel(context.Background())
+	orphanDone := make(chan struct{})
+	defer func() {
+		stopOrphanCollector()
+		<-orphanDone
+	}()
+	go func() {
+		defer close(orphanDone)
+		runOrphanCollector(orphanCtx, ingestion.OrphanCollector{
+			Objects: s3Client, References: admissionStore,
+			GracePeriod: cfg.OrphanCleanupGracePeriod, BatchSize: cfg.OrphanCleanupBatchSize,
+		}, cfg.OrphanCleanupInterval)
+	}()
 
 	// Initialize idempotency store for upload deduplication.
 	var idemStore idempotency.Store
@@ -434,6 +457,61 @@ func runOutboxRelay(ctx context.Context, relay ingestion.Relay, interval time.Du
 	for {
 		if _, err := relay.RunOnce(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("ingestion outbox relay pass failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+type ingestionOperationsReader interface {
+	OperationsSnapshot(context.Context) (ingestion.OperationsSnapshot, error)
+}
+
+type ingestionOperationsObserver interface {
+	SetIngestionOperations(int, int, time.Duration, map[string]int, int)
+}
+
+func runIngestionOperationsMonitor(ctx context.Context, reader ingestionOperationsReader, observer ingestionOperationsObserver, interval time.Duration) {
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		snapshot, err := reader.OperationsSnapshot(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("ingestion operations snapshot failed", "error", err)
+			}
+		} else {
+			observer.SetIngestionOperations(snapshot.PendingOutbox, snapshot.RetriedOutbox,
+				snapshot.OldestOutboxAge, snapshot.Jobs, snapshot.ExpiredProcessingLeases)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func runOrphanCollector(ctx context.Context, collector ingestion.OrphanCollector, interval time.Duration) {
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		deleted, err := collector.RunOnce(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("orphan object collection failed", "error", err)
+			}
+		} else if deleted > 0 {
+			slog.Info("orphan objects collected", "deleted", deleted)
 		}
 		select {
 		case <-ctx.Done():

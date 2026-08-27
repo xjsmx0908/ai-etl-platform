@@ -198,6 +198,61 @@ func TestPostgresStoreTerminalTransitionRollsBackWhenDocumentUpdateFails(t *test
 	}
 }
 
+func TestPostgresStoreOperationsSnapshotAggregatesDurableBacklog(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery("COUNT.*FILTER \\(WHERE attempts > 0\\).*FROM ingestion_outbox").WillReturnRows(
+		pgxmock.NewRows([]string{"pending", "retried", "oldest_age_seconds"}).AddRow(7, 3, 95.0),
+	)
+	mock.ExpectQuery("SELECT status, COUNT.*FROM ingestion_jobs").WillReturnRows(
+		pgxmock.NewRows([]string{"status", "count"}).
+			AddRow("processing", 4).
+			AddRow("failed", 2),
+	)
+	mock.ExpectQuery("SELECT COUNT.*lease_until <= now").WillReturnRows(
+		pgxmock.NewRows([]string{"count"}).AddRow(1),
+	)
+
+	snapshot, err := NewPostgresStore(mock).OperationsSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("OperationsSnapshot: %v", err)
+	}
+	if snapshot.PendingOutbox != 7 || snapshot.RetriedOutbox != 3 || snapshot.OldestOutboxAge != 95*time.Second {
+		t.Fatalf("outbox snapshot = %+v", snapshot)
+	}
+	if snapshot.Jobs["queued"] != 0 || snapshot.Jobs["processing"] != 4 || snapshot.Jobs["failed"] != 2 {
+		t.Fatalf("job snapshot = %+v", snapshot.Jobs)
+	}
+	if snapshot.ExpiredProcessingLeases != 1 {
+		t.Fatalf("expired leases = %d, want 1", snapshot.ExpiredProcessingLeases)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreReportsCatalogOrAdmittedJobObjectReference(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery("SELECT EXISTS.*FROM documents WHERE object_key=\\$1.*ingestion_jobs.*task->>'file_path'=\\$1\\s*\\)").
+		WithArgs("tenant/doc/live.txt").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+
+	referenced, err := NewPostgresStore(mock).IsObjectReferenced(context.Background(), "tenant/doc/live.txt")
+	if err != nil || !referenced {
+		t.Fatalf("IsObjectReferenced = (%v,%v), want (true,nil)", referenced, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func expectAdmissionWrites(mock pgxmock.PgxPoolIface) {
 	mock.ExpectBegin()
 	mock.ExpectExec("SELECT pg_advisory_xact_lock").
