@@ -555,3 +555,19 @@ This file is an append-only record of completed PRAR cycles.
   proposing distributed consistency changes. Treat equal index counts as
   insufficient without identity manifests, and never label healthy development
   containers as production readiness evidence.
+
+## 2026-08-27 - P2.2 durable admission, first vertical slice
+
+- Perceive: the upload gateway made Kafka durable before the authoritative
+  PostgreSQL catalog, so a successful enqueue could permanently lose ownership
+  and governance facts; Kafka failure could strand an object.
+- Reason: keep the current API and worker payload compatible, but move the
+  acceptance boundary to one PostgreSQL transaction containing document, job,
+  and outbox state. Use immutable object keys because S3 and PostgreSQL cannot
+  share a transaction.
+- Act: added stable job/event identities, transactional admission, leased
+  `SKIP LOCKED` outbox relay claims, retry recovery, exact cleanup on admission
+  failure, and behavior/transaction/migration tests.
+- Refine: deterministic identities must include tenant and idempotency key, and
+  immutable keys must also include the content digest so a conflicting retry
+  cannot overwrite a previously accepted object before conflict detection.

@@ -8,6 +8,10 @@ import (
 
 // Task represents a document processing task from the message queue.
 type Task struct {
+	// JobID and EventID identify the durable ingestion admission. They are
+	// optional for backwards compatibility with pre-outbox messages.
+	JobID      string            `json:"job_id,omitempty"`
+	EventID    string            `json:"event_id,omitempty"`
 	FilePath   string            `json:"file_path"`
 	DocID      string            `json:"doc_id"`
 	TenantID   string            `json:"tenant_id"`

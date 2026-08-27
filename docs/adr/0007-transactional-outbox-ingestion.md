@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-27)
+Accepted (2026-08-27)
 
 ## Context
 
@@ -78,3 +78,15 @@ write, duplicate relay delivery, Kafka outage recovery, replacement failure,
 and orphan cleanup. An isolated end-to-end test must prove that every `202`
 response eventually reaches a terminal catalog state without losing the prior
 published version.
+
+## Implementation progress
+
+The first P2.2 slice adds atomic document/job/outbox admission, immutable
+versioned object keys, stable retry identities, leased relay claims, and Kafka
+outage recovery. The existing upload response remains compatible and now also
+returns `job_id` and `event_id`. Consumer-side terminal job transitions,
+scheduled orphan collection, relay lag metrics, and the isolated end-to-end
+acceptance gate remain follow-up P2.2 work. Replacement admission failure keeps
+the old object and projections, but failure during chunk overwrite is not yet an
+atomic replacement; ADR 0008 generation activation is required before claiming
+that gate. This slice does not claim those remaining gates.

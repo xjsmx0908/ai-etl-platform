@@ -49,6 +49,27 @@ func TestNewTenantMigrationCreatesDefaultKnowledgeSpace(t *testing.T) {
 	}
 }
 
+func TestIngestionOutboxMigrationCarriesDurabilityInvariants(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0008_ingestion_outbox.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE TABLE ingestion_jobs",
+		"CREATE TABLE ingestion_outbox",
+		"event_id     TEXT NOT NULL UNIQUE",
+		"request_signature TEXT NOT NULL",
+		"published_at  TIMESTAMPTZ",
+		"WHERE published_at IS NULL",
+		"REFERENCES documents(tenant_id, doc_id) ON DELETE CASCADE",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("migration missing invariant %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.

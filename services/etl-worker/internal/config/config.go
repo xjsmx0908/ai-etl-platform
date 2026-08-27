@@ -142,10 +142,13 @@ type Config struct {
 	AgentPlannerMaxTokens int
 
 	// Kafka
-	KafkaBrokers  string
-	KafkaTopic    string
-	KafkaGroupID  string
-	KafkaDLQTopic string
+	KafkaBrokers            string
+	KafkaTopic              string
+	KafkaGroupID            string
+	KafkaDLQTopic           string
+	OutboxRelayBatchSize    int
+	OutboxRelayPollInterval time.Duration
+	OutboxRelayLease        time.Duration
 
 	// Redis (shared default; used as fallback for cache/state below)
 	RedisAddr     string
@@ -308,10 +311,13 @@ func Load() Config {
 		AgentPlannerMaxTokens: EnvInt("AGENT_PLANNER_MAX_TOKENS", 512),
 
 		// Kafka
-		KafkaBrokers:  EnvStr("KAFKA_BROKERS", "localhost:9092"),
-		KafkaTopic:    EnvStr("KAFKA_TOPIC", "doc-processing"),
-		KafkaGroupID:  EnvStr("KAFKA_GROUP_ID", "etl-pipeline"),
-		KafkaDLQTopic: EnvStr("KAFKA_DLQ_TOPIC", "doc-processing-dlq"),
+		KafkaBrokers:            EnvStr("KAFKA_BROKERS", "localhost:9092"),
+		KafkaTopic:              EnvStr("KAFKA_TOPIC", "doc-processing"),
+		KafkaGroupID:            EnvStr("KAFKA_GROUP_ID", "etl-pipeline"),
+		KafkaDLQTopic:           EnvStr("KAFKA_DLQ_TOPIC", "doc-processing-dlq"),
+		OutboxRelayBatchSize:    EnvInt("OUTBOX_RELAY_BATCH_SIZE", 50),
+		OutboxRelayPollInterval: EnvDuration("OUTBOX_RELAY_POLL_INTERVAL", 500*time.Millisecond),
+		OutboxRelayLease:        EnvDuration("OUTBOX_RELAY_LEASE", 30*time.Second),
 
 		// Redis: REDIS_* is the shared default; REDIS_CACHE_*/REDIS_STATE_*
 		// override it so evictable cache and durable state can be separated.
@@ -465,6 +471,9 @@ func (c Config) Validate() error {
 	}
 	if c.TaskStatusTTL <= 0 {
 		return fmt.Errorf("TASK_STATUS_TTL must be > 0, got %s", c.TaskStatusTTL)
+	}
+	if c.OutboxRelayBatchSize <= 0 || c.OutboxRelayPollInterval <= 0 || c.OutboxRelayLease <= 0 {
+		return fmt.Errorf("outbox relay batch size, poll interval, and lease must be > 0")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.TaskStatusStore)) {
 	case TaskStatusStoreAuto, TaskStatusStoreMemory, TaskStatusStoreRedis:
