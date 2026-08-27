@@ -90,3 +90,12 @@ acceptance gate remain follow-up P2.2 work. Replacement admission failure keeps
 the old object and projections, but failure during chunk overwrite is not yet an
 atomic replacement; ADR 0008 generation activation is required before claiming
 that gate. This slice does not claim those remaining gates.
+
+The second P2.2 slice adds consumer-side processing leases and terminal-state
+deduplication. A worker atomically commits the ingestion job and document
+terminal state before acknowledging Kafka. Repeated terminal events are ACKed
+without reprocessing; active duplicates are retried, and expired leases are
+recoverable. Partition offsets advance only across the completed prefix of
+messages actually fetched, preventing concurrent workers from committing past
+an earlier NACK. Scheduled orphan collection, outbox/job metrics and alerts, and
+the isolated crash-point E2E gate remain open.

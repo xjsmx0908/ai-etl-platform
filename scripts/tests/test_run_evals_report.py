@@ -2,6 +2,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import types
@@ -381,6 +382,48 @@ class JudgeReportTest(unittest.TestCase):
         self.assertEqual(module.resolve_compose_project("AI-ETL_EVAL-42"), "ai-etl_eval-42")
         with self.assertRaisesRegex(module.EvalRunnerError, "--compose-project"):
             module.resolve_compose_project("invalid project name")
+
+    def test_worker_compose_lease_covers_default_retry_window(self):
+        compose_text = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(
+            encoding="utf-8"
+        )
+        worker_block = compose_text.split("  etl-worker:", 1)[1].split(
+            "  parser-service:", 1
+        )[0]
+
+        lease = re.search(r"- INGESTION_JOB_LEASE=\$\{INGESTION_JOB_LEASE:-([^}]+)\}", worker_block)
+        pipeline_timeout = re.search(r"- PIPELINE_TIMEOUT=\$\{PIPELINE_TIMEOUT:-([^}]+)\}", worker_block)
+        self.assertIsNotNone(lease, "etl-worker must configure an ingestion job lease")
+        self.assertIsNotNone(pipeline_timeout, "etl-worker must configure a pipeline timeout")
+
+        def seconds(value):
+            match = re.fullmatch(r"(\d+)([smh])", value)
+            self.assertIsNotNone(match, f"unsupported duration in compose: {value}")
+            return int(match.group(1)) * {"s": 1, "m": 60, "h": 3600}[match.group(2)]
+
+        lease_seconds = seconds(lease.group(1))
+        pipeline_seconds = seconds(pipeline_timeout.group(1))
+        max_retries = 3
+        retry_backoff_seconds = 0.5
+        worst_case = pipeline_seconds * (max_retries + 1) + sum(
+            retry_backoff_seconds * (2**attempt) for attempt in range(max_retries)
+        )
+        self.assertGreater(
+            lease_seconds,
+            worst_case,
+            "worker lease must outlive the complete default pipeline retry window",
+        )
+        for relative_path in (".env.example", "services/etl-worker/.env.example"):
+            example_text = (Path(__file__).resolve().parents[2] / relative_path).read_text(
+                encoding="utf-8"
+            )
+            example_lease = re.search(r"^INGESTION_JOB_LEASE=(.+)$", example_text, re.MULTILINE)
+            self.assertIsNotNone(example_lease, f"{relative_path} must document the worker lease")
+            self.assertGreater(
+                seconds(example_lease.group(1)),
+                worst_case,
+                f"{relative_path} lease must cover the Compose retry window",
+            )
 
     def test_eval_compose_publishes_query_api_on_ephemeral_loopback_port(self):
         compose_path = Path(__file__).resolve().parents[2] / "docker-compose.eval.yml"

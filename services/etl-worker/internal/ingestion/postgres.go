@@ -9,6 +9,7 @@ import (
 
 	"ai-etl-pipeline/internal/db"
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/model"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -124,7 +125,10 @@ func (s *PostgresStore) MarkPublished(ctx context.Context, eventID string, publi
 	if _, err := tx.Exec(ctx, "UPDATE ingestion_outbox SET published_at=$2, claimed_at=NULL WHERE event_id=$1 AND published_at IS NULL", eventID, publishedAt); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, "UPDATE ingestion_jobs SET status='published', published_at=$2, updated_at=now() WHERE event_id=$1", eventID, publishedAt); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE ingestion_jobs SET
+		status=CASE WHEN status='queued' THEN 'published' ELSE status END,
+		published_at=COALESCE(published_at,$2), updated_at=now()
+		WHERE event_id=$1`, eventID, publishedAt); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -138,4 +142,96 @@ func (s *PostgresStore) Release(ctx context.Context, eventID string, nextAttempt
 	return err
 }
 
+func (s *PostgresStore) Claim(ctx context.Context, task model.Task, lease time.Duration) (ClaimResult, error) {
+	if task.JobID == "" || task.EventID == "" || task.TenantID == "" || task.DocID == "" || task.FilePath == "" {
+		return "", ErrInvalidSubmission
+	}
+	if lease <= 0 {
+		lease = 10 * time.Minute
+	}
+	var state string
+	err := s.q.QueryRow(ctx, `
+		UPDATE ingestion_jobs SET
+			status='processing', processing_started_at=COALESCE(processing_started_at,now()),
+			lease_until=now()+$7::interval, updated_at=now(), error=''
+		WHERE job_id=$1 AND event_id=$2 AND tenant_id=$3 AND doc_id=$4
+		  AND task->>'file_path'=$5 AND COALESCE(task->>'file_hash','')=$6
+		  AND (status IN ('queued','published') OR (status='processing' AND lease_until <= now()))
+		RETURNING status`, task.JobID, task.EventID, task.TenantID, task.DocID, task.FilePath, task.FileHash, lease.String()).Scan(&state)
+	if err == nil {
+		return ClaimAcquired, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("claim ingestion job: %w", err)
+	}
+	err = s.q.QueryRow(ctx, `
+		SELECT status FROM ingestion_jobs
+		WHERE job_id=$1 AND event_id=$2 AND tenant_id=$3 AND doc_id=$4
+		  AND task->>'file_path'=$5 AND COALESCE(task->>'file_hash','')=$6`,
+		task.JobID, task.EventID, task.TenantID, task.DocID, task.FilePath, task.FileHash).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrJobNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("read ingestion job state: %w", err)
+	}
+	switch state {
+	case "completed", "failed":
+		return ClaimTerminal, nil
+	case "processing":
+		return ClaimBusy, nil
+	default:
+		return "", fmt.Errorf("%w: cannot claim state %s", ErrInvalidTransition, state)
+	}
+}
+
+func (s *PostgresStore) Complete(ctx context.Context, task model.Task, completedAt time.Time) error {
+	return s.markJobTerminal(ctx, task, "completed", "", completedAt)
+}
+
+func (s *PostgresStore) Fail(ctx context.Context, task model.Task, message string, completedAt time.Time) error {
+	return s.markJobTerminal(ctx, task, "failed", message, completedAt)
+}
+
+func (s *PostgresStore) markJobTerminal(ctx context.Context, task model.Task, state, message string, completedAt time.Time) error {
+	if task.JobID == "" || task.EventID == "" || task.TenantID == "" || task.DocID == "" {
+		return ErrInvalidSubmission
+	}
+	if completedAt.IsZero() {
+		completedAt = time.Now().UTC()
+	}
+	tx, err := s.q.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin ingestion terminal transition: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	tag, err := tx.Exec(ctx, `
+		UPDATE ingestion_jobs SET status=$5, completed_at=$6, lease_until=NULL,
+			error=$7, updated_at=now()
+		WHERE job_id=$1 AND event_id=$2 AND tenant_id=$3 AND doc_id=$4
+		  AND status IN ('processing',$5)`, task.JobID, task.EventID, task.TenantID, task.DocID,
+		state, completedAt, message)
+	if err != nil {
+		return fmt.Errorf("mark ingestion job %s: %w", state, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInvalidTransition
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE documents SET status=$3, stage=$3, error=$4,
+			completed_at=$5, updated_at=now(),
+			publication_status=CASE
+				WHEN $3='completed' AND knowledge_space_id='user-uploads' THEN 'published'
+				ELSE publication_status
+			END
+		WHERE tenant_id=$1 AND doc_id=$2 AND object_key=$6`, task.TenantID, task.DocID, state, message, completedAt, task.FilePath); err != nil {
+		return fmt.Errorf("mark document %s: %w", state, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit ingestion terminal transition: %w", err)
+	}
+	return nil
+}
+
 var _ Store = (*PostgresStore)(nil)
+var _ JobStore = (*PostgresStore)(nil)

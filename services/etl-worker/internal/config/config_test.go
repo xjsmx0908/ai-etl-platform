@@ -424,6 +424,36 @@ func TestValidate_DevMode(t *testing.T) {
 	}
 }
 
+func TestValidate_IngestionJobLeaseCoversRetryWindow(t *testing.T) {
+	cfg := Load()
+	cfg.PipelineTimeout = 5 * time.Minute
+	cfg.MaxRetries = 3
+	cfg.RetryBackoff = time.Second
+	cfg.IngestionJobLease = 20*time.Minute + 7*time.Second
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected lease equal to worst-case retry window to be rejected")
+	}
+	cfg.IngestionJobLease += time.Second
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("lease exceeding retry window should pass: %v", err)
+	}
+}
+
+func TestValidate_RejectsUnsafePipelineRetrySettings(t *testing.T) {
+	for _, mutate := range []func(*Config){
+		func(c *Config) { c.MaxRetries = 11 },
+		func(c *Config) { c.MaxRetries = -1 },
+		func(c *Config) { c.PipelineTimeout = 0 },
+		func(c *Config) { c.RetryBackoff = 0 },
+	} {
+		cfg := Load()
+		mutate(&cfg)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected unsafe retry settings to fail: %+v", cfg)
+		}
+	}
+}
+
 func TestValidate_ProductionMissingKey(t *testing.T) {
 	cfg := Load()
 	cfg.Environment = "production"
