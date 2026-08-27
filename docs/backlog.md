@@ -77,6 +77,9 @@ P2.2 progress (2026-08-27):
   leases, atomically update job/document terminal state before Kafka ACK, skip
   terminal redelivery, and recover expired work. Kafka commits now advance only
   over the fetched partition prefix whose tasks reached terminal handling.
+- Aligned the deployed ingestion lease with the Compose pipeline retry window:
+  the worker now defaults to a 75-minute lease for a roughly 60-minute worst
+  case, and a configuration regression test guards Compose and example files.
 - Remaining: scheduled orphan collection, outbox/job lag and retry metrics with
   alerts, isolated crash-point E2E,
   and generation activation before failed mid-index replacements can be called

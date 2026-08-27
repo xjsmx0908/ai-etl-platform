@@ -587,3 +587,19 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: relay publication state is a one-way transition and must never regress
   a fast worker's processing or terminal state back to published. Lease duration
   must exceed the configured worst-case pipeline retry window.
+
+## 2026-08-27 - P2.2 deployed lease configuration regression
+
+- Perceive: PR CI accepted every unit suite but the deterministic evaluation
+  uploaded 47 documents, indexed none in Elasticsearch, and timed out while all
+  tasks remained pending.
+- Reason: application defaults validated in Go used a five-minute pipeline
+  timeout, while Compose deployed a 15-minute timeout with three retries. Its
+  roughly 60-minute worst-case window exceeded the new 30-minute job lease, so
+  the worker rejected its configuration before consuming Kafka.
+- Act: added a deployment-boundary regression test and set the Compose and
+  example ingestion lease to 75 minutes, preserving recovery while covering the
+  configured retry window with scheduling margin.
+- Refine: configuration validation tests must exercise deployed combinations,
+  not only application defaults. Compose syntax validation cannot prove that a
+  service accepts the resulting environment.
