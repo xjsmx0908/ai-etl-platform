@@ -6,17 +6,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/idempotency"
+	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/query"
 )
@@ -163,6 +166,16 @@ func TestBuildUploadRequestSignature(t *testing.T) {
 	}
 }
 
+func TestExtendedUploadSignatureIncludesIdentityAndGovernance(t *testing.T) {
+	base := buildUploadRequestSignature("tenant-a", "policy.pdf", 10, "application/pdf", "internal", nil)
+	a := extendUploadRequestSignature(base, "policy-v2", uploadGovernance{Owner: "legal", Supersedes: "policy-v1"})
+	b := extendUploadRequestSignature(base, "policy-v2", uploadGovernance{Owner: "finance", Supersedes: "policy-v1"})
+	c := extendUploadRequestSignature(base, "policy-v3", uploadGovernance{Owner: "legal", Supersedes: "policy-v1"})
+	if a == b || a == c {
+		t.Fatalf("durable signatures must differ: a=%s b=%s c=%s", a, b, c)
+	}
+}
+
 func TestConfig_DefaultMultipartMemory(t *testing.T) {
 	cfg := config.Load()
 	if cfg.MultipartMaxMemoryBytes != 4*1024*1024 {
@@ -173,6 +186,12 @@ func TestConfig_DefaultMultipartMemory(t *testing.T) {
 type noopProducer struct{}
 
 func (noopProducer) Publish(context.Context, model.Task) error { return nil }
+
+type unavailableProducer struct{}
+
+func (unavailableProducer) Publish(context.Context, model.Task) error {
+	return errors.New("kafka unavailable")
+}
 
 type noopObjectStore struct{}
 
@@ -745,6 +764,73 @@ func TestHandleUploadPublishesContentHash(t *testing.T) {
 	}
 	if got, want := producer.published[0].FileHash, contentHash(content); got != want {
 		t.Fatalf("expected file_hash %s, got %s", want, got)
+	}
+}
+
+func TestHandleUploadAcceptsDurablyWhileKafkaIsUnavailable(t *testing.T) {
+	admissions := ingestion.NewMemoryStore()
+	req := uploadRequest(t, "policy.txt", "durable content", "internal", "", "tenant-a", "u1", "user")
+	rr := httptest.NewRecorder()
+
+	handler := handleUploadWithAdmission(testUploadConfig(), testQueryService(), unavailableProducer{},
+		&pruningObjectStore{}, noopIdempotencyStore{}, nil, newFakeDocStore(), nil, admissions)
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected durable 202, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var response uploadAcceptedResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.JobID == "" || response.EventID == "" {
+		t.Fatalf("durable identifiers missing: %+v", response)
+	}
+	events, err := admissions.ClaimPending(context.Background(), 10, time.Minute)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("pending outbox = %+v, err=%v", events, err)
+	}
+	if events[0].Task.FilePath != response.File || events[0].Task.JobID != response.JobID {
+		t.Fatalf("persisted task = %+v, response=%+v", events[0].Task, response)
+	}
+}
+
+func TestAdmissionIDsAreStableForIdempotentRetry(t *testing.T) {
+	job1, event1 := admissionIDs("tenant-a", "request-42")
+	job2, event2 := admissionIDs("tenant-a", "request-42")
+	if job1 != job2 || event1 != event2 {
+		t.Fatalf("stable IDs changed: (%s,%s) != (%s,%s)", job1, event1, job2, event2)
+	}
+	otherJob, _ := admissionIDs("tenant-b", "request-42")
+	if otherJob == job1 {
+		t.Fatal("tenant must be part of durable admission identity")
+	}
+}
+
+func TestDurableUploadRetryKeepsOneAdmission(t *testing.T) {
+	admissions := ingestion.NewMemoryStore()
+	handler := handleUploadWithAdmission(testUploadConfig(), testQueryService(), unavailableProducer{},
+		&pruningObjectStore{}, noopIdempotencyStore{}, nil, newFakeDocStore(), nil, admissions)
+	var responses []uploadAcceptedResponse
+	for range 2 {
+		req := uploadRequest(t, "policy.txt", "durable content", "internal", "", "tenant-a", "u1", "user")
+		req.Header.Set("Idempotency-Key", "request-42")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("retry returned %d body=%s", rr.Code, rr.Body.String())
+		}
+		var response uploadAcceptedResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		responses = append(responses, response)
+	}
+	if responses[0].JobID != responses[1].JobID || responses[0].EventID != responses[1].EventID || responses[0].DocID != responses[1].DocID {
+		t.Fatalf("retry changed durable identity: %+v vs %+v", responses[0], responses[1])
+	}
+	if got := admissions.PendingCount(); got != 1 {
+		t.Fatalf("pending events = %d, want one durable admission", got)
 	}
 }
 

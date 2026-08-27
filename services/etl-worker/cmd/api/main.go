@@ -31,6 +31,7 @@ import (
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/idempotency"
+	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/kafka"
 	"ai-etl-pipeline/internal/knowledgecatalog"
 	"ai-etl-pipeline/internal/metrics"
@@ -45,6 +46,8 @@ import (
 	"ai-etl-pipeline/internal/taskstatus"
 	"ai-etl-pipeline/internal/tracing"
 	"ai-etl-pipeline/internal/userstore"
+
+	"github.com/google/uuid"
 )
 
 var (
@@ -101,6 +104,10 @@ type objectPrefixPruner interface {
 	DeleteByPrefixExcept(ctx context.Context, prefix, keepKey string) error
 }
 
+type exactObjectDeleter interface {
+	Delete(ctx context.Context, key string) error
+}
+
 // uploadDeleteObjectStore is what the upload handler needs: write a new object
 // and, for doc_id upsert, wipe the old document's objects first.
 type uploadDeleteObjectStore interface {
@@ -110,6 +117,8 @@ type uploadDeleteObjectStore interface {
 
 type uploadAcceptedResponse struct {
 	TaskID    string `json:"task_id"`
+	JobID     string `json:"job_id,omitempty"`
+	EventID   string `json:"event_id,omitempty"`
 	DocID     string `json:"doc_id"`
 	Status    string `json:"status"`
 	File      string `json:"file"`
@@ -199,6 +208,7 @@ func main() {
 		os.Exit(1)
 	}
 	docStore := docstore.New(pgPool)
+	admissionStore := ingestion.NewPostgresStore(pgPool)
 	auditStore := audit.New(pgPool)
 	knowledgeCatalog := knowledgecatalog.New(knowledgecatalog.NewPostgresStore(pgPool))
 
@@ -233,6 +243,19 @@ func main() {
 		os.Exit(1)
 	}
 	defer producer.Close()
+	relayCtx, stopRelay := context.WithCancel(context.Background())
+	relayDone := make(chan struct{})
+	defer func() {
+		stopRelay()
+		<-relayDone
+	}()
+	go func() {
+		defer close(relayDone)
+		runOutboxRelay(relayCtx, ingestion.Relay{
+			Store: admissionStore, Publisher: producer,
+			BatchSize: cfg.OutboxRelayBatchSize, Lease: cfg.OutboxRelayLease,
+		}, cfg.OutboxRelayPollInterval)
+	}()
 
 	// Initialize idempotency store for upload deduplication.
 	var idemStore idempotency.Store
@@ -297,7 +320,7 @@ func main() {
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
-	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUpload(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, auditStore))))
+	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUploadWithAdmission(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, auditStore, admissionStore))))
 	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			qs.HandleQueryStreaming(w, r)
@@ -400,6 +423,24 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		"build_time": buildTime,
 		"service":    "query-api",
 	})
+}
+
+func runOutboxRelay(ctx context.Context, relay ingestion.Relay, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if _, err := relay.RunOnce(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("ingestion outbox relay pass failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func newTaskStatusStore(cfg config.Config) (model.TaskStatusStore, error) {
@@ -616,6 +657,10 @@ func handleTaskStatus(taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 }
 
 func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore, docStore docstore.Store, audits audit.Store) http.HandlerFunc {
+	return handleUploadWithAdmission(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, audits, nil)
+}
+
+func handleUploadWithAdmission(cfg config.Config, qs *query.Service, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore, docStore docstore.Store, audits audit.Store, admissionStore ingestion.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		w = rec
@@ -736,6 +781,7 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			permission,
 			metadata,
 		)
+		requestSig = extendUploadRequestSignature(requestSig, r.FormValue("doc_id"), governance)
 		if idempotencyKey != "" {
 			if len(idempotencyKey) > 128 {
 				http.Error(w, "idempotency key too long", http.StatusBadRequest)
@@ -778,11 +824,19 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			}
 		}
 
-		now := time.Now()
+		now := time.Now().UTC()
+		jobID, eventID := "", ""
+		if admissionStore != nil {
+			jobID, eventID = admissionIDs(tenantID, idempotencyKey)
+		}
 		docID := strings.TrimSpace(r.FormValue("doc_id"))
 		userSuppliedDocID := docID != ""
 		if docID == "" {
-			docID = fmt.Sprintf("doc-%d", now.UnixNano())
+			if admissionStore != nil && idempotencyKey != "" {
+				docID = "doc-" + jobID
+			} else {
+				docID = fmt.Sprintf("doc-%d", now.UnixNano())
+			}
 		} else if !validDocID(docID) {
 			http.Error(w, "invalid doc_id (allowed: letters, digits, . _ -)", http.StatusBadRequest)
 			return
@@ -847,6 +901,11 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			http.Error(w, "storage failed", http.StatusInternalServerError)
 			return
 		}
+		if admissionStore != nil {
+			// The content digest prevents a conflicting retry from overwriting the
+			// already admitted immutable object before PostgreSQL rejects it.
+			objectKey = fmt.Sprintf("%s/%s/versions/%s-%s-%s%s", tenantID, docID, jobID, fileHash, requestSig, ext)
+		}
 
 		// Exact duplicate: the same bytes are already indexed under another doc_id.
 		// Ingesting them again would put near-identical chunks into the same
@@ -860,7 +919,7 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 				// error keep ingesting rather than rejecting a legitimate upload.
 				slog.Warn("duplicate lookup failed; proceeding with upload",
 					"tenant_id", tenantID, "error", err)
-			} else if found {
+			} else if found && !(admissionStore != nil && idempotencyKey != "" && existing.DocID == docID) {
 				writeDuplicateResponse(w, r, existing, header.Filename, now,
 					idemStore, idempotencyKey, requestSig, tenantID)
 				return
@@ -873,8 +932,11 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			return
 		}
 
-		// Create and publish task
+		// The durable path stores this exact task snapshot in PostgreSQL. The relay
+		// publishes it later, so Kafka availability is not part of HTTP admission.
 		task := model.Task{
+			JobID:      jobID,
+			EventID:    eventID,
 			FilePath:   objectKey,
 			DocID:      docID,
 			TenantID:   tenantID,
@@ -882,6 +944,45 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 			FileHash:   fileHash,
 			Metadata:   metadata,
 			CreatedAt:  now,
+		}
+		publicationStatus := "draft"
+		if replacingExisting {
+			// A replacement is not authoritative until the generation activation
+			// phase. Preserve the current publication state in the single-row catalog
+			// during this transitional slice.
+			publicationStatus = ""
+		}
+		document := docstore.Document{
+			TenantID: task.TenantID, DocID: task.DocID, FileName: header.Filename,
+			ObjectKey: task.FilePath, FileHash: task.FileHash, FileSize: header.Size,
+			ContentType: header.Header.Get("Content-Type"), Permission: task.Permission,
+			Status: docstore.StatusQueued, Stage: "queued", Metadata: task.Metadata,
+			UploadedBy: auth.GetUserID(r.Context()), CreatedAt: task.CreatedAt, UpdatedAt: now,
+			DocStatus: governance.DocStatus, EffectiveDate: governance.EffectiveDate,
+			Supersedes: governance.Supersedes, Owner: governance.Owner,
+			KnowledgeSpaceID: space.ID, PublicationStatus: publicationStatus,
+		}
+
+		if admissionStore != nil {
+			receipt, err := admissionStore.Admit(r.Context(), ingestion.Submission{
+				JobID: jobID, EventID: eventID, RequestSignature: requestSig + ":" + fileHash,
+				Document: document, Task: task,
+			})
+			if err != nil {
+				slog.Error("durable ingestion admission failed", "tenant_id", tenantID, "doc_id", task.DocID, "error", err)
+				if deleter, ok := s3Client.(exactObjectDeleter); ok {
+					if cleanupErr := deleter.Delete(r.Context(), objectKey); cleanupErr != nil {
+						slog.Warn("orphan upload cleanup failed", "object_key", objectKey, "error", cleanupErr)
+					}
+				}
+				if errors.Is(err, ingestion.ErrAdmissionConflict) {
+					http.Error(w, "idempotency key reused with different request payload", http.StatusConflict)
+				} else {
+					http.Error(w, "admission unavailable", http.StatusServiceUnavailable)
+				}
+				return
+			}
+			jobID, eventID, docID = receipt.JobID, receipt.EventID, receipt.DocID
 		}
 
 		if taskStatusStore != nil {
@@ -897,35 +998,39 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 				Metadata:   task.Metadata,
 				CreatedAt:  task.CreatedAt,
 				UpdatedAt:  now,
-			}); err != nil {
+			}); err != nil && admissionStore == nil {
 				slog.Error("task status save failed", "tenant_id", tenantID, "doc_id", task.DocID, "error", err)
 				http.Error(w, "task status unavailable", http.StatusServiceUnavailable)
 				return
+			} else if err != nil {
+				slog.Warn("non-authoritative task status save failed", "tenant_id", tenantID, "doc_id", task.DocID, "error", err)
 			}
 		}
 
-		if err := producer.Publish(r.Context(), task); err != nil {
-			slog.Error("kafka publish failed", "error", err)
-			if taskStatusStore != nil {
-				if statusErr := taskStatusStore.Save(r.Context(), model.TaskStatus{
-					TaskID:     task.DocID,
-					DocID:      task.DocID,
-					TenantID:   task.TenantID,
-					Status:     model.TaskStatusFailed,
-					Stage:      "enqueue",
-					Error:      err.Error(),
-					FilePath:   task.FilePath,
-					FileHash:   task.FileHash,
-					Permission: task.Permission,
-					Metadata:   task.Metadata,
-					CreatedAt:  task.CreatedAt,
-					UpdatedAt:  time.Now(),
-				}); statusErr != nil {
-					slog.Warn("task status failure update failed", "tenant_id", tenantID, "doc_id", task.DocID, "error", statusErr)
+		if admissionStore == nil {
+			if err := producer.Publish(r.Context(), task); err != nil {
+				slog.Error("kafka publish failed", "error", err)
+				if taskStatusStore != nil {
+					if statusErr := taskStatusStore.Save(r.Context(), model.TaskStatus{
+						TaskID:     task.DocID,
+						DocID:      task.DocID,
+						TenantID:   task.TenantID,
+						Status:     model.TaskStatusFailed,
+						Stage:      "enqueue",
+						Error:      err.Error(),
+						FilePath:   task.FilePath,
+						FileHash:   task.FileHash,
+						Permission: task.Permission,
+						Metadata:   task.Metadata,
+						CreatedAt:  task.CreatedAt,
+						UpdatedAt:  time.Now(),
+					}); statusErr != nil {
+						slog.Warn("task status failure update failed", "tenant_id", tenantID, "doc_id", task.DocID, "error", statusErr)
+					}
 				}
+				http.Error(w, "enqueue failed", http.StatusInternalServerError)
+				return
 			}
-			http.Error(w, "enqueue failed", http.StatusInternalServerError)
-			return
 		}
 
 		// Replacement is durable (object written, task enqueued), so now retire the
@@ -933,7 +1038,7 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 		// failure above leaves the old document intact rather than deleting it and
 		// then failing to ingest the new one — the upload path must never end with
 		// neither version present.
-		if replacingExisting {
+		if replacingExisting && admissionStore == nil {
 			if errs := cascadeDeleteDocExcept(r.Context(), cfg, s3Client, tenantID, docID, objectKey); len(errs) > 0 {
 				// Stale vectors/full-text for the old version may linger; the new
 				// version still lands. Reconciliation and the next upsert retry it.
@@ -944,30 +1049,8 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 		// Registry write-through: a queued row so the document appears in the
 		// inventory immediately. Failure is non-fatal for the upload path — the
 		// message is still durable — but is logged for reconciliation.
-		if docStore != nil {
-			if err := docStore.Upsert(r.Context(), docstore.Document{
-				TenantID:    task.TenantID,
-				DocID:       task.DocID,
-				FileName:    header.Filename,
-				ObjectKey:   task.FilePath,
-				FileHash:    task.FileHash,
-				FileSize:    header.Size,
-				ContentType: header.Header.Get("Content-Type"),
-				Permission:  task.Permission,
-				Status:      docstore.StatusQueued,
-				Stage:       "queued",
-				Metadata:    task.Metadata,
-				UploadedBy:  auth.GetUserID(r.Context()),
-				CreatedAt:   task.CreatedAt,
-				UpdatedAt:   now,
-
-				DocStatus:         governance.DocStatus,
-				EffectiveDate:     governance.EffectiveDate,
-				Supersedes:        governance.Supersedes,
-				Owner:             governance.Owner,
-				KnowledgeSpaceID:  space.ID,
-				PublicationStatus: "draft",
-			}); err != nil {
+		if docStore != nil && admissionStore == nil {
+			if err := docStore.Upsert(r.Context(), document); err != nil {
 				slog.Warn("document registry upsert failed", "tenant_id", task.TenantID, "doc_id", task.DocID, "error", err)
 			}
 		}
@@ -990,6 +1073,8 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 
 		resp := uploadAcceptedResponse{
 			TaskID:    task.DocID,
+			JobID:     jobID,
+			EventID:   eventID,
 			DocID:     task.DocID,
 			Status:    "processing",
 			File:      objectKey,
@@ -1016,6 +1101,15 @@ func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer,
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write(respBytes)
 	}
+}
+
+func admissionIDs(tenantID, idempotencyKey string) (string, string) {
+	if idempotencyKey == "" {
+		return uuid.NewString(), uuid.NewString()
+	}
+	seed := tenantID + "/" + idempotencyKey
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("ingestion-job/"+seed)).String(),
+		uuid.NewSHA1(uuid.NameSpaceURL, []byte("ingestion-event/"+seed)).String()
 }
 
 func validateUploadExtension(filename string) (string, error) {
@@ -1267,6 +1361,14 @@ func buildUploadRequestSignature(tenantID, filename string, size int64, contentT
 		permission,
 		canonicalMetadata(metadata),
 	)
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func extendUploadRequestSignature(base, docID string, governance uploadGovernance) string {
+	s := fmt.Sprintf("%s|doc_id=%s|doc_status=%s|effective_date=%s|supersedes=%s|owner=%s",
+		base, strings.TrimSpace(docID), governance.DocStatus,
+		governance.EffectiveDate.Format("2006-01-02"), governance.Supersedes, governance.Owner)
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }

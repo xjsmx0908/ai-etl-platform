@@ -2,8 +2,8 @@
 
 ## 2026-08-27 - Enterprise RAG Implementation Baseline
 
-Status: proposed; architecture decision review and business inputs required
-before implementation
+Status: approved; P2.2 implementation in progress, later phases still require
+their ADR and business-input gates
 
 Goal: turn the accepted enterprise RAG direction into staged, testable work
 without treating unknown identity, quality, capacity, or recovery requirements
@@ -64,6 +64,19 @@ Global acceptance gates:
 - Full Go/Python/Web tests, Compose validation, security scanning, deterministic
   evaluation, real-model acceptance, load testing, and recovery exercises pass
   before production promotion.
+
+P2.2 progress (2026-08-27):
+
+- Implemented the first vertical slice: PostgreSQL atomically commits the
+  document catalog row, ingestion job, and task outbox event before HTTP `202`.
+- Uploads use immutable version keys; stable idempotency identities recover a
+  committed admission after a gateway crash without creating a second job.
+- A leased, multi-replica-safe relay publishes committed events at least once;
+  Kafka outages leave events pending with bounded retry backoff.
+- Remaining: consumer terminal-state/deduplication handling, scheduled orphan
+  collection, outbox lag/retry metrics and alerts, isolated crash-point E2E,
+  and generation activation before failed mid-index replacements can be called
+  atomically safe.
 
 No implementation phase starts merely because this backlog entry exists. Each
 ADR must first be reviewed, its open decisions resolved, and its phase-specific
