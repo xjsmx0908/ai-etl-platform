@@ -530,3 +530,28 @@ This file is an append-only record of completed PRAR cycles.
   audit operational scripts for duplicate mutations. Prefer verifying the
   resulting state over replaying a transition, and keep managed and default
   publication paths explicit in tests.
+
+## 2026-08-27 - Enterprise RAG Design Acceptance and Implementation Baseline
+
+- **Perceive:** The accepted enterprise design identified production gaps, but
+  the current upload and indexing implementations needed to be read before
+  converting recommendations into work. Upload currently commits object,
+  Redis, Kafka, and PostgreSQL in separate steps; indexing treats Qdrant as
+  primary and Elasticsearch as a retryable projection.
+- **Reason:** Implementation should start only after the real failure seams are
+  explicit. PostgreSQL must own admission and projection manifests, while Kafka,
+  Qdrant, Elasticsearch, and Redis remain delivery or derived-state adapters.
+  Identity and SLO values require business inputs and cannot be invented by
+  engineering.
+- **Act:** Accepted and merged the reviewed enterprise design, then proposed
+  ADRs for transactional outbox admission, generation-scoped index manifests,
+  enterprise identity federation, and production SLO/recovery gates. Added a
+  staged backlog with explicit external inputs and acceptance criteria.
+- **Refine:** Kept all four ADRs Proposed, recorded unresolved decisions instead
+  of silently choosing providers or targets, and tied every phase to tests and
+  evidence. Documentation verification and PR review remain required before any
+  implementation begins.
+- **Prevention:** Read the actual write order and failure handling before
+  proposing distributed consistency changes. Treat equal index counts as
+  insufficient without identity manifests, and never label healthy development
+  containers as production readiness evidence.

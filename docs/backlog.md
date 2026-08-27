@@ -1,5 +1,74 @@
 # Backlog
 
+## 2026-08-27 - Enterprise RAG Implementation Baseline
+
+Status: proposed; architecture decision review and business inputs required
+before implementation
+
+Goal: turn the accepted enterprise RAG direction into staged, testable work
+without treating unknown identity, quality, capacity, or recovery requirements
+as engineering assumptions.
+
+Proposed decisions:
+
+1. [ADR 0007](adr/0007-transactional-outbox-ingestion.md) makes PostgreSQL
+   admission and its transactional outbox the durable start of every accepted
+   ingestion job.
+2. [ADR 0008](adr/0008-generation-scoped-index-manifests.md) makes
+   generation-scoped manifests authoritative for completeness of Qdrant and
+   Elasticsearch projections.
+3. [ADR 0009](adr/0009-enterprise-identity-federation.md) introduces
+   provider-neutral enterprise identity while keeping authorization and
+   knowledge-space policy in existing modules.
+4. [ADR 0010](adr/0010-production-slo-and-recovery-gates.md) blocks production
+   promotion until business-owned SLO, recovery, retention, capacity, and
+   quality objectives have current evidence.
+
+Required external inputs:
+
+1. Name the first production business scope and the owner authorized to approve
+   the private enterprise Gold artifact.
+2. Select the identity provider and approve tenant, group, provisioning, MFA,
+   session, and break-glass policy.
+3. Approve numeric SLO, RPO/RTO, retention, capacity, data-residency, and budget
+   constraints.
+
+Staged implementation after ADR approval:
+
+1. **P2.2 Durable admission:** add versioned object reservations, PostgreSQL
+   ingestion jobs/outbox, an at-least-once relay, idempotent consumer handling,
+   orphan cleanup, metrics, and crash-point tests.
+2. **P2.3 Index generations:** add durable manifests, deterministic identity
+   digests, dual-backend verification, atomic activation, reconciliation,
+   rollback, and generation cleanup.
+3. **P2.4 Governance acceptance:** extend automated E2E through managed upload,
+   independent approval, active-generation publication, query, replacement,
+   deletion, audit, and dependency-failure recovery.
+4. **P2.5 Enterprise identity:** implement the approved OIDC and provisioning
+   adapters, dual-auth migration, production local-login disablement, service
+   identity, and security-negative tests.
+5. **P2.6 Production evidence:** implement the approved dashboards, alerts,
+   load and quality gates, backup/restore automation, failure exercises, and
+   retained release evidence.
+
+Global acceptance gates:
+
+- Every successful upload admission is recoverable from PostgreSQL without
+  inferring governance data from a search index.
+- A document is publishable only when the active generation exactly matches the
+  expected chunk identity set in both search projections.
+- Cross-tenant, unknown-user, draft, retired, stale-generation, and dependency-
+  failure paths fail closed without leaking content.
+- Mock evaluation remains an integration gate; production quality claims use a
+  signed business Gold artifact and real models.
+- Full Go/Python/Web tests, Compose validation, security scanning, deterministic
+  evaluation, real-model acceptance, load testing, and recovery exercises pass
+  before production promotion.
+
+No implementation phase starts merely because this backlog entry exists. Each
+ADR must first be reviewed, its open decisions resolved, and its phase-specific
+plan approved.
+
 ## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
 
 Status: engineering implementation completed; business promotion remains
