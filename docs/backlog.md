@@ -2,7 +2,7 @@
 
 ## 2026-08-27 - Enterprise RAG Implementation Baseline
 
-Status: approved; P2.2 complete, P2.3 rollback/retention implemented; later
+Status: approved; P2.2 and P2.3 engineering implementation complete; later
 phases still require their ADR and business-input gates
 
 Goal: turn the accepted enterprise RAG direction into staged, testable work
@@ -215,8 +215,24 @@ P2.3 generation rollback and retention slice (2026-08-28):
 - Cleanup is disabled by default. Enabling it requires an explicit positive
   `INDEX_RETENTION_WINDOW`; source objects and durable ingestion records are
   intentionally retained.
-- Remaining: bounded manifest metrics/alerts and the final P2.3 crash, reindex,
-  rollback, and garbage-collection acceptance matrix.
+- The bounded metrics/alerts and final acceptance matrix are implemented below.
+
+P2.3 generation observability and acceptance slice (2026-08-28):
+
+- Added low-cardinality Prometheus snapshots for manifest state/age and durable
+  divergence, repair-exhaustion, and retention-failure diagnostics. Lifecycle
+  result counters use fixed outcomes only; tenant, document, and generation
+  identities are never metric labels.
+- Reconciliation, retention, and administrator rollback publish their results
+  through optional observer seams. A worker monitor refreshes durable health
+  from PostgreSQL independently of any single lifecycle pass.
+- Added tested alerts for stalled builds, failed manifests, sustained backend
+  divergence, exhausted repair attempts, and persistent retention failures.
+- Added `docs/index-generation-acceptance.md` mapping crash replay, reindex,
+  rollback, and garbage collection to automated evidence. Go CI now provisions
+  PostgreSQL 16 so lifecycle integration tests cannot silently skip.
+- P2.3 engineering is complete. Production enablement remains subject to an
+  approved retention window and the deployment gates in ADR 0010.
 
 ## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
 

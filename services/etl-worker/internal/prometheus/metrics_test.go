@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/agent"
+	"ai-etl-pipeline/internal/indexmanifest"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -178,6 +179,47 @@ func TestSetIngestionOperationsExposesDurableBacklogSnapshot(t *testing.T) {
 	}
 	if got := gaugeValue(t, m.IngestionExpiredLeases); got != 1 {
 		t.Fatalf("expired leases = %v, want 1", got)
+	}
+}
+
+func TestGenerationMetricsExposeOnlyBoundedLifecycleLabels(t *testing.T) {
+	m := New("test_ai_etl_generation")
+	m.SetGenerationOperations(indexmanifest.OperationsSnapshot{
+		Manifests: map[indexmanifest.ManifestState]int{
+			indexmanifest.StateBuilding: 2,
+			indexmanifest.StateActive:   7,
+			indexmanifest.StateFailed:   3,
+		},
+		OldestAge: map[indexmanifest.ManifestState]time.Duration{
+			indexmanifest.StateBuilding: 95 * time.Second,
+		},
+		BackendDiverged: 4,
+		RepairExhausted: 1,
+		RetentionFailed: 2,
+	})
+	m.ObserveReconciliation(indexmanifest.ReconciliationReport{
+		Healthy: 5, RepairScheduled: 2, RepairPending: 1, RepairExhausted: 1, Conflicted: 3,
+	}, nil)
+	m.ObserveRetention(indexmanifest.RetentionReport{Deleted: 4, Failed: 2, Conflicted: 1}, nil)
+	m.ObserveRollback(indexmanifest.RollbackSucceeded)
+
+	if got := gaugeValue(t, m.GenerationManifests.WithLabelValues("failed")); got != 3 {
+		t.Fatalf("failed manifests = %v, want 3", got)
+	}
+	if got := gaugeValue(t, m.GenerationOldestAge.WithLabelValues("building")); got != 95 {
+		t.Fatalf("oldest building age = %v, want 95", got)
+	}
+	if got := gaugeValue(t, m.GenerationDiagnostics.WithLabelValues("backend_diverged")); got != 4 {
+		t.Fatalf("backend divergence = %v, want 4", got)
+	}
+	if got := counterValue(t, m.GenerationReconciliations.WithLabelValues("repair_scheduled")); got != 2 {
+		t.Fatalf("scheduled repairs = %v, want 2", got)
+	}
+	if got := counterValue(t, m.GenerationRetentions.WithLabelValues("failed")); got != 2 {
+		t.Fatalf("retention failures = %v, want 2", got)
+	}
+	if got := counterValue(t, m.GenerationRollbacks.WithLabelValues("success")); got != 1 {
+		t.Fatalf("successful rollbacks = %v, want 1", got)
 	}
 }
 

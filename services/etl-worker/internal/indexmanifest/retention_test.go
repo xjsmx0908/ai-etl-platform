@@ -102,6 +102,16 @@ type retentionStoreStub struct {
 	finishErrors map[string]error
 }
 
+type retentionObserverStub struct {
+	reports []RetentionReport
+	errors  []error
+}
+
+func (o *retentionObserverStub) ObserveRetention(report RetentionReport, err error) {
+	o.reports = append(o.reports, report)
+	o.errors = append(o.errors, err)
+}
+
 func (s *retentionStoreStub) ClaimRetention(context.Context, RetentionClaim) ([]Manifest, error) {
 	return s.manifests, nil
 }
@@ -228,5 +238,71 @@ func TestRetentionCollectorContinuesAfterStaleClaimConflict(t *testing.T) {
 	}
 	if len(store.finished) != 2 {
 		t.Fatalf("finished=%d, want 2", len(store.finished))
+	}
+}
+
+func TestRetentionCollectorPublishesOneBoundedReportPerPass(t *testing.T) {
+	manifest := testManifest()
+	manifest.GenerationID, manifest.State, manifest.RetentionClaimToken = "gen-old", StateRetired, "retention-1"
+	store := &retentionStoreStub{manifests: []Manifest{manifest}}
+	observer := &retentionObserverStub{}
+	collector := NewRetentionCollector(store, &deletionProjectionStub{}, &deletionProjectionStub{}, RetentionOptions{
+		Window: time.Hour, Lease: time.Minute, BatchSize: 1,
+	}).WithObserver(observer)
+
+	report, err := collector.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observer.reports) != 1 || !reflect.DeepEqual(observer.reports[0], report) || observer.errors[0] != nil {
+		t.Fatalf("observed reports=%+v errors=%+v", observer.reports, observer.errors)
+	}
+}
+
+type rollbackObserverStub struct{ outcomes []RollbackOutcome }
+
+func (o *rollbackObserverStub) ObserveRollback(outcome RollbackOutcome) {
+	o.outcomes = append(o.outcomes, outcome)
+}
+
+func TestRollbackerPublishesSuccessAndFailureOutcomes(t *testing.T) {
+	manifest := testManifest()
+	manifest.GenerationID, manifest.State = "gen-retired", StateRetired
+	matching := BackendObservation{Count: manifest.ExpectedChunkCount, Digest: manifest.ExpectedChunkDigest}
+	request := RollbackRequest{
+		Version:            VersionIdentity{TenantID: manifest.TenantID, DocumentID: manifest.DocumentID, DocumentVersionID: manifest.DocumentVersionID},
+		TargetGenerationID: manifest.GenerationID, ExpectedActiveGenerationID: "gen-active", Window: time.Hour,
+	}
+	observer := &rollbackObserverStub{}
+	rollbacker := NewRollbacker(&rollbackStoreStub{manifest: manifest},
+		&rollbackProjectionStub{observation: matching}, &rollbackProjectionStub{observation: matching}).WithObserver(observer)
+	if err := rollbacker.Rollback(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	rollbacker = NewRollbacker(&rollbackStoreStub{manifest: manifest},
+		&rollbackProjectionStub{observation: BackendObservation{Count: 1, Digest: "wrong"}},
+		&rollbackProjectionStub{observation: matching}).WithObserver(observer)
+	if err := rollbacker.Rollback(context.Background(), request); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("error=%v, want ErrNotReady", err)
+	}
+	if !reflect.DeepEqual(observer.outcomes, []RollbackOutcome{RollbackSucceeded, RollbackNotReady}) {
+		t.Fatalf("outcomes=%v", observer.outcomes)
+	}
+}
+
+func TestRollbackerPublishesTargetConflictOutcome(t *testing.T) {
+	manifest := testManifest()
+	observer := &rollbackObserverStub{}
+	rollbacker := NewRollbacker(&rollbackStoreStub{manifest: manifest, err: ErrConflict},
+		&rollbackProjectionStub{}, &rollbackProjectionStub{}).WithObserver(observer)
+	err := rollbacker.Rollback(context.Background(), RollbackRequest{
+		Version:            VersionIdentity{TenantID: manifest.TenantID, DocumentID: manifest.DocumentID, DocumentVersionID: manifest.DocumentVersionID},
+		TargetGenerationID: "gen-retired", ExpectedActiveGenerationID: "gen-active", Window: time.Hour,
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("error=%v, want ErrConflict", err)
+	}
+	if !reflect.DeepEqual(observer.outcomes, []RollbackOutcome{RollbackConflict}) {
+		t.Fatalf("outcomes=%v", observer.outcomes)
 	}
 }

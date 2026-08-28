@@ -361,6 +361,13 @@ func TestPostgresRollbackAndRetentionLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	snapshot, err := store.OperationsSnapshot(ctx, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Manifests[StateActive] != 1 || snapshot.Manifests[StateRetired] != 1 || snapshot.RetentionFailed != 1 {
+		t.Fatalf("operations snapshot=%+v", snapshot)
+	}
 	if _, err := pool.Exec(ctx, `UPDATE index_manifests SET retention_lease_until=NULL WHERE generation_id='gen-current'`); err != nil {
 		t.Fatal(err)
 	}

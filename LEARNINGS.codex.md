@@ -745,3 +745,21 @@ This file is an append-only record of completed PRAR cycles.
   active/retired atomic exchange, stale CAS rejection, exact projection
   filters, partial cleanup retry, and manifest deletion only after both
   projections complete. Metrics/alerts and the final acceptance matrix remain.
+
+## 2026-08-28 - P2.3 generation observability and acceptance
+
+- Perceive: per-resource metric labels would turn enterprise tenant/document
+  growth into unbounded Prometheus cardinality, while process-local counters
+  alone would lose persistent failures after restart.
+- Reason: publish current health from a bounded PostgreSQL snapshot and emit
+  lifecycle pass outcomes through small optional observer seams. Keep every
+  label value in a fixed state, condition, or outcome vocabulary.
+- Act: added manifest count/age and durable diagnostic gauges, reconciliation,
+  retention, and rollback counters, five tested sustained-condition alerts,
+  and a documented crash/reindex/rollback/garbage-collection matrix.
+- Refine: integration tests guarded only by an optional local DSN are not a CI
+  acceptance gate. Go CI now provisions PostgreSQL 16, and the real rollback /
+  retention lifecycle also exercises the operations snapshot query.
+- Verification: focused TDD tests, promtool rule tests, a disposable PostgreSQL
+  lifecycle test, and the full project quality suite cover the final P2.3
+  engineering gate. Production rollout remains separately controlled.

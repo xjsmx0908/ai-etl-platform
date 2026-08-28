@@ -20,6 +20,15 @@ type RollbackRequest struct {
 	ClaimToken                 string
 }
 
+type RollbackOutcome string
+
+const (
+	RollbackSucceeded RollbackOutcome = "success"
+	RollbackConflict  RollbackOutcome = "conflict"
+	RollbackNotReady  RollbackOutcome = "not_ready"
+	RollbackFailed    RollbackOutcome = "failed"
+)
+
 func newRetentionToken() string { return "retention-" + uuid.NewString() }
 
 type RollbackCommit struct {
@@ -39,13 +48,29 @@ type Rollbacker struct {
 	store         RollbackStore
 	qdrant        Projection
 	elasticsearch Projection
+	observer      RollbackObserver
+}
+
+type RollbackObserver interface {
+	ObserveRollback(RollbackOutcome)
 }
 
 func NewRollbacker(store RollbackStore, qdrant, elasticsearch Projection) *Rollbacker {
 	return &Rollbacker{store: store, qdrant: qdrant, elasticsearch: elasticsearch}
 }
 
+func (r *Rollbacker) WithObserver(observer RollbackObserver) *Rollbacker {
+	r.observer = observer
+	return r
+}
+
 func (r *Rollbacker) Rollback(ctx context.Context, request RollbackRequest) error {
+	outcome := RollbackFailed
+	defer func() {
+		if r.observer != nil {
+			r.observer.ObserveRollback(outcome)
+		}
+	}()
 	if r.store == nil || r.qdrant == nil || r.elasticsearch == nil ||
 		request.Version.TenantID == "" || request.Version.DocumentID == "" || request.Version.DocumentVersionID == "" ||
 		request.TargetGenerationID == "" || request.ExpectedActiveGenerationID == "" ||
@@ -60,6 +85,9 @@ func (r *Rollbacker) Rollback(ctx context.Context, request RollbackRequest) erro
 	}
 	manifest, err := r.store.RollbackTarget(ctx, request)
 	if err != nil {
+		if errors.Is(err, ErrConflict) {
+			outcome = RollbackConflict
+		}
 		return fmt.Errorf("load rollback target: %w", err)
 	}
 	identity := GenerationIdentity{VersionIdentity: request.Version, GenerationID: request.TargetGenerationID}
@@ -72,11 +100,16 @@ func (r *Rollbacker) Rollback(ctx context.Context, request RollbackRequest) erro
 		return fmt.Errorf("observe rollback elasticsearch generation: %w", err)
 	}
 	if !observationMatches(manifest, qdrant) || !observationMatches(manifest, elasticsearch) {
+		outcome = RollbackNotReady
 		return ErrNotReady
 	}
 	if err := r.store.Rollback(ctx, RollbackCommit{Request: request, Qdrant: qdrant, Elasticsearch: elasticsearch}); err != nil {
+		if errors.Is(err, ErrConflict) {
+			outcome = RollbackConflict
+		}
 		return fmt.Errorf("commit generation rollback: %w", err)
 	}
+	outcome = RollbackSucceeded
 	return nil
 }
 
@@ -118,6 +151,10 @@ type RetentionReport struct {
 	Conflicted int
 }
 
+type RetentionObserver interface {
+	ObserveRetention(RetentionReport, error)
+}
+
 // RetentionCollector owns the cross-backend deletion order. The store only
 // removes a manifest after both idempotent projection deletes are confirmed.
 type RetentionCollector struct {
@@ -125,6 +162,12 @@ type RetentionCollector struct {
 	qdrant        GenerationDeleter
 	elasticsearch GenerationDeleter
 	options       RetentionOptions
+	observer      RetentionObserver
+}
+
+func (c *RetentionCollector) WithObserver(observer RetentionObserver) *RetentionCollector {
+	c.observer = observer
+	return c
 }
 
 func NewRetentionCollector(store RetentionStore, qdrant, elasticsearch GenerationDeleter, options RetentionOptions) *RetentionCollector {
@@ -132,15 +175,24 @@ func NewRetentionCollector(store RetentionStore, qdrant, elasticsearch Generatio
 }
 
 func (c *RetentionCollector) RunOnce(ctx context.Context) (RetentionReport, error) {
+	var report RetentionReport
+	var runErr error
+	defer func() {
+		if c.observer != nil {
+			c.observer.ObserveRetention(report, runErr)
+		}
+	}()
 	if c.store == nil || c.qdrant == nil || c.elasticsearch == nil || c.options.Window <= 0 {
-		return RetentionReport{}, ErrInvalidManifest
+		runErr = ErrInvalidManifest
+		return report, runErr
 	}
 	claim := RetentionClaim{Window: c.options.Window, Lease: c.options.Lease, Limit: c.options.BatchSize, Token: newRetentionToken()}
 	manifests, err := c.store.ClaimRetention(ctx, claim)
 	if err != nil {
-		return RetentionReport{}, fmt.Errorf("claim generation retention: %w", err)
+		runErr = fmt.Errorf("claim generation retention: %w", err)
+		return report, runErr
 	}
-	report := RetentionReport{Claimed: len(manifests)}
+	report = RetentionReport{Claimed: len(manifests)}
 	for _, manifest := range manifests {
 		identity := GenerationIdentity{GenerationID: manifest.GenerationID, VersionIdentity: VersionIdentity{
 			TenantID: manifest.TenantID, DocumentID: manifest.DocumentID, DocumentVersionID: manifest.DocumentVersionID,
@@ -167,7 +219,8 @@ func (c *RetentionCollector) RunOnce(ctx context.Context) (RetentionReport, erro
 				report.Conflicted++
 				continue
 			}
-			return report, fmt.Errorf("finish generation retention: %w", err)
+			runErr = fmt.Errorf("finish generation retention: %w", err)
+			return report, runErr
 		}
 		if result.Reason == "" {
 			report.Deleted++

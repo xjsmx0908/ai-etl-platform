@@ -61,6 +61,46 @@ groups:
         annotations:
           summary: Durable ingestion work is waiting for lease recovery
 
+      - alert: IndexGenerationBuildStalled
+        expr: max by (state) (ai_etl_generation_oldest_age_seconds{state="building"}) > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: An index generation has remained building for over 15 minutes
+
+      - alert: IndexGenerationFailed
+        expr: max by (state) (ai_etl_generation_manifests{state="failed"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Failed index generation manifests require investigation
+
+      - alert: IndexGenerationBackendDiverged
+        expr: max by (condition) (ai_etl_generation_diagnostics{condition="backend_diverged"}) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Active index generations remain inconsistent across search backends
+
+      - alert: IndexGenerationRepairExhausted
+        expr: max by (condition) (ai_etl_generation_diagnostics{condition="repair_exhausted"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Automatic index generation repair attempts are exhausted
+
+      - alert: IndexGenerationRetentionFailed
+        expr: max by (condition) (ai_etl_generation_diagnostics{condition="retention_failed"}) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Retired index generation cleanup continues to fail
+
       - alert: CircuitBreakerOpen
         expr: ai_etl_circuit_state == 1
         for: 5m
