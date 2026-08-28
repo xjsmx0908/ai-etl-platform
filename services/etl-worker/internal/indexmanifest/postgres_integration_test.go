@@ -100,3 +100,57 @@ func TestPostgresConcurrentActivation(t *testing.T) {
 		t.Fatalf("active generations=%d, want 1", activeCount)
 	}
 }
+
+func TestPostgresResolvesActiveAndLegacyVisibility(t *testing.T) {
+	dsn := os.Getenv("INDEX_MANIFEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set INDEX_MANIFEST_TEST_DSN to run PostgreSQL visibility integration test")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("indexvisibility_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `CREATE TABLE index_manifests (
+		generation_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL,
+		document_id TEXT NOT NULL, document_version_id TEXT NOT NULL,
+		state TEXT NOT NULL
+	); INSERT INTO index_manifests VALUES
+		('gen-active','acme','doc-managed','job-1','active'),
+		('gen-old','acme','doc-managed','job-1','retired')`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewPostgresStore(pool).ResolveVisibility(ctx, "acme", []GenerationReference{
+		{DocumentID: "doc-managed", DocumentVersionID: "job-1", GenerationID: "gen-active"},
+		{DocumentID: "doc-managed", DocumentVersionID: "job-1", GenerationID: "gen-old"},
+		{DocumentID: "doc-managed"},
+		{DocumentID: "doc-unmanaged"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []bool{true, false, false, true}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("visibility = %v, want %v", got, want)
+		}
+	}
+}

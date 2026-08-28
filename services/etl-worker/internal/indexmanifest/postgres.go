@@ -103,6 +103,71 @@ WHERE tenant_id=$1 AND document_id=$2 AND document_version_id=$3 AND state='acti
 	return generationID, true, nil
 }
 
+// ResolveVisibility applies the active-generation read policy to a batch of
+// candidates. A document with no manifest remains legacy-compatible; once any
+// manifest exists, only its active generation is visible.
+func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, refs []GenerationReference) ([]bool, error) {
+	visible := make([]bool, len(refs))
+	if len(refs) == 0 {
+		return visible, nil
+	}
+	if tenantID == "" {
+		return nil, ErrInvalidManifest
+	}
+	docIDs := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if ref.DocumentID == "" {
+			continue
+		}
+		if _, ok := seen[ref.DocumentID]; !ok {
+			seen[ref.DocumentID] = struct{}{}
+			docIDs = append(docIDs, ref.DocumentID)
+		}
+	}
+	type manifestRef struct {
+		version, generation string
+		state               ManifestState
+	}
+	manifests := make(map[string][]manifestRef)
+	if len(docIDs) > 0 {
+		rows, err := s.q.Query(ctx, `SELECT document_id,document_version_id,generation_id,state FROM index_manifests
+WHERE tenant_id=$1 AND document_id = ANY($2)`, tenantID, docIDs)
+		if err != nil {
+			return nil, fmt.Errorf("resolve index visibility: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var docID, versionID, generationID string
+			var state ManifestState
+			if err := rows.Scan(&docID, &versionID, &generationID, &state); err != nil {
+				return nil, fmt.Errorf("scan index visibility: %w", err)
+			}
+			manifests[docID] = append(manifests[docID], manifestRef{version: versionID, generation: generationID, state: state})
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate index visibility: %w", err)
+		}
+	}
+	for i, ref := range refs {
+		if ref.DocumentID == "" || (ref.GenerationID == "") != (ref.DocumentVersionID == "") {
+			continue
+		}
+		entries, managed := manifests[ref.DocumentID]
+		if !managed {
+			visible[i] = ref.GenerationID == ""
+			continue
+		}
+		for _, entry := range entries {
+			if entry.state == StateActive && entry.version == ref.DocumentVersionID && entry.generation == ref.GenerationID {
+				visible[i] = true
+				break
+			}
+		}
+	}
+	return visible, nil
+}
+
 func (s *PostgresStore) Ensure(ctx context.Context, manifest Manifest) error {
 	if err := validateBuildDefinition(manifest); err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/model"
 )
 
@@ -61,9 +62,11 @@ type SearchRequest struct {
 
 // Candidate is one retrieved chunk candidate from one or more backends.
 type Candidate struct {
-	ChunkID string `json:"chunk_id"`
-	DocID   string `json:"doc_id"`
-	Content string `json:"content"`
+	ChunkID           string `json:"chunk_id"`
+	DocID             string `json:"doc_id"`
+	DocumentVersionID string `json:"document_version_id,omitempty"`
+	GenerationID      string `json:"generation_id,omitempty"`
+	Content           string `json:"content"`
 	// Score carries the backend's raw relevance score before fusion, and the
 	// RRF fusion score afterwards. Fusion is rank-based, so the post-fusion
 	// value says nothing about semantic relevance — use Relevance for that.
@@ -81,6 +84,11 @@ type Candidate struct {
 	Source          string            `json:"source,omitempty"`
 	Rank            int               `json:"rank,omitempty"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
+}
+
+// VisibilityResolver decides which generation-scoped candidates may be read.
+type VisibilityResolver interface {
+	ResolveVisibility(context.Context, string, []indexmanifest.GenerationReference) ([]bool, error)
 }
 
 // Result is the output consumed by the RAG answer-generation layer.

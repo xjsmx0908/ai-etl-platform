@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-28); pipeline generation integration implemented
+Accepted (2026-08-28); pipeline and active-generation query integration implemented
 
 ## Context
 
@@ -114,6 +114,15 @@ Legacy non-outbox messages retain their existing compatibility path.
 The manifest also persists the active predecessor observed when the build first
 starts; delayed retries cannot adopt a newer winner and overwrite it.
 
-Query filtering by active generation, reconciliation/repair, rollback and
-retention cleanup, bounded metrics/alerts, and the remaining acceptance matrix
-are subsequent P2.3 slices.
+The fourth vertical slice gates query evidence against PostgreSQL manifests.
+Qdrant and Elasticsearch candidates carry document-version and generation
+identity through retrieval, fusion, reranking, and semantic caching. One batch
+manifest lookup admits only the matching `active` generation and rejects
+`building`, `ready`, `failed`, `retired`, stale, and malformed identities.
+Cached evidence is revalidated on every hit so activation cannot leave an old
+generation queryable until cache expiry. Documents that have never had a
+manifest retain legacy read compatibility; once a document is managed, legacy
+points fail closed. PostgreSQL lookup failures also fail the query closed.
+
+Reconciliation/repair, rollback and retention cleanup, bounded metrics/alerts,
+and the remaining acceptance matrix are subsequent P2.3 slices.

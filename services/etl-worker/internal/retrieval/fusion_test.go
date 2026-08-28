@@ -2,6 +2,16 @@ package retrieval
 
 import "testing"
 
+func TestFuseKeepsIdenticalChunkIDsFromDifferentGenerationsDistinct(t *testing.T) {
+	got := Fuse(map[string][]Candidate{SourceQdrant: {
+		{ChunkID: "c1", DocID: "doc-1", GenerationID: "gen-old", Rank: 1},
+		{ChunkID: "c1", DocID: "doc-1", GenerationID: "gen-new", Rank: 2},
+	}}, Route{UseQdrant: true, QdrantWeight: 1}, 10)
+	if len(got) != 2 {
+		t.Fatalf("fused candidates = %+v, want distinct generations", got)
+	}
+}
+
 // RRF overwrites Score with 1/(k+rank), which is identical for every rank-1
 // candidate regardless of actual relevance. Relevance gating therefore depends on
 // the raw backend score surviving fusion.

@@ -3,6 +3,7 @@ package indexmanifest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -286,5 +287,44 @@ func TestPostgresStoreResolvesOnlyActiveGeneration(t *testing.T) {
 	}
 	if !found || generationID != "gen-2" {
 		t.Fatalf("generation=%q found=%v", generationID, found)
+	}
+}
+
+func TestPostgresStoreResolvesCandidateVisibilityInOneBatch(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery("SELECT document_id,document_version_id,generation_id,state FROM index_manifests").
+		WithArgs("acme", []string{"doc-active", "doc-managed", "doc-unmanaged"}).
+		WillReturnRows(pgxmock.NewRows([]string{"document_id", "document_version_id", "generation_id", "state"}).
+			AddRow("doc-active", "job-1", "gen-active", StateActive).
+			AddRow("doc-active", "job-1", "gen-retired", StateRetired).
+			AddRow("doc-managed", "job-2", "gen-building", StateBuilding).
+			AddRow("doc-managed", "job-2", "gen-ready", StateReady).
+			AddRow("doc-managed", "job-2", "gen-failed", StateFailed))
+
+	refs := []GenerationReference{
+		{DocumentID: "doc-active", DocumentVersionID: "job-1", GenerationID: "gen-active"},
+		{DocumentID: "doc-active", DocumentVersionID: "job-1", GenerationID: "gen-retired"},
+		{DocumentID: "doc-managed", DocumentVersionID: "job-2", GenerationID: "gen-building"},
+		{DocumentID: "doc-managed", DocumentVersionID: "job-2", GenerationID: "gen-ready"},
+		{DocumentID: "doc-managed", DocumentVersionID: "job-2", GenerationID: "gen-failed"},
+		{DocumentID: "doc-managed"},
+		{DocumentID: "doc-unmanaged"},
+		{DocumentID: "doc-active", GenerationID: "gen-active"},
+		{},
+	}
+	got, err := NewPostgresStore(mock).ResolveVisibility(context.Background(), "acme", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []bool{true, false, false, false, false, false, true, false, false}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("visibility = %v, want %v", got, want)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

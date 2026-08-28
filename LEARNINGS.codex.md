@@ -681,3 +681,20 @@ This file is an append-only record of completed PRAR cycles.
   trust legacy chunk-ID checkpoints. Partial embedding and Elasticsearch errors
   must fail closed; the old eventual-consistency path remains only for legacy
   messages. Read-side active-generation filtering remains a separate slice.
+
+## 2026-08-28 - P2.3 active-generation query filtering
+
+- Perceive: writing generation identity into derived indexes does not prevent a
+  hybrid search or semantic cache from returning a stale, partial, or retired
+  generation.
+- Reason: keep lifecycle truth in PostgreSQL and place one batch visibility
+  seam between backend candidates and fusion. Reuse it for cached candidates,
+  because cache invalidation and expiry are optimizations rather than a
+  correctness boundary.
+- Act: propagated document-version/generation identity through both retrieval
+  adapters and cached candidates, made Qdrant relevance and fusion identity
+  generation-scoped, and wired a fail-closed PostgreSQL gate into Query API.
+- Refine: compatibility must be document-scoped. A document with no manifests
+  may expose historical legacy points, but the first manifest permanently
+  moves that document under active-generation rules; incomplete identities and
+  resolver failures cannot be treated as legacy.
