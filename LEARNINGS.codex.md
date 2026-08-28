@@ -624,3 +624,22 @@ This file is an append-only record of completed PRAR cycles.
   and reranker pytest suites, Compose overlays, Prometheus config/rules, and the
   real isolated crash-recovery flow passed. Generation activation remains a
   separate ADR 0008 phase and is not claimed by this slice.
+
+## 2026-08-28 - P2.3 generation manifest persistence
+
+- Perceive: Qdrant success plus asynchronous Elasticsearch enqueue cannot prove
+  that two derived projections contain the same chunks, and unordered worker
+  completion makes insertion order unsuitable as an identity.
+- Reason: place lifecycle correctness behind one manifest module interface.
+  Bind a sorted digest to the generation and document version, and keep
+  readiness and activation predicates inside PostgreSQL compare-and-set writes.
+- Act: added the manifest migration, deterministic digest, state validation,
+  backend observations, failure recording, and serialized transactional
+  activation with a database-enforced single-active invariant.
+- Refine: activation must retire and promote in one transaction because the
+  partial unique index prevents promotion while another generation is active.
+  Checking the promoted row count before commit ensures a missing/non-ready
+  target rolls back retirement, leaving the old generation queryable.
+- Scope: this slice establishes persistence only. Pipeline completion semantics,
+  backend verification, reconciliation, cleanup, and operations evidence remain
+  explicit P2.3 work and are not claimed complete.

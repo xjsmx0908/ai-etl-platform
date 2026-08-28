@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-27)
+Accepted (2026-08-28); first persistence slice implemented
 
 ## Context
 
@@ -80,3 +80,18 @@ Tests must cover partial Qdrant writes, Elasticsearch outage and dead-letter,
 identity mismatch with equal counts, process restart, concurrent activation,
 safe rollback, reindex, and garbage collection. Metrics and alerts must expose
 manifest age, failed generations, backend divergence, and repair outcomes.
+
+## Implementation progress
+
+The first vertical slice adds migration `0011_index_manifests`, a deterministic
+generation-scoped chunk identity digest, and a narrow PostgreSQL manifest
+interface. PostgreSQL enforces at most one active generation per tenant and
+document version. Readiness and activation use compare-and-set predicates;
+activation holds a transaction-scoped identity lock, so a failed activation
+rolls back retirement of the previous generation.
+
+The current ETL pipeline is not connected to this module yet. Consequently its
+existing `completed` state does not yet satisfy this ADR's verified-generation
+invariant. Backend observation adapters, pipeline integration, reconciliation,
+rollback/retention, metrics, alerts, and acceptance tests remain later P2.3
+vertical slices.

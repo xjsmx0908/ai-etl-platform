@@ -105,6 +105,25 @@ func TestObjectReferenceLookupMigrationSupportsBoundedCleanup(t *testing.T) {
 	}
 }
 
+func TestIndexManifestMigrationCarriesGenerationInvariants(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0011_index_manifests.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE TABLE index_manifests", "generation_id TEXT PRIMARY KEY",
+		"expected_chunk_digest TEXT NOT NULL", "qdrant_digest TEXT NOT NULL",
+		"elasticsearch_digest TEXT NOT NULL", "'building','ready','failed','active','retired'",
+		"REFERENCES tenants(id) ON DELETE CASCADE", "attempts INT NOT NULL DEFAULT 0",
+		"CREATE UNIQUE INDEX index_manifests_one_active", "WHERE state = 'active'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("migration missing generation invariant %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.
