@@ -100,3 +100,10 @@ existing `completed` state does not yet satisfy this ADR's verified-generation
 invariant. Backend observation adapters, pipeline integration, reconciliation,
 rollback/retention, metrics, alerts, and acceptance tests remain later P2.3
 vertical slices.
+
+The second vertical slice adds generation-aware projection adapters. Qdrant
+points and Elasticsearch documents carry tenant, document version, generation,
+and content-hash fields; physical identities include the generation so a rebuild
+cannot overwrite the prior generation. Both adapters enumerate exactly one
+generation and produce the same deterministic digest for verification. Existing
+non-generation writes remain compatible until the pipeline cutover.

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/model"
 )
 
@@ -34,6 +35,39 @@ func TestMapChunkToESDoc_NormalizesPermissionAndCreatedAt(t *testing.T) {
 	}
 	if doc.Metadata["contract_no"] != "CN-2026-0001" {
 		t.Fatalf("expected metadata copied, got %+v", doc.Metadata)
+	}
+}
+
+func TestGenerationWriteUpdatesExistingIndexMappings(t *testing.T) {
+	var mapping map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodHead:
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPut && r.URL.Path == "/documents_text/_mapping":
+			_ = json.NewDecoder(r.Body).Decode(&mapping)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/_doc/"):
+			w.WriteHeader(http.StatusCreated)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	identity := indexmanifest.GenerationIdentity{GenerationID: "gen-1", VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+	if err := idx.UpsertGeneration(context.Background(), identity, model.Chunk{ChunkID: "doc_0000", TenantID: "tenant-a", DocID: "doc", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	properties := mapping["properties"].(map[string]interface{})
+	for _, field := range []string{"generation_id", "document_version_id", "content_hash"} {
+		if properties[field] == nil {
+			t.Errorf("mapping missing %s", field)
+		}
 	}
 }
 
@@ -219,6 +253,83 @@ func TestHTTPIndexer_IndexChunk(t *testing.T) {
 	metadata := gotDoc["metadata"].(map[string]interface{})
 	if metadata["contract_no"] != "CN-2026-0001" {
 		t.Fatalf("expected metadata indexed, got %#v", metadata)
+	}
+}
+
+func TestHTTPIndexerGenerationProjectionUsesScopedDocumentIdentity(t *testing.T) {
+	var paths []string
+	var docs []map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/documents_text/_mapping" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		paths = append(paths, r.URL.Path)
+		var doc map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&doc)
+		docs = append(docs, doc)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	chunk := model.Chunk{ChunkID: "doc_0000", DocID: "doc", TenantID: "tenant-a", Content: "hello", Index: 0}
+	for _, generationID := range []string{"gen-1", "gen-2"} {
+		identity := indexmanifest.GenerationIdentity{GenerationID: generationID, VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+		if err := idx.UpsertGeneration(context.Background(), identity, chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(paths) != 2 || paths[0] == paths[1] {
+		t.Fatalf("generation document paths=%v", paths)
+	}
+	if docs[0]["generation_id"] != "gen-1" || docs[0]["document_version_id"] != "job-1" || docs[0]["content_hash"] != indexmanifest.ContentHash("hello") {
+		t.Fatalf("unexpected document: %+v", docs[0])
+	}
+}
+
+func TestHTTPIndexerGenerationProjectionObservesIdentityDigest(t *testing.T) {
+	identity := indexmanifest.GenerationIdentity{GenerationID: "gen-1", VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+	var searchCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodHead:
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/documents_text/_mapping":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/documents_text/_refresh":
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/documents_text/_search":
+			searchCalls++
+			_, _ = w.Write([]byte(`{"_scroll_id":"scroll-1","hits":{"hits":[{"_source":{"chunk_id":"doc_0001","chunk_index":1,"content_hash":"` + indexmanifest.ContentHash("second") + `"}},{"_source":{"chunk_id":"doc_0000","chunk_index":0,"content_hash":"` + indexmanifest.ContentHash("first") + `"}}]}}`))
+		case r.URL.Path == "/_search/scroll" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"_scroll_id":"scroll-1","hits":{"hits":[]}}`))
+		case r.URL.Path == "/_search/scroll" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	got, err := idx.ObserveGeneration(context.Background(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := indexmanifest.IdentityDigest(identity, []indexmanifest.ChunkIdentity{{ChunkID: "doc_0000", Index: 0, ContentHash: indexmanifest.ContentHash("first")}, {ChunkID: "doc_0001", Index: 1, ContentHash: indexmanifest.ContentHash("second")}})
+	if searchCalls != 1 || got.Count != 2 || got.Digest != want {
+		t.Fatalf("observation=%+v searchCalls=%d", got, searchCalls)
 	}
 }
 

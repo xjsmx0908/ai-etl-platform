@@ -134,6 +134,17 @@ P2.3 progress (2026-08-28):
   completion integration, reconciler and repair, rollback/retention cleanup,
   bounded metrics/alerts, and the full ADR acceptance matrix.
 
+P2.3 backend projection slice (2026-08-28):
+
+- Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
+  adapters behind the manifest projection seam. Physical IDs and payloads carry
+  generation and durable document-version identity, plus content hashes.
+- Added a cross-backend verifier that records both observations and marks a
+  manifest ready only when each count/digest matches the expected set; backend
+  errors and identity mismatches fail the manifest.
+- Existing writes and pipeline completion behavior are intentionally unchanged
+  until the next slice wires manifest creation and verification into processing.
+
 ## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
 
 Status: engineering implementation completed; business promotion remains

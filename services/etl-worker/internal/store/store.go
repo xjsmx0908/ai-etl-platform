@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/model"
 )
 
@@ -129,6 +130,100 @@ func (q *QdrantStorer) Upsert(ctx context.Context, chunk model.Chunk) error {
 	url := fmt.Sprintf("%s/collections/%s/points", q.endpoint, q.collection)
 	return q.doPut(ctx, url, body)
 }
+
+func (q *QdrantStorer) UpsertGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity, chunk model.Chunk) error {
+	if identity.GenerationID == "" || identity.TenantID != chunk.TenantID || identity.DocumentID != chunk.DocID || identity.DocumentVersionID == "" {
+		return indexmanifest.ErrInvalidManifest
+	}
+	vectors := map[string]interface{}{"dense": chunk.Vector}
+	if !chunk.SparseVector.IsEmpty() {
+		vectors["sparse"] = map[string]interface{}{"indices": chunk.SparseVector.Indices, "values": chunk.SparseVector.Values}
+	}
+	payload := map[string]interface{}{
+		"chunk_id": chunk.ChunkID, "doc_id": chunk.DocID, "tenant_id": chunk.TenantID,
+		"document_version_id": identity.DocumentVersionID, "generation_id": identity.GenerationID,
+		"content_hash": indexmanifest.ContentHash(chunk.Content), "content": chunk.Content,
+		"index": chunk.Index, "permission": normalizeChunkPermission(chunk.Permission),
+	}
+	if len(chunk.Metadata) > 0 {
+		payload["metadata"] = chunk.Metadata
+	}
+	body := map[string]interface{}{"points": []interface{}{map[string]interface{}{
+		"id": chunkIDToUint(identity.GenerationID + "\x00" + chunk.ChunkID), "vector": vectors, "payload": payload,
+	}}}
+	url := fmt.Sprintf("%s/collections/%s/points?wait=true", q.endpoint, q.collection)
+	return q.doPut(ctx, url, body)
+}
+
+func (q *QdrantStorer) ObserveGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity) (indexmanifest.BackendObservation, error) {
+	if identity.GenerationID == "" || identity.TenantID == "" || identity.DocumentID == "" || identity.DocumentVersionID == "" {
+		return indexmanifest.BackendObservation{}, indexmanifest.ErrInvalidManifest
+	}
+	must := []map[string]interface{}{
+		{"key": "tenant_id", "match": map[string]string{"value": identity.TenantID}},
+		{"key": "doc_id", "match": map[string]string{"value": identity.DocumentID}},
+		{"key": "document_version_id", "match": map[string]string{"value": identity.DocumentVersionID}},
+		{"key": "generation_id", "match": map[string]string{"value": identity.GenerationID}},
+	}
+	var offset any
+	identities := []indexmanifest.ChunkIdentity{}
+	for {
+		body := map[string]interface{}{"limit": 100, "with_payload": []string{"chunk_id", "index", "content_hash"}, "filter": map[string]interface{}{"must": must}}
+		if offset != nil {
+			body["offset"] = offset
+		}
+		data, err := json.Marshal(body)
+		if err != nil {
+			return indexmanifest.BackendObservation{}, err
+		}
+		url := fmt.Sprintf("%s/collections/%s/points/scroll", q.endpoint, q.collection)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			return indexmanifest.BackendObservation{}, err
+		}
+		q.setHeaders(req)
+		resp, err := q.client.Do(req)
+		if err != nil {
+			return indexmanifest.BackendObservation{}, fmt.Errorf("qdrant generation scroll: %w", err)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return indexmanifest.BackendObservation{}, fmt.Errorf("qdrant generation scroll status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var result struct {
+			Result struct {
+				Points []struct {
+					Payload map[string]interface{} `json:"payload"`
+				} `json:"points"`
+				NextPageOffset any `json:"next_page_offset"`
+			} `json:"result"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
+			return indexmanifest.BackendObservation{}, fmt.Errorf("decode qdrant generation: %w", err)
+		}
+		for _, point := range result.Result.Points {
+			idx, ok := point.Payload["index"].(float64)
+			if !ok {
+				return indexmanifest.BackendObservation{}, fmt.Errorf("qdrant generation chunk index missing")
+			}
+			identities = append(identities, indexmanifest.ChunkIdentity{ChunkID: strVal(point.Payload["chunk_id"]), Index: int(idx), ContentHash: strVal(point.Payload["content_hash"])})
+		}
+		if result.Result.NextPageOffset == nil {
+			break
+		}
+		offset = result.Result.NextPageOffset
+	}
+	digest, err := indexmanifest.IdentityDigest(identity, identities)
+	if err != nil {
+		return indexmanifest.BackendObservation{}, err
+	}
+	return indexmanifest.BackendObservation{Count: len(identities), Digest: digest, ObservedAt: time.Now().UTC()}, nil
+}
+
+var _ indexmanifest.Projection = (*QdrantStorer)(nil)
 
 // Exists checks if a vector point already exists by chunk ID.
 func (q *QdrantStorer) Exists(ctx context.Context, chunkID string) (bool, error) {

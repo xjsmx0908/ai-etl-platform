@@ -68,3 +68,25 @@ func TestChunkIdentityDigestRejectsCrossDocumentAndDuplicateChunks(t *testing.T)
 		t.Fatal("accepted duplicate chunk identity")
 	}
 }
+
+func TestIdentityDigestMatchesChunkDigestFromBackendContentHashes(t *testing.T) {
+	identity := GenerationIdentity{GenerationID: "gen-1", VersionIdentity: VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+	chunks := []model.Chunk{
+		{ChunkID: "doc_0001", DocID: "doc", TenantID: "tenant-a", Index: 1, Content: "second"},
+		{ChunkID: "doc_0000", DocID: "doc", TenantID: "tenant-a", Index: 0, Content: "first"},
+	}
+	want, err := ChunkIdentityDigest(identity, chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := IdentityDigest(identity, []ChunkIdentity{
+		{ChunkID: "doc_0000", Index: 0, ContentHash: ContentHash("first")},
+		{ChunkID: "doc_0001", Index: 1, ContentHash: ContentHash("second")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed != want {
+		t.Fatalf("backend digest=%s want=%s", observed, want)
+	}
+}
