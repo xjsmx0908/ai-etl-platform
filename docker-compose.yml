@@ -341,6 +341,11 @@ services:
       - S3_USE_SSL=${S3_USE_SSL:-false}
       # Document registry write-through (status updates; warn-only on failure).
       - PG_DSN_FILE=/run/secrets/pg_dsn
+      - INDEX_RECONCILE_ENABLED=${INDEX_RECONCILE_ENABLED:-true}
+      - INDEX_RECONCILE_INTERVAL=${INDEX_RECONCILE_INTERVAL:-5m}
+      - INDEX_RECONCILE_LEASE=${INDEX_RECONCILE_LEASE:-30m}
+      - INDEX_RECONCILE_BATCH_SIZE=${INDEX_RECONCILE_BATCH_SIZE:-20}
+      - INDEX_RECONCILE_MAX_REPAIRS=${INDEX_RECONCILE_MAX_REPAIRS:-3}
       - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
     secrets:
       - parser_internal_token

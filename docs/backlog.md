@@ -2,7 +2,7 @@
 
 ## 2026-08-27 - Enterprise RAG Implementation Baseline
 
-Status: approved; P2.2 complete, P2.3 pipeline integration in progress; later
+Status: approved; P2.2 complete, P2.3 reconciliation implemented; later
 phases still require their ADR and business-input gates
 
 Goal: turn the accepted enterprise RAG direction into staged, testable work
@@ -130,8 +130,9 @@ P2.3 progress (2026-08-28):
   jobs; failed builds can be retried after clearing observations; stale
   activation writers are rejected using expected-current CAS. A real PostgreSQL
   concurrency test verifies that only one competing activation succeeds.
-- Remaining P2.3 slices: reconciler and repair, rollback/retention cleanup,
-  bounded metrics/alerts, and the full ADR acceptance matrix.
+- Subsequent slices at this checkpoint were reconciliation/repair,
+  rollback/retention cleanup, bounded metrics/alerts, and the full ADR
+  acceptance matrix. Reconciliation/repair is now implemented below.
 
 P2.3 backend projection slice (2026-08-28):
 
@@ -158,8 +159,9 @@ P2.3 pipeline integration slice (2026-08-28):
 - Redelivery targets the same generation and idempotently rewrites all chunks;
   it no longer trusts legacy chunk-ID checkpoints. Build configuration changes
   deterministically create a different generation.
-- Remaining: add background repair and retention, expose manifest
-  metrics/alerts, and finish crash/reindex/rollback acceptance coverage.
+- This slice deferred background repair and retention, manifest metrics/alerts,
+  and crash/reindex/rollback acceptance coverage. Reconciliation/repair is now
+  implemented below.
 
 P2.3 active-generation query slice (2026-08-28):
 
@@ -172,8 +174,29 @@ P2.3 active-generation query slice (2026-08-28):
 - Semantic-cache hits pass through the same gate on every read. Documents with
   no manifest retain legacy compatibility, while managed legacy points,
   malformed identities, and manifest lookup failures are rejected.
-- Remaining: reconciler/repair, rollback and retention cleanup, manifest
-  metrics/alerts, and the remaining crash/reindex/rollback acceptance matrix.
+- This slice deferred reconciler/repair, rollback and retention cleanup,
+  manifest metrics/alerts, and the remaining acceptance matrix.
+  Reconciliation/repair is now implemented below.
+
+P2.3 manifest reconciliation slice (2026-08-28):
+
+- Added an enabled-by-default worker reconciler that fairly claims bounded
+  batches of active manifests with PostgreSQL leases, fencing tokens, and
+  `FOR UPDATE SKIP LOCKED` for safe multi-worker operation.
+- Each claim independently observes Qdrant and Elasticsearch. Matching counts
+  and identity digests persist a healthy result; backend errors or mismatches
+  persist a durable diagnostic and make managed query evidence fail closed.
+- Divergence atomically reopens the original ingestion job and outbox event so
+  the existing relay and pipeline rebuild the exact deterministic generation.
+  Already-pending work is not duplicated and consecutive repair scheduling is
+  capped by configuration.
+- A repair replay is not considered complete until both rebuilt projections
+  are freshly observed and match the sealed manifest. Healthy confirmation
+  clears the diagnostic and resets consecutive repair attempts.
+- Real PostgreSQL tests cover concurrent activation, active/legacy visibility,
+  a single pending replay, and healthy recovery.
+- Remaining: rollback and retention cleanup, bounded manifest metrics/alerts,
+  and the remaining crash/reindex/rollback acceptance matrix.
 
 ## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
 

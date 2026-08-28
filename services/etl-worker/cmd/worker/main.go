@@ -131,6 +131,7 @@ func main() {
 	var docStore docstore.Store
 	var ingestionJobs ingestion.JobStore
 	var generationBuilder indexmanifest.BuildStarter
+	var generationReconciler *indexmanifest.Reconciler
 	pgPool, err := migrations.Open(context.Background(), cfg.PGDSN)
 	if err != nil {
 		slog.Warn("postgres unavailable; document registry status write-through disabled", "error", err)
@@ -143,7 +144,14 @@ func main() {
 			slog.Warn("generation indexing disabled; vector store lacks generation projection")
 		} else {
 			manifestStore := indexmanifest.NewPostgresStore(pgPool)
-			generationBuilder = indexmanifest.NewBuilder(manifestStore, qdrantProjection, fullTextSink.GenerationProjection())
+			elasticsearchProjection := fullTextSink.GenerationProjection()
+			generationBuilder = indexmanifest.NewBuilder(manifestStore, qdrantProjection, elasticsearchProjection)
+			if cfg.IndexReconcileEnabled {
+				generationReconciler = indexmanifest.NewReconciler(manifestStore, qdrantProjection, elasticsearchProjection, indexmanifest.ReconcilerOptions{
+					BatchSize: cfg.IndexReconcileBatchSize, Interval: cfg.IndexReconcileInterval,
+					Lease: cfg.IndexReconcileLease, MaxRepairs: cfg.IndexReconcileMaxRepairs,
+				})
+			}
 		}
 	}
 
@@ -157,6 +165,9 @@ func main() {
 	// Start Pipeline
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if generationReconciler != nil {
+		go generationReconciler.Run(ctx)
+	}
 
 	p.Run(ctx, source)
 	slog.Info("worker running, consuming tasks from Kafka")

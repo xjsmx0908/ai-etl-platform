@@ -16,6 +16,14 @@ type buildLifecycleStub struct {
 	failed   string
 }
 
+func (s *buildLifecycleStub) ConfirmActive(_ context.Context, generationID string, qdrant, elasticsearch BackendObservation) error {
+	s.events = append(s.events, "confirm-active")
+	if generationID != s.manifest.GenerationID || qdrant.Count != s.manifest.ExpectedChunkCount || elasticsearch.Digest != s.manifest.ExpectedChunkDigest {
+		return ErrNotReady
+	}
+	return nil
+}
+
 func (s *buildLifecycleStub) Begin(_ context.Context, manifest Manifest) (Manifest, error) {
 	s.events = append(s.events, "begin")
 	manifest.State = StateBuilding
@@ -198,4 +206,47 @@ func TestBuilderRedeliveryCannotAdoptAnewerActiveGeneration(t *testing.T) {
 	if lifecycle.active != "gen-new-winner" {
 		t.Fatalf("stale build replaced winner with %q", lifecycle.active)
 	}
+}
+
+func TestBuilderActiveRepairCompletesOnlyAfterDualVerification(t *testing.T) {
+	lifecycle := &buildLifecycleStub{active: "gen-existing"}
+	request := testBuildRequest()
+	manifest, err := manifestFor(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := model.Chunk{ChunkID: "doc-1_0000", TenantID: "acme", DocID: "doc-1", Index: 0, Content: "repaired"}
+	digest, err := ChunkIdentityDigest(GenerationIdentity{VersionIdentity: request.Version, GenerationID: manifest.GenerationID}, []model.Chunk{chunk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.manifest = manifest
+	lifecycle.manifest.State = StateActive
+	lifecycle.manifest.ExpectedChunkCount = 1
+	lifecycle.manifest.ExpectedChunkDigest = digest
+	lifecycle.manifest.ExpectedSealed = true
+	qdrant := &buildProjectionStub{name: "qdrant", events: &lifecycle.events}
+	elastic := &buildProjectionStub{name: "elasticsearch", events: &lifecycle.events}
+	builder := NewBuilder(&activeRepairLifecycleStub{buildLifecycleStub: lifecycle}, qdrant, elastic)
+	build, err := builder.Begin(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := build.Upsert(context.Background(), chunk); err != nil {
+		t.Fatal(err)
+	}
+	if err := build.Complete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantTail := []string{"observe-backend:qdrant", "observe-backend:elasticsearch", "confirm-active"}
+	if len(lifecycle.events) < len(wantTail) || !reflect.DeepEqual(lifecycle.events[len(lifecycle.events)-len(wantTail):], wantTail) {
+		t.Fatalf("events = %v, want tail %v", lifecycle.events, wantTail)
+	}
+}
+
+type activeRepairLifecycleStub struct{ *buildLifecycleStub }
+
+func (s *activeRepairLifecycleStub) Begin(_ context.Context, _ Manifest) (Manifest, error) {
+	s.events = append(s.events, "begin")
+	return s.manifest, nil
 }

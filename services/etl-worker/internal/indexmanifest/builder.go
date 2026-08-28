@@ -38,6 +38,7 @@ type BuildLifecycle interface {
 	VerificationLifecycle
 	Retry(context.Context, string) error
 	Activate(context.Context, ActivationTarget) error
+	ConfirmActive(context.Context, string, BackendObservation, BackendObservation) error
 }
 
 // Builder hides manifest ordering, cross-backend verification, and activation
@@ -110,6 +111,17 @@ func (b *Build) Complete(ctx context.Context) error {
 	}
 	b.manifest = manifest
 	if manifest.State == StateActive {
+		qdrant, err := b.qdrant.ObserveGeneration(ctx, b.identity)
+		if err != nil {
+			return fmt.Errorf("observe repaired qdrant generation: %w", err)
+		}
+		elasticsearch, err := b.elastic.ObserveGeneration(ctx, b.identity)
+		if err != nil {
+			return fmt.Errorf("observe repaired elasticsearch generation: %w", err)
+		}
+		if err := b.lifecycle.ConfirmActive(ctx, b.identity.GenerationID, qdrant, elasticsearch); err != nil {
+			return fmt.Errorf("confirm repaired active generation: %w", err)
+		}
 		return nil
 	}
 	if manifest.State == StateBuilding {

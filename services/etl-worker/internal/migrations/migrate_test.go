@@ -160,6 +160,23 @@ func TestIndexManifestVisibilityLookupMigrationSupportsBatchReads(t *testing.T) 
 	}
 }
 
+func TestIndexManifestReconciliationMigrationSupportsLeasedRepair(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0014_index_manifest_reconciliation.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"last_reconciled_at", "reconcile_lease_until", "reconcile_claim_token",
+		"repair_attempts", "last_reconcile_error",
+		"CREATE INDEX index_manifests_reconciliation_claim_idx", "WHERE state = 'active'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.

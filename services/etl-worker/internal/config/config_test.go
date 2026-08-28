@@ -48,6 +48,10 @@ func TestLoad_Defaults(t *testing.T) {
 		t.Errorf("unexpected orphan cleanup defaults: interval=%v grace=%v batch=%d",
 			cfg.OrphanCleanupInterval, cfg.OrphanCleanupGracePeriod, cfg.OrphanCleanupBatchSize)
 	}
+	if !cfg.IndexReconcileEnabled || cfg.IndexReconcileInterval != 5*time.Minute || cfg.IndexReconcileLease != 30*time.Minute || cfg.IndexReconcileBatchSize != 20 || cfg.IndexReconcileMaxRepairs != 3 {
+		t.Fatalf("unexpected index reconciliation defaults: enabled=%v interval=%v lease=%v batch=%d max_repairs=%d",
+			cfg.IndexReconcileEnabled, cfg.IndexReconcileInterval, cfg.IndexReconcileLease, cfg.IndexReconcileBatchSize, cfg.IndexReconcileMaxRepairs)
+	}
 	if cfg.TaskStatusStore != TaskStatusStoreAuto {
 		t.Errorf("expected TaskStatusStore=auto, got %s", cfg.TaskStatusStore)
 	}
@@ -457,6 +461,38 @@ func TestLoad_IngestionOperationsOverrides(t *testing.T) {
 		cfg.OrphanCleanupGracePeriod != 48*time.Hour || cfg.OrphanCleanupBatchSize != 250 {
 		t.Fatalf("unexpected ingestion operations overrides: metrics=%v interval=%v grace=%v batch=%d",
 			cfg.IngestionMetricsInterval, cfg.OrphanCleanupInterval, cfg.OrphanCleanupGracePeriod, cfg.OrphanCleanupBatchSize)
+	}
+}
+
+func TestLoad_IndexReconciliationOverrides(t *testing.T) {
+	t.Setenv("INDEX_RECONCILE_ENABLED", "false")
+	t.Setenv("INDEX_RECONCILE_INTERVAL", "10m")
+	t.Setenv("INDEX_RECONCILE_LEASE", "45m")
+	t.Setenv("INDEX_RECONCILE_BATCH_SIZE", "50")
+	t.Setenv("INDEX_RECONCILE_MAX_REPAIRS", "5")
+	cfg := Load()
+	if cfg.IndexReconcileEnabled || cfg.IndexReconcileInterval != 10*time.Minute || cfg.IndexReconcileLease != 45*time.Minute || cfg.IndexReconcileBatchSize != 50 || cfg.IndexReconcileMaxRepairs != 5 {
+		t.Fatalf("unexpected reconciliation overrides: %+v", cfg)
+	}
+}
+
+func TestValidate_RejectsUnsafeIndexReconciliationSettings(t *testing.T) {
+	for name, mutate := range map[string]func(*Config){
+		"interval":     func(c *Config) { c.IndexReconcileInterval = 0 },
+		"lease":        func(c *Config) { c.IndexReconcileLease = 0 },
+		"short lease":  func(c *Config) { c.IndexReconcileLease = c.IndexReconcileInterval },
+		"batch low":    func(c *Config) { c.IndexReconcileBatchSize = 0 },
+		"batch high":   func(c *Config) { c.IndexReconcileBatchSize = 1001 },
+		"repairs low":  func(c *Config) { c.IndexReconcileMaxRepairs = 0 },
+		"repairs high": func(c *Config) { c.IndexReconcileMaxRepairs = 21 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Load()
+			mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected invalid reconciliation settings to fail")
+			}
+		})
 	}
 }
 

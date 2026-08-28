@@ -154,6 +154,11 @@ type Config struct {
 	OrphanCleanupInterval    time.Duration
 	OrphanCleanupGracePeriod time.Duration
 	OrphanCleanupBatchSize   int
+	IndexReconcileEnabled    bool
+	IndexReconcileInterval   time.Duration
+	IndexReconcileLease      time.Duration
+	IndexReconcileBatchSize  int
+	IndexReconcileMaxRepairs int
 
 	// Redis (shared default; used as fallback for cache/state below)
 	RedisAddr     string
@@ -328,6 +333,11 @@ func Load() Config {
 		OrphanCleanupInterval:    EnvDuration("ORPHAN_CLEANUP_INTERVAL", 15*time.Minute),
 		OrphanCleanupGracePeriod: EnvDuration("ORPHAN_CLEANUP_GRACE_PERIOD", 24*time.Hour),
 		OrphanCleanupBatchSize:   EnvInt("ORPHAN_CLEANUP_BATCH_SIZE", 100),
+		IndexReconcileEnabled:    EnvBool("INDEX_RECONCILE_ENABLED", true),
+		IndexReconcileInterval:   EnvDuration("INDEX_RECONCILE_INTERVAL", 5*time.Minute),
+		IndexReconcileLease:      EnvDuration("INDEX_RECONCILE_LEASE", 30*time.Minute),
+		IndexReconcileBatchSize:  EnvInt("INDEX_RECONCILE_BATCH_SIZE", 20),
+		IndexReconcileMaxRepairs: EnvInt("INDEX_RECONCILE_MAX_REPAIRS", 3),
 
 		// Redis: REDIS_* is the shared default; REDIS_CACHE_*/REDIS_STATE_*
 		// override it so evictable cache and durable state can be separated.
@@ -493,6 +503,11 @@ func (c Config) Validate() error {
 	}
 	if c.OrphanCleanupInterval <= 0 || c.OrphanCleanupGracePeriod <= 0 || c.OrphanCleanupBatchSize < 1 || c.OrphanCleanupBatchSize > 1000 {
 		return fmt.Errorf("orphan cleanup interval/grace must be > 0 and batch size between 1 and 1000")
+	}
+	if c.IndexReconcileInterval <= 0 || c.IndexReconcileLease <= c.IndexReconcileInterval ||
+		c.IndexReconcileBatchSize < 1 || c.IndexReconcileBatchSize > 1000 ||
+		c.IndexReconcileMaxRepairs < 1 || c.IndexReconcileMaxRepairs > 20 {
+		return fmt.Errorf("index reconciliation interval must be > 0, lease must exceed interval, batch must be 1..1000, and max repairs must be 1..20")
 	}
 	worstCaseProcessing := c.PipelineTimeout * time.Duration(c.MaxRetries+1)
 	for attempt := 1; attempt <= c.MaxRetries; attempt++ {
