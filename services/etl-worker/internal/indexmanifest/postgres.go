@@ -2,6 +2,7 @@ package indexmanifest
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -12,6 +13,8 @@ import (
 )
 
 type Store interface {
+	Begin(context.Context, Manifest) (Manifest, error)
+	SealExpected(context.Context, string, int, string) (Manifest, error)
 	Ensure(context.Context, Manifest) error
 	ActiveGeneration(context.Context, VersionIdentity) (string, bool, error)
 	Observe(context.Context, string, Backend, BackendObservation) error
@@ -26,6 +29,53 @@ type PostgresStore struct{ q db.Querier }
 func NewPostgresStore(q db.Querier) *PostgresStore { return &PostgresStore{q: q} }
 
 var _ Store = (*PostgresStore)(nil)
+
+func (s *PostgresStore) Begin(ctx context.Context, manifest Manifest) (Manifest, error) {
+	if err := validateUnsealedBuildDefinition(manifest); err != nil {
+		return Manifest{}, err
+	}
+	if manifest.CreatedAt.IsZero() {
+		manifest.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.q.Exec(ctx, `INSERT INTO index_manifests (
+generation_id,tenant_id,document_id,document_version_id,chunker_version,embedding_model,vector_dimension,schema_version,collection_version,index_version,state,created_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'building',$11)
+ON CONFLICT (generation_id) DO NOTHING`, manifest.GenerationID, manifest.TenantID,
+		manifest.DocumentID, manifest.DocumentVersionID, manifest.ChunkerVersion,
+		manifest.EmbeddingModel, manifest.VectorDimension, manifest.SchemaVersion,
+		manifest.CollectionVersion, manifest.IndexVersion, manifest.CreatedAt)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("begin index manifest: %w", err)
+	}
+	existing, err := scanManifest(s.q.QueryRow(ctx, manifestSelect+" WHERE generation_id=$1", manifest.GenerationID))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("load begun index manifest: %w", err)
+	}
+	if !sameUnsealedBuildDefinition(existing, manifest) {
+		return Manifest{}, ErrConflict
+	}
+	return existing, nil
+}
+
+func (s *PostgresStore) SealExpected(ctx context.Context, generationID string, count int, digest string) (Manifest, error) {
+	if generationID == "" || count <= 0 || digest == "" {
+		return Manifest{}, ErrInvalidManifest
+	}
+	_, err := s.q.Exec(ctx, `UPDATE index_manifests
+SET expected_chunk_count=$2, expected_chunk_digest=$3
+WHERE generation_id=$1 AND state='building' AND expected_chunk_count IS NULL`, generationID, count, digest)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("seal expected generation identity: %w", err)
+	}
+	manifest, err := scanManifest(s.q.QueryRow(ctx, manifestSelect+" WHERE generation_id=$1", generationID))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("load sealed index manifest: %w", err)
+	}
+	if !manifest.ExpectedSealed || manifest.ExpectedChunkCount != count || manifest.ExpectedChunkDigest != digest {
+		return Manifest{}, ErrConflict
+	}
+	return manifest, nil
+}
 
 func (s *PostgresStore) ActiveGeneration(ctx context.Context, version VersionIdentity) (string, bool, error) {
 	if version.TenantID == "" || version.DocumentID == "" || version.DocumentVersionID == "" {
@@ -200,14 +250,51 @@ AND generation_id=$4 AND state='ready'`, target.Version.TenantID, target.Version
 }
 
 func validateBuildDefinition(manifest Manifest) error {
+	if err := validateUnsealedBuildDefinition(manifest); err != nil ||
+		manifest.ExpectedChunkCount < 0 || manifest.ExpectedChunkDigest == "" {
+		return ErrInvalidManifest
+	}
+	return nil
+}
+
+func validateUnsealedBuildDefinition(manifest Manifest) error {
 	if manifest.GenerationID == "" || manifest.TenantID == "" || manifest.DocumentID == "" ||
 		manifest.DocumentVersionID == "" || manifest.ChunkerVersion == "" ||
 		manifest.EmbeddingModel == "" || manifest.VectorDimension <= 0 ||
 		manifest.SchemaVersion == "" || manifest.CollectionVersion == "" ||
-		manifest.IndexVersion == "" || manifest.ExpectedChunkCount < 0 || manifest.ExpectedChunkDigest == "" {
+		manifest.IndexVersion == "" {
 		return ErrInvalidManifest
 	}
 	return nil
+}
+
+const manifestSelect = `SELECT generation_id,tenant_id,document_id,
+document_version_id,chunker_version,embedding_model,vector_dimension,schema_version,
+collection_version,index_version,expected_chunk_count,expected_chunk_digest,state
+FROM index_manifests`
+
+func scanManifest(row pgx.Row) (Manifest, error) {
+	var manifest Manifest
+	var expectedCount sql.NullInt64
+	var expectedDigest sql.NullString
+	err := row.Scan(&manifest.GenerationID, &manifest.TenantID, &manifest.DocumentID,
+		&manifest.DocumentVersionID, &manifest.ChunkerVersion, &manifest.EmbeddingModel,
+		&manifest.VectorDimension, &manifest.SchemaVersion, &manifest.CollectionVersion,
+		&manifest.IndexVersion, &expectedCount, &expectedDigest, &manifest.State)
+	if expectedCount.Valid && expectedDigest.Valid {
+		manifest.ExpectedChunkCount = int(expectedCount.Int64)
+		manifest.ExpectedChunkDigest = expectedDigest.String
+		manifest.ExpectedSealed = true
+	}
+	return manifest, err
+}
+
+func sameUnsealedBuildDefinition(a, b Manifest) bool {
+	return a.GenerationID == b.GenerationID && a.TenantID == b.TenantID &&
+		a.DocumentID == b.DocumentID && a.DocumentVersionID == b.DocumentVersionID &&
+		a.ChunkerVersion == b.ChunkerVersion && a.EmbeddingModel == b.EmbeddingModel &&
+		a.VectorDimension == b.VectorDimension && a.SchemaVersion == b.SchemaVersion &&
+		a.CollectionVersion == b.CollectionVersion && a.IndexVersion == b.IndexVersion
 }
 
 const immutableManifestSelect = `SELECT generation_id,tenant_id,document_id,

@@ -126,6 +126,23 @@ func TestIndexManifestMigrationCarriesGenerationInvariants(t *testing.T) {
 	}
 }
 
+func TestSealableIndexManifestMigrationAllowsPreWriteManifest(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0012_sealable_index_manifests.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"expected_chunk_count DROP NOT NULL",
+		"expected_chunk_digest DROP NOT NULL",
+		"index_manifests_expected_identity_pair",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.

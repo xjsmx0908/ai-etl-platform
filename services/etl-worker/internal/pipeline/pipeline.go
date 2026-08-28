@@ -15,6 +15,7 @@ import (
 
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/model"
@@ -31,19 +32,20 @@ type docStatusWriter interface {
 }
 
 type Pipeline struct {
-	cfg           config.Config
-	parser        *parser.Parser
-	parserClient  *parser.Client
-	embedder      model.Embedder
-	storer        model.Storer
-	fullTextSink  model.FullTextSink
-	metrics       *metrics.Collector
-	checkpoint    model.CheckpointStore
-	dlq           model.DLQStore
-	taskStatus    model.TaskStatusStore
-	docStatus     docStatusWriter
-	ingestionJobs ingestion.JobStore
-	sparseEncoder *sparse.Encoder
+	cfg              config.Config
+	parser           *parser.Parser
+	parserClient     *parser.Client
+	embedder         model.Embedder
+	storer           model.Storer
+	fullTextSink     model.FullTextSink
+	metrics          *metrics.Collector
+	checkpoint       model.CheckpointStore
+	dlq              model.DLQStore
+	taskStatus       model.TaskStatusStore
+	docStatus        docStatusWriter
+	ingestionJobs    ingestion.JobStore
+	generationBuilds indexmanifest.BuildStarter
+	sparseEncoder    *sparse.Encoder
 
 	taskCh  chan model.TaskWithAck
 	wg      sync.WaitGroup
@@ -52,6 +54,11 @@ type Pipeline struct {
 
 func (p *Pipeline) WithIngestionJobs(store ingestion.JobStore) *Pipeline {
 	p.ingestionJobs = store
+	return p
+}
+
+func (p *Pipeline) WithGenerationBuilder(builder indexmanifest.BuildStarter) *Pipeline {
+	p.generationBuilds = builder
 	return p
 }
 
@@ -312,9 +319,41 @@ func requiresParserService(path string) bool {
 }
 
 // processTask: streaming Parse → batch Embed → Store
-func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
+func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr error) {
 	taskCtx, cancel := context.WithTimeout(ctx, p.cfg.PipelineTimeout)
 	defer cancel()
+
+	var generationBuild indexmanifest.BuildSession
+	if task.EventID != "" {
+		if p.generationBuilds == nil {
+			return errors.New("generation builder unavailable for durable ingestion")
+		}
+		generationBuild, resultErr = p.generationBuilds.Begin(taskCtx, indexmanifest.BuildRequest{
+			Version: indexmanifest.VersionIdentity{
+				TenantID: task.TenantID, DocumentID: task.DocID, DocumentVersionID: task.JobID,
+			},
+			Definition: indexmanifest.BuildDefinition{
+				ChunkerVersion:    fmt.Sprintf("parser-v1:size=%d:overlap=%d", p.cfg.MaxChunkSize, p.cfg.ChunkOverlap),
+				EmbeddingModel:    p.cfg.EmbedModel,
+				VectorDimension:   p.cfg.EmbedDimension,
+				SchemaVersion:     "generation-payload-v1",
+				CollectionVersion: p.cfg.StoreCollection,
+				IndexVersion:      p.cfg.ESIndex,
+			},
+		})
+		if resultErr != nil {
+			return resultErr
+		}
+		defer func() {
+			if resultErr != nil {
+				abortCtx, abortCancel := context.WithTimeout(context.WithoutCancel(ctx), p.cfg.StageTimeout)
+				defer abortCancel()
+				if abortErr := generationBuild.Abort(abortCtx, resultErr); abortErr != nil {
+					resultErr = errors.Join(resultErr, abortErr)
+				}
+			}
+		}()
+	}
 
 	resumeCheckpoint, hasCheckpoint, err := p.checkpoint.Load(taskCtx, task.DocID)
 	if err != nil {
@@ -407,7 +446,7 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 		default:
 		}
 
-		if hasCheckpoint {
+		if hasCheckpoint && generationBuild == nil {
 			exists, err := p.storer.Exists(taskCtx, chunk.ChunkID)
 			if err != nil {
 				return fmt.Errorf("resume exists check for chunk %s: %w", chunk.ChunkID, err)
@@ -420,7 +459,7 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 
 		batch = append(batch, chunk)
 		if len(batch) >= p.cfg.BatchSize {
-			if err := p.processBatch(taskCtx, batch, task.DocID, &total); err != nil {
+			if err := p.processBatch(taskCtx, batch, task.DocID, &total, generationBuild); err != nil {
 				return err
 			}
 			p.saveTaskStatusProgress(taskCtx, task, model.TaskStatusProcessing, "embedding", "", total, totalChunks)
@@ -429,7 +468,7 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 	}
 
 	if len(batch) > 0 {
-		if err := p.processBatch(taskCtx, batch, task.DocID, &total); err != nil {
+		if err := p.processBatch(taskCtx, batch, task.DocID, &total, generationBuild); err != nil {
 			return err
 		}
 		p.saveTaskStatusProgress(taskCtx, task, model.TaskStatusProcessing, "embedding", "", total, totalChunks)
@@ -442,6 +481,11 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) error {
 	}
 	if total == 0 {
 		return errors.New("parser produced no chunks")
+	}
+	if generationBuild != nil {
+		if err := generationBuild.Complete(taskCtx); err != nil {
+			return fmt.Errorf("complete generation build: %w", err)
+		}
 	}
 
 	slog.Info("document processed", "doc_id", task.DocID, "chunks", total)
@@ -456,7 +500,7 @@ func pathExists(path string) bool {
 }
 
 // processBatch: concurrent Embed + sequential Store
-func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID string, total *int) error {
+func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID string, total *int, generationBuild indexmanifest.BuildSession) error {
 	stageCtx, cancel := context.WithTimeout(ctx, p.cfg.StageTimeout)
 	defer cancel()
 
@@ -505,6 +549,12 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 		slog.Warn("batch embed partial failure",
 			"doc_id", docID, "success", len(successful), "failed", len(errs))
 	}
+	if generationBuild != nil && len(errs) > 0 {
+		return fmt.Errorf("strict generation embedding failed for %d/%d chunks: %w", len(errs), len(batch), errors.Join(errs...))
+	}
+	if generationBuild != nil && len(successful) != len(batch) {
+		return fmt.Errorf("strict generation embedding produced vectors for %d/%d chunks", len(successful), len(batch))
+	}
 	if len(successful) == 0 {
 		return fmt.Errorf("all %d chunks failed embedding: %w", len(batch), errors.Join(errs...))
 	}
@@ -518,9 +568,18 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 			return stageCtx.Err()
 		default:
 		}
-		if err := p.storer.Upsert(stageCtx, chunk); err != nil {
+		var storeErr error
+		if generationBuild != nil {
+			storeErr = generationBuild.Upsert(stageCtx, chunk)
+		} else {
+			storeErr = p.storer.Upsert(stageCtx, chunk)
+		}
+		if storeErr != nil {
 			storeFailed++
-			slog.Warn("store upsert failed", "chunk_id", chunk.ChunkID, "error", err)
+			slog.Warn("store upsert failed", "chunk_id", chunk.ChunkID, "error", storeErr)
+			if generationBuild != nil {
+				return storeErr
+			}
 			if storeFailed > len(successful)/2 {
 				return fmt.Errorf("store failure rate too high: %d/%d", storeFailed, len(successful))
 			}
@@ -531,7 +590,7 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 
 		// Eventual-consistency full-text path:
 		// Qdrant success is primary; ES errors never fail main pipeline.
-		if p.fullTextSink != nil {
+		if generationBuild == nil && p.fullTextSink != nil {
 			if err := p.fullTextSink.Enqueue(stageCtx, chunk); err != nil {
 				slog.Warn("full-text enqueue failed (ignored for eventual consistency)",
 					"chunk_id", chunk.ChunkID, "doc_id", chunk.DocID, "error", err)

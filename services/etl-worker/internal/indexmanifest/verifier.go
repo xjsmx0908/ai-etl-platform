@@ -24,6 +24,9 @@ func NewVerifier(qdrant, elasticsearch Projection, lifecycle VerificationLifecyc
 }
 
 func (v *Verifier) Verify(ctx context.Context, manifest Manifest) error {
+	if manifest.ExpectedChunkCount <= 0 || manifest.ExpectedChunkDigest == "" {
+		return v.fail(ctx, manifest.GenerationID, ErrNotReady)
+	}
 	identity := GenerationIdentity{GenerationID: manifest.GenerationID, VersionIdentity: VersionIdentity{TenantID: manifest.TenantID, DocumentID: manifest.DocumentID, DocumentVersionID: manifest.DocumentVersionID}}
 	for _, backend := range []struct {
 		name       Backend

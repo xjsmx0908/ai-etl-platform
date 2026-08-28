@@ -2,7 +2,7 @@
 
 ## 2026-08-27 - Enterprise RAG Implementation Baseline
 
-Status: approved; P2.2 complete, P2.3 persistence slice in progress; later
+Status: approved; P2.2 complete, P2.3 pipeline integration in progress; later
 phases still require their ADR and business-input gates
 
 Goal: turn the accepted enterprise RAG direction into staged, testable work
@@ -130,9 +130,9 @@ P2.3 progress (2026-08-28):
   jobs; failed builds can be retried after clearing observations; stale
   activation writers are rejected using expected-current CAS. A real PostgreSQL
   concurrency test verifies that only one competing activation succeeds.
-- Remaining P2.3 slices: backend generation-aware writes/observations, pipeline
-  completion integration, reconciler and repair, rollback/retention cleanup,
-  bounded metrics/alerts, and the full ADR acceptance matrix.
+- Remaining P2.3 slices: active-generation query filtering, reconciler and
+  repair, rollback/retention cleanup, bounded metrics/alerts, and the full ADR
+  acceptance matrix.
 
 P2.3 backend projection slice (2026-08-28):
 
@@ -144,6 +144,22 @@ P2.3 backend projection slice (2026-08-28):
   errors and identity mismatches fail the manifest.
 - Existing writes and pipeline completion behavior are intentionally unchanged
   until the next slice wires manifest creation and verification into processing.
+
+P2.3 pipeline integration slice (2026-08-28):
+
+- Added a deep generation-builder module that persists a deterministic unsealed
+  manifest before backend writes, seals expected identity after parsing, runs
+  dual-backend verification, and performs expected-current CAS activation.
+- Durable outbox tasks now fail closed on any embedding, Qdrant, Elasticsearch,
+  verification, or activation error. Their ingestion job reaches `completed`
+  only after the generation is active; legacy messages keep the compatibility
+  path and asynchronous Elasticsearch queue.
+- Redelivery targets the same generation and idempotently rewrites all chunks;
+  it no longer trusts legacy chunk-ID checkpoints. Build configuration changes
+  deterministically create a different generation.
+- Remaining: query only the active generation, add background repair and
+  retention, expose manifest metrics/alerts, and finish crash/reindex/rollback
+  acceptance coverage.
 
 ## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
 

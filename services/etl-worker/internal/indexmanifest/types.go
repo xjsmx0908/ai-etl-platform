@@ -78,6 +78,7 @@ type Manifest struct {
 	ChunkerVersion, EmbeddingModel, SchemaVersion, CollectionVersion, IndexVersion string
 	VectorDimension, ExpectedChunkCount                                            int
 	ExpectedChunkDigest                                                            string
+	ExpectedSealed                                                                 bool
 	Qdrant, Elasticsearch                                                          BackendObservation
 	State                                                                          ManifestState
 	Attempts                                                                       int
