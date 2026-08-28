@@ -279,7 +279,57 @@ func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanif
 	return indexmanifest.BackendObservation{Count: len(identities), Digest: digest, ObservedAt: time.Now().UTC()}, nil
 }
 
+func (i *HTTPIndexer) DeleteGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity) error {
+	if identity.GenerationID == "" || identity.TenantID == "" || identity.DocumentID == "" || identity.DocumentVersionID == "" {
+		return indexmanifest.ErrInvalidManifest
+	}
+	return i.deleteGenerationByQuery(ctx, map[string]interface{}{
+		"bool": map[string]interface{}{"filter": []map[string]interface{}{
+			{"term": map[string]string{"tenant_id": identity.TenantID}},
+			{"term": map[string]string{"doc_id": identity.DocumentID}},
+			{"term": map[string]string{"document_version_id": identity.DocumentVersionID}},
+			{"term": map[string]string{"generation_id": identity.GenerationID}},
+		}},
+	})
+}
+
+func (i *HTTPIndexer) deleteGenerationByQuery(ctx context.Context, query map[string]interface{}) error {
+	body, err := json.Marshal(map[string]interface{}{"query": query})
+	if err != nil {
+		return fmt.Errorf("marshal es generation delete query: %w", err)
+	}
+	endpoint := fmt.Sprintf("%s/%s/_delete_by_query?refresh=true", i.address, pathEscape(i.index))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create es generation delete request: %w", err)
+	}
+	i.setHeaders(req)
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("es generation delete request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("es generation delete failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	var result struct {
+		TimedOut bool              `json:"timed_out"`
+		Failures []json.RawMessage `json:"failures"`
+	}
+	if len(responseBody) > 0 {
+		if err := json.Unmarshal(responseBody, &result); err != nil {
+			return fmt.Errorf("decode es generation delete: %w", err)
+		}
+	}
+	if result.TimedOut || len(result.Failures) > 0 {
+		return fmt.Errorf("es generation delete incomplete: timed_out=%v failures=%d", result.TimedOut, len(result.Failures))
+	}
+	return nil
+}
+
 var _ indexmanifest.Projection = (*HTTPIndexer)(nil)
+var _ indexmanifest.GenerationDeleter = (*HTTPIndexer)(nil)
 
 func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 	headURL := fmt.Sprintf("%s/%s", i.address, pathEscape(i.index))

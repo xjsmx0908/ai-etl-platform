@@ -2,7 +2,7 @@
 
 ## 2026-08-27 - Enterprise RAG Implementation Baseline
 
-Status: approved; P2.2 complete, P2.3 reconciliation implemented; later
+Status: approved; P2.2 complete, P2.3 rollback/retention implemented; later
 phases still require their ADR and business-input gates
 
 Goal: turn the accepted enterprise RAG direction into staged, testable work
@@ -195,8 +195,28 @@ P2.3 manifest reconciliation slice (2026-08-28):
   clears the diagnostic and resets consecutive repair attempts.
 - Real PostgreSQL tests cover concurrent activation, active/legacy visibility,
   a single pending replay, and healthy recovery.
-- Remaining: rollback and retention cleanup, bounded manifest metrics/alerts,
-  and the remaining crash/reindex/rollback acceptance matrix.
+- This slice deferred rollback and retention cleanup, bounded manifest
+  metrics/alerts, and the remaining acceptance matrix. Rollback/retention is
+  now implemented below.
+
+P2.3 generation rollback and retention slice (2026-08-28):
+
+- Added an administrator-only, tenant-scoped rollback operation. Requests must
+  name the target and expected current generation; rollback verifies both
+  projections before an advisory-locked PostgreSQL CAS swaps their states.
+- A rollback target is leased and fenced during backend verification. Expired
+  windows, partial backend data, stale active identities, cleanup-in-progress,
+  and late claims fail closed.
+- Added retired-generation cleanup with exact tenant/document/version/
+  generation filters for Qdrant and Elasticsearch. Per-backend deletion state
+  survives retries, and the manifest is removed only after both succeed.
+- Rollback windows begin at retirement. Existing retired rows receive a fresh
+  window during migration to prevent immediate cleanup after rollout.
+- Cleanup is disabled by default. Enabling it requires an explicit positive
+  `INDEX_RETENTION_WINDOW`; source objects and durable ingestion records are
+  intentionally retained.
+- Remaining: bounded manifest metrics/alerts and the final P2.3 crash, reindex,
+  rollback, and garbage-collection acceptance matrix.
 
 ## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
 

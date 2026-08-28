@@ -721,3 +721,27 @@ This file is an append-only record of completed PRAR cycles.
   fencing, single replay scheduling, repair limits, healthy resets, concurrent
   activation, and active/legacy visibility. Retention and operational
   metrics/alerts remain separate P2.3 work.
+
+## 2026-08-28 - P2.3 generation rollback and retention
+
+- Perceive: rollback and garbage collection compete for the same retired
+  generation. Verifying a rollback target without protecting it allows cleanup
+  to delete one projection before promotion; using original activation time as
+  the retention clock can delete a newly retired, long-running generation.
+- Reason: use `retired_at` as the rollback-window boundary and one retention
+  lease/fencing mechanism for both rollback protection and cleanup ownership.
+  Keep cross-backend deletion ordering behind a collector interface while
+  PostgreSQL owns final CAS transitions and durable partial progress.
+- Act: added administrator-only explicit rollback with expected-active CAS,
+  fresh dual-backend verification, exact-generation deletion adapters, leased
+  cleanup claims, per-backend deletion timestamps, and cleanup-disabled
+  configuration requiring an approved positive window before enablement.
+- Refine: retiring a generation must invalidate outstanding reconciliation
+  claims, and Elasticsearch `delete_by_query` can return HTTP 2xx with shard
+  failures. State transitions now clear stale reconciliation fences, Qdrant
+  waits for deletion acknowledgement, and Elasticsearch inspects partial
+  failure fields before marking cleanup complete.
+- Verification: unit and real PostgreSQL tests cover window enforcement,
+  active/retired atomic exchange, stale CAS rejection, exact projection
+  filters, partial cleanup retry, and manifest deletion only after both
+  projections complete. Metrics/alerts and the final acceptance matrix remain.

@@ -132,6 +132,7 @@ func main() {
 	var ingestionJobs ingestion.JobStore
 	var generationBuilder indexmanifest.BuildStarter
 	var generationReconciler *indexmanifest.Reconciler
+	var generationRetention *indexmanifest.RetentionCollector
 	pgPool, err := migrations.Open(context.Background(), cfg.PGDSN)
 	if err != nil {
 		slog.Warn("postgres unavailable; document registry status write-through disabled", "error", err)
@@ -152,6 +153,18 @@ func main() {
 					Lease: cfg.IndexReconcileLease, MaxRepairs: cfg.IndexReconcileMaxRepairs,
 				})
 			}
+			if cfg.IndexRetentionEnabled {
+				qdrantDeleter, qdrantOK := storer.(indexmanifest.GenerationDeleter)
+				elasticsearchDeleter, elasticsearchOK := elasticsearchProjection.(indexmanifest.GenerationDeleter)
+				if !qdrantOK || !elasticsearchOK {
+					slog.Warn("generation retention disabled; projection lacks exact generation deletion")
+				} else {
+					generationRetention = indexmanifest.NewRetentionCollector(manifestStore, qdrantDeleter, elasticsearchDeleter, indexmanifest.RetentionOptions{
+						Window: cfg.IndexRetentionWindow, Interval: cfg.IndexRetentionInterval,
+						Lease: cfg.IndexRetentionLease, BatchSize: cfg.IndexRetentionBatchSize,
+					})
+				}
+			}
 		}
 	}
 
@@ -167,6 +180,9 @@ func main() {
 	defer cancel()
 	if generationReconciler != nil {
 		go generationReconciler.Run(ctx)
+	}
+	if generationRetention != nil {
+		go generationRetention.Run(ctx)
 	}
 
 	p.Run(ctx, source)

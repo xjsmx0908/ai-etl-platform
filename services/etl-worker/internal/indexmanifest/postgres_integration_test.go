@@ -45,7 +45,8 @@ func TestPostgresConcurrentActivation(t *testing.T) {
 	if _, err := pool.Exec(ctx, `CREATE TABLE index_manifests (
 		generation_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL,
 		document_id TEXT NOT NULL, document_version_id TEXT NOT NULL,
-		state TEXT NOT NULL, activated_at TIMESTAMPTZ
+		state TEXT NOT NULL, activated_at TIMESTAMPTZ,retired_at TIMESTAMPTZ,
+		reconcile_claim_token TEXT NOT NULL DEFAULT '',reconcile_lease_until TIMESTAMPTZ
 	)`); err != nil {
 		t.Fatal(err)
 	}
@@ -280,5 +281,101 @@ func TestPostgresReconciliationSchedulesOnlyOnePendingReplay(t *testing.T) {
 	}
 	if reconcileError != "" {
 		t.Fatalf("late reconciliation restored error %q", reconcileError)
+	}
+}
+
+func TestPostgresRollbackAndRetentionLifecycle(t *testing.T) {
+	dsn := os.Getenv("INDEX_MANIFEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set INDEX_MANIFEST_TEST_DSN to run PostgreSQL rollback/retention integration test")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("indexretention_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `CREATE TABLE index_manifests (
+		generation_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,document_id TEXT NOT NULL,document_version_id TEXT NOT NULL,
+		chunker_version TEXT NOT NULL,embedding_model TEXT NOT NULL,vector_dimension INT NOT NULL,schema_version TEXT NOT NULL,
+		collection_version TEXT NOT NULL,index_version TEXT NOT NULL,expected_active_generation_id TEXT NOT NULL DEFAULT '',
+		expected_chunk_count INT,expected_chunk_digest TEXT,qdrant_count INT,qdrant_digest TEXT,qdrant_observed_at TIMESTAMPTZ,
+		elasticsearch_count INT,elasticsearch_digest TEXT,elasticsearch_observed_at TIMESTAMPTZ,state TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),activated_at TIMESTAMPTZ,retired_at TIMESTAMPTZ,
+		last_reconciled_at TIMESTAMPTZ,last_reconcile_error TEXT NOT NULL DEFAULT '',repair_attempts INT NOT NULL DEFAULT 0,
+		reconcile_lease_until TIMESTAMPTZ,reconcile_claim_token TEXT NOT NULL DEFAULT '',
+		retention_lease_until TIMESTAMPTZ,retention_claim_token TEXT NOT NULL DEFAULT '',
+		qdrant_deleted_at TIMESTAMPTZ,elasticsearch_deleted_at TIMESTAMPTZ,
+		retention_attempts INT NOT NULL DEFAULT 0,retention_last_error TEXT NOT NULL DEFAULT ''
+	); CREATE UNIQUE INDEX one_active_retention ON index_manifests (tenant_id,document_version_id) WHERE state='active';
+	INSERT INTO index_manifests (generation_id,tenant_id,document_id,document_version_id,chunker_version,embedding_model,vector_dimension,schema_version,collection_version,index_version,expected_chunk_count,expected_chunk_digest,state,activated_at,retired_at)
+	VALUES ('gen-current','acme','doc-1','job-1','chunk-v1','embed-v1',3,'schema-v1','collection-v1','index-v1',2,'expected','active',now(),NULL),
+	('gen-old','acme','doc-1','job-1','chunk-v1','embed-v1',3,'schema-v1','collection-v1','index-v1',2,'expected','retired',now()-interval '2 hours',now()-interval '30 minutes')`); err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresStore(pool)
+	request := RollbackRequest{
+		Version:            VersionIdentity{TenantID: "acme", DocumentID: "doc-1", DocumentVersionID: "job-1"},
+		TargetGenerationID: "gen-old", ExpectedActiveGenerationID: "gen-current",
+		Window: time.Hour, Lease: time.Minute, ClaimToken: "rollback-claim",
+	}
+	target, err := store.RollbackTarget(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matching := BackendObservation{Count: 2, Digest: "expected"}
+	if err := store.Rollback(ctx, RollbackCommit{Request: request, Qdrant: matching, Elasticsearch: matching}); err != nil {
+		t.Fatal(err)
+	}
+	var active string
+	if err := pool.QueryRow(ctx, `SELECT generation_id FROM index_manifests WHERE state='active'`).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != target.GenerationID {
+		t.Fatalf("active=%q, want %q", active, target.GenerationID)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE index_manifests SET retired_at=now()-interval '2 hours' WHERE generation_id='gen-current'`); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimRetention(ctx, RetentionClaim{Window: time.Hour, Lease: time.Minute, Limit: 1, Token: "cleanup-1"})
+	if err != nil || len(claimed) != 1 || claimed[0].GenerationID != "gen-current" {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	if err := store.FinishRetention(ctx, RetentionResult{
+		Manifest: claimed[0], QdrantDeleted: true, Reason: "delete elasticsearch: unavailable", RetryAfter: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE index_manifests SET retention_lease_until=NULL WHERE generation_id='gen-current'`); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.ClaimRetention(ctx, RetentionClaim{Window: time.Hour, Lease: time.Minute, Limit: 1, Token: "cleanup-2"})
+	if err != nil || len(claimed) != 1 || claimed[0].QdrantDeletedAt.IsZero() {
+		t.Fatalf("retry claim=%+v err=%v", claimed, err)
+	}
+	if err := store.FinishRetention(ctx, RetentionResult{Manifest: claimed[0], QdrantDeleted: true, ElasticsearchDeleted: true}); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM index_manifests WHERE generation_id='gen-current'`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("retained manifest remained: %d", remaining)
 	}
 }

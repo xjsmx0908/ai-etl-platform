@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-28); pipeline, active-generation reads, and reconciliation implemented
+Accepted (2026-08-28); pipeline, reads, reconciliation, rollback, and retention implemented
 
 ## Context
 
@@ -140,5 +140,21 @@ attempts are bounded, and a healthy observation resets the attempt count.
 After a replay, durable job completion requires fresh observations from both
 backends and an exact match before the reconciliation error is cleared.
 
-Rollback and retention cleanup, bounded metrics/alerts, and the remaining
-acceptance matrix are subsequent P2.3 slices.
+The sixth vertical slice adds explicit rollback and retention cleanup. Rollback
+is an administrator-only, tenant-scoped operation that requires the caller's
+expected active generation. The target must still be `retired`, remain inside
+the configured rollback window, and freshly match both Qdrant and Elasticsearch
+before PostgreSQL atomically exchanges active and retired states. Target
+protection and the final transaction use leases, fencing tokens, and the same
+document-version advisory lock as forward activation.
+
+Retention windows begin at `retired_at`, not the generation's original
+activation time. Cleanup claims only expired retired generations and deletes by
+tenant, document, document version, and generation. Per-backend completion is
+durable, so a partial failure retries only the unfinished projection; the
+manifest is deleted only after both deletes succeed. Source objects and durable
+ingestion records remain outside this cleanup. Automatic cleanup is disabled by
+default and cannot be enabled without an explicitly approved positive window.
+
+Bounded metrics/alerts and the remaining acceptance matrix are subsequent P2.3
+slices.
