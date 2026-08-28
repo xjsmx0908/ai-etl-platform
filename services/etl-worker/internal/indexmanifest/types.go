@@ -75,6 +75,7 @@ type ActivationTarget struct {
 
 type Manifest struct {
 	GenerationID, TenantID, DocumentID, DocumentVersionID                          string
+	ExpectedActiveGenerationID                                                     string
 	ChunkerVersion, EmbeddingModel, SchemaVersion, CollectionVersion, IndexVersion string
 	VectorDimension, ExpectedChunkCount                                            int
 	ExpectedChunkDigest                                                            string

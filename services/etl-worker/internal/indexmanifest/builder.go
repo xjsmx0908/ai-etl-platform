@@ -37,7 +37,6 @@ type BuildLifecycle interface {
 	SealExpected(context.Context, string, int, string) (Manifest, error)
 	VerificationLifecycle
 	Retry(context.Context, string) error
-	ActiveGeneration(context.Context, VersionIdentity) (string, bool, error)
 	Activate(context.Context, ActivationTarget) error
 }
 
@@ -118,16 +117,12 @@ func (b *Build) Complete(ctx context.Context) error {
 			return err
 		}
 	}
-	active, found, err := b.lifecycle.ActiveGeneration(ctx, b.identity.VersionIdentity)
-	if err != nil {
-		return fmt.Errorf("load active generation: %w", err)
-	}
-	if found && active == b.identity.GenerationID {
+	if manifest.ExpectedActiveGenerationID == b.identity.GenerationID {
 		return nil
 	}
 	if err := b.lifecycle.Activate(ctx, ActivationTarget{
 		Version: b.identity.VersionIdentity, GenerationID: b.identity.GenerationID,
-		ExpectedActiveGenerationID: active,
+		ExpectedActiveGenerationID: manifest.ExpectedActiveGenerationID,
 	}); err != nil {
 		return fmt.Errorf("activate generation: %w", err)
 	}

@@ -19,6 +19,7 @@ type buildLifecycleStub struct {
 func (s *buildLifecycleStub) Begin(_ context.Context, manifest Manifest) (Manifest, error) {
 	s.events = append(s.events, "begin")
 	manifest.State = StateBuilding
+	manifest.ExpectedActiveGenerationID = s.active
 	s.manifest = manifest
 	return manifest, nil
 }
@@ -174,5 +175,27 @@ func TestBuilderDoesNotPublishWhenElasticsearchWriteFails(t *testing.T) {
 	}
 	if lifecycle.active != "" || lifecycle.failed == "" {
 		t.Fatalf("active=%q failed=%q", lifecycle.active, lifecycle.failed)
+	}
+}
+
+func TestBuilderRedeliveryCannotAdoptAnewerActiveGeneration(t *testing.T) {
+	lifecycle := &buildLifecycleStub{active: "gen-old"}
+	qdrant := &buildProjectionStub{name: "qdrant", events: &lifecycle.events}
+	elasticsearch := &buildProjectionStub{name: "elasticsearch", events: &lifecycle.events}
+	build, err := NewBuilder(lifecycle, qdrant, elasticsearch).Begin(context.Background(), testBuildRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := model.Chunk{ChunkID: "doc-1_0000", TenantID: "acme", DocID: "doc-1", Index: 0, Content: "stale"}
+	if err := build.Upsert(context.Background(), chunk); err != nil {
+		t.Fatal(err)
+	}
+	// Another generation wins after this build has persisted its predecessor.
+	lifecycle.active = "gen-new-winner"
+	if err := build.Complete(context.Background()); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Complete error=%v, want stale-writer conflict", err)
+	}
+	if lifecycle.active != "gen-new-winner" {
+		t.Fatalf("stale build replaced winner with %q", lifecycle.active)
 	}
 }

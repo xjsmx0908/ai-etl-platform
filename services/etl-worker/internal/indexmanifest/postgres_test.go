@@ -34,10 +34,10 @@ func immutableManifestRowNullable(m Manifest, count any, digest any) *pgxmock.Ro
 	return pgxmock.NewRows([]string{
 		"generation_id", "tenant_id", "document_id", "document_version_id", "chunker_version",
 		"embedding_model", "vector_dimension", "schema_version", "collection_version",
-		"index_version", "expected_chunk_count", "expected_chunk_digest", "state",
+		"index_version", "expected_active_generation_id", "expected_chunk_count", "expected_chunk_digest", "state",
 	}).AddRow(m.GenerationID, m.TenantID, m.DocumentID, m.DocumentVersionID, m.ChunkerVersion,
 		m.EmbeddingModel, m.VectorDimension, m.SchemaVersion, m.CollectionVersion,
-		m.IndexVersion, count, digest, m.State)
+		m.IndexVersion, m.ExpectedActiveGenerationID, count, digest, m.State)
 }
 
 func TestPostgresStoreBeginsBeforeExpectedIdentityAndSealsIdempotently(t *testing.T) {
@@ -48,10 +48,11 @@ func TestPostgresStoreBeginsBeforeExpectedIdentityAndSealsIdempotently(t *testin
 	defer mock.Close()
 	m := testManifest()
 	m.ExpectedChunkCount, m.ExpectedChunkDigest, m.ExpectedSealed = 0, "", false
+	mock.ExpectQuery("SELECT generation_id").WithArgs(m.TenantID, m.DocumentID, m.DocumentVersionID).WillReturnError(pgx.ErrNoRows)
 	mock.ExpectExec("INSERT INTO index_manifests").WithArgs(
 		m.GenerationID, m.TenantID, m.DocumentID, m.DocumentVersionID, m.ChunkerVersion,
 		m.EmbeddingModel, m.VectorDimension, m.SchemaVersion, m.CollectionVersion,
-		m.IndexVersion, m.CreatedAt,
+		m.IndexVersion, "", m.CreatedAt,
 	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery("SELECT generation_id").WithArgs(m.GenerationID).WillReturnRows(immutableManifestRowNullable(m, nil, nil))
 	store := NewPostgresStore(mock)
@@ -76,6 +77,41 @@ func TestPostgresStoreBeginsBeforeExpectedIdentityAndSealsIdempotently(t *testin
 	}
 	if !got.ExpectedSealed || got.ExpectedChunkCount != 2 {
 		t.Fatalf("sealed manifest = %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreBeginReplayKeepsPersistedActivationPredecessor(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.ExpectedChunkCount, m.ExpectedChunkDigest = 0, ""
+	existing := m
+	existing.ExpectedActiveGenerationID = "gen-old"
+	existing.State = StateReady
+	// A newer generation is active when this delayed build is replayed. The
+	// insert conflicts, and the original predecessor remains authoritative.
+	mock.ExpectQuery("SELECT generation_id").WithArgs(m.TenantID, m.DocumentID, m.DocumentVersionID).
+		WillReturnRows(pgxmock.NewRows([]string{"generation_id"}).AddRow("gen-new"))
+	mock.ExpectExec("INSERT INTO index_manifests").WithArgs(
+		m.GenerationID, m.TenantID, m.DocumentID, m.DocumentVersionID, m.ChunkerVersion,
+		m.EmbeddingModel, m.VectorDimension, m.SchemaVersion, m.CollectionVersion,
+		m.IndexVersion, "gen-new", m.CreatedAt,
+	).WillReturnResult(pgxmock.NewResult("INSERT", 0))
+	mock.ExpectQuery("SELECT generation_id").WithArgs(m.GenerationID).
+		WillReturnRows(immutableManifestRowNullable(existing, 2, "sha256:digest"))
+
+	got, err := NewPostgresStore(mock).Begin(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExpectedActiveGenerationID != "gen-old" {
+		t.Fatalf("predecessor = %q, want persisted gen-old", got.ExpectedActiveGenerationID)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

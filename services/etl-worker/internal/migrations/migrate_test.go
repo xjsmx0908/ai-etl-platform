@@ -136,6 +136,7 @@ func TestSealableIndexManifestMigrationAllowsPreWriteManifest(t *testing.T) {
 		"expected_chunk_count DROP NOT NULL",
 		"expected_chunk_digest DROP NOT NULL",
 		"index_manifests_expected_identity_pair",
+		"expected_active_generation_id",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Fatalf("migration missing %q", required)

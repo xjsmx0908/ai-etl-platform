@@ -111,6 +111,8 @@ the durable job identity and complete build configuration, so redelivery repairs
 the same generation. Any embedding, Qdrant, Elasticsearch, verification, or
 activation failure prevents durable job completion and records a failed build.
 Legacy non-outbox messages retain their existing compatibility path.
+The manifest also persists the active predecessor observed when the build first
+starts; delayed retries cannot adopt a newer winner and overwrite it.
 
 Query filtering by active generation, reconciliation/repair, rollback and
 retention cleanup, bounded metrics/alerts, and the remaining acceptance matrix

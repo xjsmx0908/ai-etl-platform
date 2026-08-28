@@ -37,13 +37,22 @@ func (s *PostgresStore) Begin(ctx context.Context, manifest Manifest) (Manifest,
 	if manifest.CreatedAt.IsZero() {
 		manifest.CreatedAt = time.Now().UTC()
 	}
-	_, err := s.q.Exec(ctx, `INSERT INTO index_manifests (
-generation_id,tenant_id,document_id,document_version_id,chunker_version,embedding_model,vector_dimension,schema_version,collection_version,index_version,state,created_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'building',$11)
+	active, _, err := s.ActiveGeneration(ctx, VersionIdentity{
+		TenantID: manifest.TenantID, DocumentID: manifest.DocumentID,
+		DocumentVersionID: manifest.DocumentVersionID,
+	})
+	if err != nil {
+		return Manifest{}, err
+	}
+	manifest.ExpectedActiveGenerationID = active
+	_, err = s.q.Exec(ctx, `INSERT INTO index_manifests (
+generation_id,tenant_id,document_id,document_version_id,chunker_version,embedding_model,vector_dimension,schema_version,collection_version,index_version,expected_active_generation_id,state,created_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'building',$12)
 ON CONFLICT (generation_id) DO NOTHING`, manifest.GenerationID, manifest.TenantID,
 		manifest.DocumentID, manifest.DocumentVersionID, manifest.ChunkerVersion,
 		manifest.EmbeddingModel, manifest.VectorDimension, manifest.SchemaVersion,
-		manifest.CollectionVersion, manifest.IndexVersion, manifest.CreatedAt)
+		manifest.CollectionVersion, manifest.IndexVersion, manifest.ExpectedActiveGenerationID,
+		manifest.CreatedAt)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("begin index manifest: %w", err)
 	}
@@ -270,7 +279,7 @@ func validateUnsealedBuildDefinition(manifest Manifest) error {
 
 const manifestSelect = `SELECT generation_id,tenant_id,document_id,
 document_version_id,chunker_version,embedding_model,vector_dimension,schema_version,
-collection_version,index_version,expected_chunk_count,expected_chunk_digest,state
+collection_version,index_version,expected_active_generation_id,expected_chunk_count,expected_chunk_digest,state
 FROM index_manifests`
 
 func scanManifest(row pgx.Row) (Manifest, error) {
@@ -280,7 +289,8 @@ func scanManifest(row pgx.Row) (Manifest, error) {
 	err := row.Scan(&manifest.GenerationID, &manifest.TenantID, &manifest.DocumentID,
 		&manifest.DocumentVersionID, &manifest.ChunkerVersion, &manifest.EmbeddingModel,
 		&manifest.VectorDimension, &manifest.SchemaVersion, &manifest.CollectionVersion,
-		&manifest.IndexVersion, &expectedCount, &expectedDigest, &manifest.State)
+		&manifest.IndexVersion, &manifest.ExpectedActiveGenerationID, &expectedCount,
+		&expectedDigest, &manifest.State)
 	if expectedCount.Valid && expectedDigest.Valid {
 		manifest.ExpectedChunkCount = int(expectedCount.Int64)
 		manifest.ExpectedChunkDigest = expectedDigest.String

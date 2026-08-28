@@ -150,6 +150,8 @@ P2.3 pipeline integration slice (2026-08-28):
 - Added a deep generation-builder module that persists a deterministic unsealed
   manifest before backend writes, seals expected identity after parsing, runs
   dual-backend verification, and performs expected-current CAS activation.
+- Persisted activation predecessors keep stale-writer protection effective
+  across process crashes and delayed message redelivery.
 - Durable outbox tasks now fail closed on any embedding, Qdrant, Elasticsearch,
   verification, or activation error. Their ingestion job reaches `completed`
   only after the generation is active; legacy messages keep the compatibility
