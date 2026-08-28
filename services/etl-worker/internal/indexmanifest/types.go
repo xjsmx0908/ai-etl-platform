@@ -30,18 +30,28 @@ const (
 )
 
 type BackendObservation struct {
-	Count  int
-	Digest string
+	Count      int
+	Digest     string
+	ObservedAt time.Time
 }
 
-// GenerationIdentity scopes a digest to the exact catalog version and index
-// generation. Identical content rebuilt as a new generation therefore cannot
-// be mistaken for an observation of the old generation.
-type GenerationIdentity struct {
-	GenerationID      string
+// VersionIdentity binds an index generation to one durable ingestion job. The
+// PostgreSQL adapter enforces this tuple against ingestion_jobs.
+type VersionIdentity struct {
 	TenantID          string
 	DocumentID        string
 	DocumentVersionID string
+}
+
+type GenerationIdentity struct {
+	VersionIdentity
+	GenerationID string
+}
+
+type ActivationTarget struct {
+	Version                    VersionIdentity
+	GenerationID               string
+	ExpectedActiveGenerationID string
 }
 
 type Manifest struct {
@@ -53,36 +63,14 @@ type Manifest struct {
 	State                                                                          ManifestState
 	Attempts                                                                       int
 	LastError                                                                      string
-	CreatedAt, VerifiedAt, ActivatedAt                                             time.Time
+	CreatedAt, LastAttemptAt, VerifiedAt, ActivatedAt                              time.Time
 }
 
 var (
-	ErrInvalidManifest   = errors.New("indexmanifest: invalid manifest")
-	ErrNotReady          = errors.New("indexmanifest: manifest is not ready")
-	ErrInvalidTransition = errors.New("indexmanifest: invalid state transition")
-	ErrConflict          = errors.New("indexmanifest: compare-and-set conflict")
+	ErrInvalidManifest = errors.New("indexmanifest: invalid manifest")
+	ErrNotReady        = errors.New("indexmanifest: manifest is not ready")
+	ErrConflict        = errors.New("indexmanifest: compare-and-set conflict")
 )
-
-func (m *Manifest) MarkReady() error {
-	if m.State != StateBuilding {
-		return ErrInvalidTransition
-	}
-	if m.ExpectedChunkCount < 0 || m.ExpectedChunkDigest == "" ||
-		m.Qdrant.Count != m.ExpectedChunkCount || m.Qdrant.Digest != m.ExpectedChunkDigest ||
-		m.Elasticsearch.Count != m.ExpectedChunkCount || m.Elasticsearch.Digest != m.ExpectedChunkDigest {
-		return ErrNotReady
-	}
-	m.State = StateReady
-	return nil
-}
-
-func (m *Manifest) Activate() error {
-	if m.State != StateReady {
-		return ErrInvalidTransition
-	}
-	m.State = StateActive
-	return nil
-}
 
 // ChunkIdentityDigest returns a stable digest of chunk identities and content
 // hashes. Sorting makes it independent of delivery or worker completion order.

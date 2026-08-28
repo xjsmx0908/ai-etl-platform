@@ -643,3 +643,10 @@ This file is an append-only record of completed PRAR cycles.
 - Scope: this slice establishes persistence only. Pipeline completion semantics,
   backend verification, reconciliation, cleanup, and operations evidence remain
   explicit P2.3 work and are not claimed complete.
+- Review refinement: serialization alone is not stale-writer protection. An
+  activation must compare the caller's expected current generation after taking
+  the lock. At-least-once delivery also makes idempotent manifest creation and a
+  controlled failed-to-building retry transition prerequisites for pipeline
+  integration. Durable ingestion `job_id` is the authoritative document-version
+  key, enforced together with tenant/document identity by a composite foreign
+  key. Mock SQL tests were supplemented by a disposable-schema PostgreSQL race.

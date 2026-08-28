@@ -7,7 +7,7 @@ import (
 )
 
 func TestChunkIdentityDigestIsOrderIndependent(t *testing.T) {
-	identity := GenerationIdentity{GenerationID: "gen-1", TenantID: "tenant-a", DocumentID: "doc-2", DocumentVersionID: "version-1"}
+	identity := GenerationIdentity{GenerationID: "gen-1", VersionIdentity: VersionIdentity{TenantID: "tenant-a", DocumentID: "doc-2", DocumentVersionID: "version-1"}}
 	chunks := []model.Chunk{
 		{ChunkID: "doc-2_0001", DocID: "doc-2", TenantID: "tenant-a", Index: 1, Content: "second"},
 		{ChunkID: "doc-2_0000", DocID: "doc-2", TenantID: "tenant-a", Index: 0, Content: "first"},
@@ -31,7 +31,7 @@ func TestChunkIdentityDigestIsOrderIndependent(t *testing.T) {
 }
 
 func TestChunkIdentityDigestChangesWhenIdentityOrContentChanges(t *testing.T) {
-	identity := GenerationIdentity{GenerationID: "gen-1", TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "version-1"}
+	identity := GenerationIdentity{GenerationID: "gen-1", VersionIdentity: VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "version-1"}}
 	base := []model.Chunk{{ChunkID: "doc_0000", DocID: "doc", TenantID: "tenant-a", Index: 0, Content: "hello"}}
 	want, err := ChunkIdentityDigest(identity, base)
 	if err != nil {
@@ -58,45 +58,8 @@ func TestChunkIdentityDigestChangesWhenIdentityOrContentChanges(t *testing.T) {
 	}
 }
 
-func TestManifestReadyRequiresBothBackendObservations(t *testing.T) {
-	m := Manifest{State: StateBuilding, ExpectedChunkCount: 2, ExpectedChunkDigest: "d"}
-	if err := m.MarkReady(); err == nil {
-		t.Fatal("expected incomplete manifest to remain building")
-	}
-	m.Qdrant = BackendObservation{Count: 2, Digest: "d"}
-	if err := m.MarkReady(); err == nil {
-		t.Fatal("expected missing Elasticsearch observation")
-	}
-	m.Elasticsearch = BackendObservation{Count: 2, Digest: "d"}
-	if err := m.MarkReady(); err != nil {
-		t.Fatal(err)
-	}
-	if m.State != StateReady {
-		t.Fatalf("state=%s", m.State)
-	}
-}
-
-func TestManifestStateTransitionsAreMonotonic(t *testing.T) {
-	for _, state := range []ManifestState{StateFailed, StateActive, StateRetired} {
-		m := Manifest{State: state}
-		if err := m.MarkReady(); err == nil {
-			t.Fatalf("%s manifest became ready", state)
-		}
-	}
-	m := Manifest{State: StateReady}
-	if err := m.Activate(); err != nil {
-		t.Fatal(err)
-	}
-	if m.State != StateActive {
-		t.Fatalf("state=%s", m.State)
-	}
-	if err := m.Activate(); err == nil {
-		t.Fatal("active manifest reactivated")
-	}
-}
-
 func TestChunkIdentityDigestRejectsCrossDocumentAndDuplicateChunks(t *testing.T) {
-	identity := GenerationIdentity{GenerationID: "gen-1", TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "version-1"}
+	identity := GenerationIdentity{GenerationID: "gen-1", VersionIdentity: VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "version-1"}}
 	if _, err := ChunkIdentityDigest(identity, []model.Chunk{{ChunkID: "x", DocID: "other", TenantID: "tenant-a", Index: 0}}); err == nil {
 		t.Fatal("accepted a chunk from another document")
 	}

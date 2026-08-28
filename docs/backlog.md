@@ -124,6 +124,12 @@ P2.3 progress (2026-08-28):
 - Added a narrow PostgreSQL adapter for create, observe, fail, ready, and atomic
   activation transitions. A partial or mismatched observation cannot become
   ready, and activation rollback preserves the prior active generation.
+- Hardened the persistence seam after review: manifest creation now supports
+  idempotent crash replay with immutable-definition conflict detection; build
+  configuration is mandatory; document versions reference durable ingestion
+  jobs; failed builds can be retried after clearing observations; stale
+  activation writers are rejected using expected-current CAS. A real PostgreSQL
+  concurrency test verifies that only one competing activation succeeds.
 - Remaining P2.3 slices: backend generation-aware writes/observations, pipeline
   completion integration, reconciler and repair, rollback/retention cleanup,
   bounded metrics/alerts, and the full ADR acceptance matrix.

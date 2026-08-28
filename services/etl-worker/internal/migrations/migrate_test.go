@@ -113,9 +113,11 @@ func TestIndexManifestMigrationCarriesGenerationInvariants(t *testing.T) {
 	sql := string(body)
 	for _, required := range []string{
 		"CREATE TABLE index_manifests", "generation_id TEXT PRIMARY KEY",
-		"expected_chunk_digest TEXT NOT NULL", "qdrant_digest TEXT NOT NULL",
-		"elasticsearch_digest TEXT NOT NULL", "'building','ready','failed','active','retired'",
-		"REFERENCES tenants(id) ON DELETE CASCADE", "attempts INT NOT NULL DEFAULT 0",
+		"expected_chunk_digest TEXT NOT NULL", "qdrant_digest TEXT",
+		"elasticsearch_digest TEXT", "'building','ready','failed','active','retired'",
+		"ingestion_jobs_version_identity_key", "REFERENCES ingestion_jobs",
+		"chunker_version <> ''", "embedding_model <> ''", "vector_dimension > 0",
+		"qdrant_observed_at", "elasticsearch_observed_at", "attempts INT NOT NULL DEFAULT 1",
 		"CREATE UNIQUE INDEX index_manifests_one_active", "WHERE state = 'active'",
 	} {
 		if !strings.Contains(sql, required) {

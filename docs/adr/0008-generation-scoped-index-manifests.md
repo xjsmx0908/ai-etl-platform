@@ -85,10 +85,15 @@ manifest age, failed generations, backend divergence, and repair outcomes.
 
 The first vertical slice adds migration `0011_index_manifests`, a deterministic
 generation-scoped chunk identity digest, and a narrow PostgreSQL manifest
-interface. PostgreSQL enforces at most one active generation per tenant and
-document version. Readiness and activation use compare-and-set predicates;
-activation holds a transaction-scoped identity lock, so a failed activation
-rolls back retirement of the previous generation.
+interface. A document version is the durable ingestion `job_id`, protected by a
+composite foreign key with tenant and document identity. Identical manifest
+creation is idempotent; a conflicting immutable definition fails closed.
+PostgreSQL enforces at most one active generation per tenant and document
+version. Readiness and activation use compare-and-set predicates; activation
+compares the expected current generation while holding a transaction-scoped
+identity lock, so stale writers fail and a failed activation rolls back
+retirement of the previous generation. Failed builds have a controlled retry
+transition that clears stale backend observations before rebuilding.
 
 The current ETL pipeline is not connected to this module yet. Consequently its
 existing `completed` state does not yet satisfy this ADR's verified-generation
