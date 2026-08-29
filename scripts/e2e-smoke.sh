@@ -325,18 +325,28 @@ fi
 
 echo "[e2e] deleting document ${DOC_ID} via registry API"
 DELETE_STATUS="$(
-  curl -sS -o /dev/null -w "%{http_code}" \
+  curl -sS -o "${TMP_DIR}/delete.json" -w "%{http_code}" \
     -X DELETE "http://127.0.0.1:${API_PORT}/v1/documents/${DOC_ID}" \
     -H "Authorization: Bearer ${ADMIN_TOKEN}"
 )"
-if [[ "${DELETE_STATUS}" != "204" ]]; then
+if [[ "${DELETE_STATUS}" != "202" ]]; then
   echo "[e2e] document delete failed, status=${DELETE_STATUS}" >&2
+  cat "${TMP_DIR}/delete.json" >&2 || true
   exit 1
 fi
 
-GET_STATUS="$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:${API_PORT}/v1/documents/${DOC_ID}" -H "Authorization: Bearer ${ADMIN_TOKEN}")"
+echo "[e2e] waiting for asynchronous document cleanup"
+GET_STATUS=""
+deadline=$((SECONDS + MAX_WAIT_SECONDS))
+while (( SECONDS < deadline )); do
+  GET_STATUS="$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:${API_PORT}/v1/documents/${DOC_ID}" -H "Authorization: Bearer ${ADMIN_TOKEN}")"
+  if [[ "${GET_STATUS}" == "404" ]]; then
+    break
+  fi
+  sleep 2
+done
 if [[ "${GET_STATUS}" != "404" ]]; then
-  echo "[e2e] expected 404 after delete, got ${GET_STATUS}" >&2
+  echo "[e2e] expected eventual 404 after accepted delete, got ${GET_STATUS}" >&2
   exit 1
 fi
 

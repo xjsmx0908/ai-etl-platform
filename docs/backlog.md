@@ -2,8 +2,8 @@
 
 ## 2026-08-27 - Enterprise RAG Implementation Baseline
 
-Status: approved; P2.2 and P2.3 engineering implementation complete; later
-phases still require their ADR and business-input gates
+Status: approved; P2.2, P2.3, and P2.4 engineering implementation complete;
+later phases still require their ADR and business-input gates
 
 Goal: turn the accepted enterprise RAG direction into staged, testable work
 without treating unknown identity, quality, capacity, or recovery requirements
@@ -284,6 +284,42 @@ P2.4-D outcome (2026-08-29):
 - Added bounded deletion metrics and tested stalled, dependency-failure, and
   expired-lease alerts. Generation retention remains disabled and independent.
 - P2.4-E public-interface governance acceptance remains next.
+
+P2.4-E implementation plan (approved 2026-08-29):
+
+1. Define one isolated governance-acceptance command and a scenario matrix whose
+   observation seams are authenticated HTTP responses and a retained JSON
+   report. Database state is not accepted as user-visible success evidence.
+2. Drive a managed-space document through durable upload, ingestion, an
+   independently administered exact-candidate approval, query visibility,
+   replacement continuity, approved cutover, recoverable deletion, and audit
+   correlation. Use deterministic model adapters while exercising real
+   PostgreSQL, Kafka, Qdrant, Elasticsearch, and MinIO containers.
+3. Inject bounded dependency/process interruptions through Docker Compose and
+   prove recovery after Kafka/API/worker interruption, search projection
+   interruption, and object-store interruption. Every accepted operation must
+   remain fail-closed until its owned dependencies recover.
+4. Emit a timestamped, secret-free JSON result with scenario status, duration,
+   public observations, and failure diagnostics. Add contract tests that map
+   every ADR 0011 acceptance requirement to executable evidence.
+5. Keep the full dependency exercise opt-in rather than pretending it is a
+   lightweight module test. Run deterministic contract tests in normal CI and
+   document the explicit full-stack command for release evidence retention.
+
+P2.4-E outcome (completed 2026-08-29):
+
+- Added one isolated executable gate, `scripts/governance-acceptance.sh`, and a
+  public-evidence scenario matrix. Normal CI discovers its deterministic
+  contract tests; the real dependency exercise remains an explicit command.
+- Verified managed admission and ingestion recovery, draft invisibility,
+  independent approval, old-release continuity, approved replacement cutover,
+  immediate deletion revocation, durable partial cleanup, eventual `404`, and
+  publication/deletion audit correlation.
+- Injected Kafka/API/worker and Qdrant/Elasticsearch/MinIO interruption against
+  real containers. The passing run retained a timestamped JSON report containing
+  bounded HTTP/metrics observations and no credentials or authorization data.
+- Updated the existing smoke test to accept asynchronous deletion via HTTP
+  `202` and poll for final `404`. No deployment or retention enablement occurred.
 
 P2.3 backend projection slice (2026-08-28):
 

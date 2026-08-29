@@ -128,6 +128,19 @@ bash scripts/e2e-smoke.sh
 
 该脚本会启动本地 `docker compose` 全链路，并用 mock OpenAI 服务验证 `上传 -> Kafka -> 解析 -> 向量化 -> 入库 -> 查询`。
 
+### 企业治理验收
+
+```bash
+bash scripts/governance-acceptance.sh
+```
+
+该隔离命令从认证后的公共 HTTP 接口验证受管空间上传、双管理员审批、
+旧版本连续可见、批准后切换、可恢复删除和审计关联，并通过 Compose 注入
+Kafka、进程及存储依赖中断。结果写入 `artifacts/governance-acceptance/`
+中的无密钥 JSON 报告；完整场景与证据映射见
+[`docs/governance-acceptance.md`](docs/governance-acceptance.md)。此命令是显式
+发布验收，不会部署服务或启用 generation retention。
+
 ### 6. 评测闭环
 
 ```bash

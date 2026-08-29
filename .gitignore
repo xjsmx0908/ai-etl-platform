@@ -38,6 +38,9 @@ docs/evals/reports/
 docs/evals/private/*
 !docs/evals/private/.gitkeep
 
+# Local full-stack acceptance evidence (may contain environment diagnostics)
+/artifacts/governance-acceptance/
+
 # Real enterprise documents supplied for local-only evaluation
 rag_datas/
 
