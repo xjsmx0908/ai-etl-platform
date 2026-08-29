@@ -312,14 +312,6 @@ func main() {
 	}
 	defer taskStatusStore.Close()
 
-	publicationInspector := publicationworkflow.NewHTTPIndexInspector(publicationworkflow.IndexInspectorOptions{
-		QdrantEndpoint:       cfg.StoreEndpoint,
-		QdrantAPIKey:         cfg.StoreAPIKey,
-		QdrantCollection:     cfg.StoreCollection,
-		ElasticsearchAddress: cfg.ESAddress,
-		ElasticsearchAPIKey:  cfg.ESAPIKey,
-		ElasticsearchIndex:   cfg.ESIndex,
-	})
 	if cfg.IndexRetentionWindow > 0 {
 		rollbackQdrant, rollbackQdrantErr := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension)
 		rollbackElasticsearch, rollbackElasticsearchErr := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
@@ -337,8 +329,9 @@ func main() {
 			generationRollbacker = indexmanifest.NewRollbacker(generationVisibility, rollbackQdrant, rollbackElasticsearch).WithObserver(prom)
 		}
 	}
-	publicationWorkflow := publicationworkflow.New(docStore, publicationInspector).
-		WithPublisher(newDocumentPublisher(docStore, qs, auditStore))
+	exactPublication := publicationworkflow.NewPostgresPublication(pgPool, qs)
+	publicationWorkflow := publicationworkflow.New(docStore, exactPublication).
+		WithPublisher(exactPublication)
 	agentSvc, err := agentapi.NewServiceWithDependencies(cfg, qs, taskStatusStore, prom, agentapi.Dependencies{
 		ApprovalStore:       agent.NewPostgresApprovalStore(pgPool),
 		PublicationWorkflow: publicationWorkflow,

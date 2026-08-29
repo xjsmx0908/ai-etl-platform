@@ -137,7 +137,7 @@ P2.3 progress (2026-08-28):
   rollback/retention cleanup, bounded metrics/alerts, and the full ADR
   acceptance matrix. Reconciliation/repair is now implemented below.
 
-P2.4 approved plan (2026-08-29; P2.4-A implemented):
+P2.4 approved plan (2026-08-29; P2.4-A and P2.4-B implemented):
 
 The governing decision is [ADR 0011](adr/0011-version-bound-governance-publication.md).
 P2.4 integrates the existing P2.1 publication workflow with P2.2 durable
@@ -220,6 +220,20 @@ P2.4-A outcome (2026-08-29):
 - CI runs the new PostgreSQL integration tests against PostgreSQL 16. Full Go
   tests, race detection, formatting, and `go vet` pass. Query visibility and
   approval behavior remain unchanged until P2.4-B/C consume this release seam.
+
+P2.4-B outcome (2026-08-29):
+
+- Replaced mutable document-level backend counts with one PostgreSQL candidate
+  for the current release version's sealed, active, reconciled generation.
+- Assessment and the durable Agent approval now carry document version,
+  generation, expected chunk count/digest, and release revision. Tenant scope
+  remains derived from the authenticated actor rather than tool arguments.
+- Publication locks and revalidates the exact manifest, then changes document
+  publication state, advances the release CAS, stores the idempotency binding,
+  and appends the success audit in one transaction. Stale, unhealthy, or
+  altered candidates produce no partial writes; response-loss replay is safe.
+- Removed the obsolete HTTP document-count inspector and non-transactional
+  best-effort publication adapter. Query visibility remains P2.4-C scope.
 
 P2.3 backend projection slice (2026-08-28):
 

@@ -9,7 +9,28 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ai-etl-pipeline/internal/db"
 )
+
+func TestAllMigrationsApplyOnFreshSchema(t *testing.T) {
+	pool, cleanup := publicationReleaseMigrationPool(t)
+	defer cleanup()
+
+	if err := Up(context.Background(), &db.Pool{Pool: pool}); err != nil {
+		t.Fatalf("apply all migrations: %v", err)
+	}
+	var applied bool
+	if err := pool.QueryRow(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema=current_schema() AND table_name='document_releases'
+			AND column_name='last_publication_request_hash')`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("exact-candidate publication migration was not applied")
+	}
+}
 
 func TestDocumentReleaseMigrationBackfillsUniquePublishedGeneration(t *testing.T) {
 	pool, cleanup := publicationReleaseMigrationPool(t)

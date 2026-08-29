@@ -25,9 +25,7 @@ func TestAssessFailsClosedWithDeterministicBlockers(t *testing.T) {
 		KnowledgeSpaceID:  "user-uploads",
 		PublicationStatus: "published",
 	}
-	workflow := New(documentReaderStub{document: doc, found: true}, indexInspectorStub{
-		counts: IndexCounts{Vector: 0, Text: 2},
-	})
+	workflow := New(documentReaderStub{document: doc, found: true}, candidateReaderStub{})
 
 	assessment, err := workflow.Assess(context.Background(), Actor{TenantID: "acme", UserID: "user-1"}, "doc-2")
 	if err != nil {
@@ -40,8 +38,7 @@ func TestAssessFailsClosedWithDeterministicBlockers(t *testing.T) {
 		"document_not_draft",
 		"owner_required",
 		"effective_date_required",
-		"vector_index_missing",
-		"index_count_mismatch",
+		"exact_candidate_unavailable",
 	}
 	if assessment.Ready || !reflect.DeepEqual(assessment.Blockers, want) {
 		t.Fatalf("blockers = %#v, want %#v", assessment.Blockers, want)
@@ -52,22 +49,15 @@ func (s documentReaderStub) Get(context.Context, string, string) (docstore.Docum
 	return s.document, s.found, s.err
 }
 
-type indexInspectorStub struct {
-	counts IndexCounts
-	err    error
-}
-
 type publisherStub struct {
-	calls int
+	calls     int
+	candidate Candidate
 }
 
-func (s *publisherStub) Publish(context.Context, Actor, string, string) error {
+func (s *publisherStub) Publish(_ context.Context, _ Actor, candidate Candidate, _ string) error {
 	s.calls++
+	s.candidate = candidate
 	return nil
-}
-
-func (s indexInspectorStub) CountDocumentChunks(context.Context, string, string) (IndexCounts, error) {
-	return s.counts, s.err
 }
 
 func TestAssessReturnsReadyForCompleteManagedDraft(t *testing.T) {
@@ -81,9 +71,8 @@ func TestAssessReturnsReadyForCompleteManagedDraft(t *testing.T) {
 		Owner:             "hr",
 		EffectiveDate:     time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
 	}
-	workflow := New(documentReaderStub{document: doc, found: true}, indexInspectorStub{
-		counts: IndexCounts{Vector: 3, Text: 3},
-	})
+	want := Candidate{DocumentID: "doc-1", DocumentVersionID: "job-1", GenerationID: "gen-1", ExpectedChunkCount: 3, ExpectedChunkDigest: "sha256:ready", ReleaseRevision: 1}
+	workflow := New(documentReaderStub{document: doc, found: true}, candidateReaderStub{candidate: want, found: true})
 
 	assessment, err := workflow.Assess(context.Background(), Actor{
 		TenantID: "acme", UserID: "user-1", Role: "user",
@@ -94,9 +83,53 @@ func TestAssessReturnsReadyForCompleteManagedDraft(t *testing.T) {
 	if !assessment.Ready || len(assessment.Blockers) != 0 {
 		t.Fatalf("expected ready assessment, got %+v", assessment)
 	}
-	if assessment.DocumentID != "doc-1" || assessment.KnowledgeSpaceID != "policies" || assessment.IndexCounts.Vector != 3 {
+	if assessment.DocumentID != "doc-1" || assessment.KnowledgeSpaceID != "policies" || !reflect.DeepEqual(assessment.Candidate, &want) {
 		t.Fatalf("unexpected assessment: %+v", assessment)
 	}
+}
+
+func TestAssessBindsReadyDecisionToExactActiveGeneration(t *testing.T) {
+	doc := docstore.Document{
+		TenantID:          "acme",
+		DocID:             "doc-1",
+		Status:            docstore.StatusCompleted,
+		DocStatus:         docstore.DocStatusActive,
+		KnowledgeSpaceID:  "policies",
+		PublicationStatus: "draft",
+		Owner:             "hr",
+		EffectiveDate:     time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	}
+	want := Candidate{
+		DocumentID:          "doc-1",
+		DocumentVersionID:   "job-2",
+		GenerationID:        "gen-2",
+		ExpectedChunkCount:  4,
+		ExpectedChunkDigest: "sha256:approved",
+		ReleaseRevision:     7,
+	}
+	workflow := New(documentReaderStub{document: doc, found: true}, candidateReaderStub{
+		candidate: want, found: true,
+	})
+
+	assessment, err := workflow.Assess(context.Background(), Actor{
+		TenantID: "acme", UserID: "user-1", Role: "user",
+	}, "doc-1")
+	if err != nil {
+		t.Fatalf("Assess: %v", err)
+	}
+	if !assessment.Ready || !reflect.DeepEqual(assessment.Candidate, &want) {
+		t.Fatalf("assessment = %+v, want exact candidate %+v", assessment, want)
+	}
+}
+
+type candidateReaderStub struct {
+	candidate Candidate
+	found     bool
+	err       error
+}
+
+func (s candidateReaderStub) CurrentCandidate(context.Context, string, string) (Candidate, bool, error) {
+	return s.candidate, s.found, s.err
 }
 
 func TestPublishApprovedRequiresAdministratorAndReadyAssessment(t *testing.T) {
@@ -107,22 +140,21 @@ func TestPublishApprovedRequiresAdministratorAndReadyAssessment(t *testing.T) {
 		EffectiveDate: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
 	}
 	publisher := &publisherStub{}
-	workflow := New(documentReaderStub{document: doc, found: true}, indexInspectorStub{
-		counts: IndexCounts{Vector: 4, Text: 4},
-	}).WithPublisher(publisher)
+	candidate := Candidate{DocumentID: "doc-3", DocumentVersionID: "job-3", GenerationID: "gen-3", ExpectedChunkCount: 4, ExpectedChunkDigest: "sha256:ready", ReleaseRevision: 2}
+	workflow := New(documentReaderStub{document: doc, found: true}, candidateReaderStub{candidate: candidate, found: true}).WithPublisher(publisher)
 
 	if _, err := workflow.PublishApproved(context.Background(), Actor{
 		TenantID: "acme", UserID: "author", Role: "user",
-	}, "doc-3", "agent:run-1:2:publish_document"); !errors.Is(err, ErrAdminRequired) {
+	}, candidate, "agent:run-1:2:publish_document"); !errors.Is(err, ErrAdminRequired) {
 		t.Fatalf("expected ErrAdminRequired, got %v", err)
 	}
 	result, err := workflow.PublishApproved(context.Background(), Actor{
 		TenantID: "acme", UserID: "reviewer", Role: "admin",
-	}, "doc-3", "agent:run-1:2:publish_document")
+	}, candidate, "agent:run-1:2:publish_document")
 	if err != nil {
 		t.Fatalf("PublishApproved: %v", err)
 	}
-	if publisher.calls != 1 || result.PublicationStatus != "published" {
+	if publisher.calls != 1 || publisher.candidate != candidate || result.PublicationStatus != "published" {
 		t.Fatalf("unexpected publish result=%+v calls=%d", result, publisher.calls)
 	}
 }

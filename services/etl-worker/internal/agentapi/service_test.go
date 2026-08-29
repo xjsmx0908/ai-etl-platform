@@ -35,19 +35,21 @@ func (p *fixedPlanner) Plan(context.Context, agent.Run) (agent.PlanDecision, err
 }
 
 type fakePublicationWorkflow struct {
-	assessment   publicationworkflow.Assessment
-	publishCalls int
-	lastActor    publicationworkflow.Actor
+	assessment    publicationworkflow.Assessment
+	publishCalls  int
+	lastActor     publicationworkflow.Actor
+	lastCandidate publicationworkflow.Candidate
 }
 
 func (f *fakePublicationWorkflow) Assess(context.Context, publicationworkflow.Actor, string) (publicationworkflow.Assessment, error) {
 	return f.assessment, nil
 }
 
-func (f *fakePublicationWorkflow) PublishApproved(_ context.Context, actor publicationworkflow.Actor, docID, _ string) (publicationworkflow.PublicationResult, error) {
+func (f *fakePublicationWorkflow) PublishApproved(_ context.Context, actor publicationworkflow.Actor, candidate publicationworkflow.Candidate, _ string) (publicationworkflow.PublicationResult, error) {
 	f.publishCalls++
 	f.lastActor = actor
-	return publicationworkflow.PublicationResult{DocumentID: docID, PublicationStatus: "published"}, nil
+	f.lastCandidate = candidate
+	return publicationworkflow.PublicationResult{DocumentID: candidate.DocumentID, PublicationStatus: "published"}, nil
 }
 
 func (f *fakeQueryService) Ask(_ context.Context, req query.Request, access query.AccessContext) (query.Response, error) {
@@ -158,9 +160,13 @@ func TestHandleRunsCreatesAndExecutesRAGRun(t *testing.T) {
 }
 
 func TestDocumentGovernanceRunWaitsForApprovalThenPublishes(t *testing.T) {
+	candidate := publicationworkflow.Candidate{
+		DocumentID: "doc-1", DocumentVersionID: "job-2", GenerationID: "gen-2",
+		ExpectedChunkCount: 4, ExpectedChunkDigest: "sha256:approved", ReleaseRevision: 7,
+	}
 	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{
 		DocumentID: "doc-1", KnowledgeSpaceID: "policies", Ready: true,
-		Blockers: []string{}, IndexCounts: publicationworkflow.IndexCounts{Vector: 4, Text: 4},
+		Blockers: []string{}, Candidate: &candidate,
 	}}
 	store := agent.NewMemoryStore()
 	registry := agent.NewRegistry()
@@ -191,6 +197,13 @@ func TestDocumentGovernanceRunWaitsForApprovalThenPublishes(t *testing.T) {
 	if err != nil || len(approvals) != 1 {
 		t.Fatalf("approvals=%+v err=%v", approvals, err)
 	}
+	var approvedCandidate publicationworkflow.Candidate
+	if err := json.Unmarshal(approvals[0].ToolArguments, &approvedCandidate); err != nil {
+		t.Fatalf("decode approval candidate: %v", err)
+	}
+	if approvedCandidate != candidate {
+		t.Fatalf("approval candidate=%+v, want %+v", approvedCandidate, candidate)
+	}
 	approveReq := adminRequest(http.MethodPost, "/v1/agent/runs/"+run.ID+"/approve", []byte(`{"reason":"checks passed"}`))
 	approveRR := httptest.NewRecorder()
 	svc.HandleRun(approveRR, approveReq)
@@ -200,7 +213,7 @@ func TestDocumentGovernanceRunWaitsForApprovalThenPublishes(t *testing.T) {
 	if err := json.NewDecoder(approveRR.Body).Decode(&run); err != nil {
 		t.Fatalf("decode approved run: %v", err)
 	}
-	if run.State != agent.StateCompleted || workflow.publishCalls != 1 || workflow.lastActor.UserID != "admin-a" {
+	if run.State != agent.StateCompleted || workflow.publishCalls != 1 || workflow.lastActor.UserID != "admin-a" || workflow.lastCandidate != candidate {
 		t.Fatalf("run=%+v calls=%d actor=%+v", run, workflow.publishCalls, workflow.lastActor)
 	}
 }
@@ -208,8 +221,7 @@ func TestDocumentGovernanceRunWaitsForApprovalThenPublishes(t *testing.T) {
 func TestDocumentGovernanceRunStopsWhenAssessmentIsBlocked(t *testing.T) {
 	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{
 		DocumentID: "doc-1", KnowledgeSpaceID: "policies", Ready: false,
-		Blockers:    []string{"owner_required", "text_index_missing"},
-		IndexCounts: publicationworkflow.IndexCounts{Vector: 4, Text: 0},
+		Blockers: []string{"owner_required", "exact_candidate_unavailable"},
 	}}
 	store := agent.NewMemoryStore()
 	registry := agent.NewRegistry()
@@ -232,7 +244,7 @@ func TestDocumentGovernanceRunStopsWhenAssessmentIsBlocked(t *testing.T) {
 	if run.State != agent.StateCompleted || len(run.Steps) != 2 || run.Steps[0].ToolName != assessPublicationToolName {
 		t.Fatalf("expected blocked assessment to complete without publication, got %+v", run)
 	}
-	if !strings.Contains(run.Final, "owner_required") || !strings.Contains(run.Final, "text_index_missing") {
+	if !strings.Contains(run.Final, "owner_required") || !strings.Contains(run.Final, "exact_candidate_unavailable") {
 		t.Fatalf("expected blockers in final result, got %q", run.Final)
 	}
 	approvals, err := svc.approvalStore.ListRunApprovals(context.Background(), "tenant-a", run.ID)
@@ -242,9 +254,13 @@ func TestDocumentGovernanceRunStopsWhenAssessmentIsBlocked(t *testing.T) {
 }
 
 func TestDocumentGovernanceRunRejectsSelfApproval(t *testing.T) {
+	candidate := publicationworkflow.Candidate{
+		DocumentID: "doc-1", DocumentVersionID: "job-2", GenerationID: "gen-2",
+		ExpectedChunkCount: 4, ExpectedChunkDigest: "sha256:approved", ReleaseRevision: 7,
+	}
 	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{
 		DocumentID: "doc-1", KnowledgeSpaceID: "policies", Ready: true,
-		Blockers: []string{}, IndexCounts: publicationworkflow.IndexCounts{Vector: 4, Text: 4},
+		Blockers: []string{}, Candidate: &candidate,
 	}}
 	store := agent.NewMemoryStore()
 	registry := agent.NewRegistry()

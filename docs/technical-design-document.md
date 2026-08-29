@@ -56,3 +56,18 @@ published-only evidence, catalog outage behavior, migration ordering, handler
 status codes, and two same-topic documents in different spaces. Completion also
 requires `gofmt`, `go vet`, full Go/Python tests, Web build, Compose validation,
 and the deterministic RAG evaluation.
+
+## Exact-candidate Publication
+
+Migration `0017_exact_candidate_publication.up.sql` adds the last successful
+publication idempotency key and candidate request hash to `document_releases`.
+Assessment reads an authoritative candidate only when the release is resolved
+and both backend observations equal the sealed active-manifest identity. The
+approval tool requires and persists every candidate field.
+
+Publication acquires a release row lock and a shared manifest lock, checks the
+authenticated tenant and administrator role, and rejects any version,
+generation, digest, count, health, or revision change. Document publication,
+release CAS, and the immutable success audit commit together. An identical
+idempotency-key/request-hash replay returns success without a second audit or
+revision; a reused key with altered arguments fails closed.

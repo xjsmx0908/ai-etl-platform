@@ -41,3 +41,18 @@ creates a default `user-uploads` production space per tenant and quarantines
 
 This design preserves the accepted lean Compose architecture. Kubernetes or a
 service mesh is not required for knowledge correctness.
+
+## Version-bound Publication Module
+
+`internal/publicationworkflow` owns governed publication behind the assessment
+and approved-publication interface. PostgreSQL resolves only the current
+release version's sealed, active generation whose Qdrant and Elasticsearch
+observations match the expected chunk count and identity digest. The returned
+candidate is immutable: document version, generation, expected count/digest,
+and release revision. Tenant scope always comes from authenticated context.
+
+Agent approval persists that complete candidate. Approved publication locks
+and revalidates it, then updates the document state, advances the release
+compare-and-set, binds the idempotency key, and appends the audit event in one
+transaction. Cache invalidation runs after commit. Query enforcement of the
+published release is the subsequent P2.4-C cutover.

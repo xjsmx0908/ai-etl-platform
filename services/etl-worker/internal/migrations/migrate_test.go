@@ -215,6 +215,22 @@ func TestDocumentReleaseMigrationCarriesVersionBoundPublicationInvariants(t *tes
 	}
 }
 
+func TestExactCandidatePublicationMigrationCarriesIdempotencyKey(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0017_exact_candidate_publication.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"last_publication_idempotency_key", "last_publication_request_hash",
+		"document_releases_publication_idempotency_key",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.
