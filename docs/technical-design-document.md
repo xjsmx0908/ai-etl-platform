@@ -103,3 +103,19 @@ lease. Partial completion persists successes and schedules a retry; full
 completion appends its audit and deletes the catalog row, whose foreign-key
 cascade removes releases, ingestion state, manifests, and the deletion job.
 Prometheus exposes only fixed state/condition/outcome labels.
+
+## P2.4 governance acceptance harness
+
+The governance overlay exposes worker metrics on loopback and replaces only its
+isolated MinIO data volume with a bounded tmpfs. The Python driver calls public
+HTTP for all business observations and uses Compose for Kafka, process, Qdrant,
+Elasticsearch, and MinIO interruption. Because restarting the ephemeral MinIO
+container clears its bucket, the driver restarts Query API after recovery to
+exercise the normal bucket-initialization path before awaiting deletion.
+
+Run `bash scripts/governance-acceptance.sh`; set `GOVERNANCE_REPORT_DIR` to
+choose the retained evidence directory. `GOVERNANCE_BUILD=0` may reuse local
+images while developing the harness, but release evidence should use the
+default clean build. Unit contract tests run under the existing
+`python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v` CI step; the
+dependency-heavy exercise remains an explicit release command.

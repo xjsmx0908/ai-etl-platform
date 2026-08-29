@@ -1,0 +1,12 @@
+# P2.4 governance acceptance stores MinIO data in an isolated tmpfs. The suite
+# is destructive and always starts from empty evidence, so persistence would
+# consume host disk without adding recovery coverage; process restarts retain
+# tmpfs data for the lifetime of this container.
+services:
+  etl-worker:
+    ports:
+      - "127.0.0.1:${WORKER_METRICS_HOST_PORT:-18084}:8081"
+  minio:
+    volumes: !reset []
+    tmpfs:
+      - /data:size=128m,mode=1777

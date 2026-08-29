@@ -849,3 +849,24 @@ This file is an append-only record of completed PRAR cycles.
   work is cancelled, active leases delay cleanup, completion cannot auto-publish
   a pending deletion, and stale collector tokens cannot finalize. Exact object
   keys avoid ambiguous prefix deletion when document ids share prefixes.
+
+## 2026-08-29 - P2.4-E public governance acceptance
+
+- Perceive: unit and PostgreSQL tests proved individual invariants, but no one
+  retained artifact showed that authenticated users observe continuity,
+  independent approval, fail-closed deletion, dependency recovery, and audit
+  correlation as one lifecycle.
+- Reason: use public HTTP as the business evidence seam, bounded worker metrics
+  for durable failure evidence, and Compose only for fault injection. Keep the
+  real dependency run explicit while normal CI checks the harness contract.
+- Act: added an isolated executable matrix covering Kafka/API/worker recovery,
+  managed replacement cutover, Qdrant/Elasticsearch/MinIO deletion recovery,
+  final `404`, and correlated audit. Reports recursively redact credentials and
+  authorization data. The legacy smoke flow now polls after HTTP `202` deletion.
+- Refine: an acceptance-only MinIO tmpfs avoids the host disk floor, but a
+  container restart clears the bucket. Recovery must invoke the application's
+  normal bucket initialization before judging retry behavior; otherwise the
+  harness manufactures a permanent fault absent from the intended scenario.
+- Verification: nine harness contract tests, syntax/Compose checks, and the
+  isolated full-stack run passed all six scenarios with a secret-free JSON
+  report. No deployment or generation-retention change was made.

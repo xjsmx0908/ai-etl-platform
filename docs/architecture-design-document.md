@@ -78,3 +78,17 @@ Elasticsearch are deleted by tenant/document identity; MinIO receives the exact
 immutable keys captured at acceptance. Each success is durable across retries.
 An active ingestion lease delays the claim, and only a fully successful current
 claim removes the authoritative PostgreSQL graph.
+
+## Governance Acceptance Boundary
+
+`scripts/governance-acceptance.sh` is the executable P2.4 system boundary. It
+starts an isolated stack and drives authenticated public HTTP through managed
+admission, independent approval, release continuity and cutover, recoverable
+deletion, and correlated audit. Compose is used only to interrupt dependencies;
+database inspection is not accepted as business-success evidence.
+
+Deterministic inference keeps the lifecycle repeatable while PostgreSQL, Kafka,
+Qdrant, Elasticsearch, and MinIO remain real. The runner retains a timestamped,
+secret-free JSON report and always tears down its project unless explicitly kept
+for diagnosis. This gate proves governance orchestration, not production answer
+quality, capacity, identity federation, or recovery objectives.
