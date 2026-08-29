@@ -2,8 +2,8 @@
 
 ## 2026-08-27 - Enterprise RAG Implementation Baseline
 
-Status: approved; P2.2 implementation in progress, later phases still require
-their ADR and business-input gates
+Status: approved; P2.2 complete, P2.3 persistence slice in progress; later
+phases still require their ADR and business-input gates
 
 Goal: turn the accepted enterprise RAG direction into staged, testable work
 without treating unknown identity, quality, capacity, or recovery requirements
@@ -112,6 +112,27 @@ P2.2 third-slice implementation plan (approved 2026-08-27):
 No implementation phase starts merely because this backlog entry exists. Each
 ADR must first be reviewed, its open decisions resolved, and its phase-specific
 plan approved.
+
+P2.3 progress (2026-08-28):
+
+- Added a generation manifest schema containing immutable build configuration,
+  expected count/digest, Qdrant and Elasticsearch observations, lifecycle,
+  attempts, errors, and verification/activation timestamps.
+- Added an order-independent digest over generation/document identity, chunk
+  index/ID, and SHA-256 content hash; invalid or duplicate chunk identities fail
+  closed.
+- Added a narrow PostgreSQL adapter for create, observe, fail, ready, and atomic
+  activation transitions. A partial or mismatched observation cannot become
+  ready, and activation rollback preserves the prior active generation.
+- Hardened the persistence seam after review: manifest creation now supports
+  idempotent crash replay with immutable-definition conflict detection; build
+  configuration is mandatory; document versions reference durable ingestion
+  jobs; failed builds can be retried after clearing observations; stale
+  activation writers are rejected using expected-current CAS. A real PostgreSQL
+  concurrency test verifies that only one competing activation succeeds.
+- Remaining P2.3 slices: backend generation-aware writes/observations, pipeline
+  completion integration, reconciler and repair, rollback/retention cleanup,
+  bounded metrics/alerts, and the full ADR acceptance matrix.
 
 ## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
 
