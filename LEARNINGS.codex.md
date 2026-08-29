@@ -2,6 +2,25 @@
 
 This file is an append-only record of completed PRAR cycles.
 
+## 2026-08-29 - P2.4 governance acceptance planning
+
+- **Perceive:** P2.1 publication approval, P2.2 durable document versions, and
+  P2.3 generation manifests existed independently. Publication still inspected
+  document-level backend counts, approval named only a mutable document id, and
+  replacement/deletion lacked one durable release lifecycle.
+- **Reason:** Treat PostgreSQL release identity as the publication and query
+  correctness seam. Bind assessment and approval to an immutable version,
+  generation, digest, and revision; preserve the prior release until an atomic
+  approved cutover; make deletion a recoverable workflow.
+- **Act:** Proposed ADR 0011 and a five-slice, test-driven P2.4 plan covering the
+  release model, exact-candidate approval, replacement/read cutover, recoverable
+  deletion, and public-interface governance acceptance.
+- **Refine:** An E2E script alone would certify count equality while retaining a
+  time-of-check/time-of-use publication hole. The acceptance harness must be
+  the final proof over shared production interfaces, not a substitute for the
+  missing invariants. No code, deployment, or retention setting changed during
+  this planning cycle.
+
 ## 2026-08-19 - Legacy Word DOC Parsing
 
 - **Perceive:** A genuine OLE Microsoft Word `.doc` upload repeatedly failed in parser-service with `PackageNotFoundError` and entered the Kafka DLQ.

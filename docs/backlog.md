@@ -23,6 +23,9 @@ Proposed decisions:
 4. [ADR 0010](adr/0010-production-slo-and-recovery-gates.md) blocks production
    promotion until business-owned SLO, recovery, retention, capacity, and
    quality objectives have current evidence.
+5. [ADR 0011](adr/0011-version-bound-governance-publication.md) unifies managed
+   publication, exact document versions, generation identity, replacement, and
+   recoverable deletion behind one PostgreSQL-owned release lifecycle.
 
 Required external inputs:
 
@@ -133,6 +136,72 @@ P2.3 progress (2026-08-28):
 - Subsequent slices at this checkpoint were reconciliation/repair,
   rollback/retention cleanup, bounded metrics/alerts, and the full ADR
   acceptance matrix. Reconciliation/repair is now implemented below.
+
+P2.4 proposed plan (2026-08-29; awaiting approval):
+
+The governing decision is [ADR 0011](adr/0011-version-bound-governance-publication.md).
+P2.4 integrates the existing P2.1 publication workflow with P2.2 durable
+versions and P2.3 generation manifests; it does not rebuild the RAG platform.
+Repository inspection found three correctness gaps that must precede an E2E
+claim:
+
+- publication readiness still trusts document-level backend counts instead of
+  the sealed, healthy active-generation identity;
+- durable approval names only `document_id`, so a replacement during review can
+  change the bytes ultimately published; and
+- replacement can leave multiple version-scoped active generations visible,
+  while deletion has no durable record for partial dependency failure.
+
+Test-driven delivery is split into reviewable, stacked changes:
+
+1. **P2.4-A — Version-bound release model.** Add the current-version and
+   published-release identity/revision schema with deterministic legacy
+   backfill. Add PostgreSQL integration tests for one visible release,
+   compare-and-set updates, tenant isolation, and ambiguous-backfill failure.
+2. **P2.4-B — Exact-candidate approval.** Replace count-only readiness with a
+   small publication-candidate interface backed by the active manifest and its
+   expected/observed identity. Persist version, generation, digest, and revision
+   in approval arguments; reject stale, self, cross-tenant, unhealthy, and
+   replayed candidates. Commit publication and its audit event atomically.
+3. **P2.4-C — Replacement and read cutover.** Require managed query candidates
+   to match the published release. Preserve the old approved release while a
+   replacement builds or awaits approval; cut over only after exact-candidate
+   approval. Preserve the automatic `user-uploads` policy through the same
+   explicit release identity. Cover caches and both retrievers.
+4. **P2.4-D — Recoverable deletion.** Add a durable, leased deletion workflow
+   with immediate fail-closed visibility, per-Qdrant/Elasticsearch/object-store
+   progress, idempotent retry, immutable audit correlation, metrics, and tested
+   alerts. Do not enable generation retention.
+5. **P2.4-E — Governance acceptance.** Add an isolated public-interface E2E
+   harness and acceptance matrix for managed upload, independent approval,
+   publication/query, replacement continuity and cutover, deletion, audit, and
+   recovery after Kafka, Qdrant, Elasticsearch, MinIO, or process interruption.
+   CI runs deterministic module/PostgreSQL tests; full dependency exercises are
+   an explicit acceptance command with retained, secret-free results.
+
+Definition of done:
+
+- Every governed approval is cryptographically and transactionally bound to
+  the exact document version and generation that was assessed.
+- Query visibility has one PostgreSQL-owned release identity and fails closed
+  for drafts, stale generations, deletion, unknown identity, or authority
+  lookup failure without leaking cross-tenant content.
+- Replacement preserves the last approved release until atomic approved
+  cutover; stale approval cannot publish a newer replacement.
+- Deletion is restart-safe and exposes partial progress without reporting
+  success before every owned dependency acknowledges cleanup.
+- Focused tests are written first for each slice, then the full Go race suite,
+  `go vet`, Python/Web tests, Compose validation, security scan, deterministic
+  eval, generation acceptance, and governance acceptance all pass.
+- Documentation and the append-only learning log match implemented behavior.
+  Production deployment, retention enablement, and P2.5 identity work remain
+  out of scope.
+
+Expected implementation areas (exact files may be refined after red tests):
+`internal/migrations`, `internal/publicationworkflow`, `internal/indexmanifest`,
+`internal/query`, `internal/agentapi`, `internal/audit`, `cmd/api`, worker
+wiring, `scripts`, `infrastructure/rules`, and governance/architecture docs.
+No implementation slice starts until ADR 0011 and this plan are approved.
 
 P2.3 backend projection slice (2026-08-28):
 
