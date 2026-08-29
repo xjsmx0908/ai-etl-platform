@@ -39,6 +39,7 @@ import (
 	"ai-etl-pipeline/internal/middleware"
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/prometheus"
+	"ai-etl-pipeline/internal/publicationrelease"
 	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/retrieval"
@@ -213,6 +214,7 @@ func main() {
 	auditStore := audit.New(pgPool)
 	knowledgeCatalog := knowledgecatalog.New(knowledgecatalog.NewPostgresStore(pgPool))
 	generationVisibility := indexmanifest.NewPostgresStore(pgPool)
+	releaseVisibility := publicationrelease.NewPostgresStore(pgPool)
 	var generationRollbacker generationRollbacker
 
 	// Initialize auth. The verifier re-validates each token's token_version
@@ -304,7 +306,7 @@ func main() {
 	qs := query.NewServiceWithObserver(cfg, prom).
 		WithGovernance(docStore).
 		WithKnowledgeCatalog(knowledgeCatalog).
-		WithGenerationVisibility(generationVisibility)
+		WithReleaseVisibility(releaseVisibility)
 	taskStatusStore, err := newTaskStatusStore(cfg)
 	if err != nil {
 		slog.Error("failed to create task status store", "error", err)
@@ -378,7 +380,7 @@ func main() {
 	// long-lived clients: a per-request storer would re-run ensureCollection on
 	// every call.
 	esRetriever := retrieval.NewElasticRetriever(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, &http.Client{Timeout: 15 * time.Second})
-	apiV1.Handle("/v1/documents/search", http.HandlerFunc(handleDocumentSearch(cfg, docStore, esRetriever, qs)))
+	apiV1.Handle("/v1/documents/search", http.HandlerFunc(handleDocumentSearch(cfg, docStore, esRetriever, qs, releaseVisibility)))
 	var chunksHandler http.Handler
 	if chunkStorer, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension); err != nil {
 		slog.Warn("qdrant storer for chunk detail failed", "error", err)
@@ -983,6 +985,11 @@ func handleUploadWithAdmission(cfg config.Config, qs *query.Service, producer up
 						},
 					})
 					http.Error(w, reason, status)
+					return
+				}
+				if (existing.Permission != "" && existing.Permission != permission) ||
+					(existing.KnowledgeSpaceID != "" && existing.KnowledgeSpaceID != space.ID) {
+					http.Error(w, "replacement cannot change document permission or knowledge space", http.StatusConflict)
 					return
 				}
 			}

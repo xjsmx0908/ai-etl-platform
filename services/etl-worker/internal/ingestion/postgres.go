@@ -280,15 +280,25 @@ func (s *PostgresStore) markJobTerminal(ctx context.Context, task model.Task, st
 	if tag.RowsAffected() == 0 {
 		return ErrInvalidTransition
 	}
-	if _, err := tx.Exec(ctx, `
+	var knowledgeSpaceID string
+	err = tx.QueryRow(ctx, `
 		UPDATE documents SET status=$3, stage=$3, error=$4,
 			completed_at=$5, updated_at=now(),
 			publication_status=CASE
 				WHEN $3='completed' AND knowledge_space_id='user-uploads' THEN 'published'
 				ELSE publication_status
 			END
-		WHERE tenant_id=$1 AND doc_id=$2 AND object_key=$6`, task.TenantID, task.DocID, state, message, completedAt, task.FilePath); err != nil {
+		WHERE tenant_id=$1 AND doc_id=$2 AND object_key=$6
+		RETURNING knowledge_space_id`, task.TenantID, task.DocID, state, message, completedAt, task.FilePath).Scan(&knowledgeSpaceID)
+	if err != nil {
 		return fmt.Errorf("mark document %s: %w", state, err)
+	}
+	if state == "completed" && knowledgeSpaceID == "user-uploads" {
+		if _, err := publicationrelease.NewPostgresStore(tx).PublishAutomatic(ctx, publicationrelease.VersionIdentity{
+			TenantID: task.TenantID, DocumentID: task.DocID, VersionID: task.JobID,
+		}); err != nil {
+			return fmt.Errorf("automatically publish completed document release: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit ingestion terminal transition: %w", err)

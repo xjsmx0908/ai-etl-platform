@@ -235,6 +235,21 @@ P2.4-B outcome (2026-08-29):
 - Removed the obsolete HTTP document-count inspector and non-transactional
   best-effort publication adapter. Query visibility remains P2.4-C scope.
 
+P2.4-C outcome (2026-08-29):
+
+- Query and content-search candidates now pass through the PostgreSQL-owned
+  published-release resolver. A candidate is visible only when its exact
+  document version and generation match the resolved release and the active
+  manifest remains sealed, healthy, and reconciled in both projections.
+- A managed replacement advances the current version without retiring the
+  published release. The old version remains queryable until an independent,
+  exact-candidate approval atomically cuts over the release.
+- Completed `user-uploads` versions use the same explicit release identity via
+  an idempotent automatic publication transition; managed spaces still require
+  approval. Replacement uploads cannot change permission or knowledge space.
+- Added handler, release, ingestion, and PostgreSQL continuity tests. P2.4-D
+  recoverable deletion and P2.4-E public-interface acceptance remain next.
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

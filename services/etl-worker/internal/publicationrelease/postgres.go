@@ -9,10 +9,79 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"ai-etl-pipeline/internal/db"
+	"ai-etl-pipeline/internal/indexmanifest"
 )
 
 type PostgresStore struct {
 	q db.Querier
+}
+
+// ResolveVisibility applies the published-release read policy to backend and
+// cached candidates. A candidate is visible only when it exactly matches the
+// tenant's resolved published version/generation and that manifest remains
+// active and healthy. Missing or incomplete authority fails closed.
+func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, refs []indexmanifest.GenerationReference) ([]bool, error) {
+	visible := make([]bool, len(refs))
+	if len(refs) == 0 {
+		return visible, nil
+	}
+	if s == nil || s.q == nil || strings.TrimSpace(tenantID) == "" {
+		return nil, ErrInvalid
+	}
+	documentIDs := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.DocumentID) == "" {
+			continue
+		}
+		if _, ok := seen[ref.DocumentID]; ok {
+			continue
+		}
+		seen[ref.DocumentID] = struct{}{}
+		documentIDs = append(documentIDs, ref.DocumentID)
+	}
+	if len(documentIDs) == 0 {
+		return visible, nil
+	}
+	type identity struct{ versionID, generationID string }
+	published := make(map[string]identity, len(documentIDs))
+	rows, err := s.q.Query(ctx, `SELECT r.document_id,r.published_version_id,r.published_generation_id
+		FROM document_releases r
+		JOIN index_manifests m ON m.tenant_id=r.tenant_id
+			AND m.document_id=r.document_id
+			AND m.document_version_id=r.published_version_id
+			AND m.generation_id=r.published_generation_id
+		WHERE r.tenant_id=$1 AND r.document_id=ANY($2)
+			AND r.resolution_status='resolved'
+			AND r.published_version_id IS NOT NULL
+			AND r.published_generation_id IS NOT NULL
+			AND m.state='active' AND m.last_reconcile_error=''
+			AND m.expected_chunk_count > 0
+			AND m.expected_chunk_digest IS NOT NULL AND m.expected_chunk_digest<>''
+			AND m.qdrant_count=m.expected_chunk_count
+			AND m.qdrant_digest=m.expected_chunk_digest
+			AND m.elasticsearch_count=m.expected_chunk_count
+			AND m.elasticsearch_digest=m.expected_chunk_digest`, tenantID, documentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve published release visibility: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var documentID, versionID, generationID string
+		if err := rows.Scan(&documentID, &versionID, &generationID); err != nil {
+			return nil, fmt.Errorf("scan published release visibility: %w", err)
+		}
+		published[documentID] = identity{versionID: versionID, generationID: generationID}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate published release visibility: %w", err)
+	}
+	for i, ref := range refs {
+		identity, ok := published[ref.DocumentID]
+		visible[i] = ok && ref.DocumentVersionID != "" && ref.GenerationID != "" &&
+			identity.versionID == ref.DocumentVersionID && identity.generationID == ref.GenerationID
+	}
+	return visible, nil
 }
 
 func NewPostgresStore(q db.Querier) *PostgresStore {
@@ -88,6 +157,48 @@ func (s *PostgresStore) Publish(ctx context.Context, candidate Candidate) (Relea
 	}
 	if err != nil {
 		return Release{}, fmt.Errorf("publish document release: %w", err)
+	}
+	return release, nil
+}
+
+// PublishAutomatic advances the release for a document whose knowledge-space
+// policy permits automatic publication. It derives the generation from the
+// healthy active manifest instead of accepting mutable caller input. Replaying
+// the same completed version is idempotent.
+func (s *PostgresStore) PublishAutomatic(ctx context.Context, version VersionIdentity) (Release, error) {
+	if s == nil || s.q == nil || invalidVersion(version) {
+		return Release{}, ErrInvalid
+	}
+	row := s.q.QueryRow(ctx, `WITH candidate AS (
+		SELECT m.generation_id
+		FROM index_manifests m
+		WHERE m.tenant_id=$1 AND m.document_id=$2 AND m.document_version_id=$3
+			AND m.state='active' AND m.last_reconcile_error=''
+			AND m.expected_chunk_count > 0
+			AND m.expected_chunk_digest IS NOT NULL AND m.expected_chunk_digest<>''
+			AND m.qdrant_count=m.expected_chunk_count
+			AND m.qdrant_digest=m.expected_chunk_digest
+			AND m.elasticsearch_count=m.expected_chunk_count
+			AND m.elasticsearch_digest=m.expected_chunk_digest
+	)
+	UPDATE document_releases r SET
+		published_version_id=$3,published_generation_id=c.generation_id,
+		revision=CASE WHEN r.published_version_id=$3
+			AND r.published_generation_id=c.generation_id THEN r.revision ELSE r.revision+1 END,
+		last_error='',updated_at=now()
+	FROM candidate c
+	WHERE r.tenant_id=$1 AND r.document_id=$2 AND r.current_version_id=$3
+		AND r.resolution_status='resolved'
+	RETURNING r.tenant_id,r.document_id,r.current_version_id,
+		COALESCE(r.published_version_id,''),COALESCE(r.published_generation_id,''),
+		r.revision,r.resolution_status,r.last_error,r.updated_at`, version.TenantID,
+		version.DocumentID, version.VersionID)
+	release, err := scanRelease(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Release{}, ErrConflict
+	}
+	if err != nil {
+		return Release{}, fmt.Errorf("automatically publish document release: %w", err)
 	}
 	return release, nil
 }

@@ -23,7 +23,7 @@ func TestAssessFailsClosedWithDeterministicBlockers(t *testing.T) {
 		Status:            docstore.StatusProcessing,
 		DocStatus:         docstore.DocStatusSuperseded,
 		KnowledgeSpaceID:  "user-uploads",
-		PublicationStatus: "published",
+		PublicationStatus: "retired",
 	}
 	workflow := New(documentReaderStub{document: doc, found: true}, candidateReaderStub{})
 
@@ -35,7 +35,7 @@ func TestAssessFailsClosedWithDeterministicBlockers(t *testing.T) {
 		"managed_space_required",
 		"ingestion_not_completed",
 		"document_not_active",
-		"document_not_draft",
+		"document_not_publishable",
 		"owner_required",
 		"effective_date_required",
 		"exact_candidate_unavailable",
@@ -119,6 +119,28 @@ func TestAssessBindsReadyDecisionToExactActiveGeneration(t *testing.T) {
 	}
 	if !assessment.Ready || !reflect.DeepEqual(assessment.Candidate, &want) {
 		t.Fatalf("assessment = %+v, want exact candidate %+v", assessment, want)
+	}
+}
+
+func TestAssessAllowsPublishedCatalogStateForPendingReplacement(t *testing.T) {
+	doc := docstore.Document{
+		TenantID: "acme", DocID: "doc-1", Status: docstore.StatusCompleted,
+		DocStatus: docstore.DocStatusActive, KnowledgeSpaceID: "policies",
+		PublicationStatus: "published", Owner: "hr",
+		EffectiveDate: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+	}
+	candidate := Candidate{
+		DocumentID: "doc-1", DocumentVersionID: "job-2", GenerationID: "gen-2",
+		ExpectedChunkCount: 4, ExpectedChunkDigest: "sha256:replacement", ReleaseRevision: 7,
+	}
+	assessment, err := New(documentReaderStub{document: doc, found: true}, candidateReaderStub{
+		candidate: candidate, found: true,
+	}).Assess(context.Background(), Actor{TenantID: "acme", UserID: "reviewer"}, "doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !assessment.Ready || !reflect.DeepEqual(assessment.Candidate, &candidate) {
+		t.Fatalf("replacement assessment=%+v, want ready exact candidate", assessment)
 	}
 }
 

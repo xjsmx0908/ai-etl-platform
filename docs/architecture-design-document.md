@@ -24,7 +24,8 @@ upload, query, and HTTP handlers cannot diverge.
 1. Authenticate the principal.
 2. Resolve an explicit or default knowledge space.
 3. Retrieve with tenant, permission, and space filters.
-4. Fail-closed batch validation retains only published, active documents.
+4. Fail-closed batch validation retains only candidates matching the
+   PostgreSQL published release and its healthy active generation.
 5. Generate the answer, then verify both evidence support and responsiveness to
    the question before returning citations.
 
@@ -54,5 +55,11 @@ and release revision. Tenant scope always comes from authenticated context.
 Agent approval persists that complete candidate. Approved publication locks
 and revalidates it, then updates the document state, advances the release
 compare-and-set, binds the idempotency key, and appends the audit event in one
-transaction. Cache invalidation runs after commit. Query enforcement of the
-published release is the subsequent P2.4-C cutover.
+transaction. Cache invalidation runs after commit.
+
+Query enforcement of the published release is applied by the retrieval engine
+and the Elasticsearch document-search handler. Both use the same resolver, so
+semantic cache, Qdrant, Elasticsearch, and content-search results cannot expose
+a replacement generation before approval. A replacement keeps the old release
+visible until atomic cutover; `user-uploads` records an explicit automatic
+release after successful activation.

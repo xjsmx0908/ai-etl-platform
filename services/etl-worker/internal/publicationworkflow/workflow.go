@@ -124,8 +124,8 @@ func (w *Workflow) Assess(ctx context.Context, actor Actor, docID string) (Asses
 	if doc.DocStatus != "" && doc.DocStatus != docstore.DocStatusActive {
 		blockers = append(blockers, "document_not_active")
 	}
-	if doc.PublicationStatus != "draft" {
-		blockers = append(blockers, "document_not_draft")
+	if doc.PublicationStatus != "draft" && doc.PublicationStatus != "published" {
+		blockers = append(blockers, "document_not_publishable")
 	}
 	if strings.TrimSpace(doc.Owner) == "" {
 		blockers = append(blockers, "owner_required")
