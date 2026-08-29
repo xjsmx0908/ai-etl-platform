@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -28,6 +29,24 @@ func TestListOlderThanReturnsVersionedCandidatesWithoutLegacyStarvation(t *testi
 	}
 	if len(got) != 1 || got[0].Key != "tenant/doc/versions/orphan.txt" {
 		t.Fatalf("candidates = %+v, want the versioned orphan", got)
+	}
+}
+
+func TestDeleteObjectsRemovesOnlyCapturedExactKeys(t *testing.T) {
+	keys := []string{"acme/doc-1.pdf", "acme/doc-1/versions/job.txt"}
+	deleted := []string{}
+	client := &Client{
+		bucket: "documents",
+		removeObject: func(_ context.Context, _ string, key string, _ minio.RemoveObjectOptions) error {
+			deleted = append(deleted, key)
+			return nil
+		},
+	}
+	if err := client.DeleteObjects(context.Background(), keys); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(deleted, keys) {
+		t.Fatalf("deleted=%v want=%v", deleted, keys)
 	}
 }
 

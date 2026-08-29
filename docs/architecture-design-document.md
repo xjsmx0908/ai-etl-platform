@@ -63,3 +63,18 @@ semantic cache, Qdrant, Elasticsearch, and content-search results cannot expose
 a replacement generation before approval. A replacement keeps the old release
 visible until atomic cutover; `user-uploads` records an explicit automatic
 release after successful activation.
+
+## Recoverable Deletion Module
+
+`internal/deletionworkflow` owns deletion from HTTP acceptance through final
+cleanup. Its small interfaces separate the PostgreSQL state machine from three
+idempotent dependency adapters. Acceptance atomically marks the document
+deletion-pending, revokes the published release, cancels queued ingestion, and
+records the audit/job correlation, making all query paths fail closed before
+external deletion begins.
+
+The worker claims bounded batches with a lease and fencing token. Qdrant and
+Elasticsearch are deleted by tenant/document identity; MinIO receives the exact
+immutable keys captured at acceptance. Each success is durable across retries.
+An active ingestion lease delays the claim, and only a fully successful current
+claim removes the authoritative PostgreSQL graph.

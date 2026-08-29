@@ -114,8 +114,8 @@ export async function searchDocuments(
   return request(`/documents/search?${sp.toString()}`);
 }
 
-export async function deleteDocument(id: string): Promise<void> {
-  return request<void>(`/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
+export async function deleteDocument(id: string): Promise<{ job_id: string; status: "pending" | "processing" }> {
+  return request(`/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function updateDocumentPublication(id: string, publicationStatus: "draft" | "published" | "retired"): Promise<Document> {

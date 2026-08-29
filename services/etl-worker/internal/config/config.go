@@ -164,6 +164,10 @@ type Config struct {
 	IndexRetentionInterval   time.Duration
 	IndexRetentionLease      time.Duration
 	IndexRetentionBatchSize  int
+	DeletionInterval         time.Duration
+	DeletionLease            time.Duration
+	DeletionBatchSize        int
+	DeletionRetryBackoff     time.Duration
 
 	// Redis (shared default; used as fallback for cache/state below)
 	RedisAddr     string
@@ -348,6 +352,10 @@ func Load() Config {
 		IndexRetentionInterval:   EnvDuration("INDEX_RETENTION_INTERVAL", time.Hour),
 		IndexRetentionLease:      EnvDuration("INDEX_RETENTION_LEASE", 30*time.Minute),
 		IndexRetentionBatchSize:  EnvInt("INDEX_RETENTION_BATCH_SIZE", 20),
+		DeletionInterval:         EnvDuration("DELETION_INTERVAL", time.Minute),
+		DeletionLease:            EnvDuration("DELETION_LEASE", 30*time.Minute),
+		DeletionBatchSize:        EnvInt("DELETION_BATCH_SIZE", 20),
+		DeletionRetryBackoff:     EnvDuration("DELETION_RETRY_BACKOFF", 5*time.Minute),
 
 		// Redis: REDIS_* is the shared default; REDIS_CACHE_*/REDIS_STATE_*
 		// override it so evictable cache and durable state can be separated.
@@ -528,6 +536,10 @@ func (c Config) Validate() error {
 	}
 	if c.IndexRetentionLease <= time.Duration(c.IndexRetentionBatchSize)*45*time.Second {
 		return fmt.Errorf("INDEX_RETENTION_LEASE must exceed the configured batch worst-case projection timeout")
+	}
+	if c.DeletionInterval <= 0 || c.DeletionLease <= 0 || c.DeletionRetryBackoff <= 0 ||
+		c.DeletionBatchSize < 1 || c.DeletionBatchSize > 1000 {
+		return fmt.Errorf("deletion collector configuration is invalid")
 	}
 	worstCaseProcessing := c.PipelineTimeout * time.Duration(c.MaxRetries+1)
 	for attempt := 1; attempt <= c.MaxRetries; attempt++ {

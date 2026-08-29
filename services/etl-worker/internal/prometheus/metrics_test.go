@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/agent"
+	"ai-etl-pipeline/internal/deletionworkflow"
 	"ai-etl-pipeline/internal/indexmanifest"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -220,6 +221,26 @@ func TestGenerationMetricsExposeOnlyBoundedLifecycleLabels(t *testing.T) {
 	}
 	if got := counterValue(t, m.GenerationRollbacks.WithLabelValues("success")); got != 1 {
 		t.Fatalf("successful rollbacks = %v, want 1", got)
+	}
+}
+
+func TestDeletionMetricsExposeOnlyBoundedStateAndOutcomeLabels(t *testing.T) {
+	m := New("test_ai_etl_deletion")
+	m.SetDeletionOperations(deletionworkflow.OperationsSnapshot{
+		Pending: 3, Processing: 2, Failed: 1, ExpiredLeases: 1, OldestAge: 95 * time.Second,
+	})
+	m.ObserveDeletion(deletionworkflow.Report{Completed: 4, Failed: 2, Conflicted: 1}, nil)
+	if got := gaugeValue(t, m.DeletionJobs.WithLabelValues("pending")); got != 3 {
+		t.Fatalf("pending=%v", got)
+	}
+	if got := gaugeValue(t, m.DeletionDiagnostics.WithLabelValues("failed")); got != 1 {
+		t.Fatalf("failed=%v", got)
+	}
+	if got := gaugeValue(t, m.DeletionOldestAge); got != 95 {
+		t.Fatalf("oldest=%v", got)
+	}
+	if got := counterValue(t, m.DeletionOutcomes.WithLabelValues("completed")); got != 4 {
+		t.Fatalf("completed=%v", got)
 	}
 }
 

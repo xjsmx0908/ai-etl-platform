@@ -97,6 +97,11 @@ func (i *HTTPIndexer) DeleteByDocIDAndTenant(ctx context.Context, tenantID, docI
 	})
 }
 
+// DeleteDocument satisfies the recoverable deletion dependency seam.
+func (i *HTTPIndexer) DeleteDocument(ctx context.Context, tenantID, docID string) error {
+	return i.DeleteByDocIDAndTenant(ctx, tenantID, docID)
+}
+
 func (i *HTTPIndexer) deleteByQuery(ctx context.Context, query map[string]interface{}) error {
 	body, err := json.Marshal(map[string]interface{}{"query": query})
 	if err != nil {

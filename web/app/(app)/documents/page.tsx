@@ -297,8 +297,8 @@ export default function DocumentsPage() {
                     </td>
 					<td className="px-4 py-2.5 text-xs text-slate-600">{doc.knowledge_space_id || "—"}</td>
 					<td className="px-4 py-2.5">
-					  <Badge tone={doc.publication_status === "published" ? "success" : "warning"}>
-						{doc.publication_status === "published" ? "已发布" : doc.publication_status === "retired" ? "已退役" : "草稿"}
+					  <Badge tone={doc.deletion_status === "pending" ? "warning" : doc.publication_status === "published" ? "success" : "warning"}>
+						{doc.deletion_status === "pending" ? "删除处理中" : doc.publication_status === "published" ? "已发布" : doc.publication_status === "retired" ? "已退役" : "草稿"}
 					  </Badge>
 					</td>
                     <td className="px-4 py-2.5">
@@ -323,10 +323,10 @@ export default function DocumentsPage() {
                       {isAdmin && (
                         <button
                           onClick={() => void onDelete(doc)}
-                          disabled={deleting === doc.doc_id}
+                          disabled={deleting === doc.doc_id || doc.deletion_status === "pending"}
                           className="rounded-md px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
                         >
-                          {deleting === doc.doc_id ? "删除中…" : "删除"}
+                          {doc.deletion_status === "pending" ? "处理中" : deleting === doc.doc_id ? "删除中…" : "删除"}
                         </button>
                       )}
                     </td>

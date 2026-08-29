@@ -106,6 +106,24 @@ func TestPostgresPublicationRollsBackReleaseWhenAuditFails(t *testing.T) {
 	assertPublicationUnchanged(t, pool)
 }
 
+func TestPostgresPublicationRejectsCandidateAfterDeletionAcceptance(t *testing.T) {
+	pool, cleanup := publicationWorkflowPool(t)
+	defer cleanup()
+	seedExactPublication(t, pool)
+	publication := NewPostgresPublication(pool, nil)
+	candidate, _, err := publication.CurrentCandidate(context.Background(), "acme", "policy-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE documents SET deletion_status='pending',publication_status='retired' WHERE tenant_id='acme' AND doc_id='policy-1'`); err != nil {
+		t.Fatal(err)
+	}
+	err = publication.Publish(context.Background(), Actor{TenantID: "acme", UserID: "admin-1", Role: "admin"}, candidate, "agent:delete-race")
+	if !errors.Is(err, ErrCandidateStale) {
+		t.Fatalf("publish error=%v, want stale", err)
+	}
+}
+
 func assertPublicationUnchanged(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	var status string
@@ -164,7 +182,7 @@ func publicationWorkflowPool(t *testing.T) (*pgxpool.Pool, func()) {
 		CREATE TABLE documents (
 			tenant_id TEXT NOT NULL,doc_id TEXT NOT NULL,status TEXT NOT NULL,doc_status TEXT NOT NULL,
 			knowledge_space_id TEXT NOT NULL,publication_status TEXT NOT NULL,owner TEXT NOT NULL,
-			effective_date TIMESTAMPTZ,updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),PRIMARY KEY(tenant_id,doc_id));
+			effective_date TIMESTAMPTZ,deletion_status TEXT NOT NULL DEFAULT 'active',updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),PRIMARY KEY(tenant_id,doc_id));
 		CREATE TABLE document_releases (
 			tenant_id TEXT NOT NULL,document_id TEXT NOT NULL,current_version_id TEXT,published_version_id TEXT,
 			published_generation_id TEXT,revision BIGINT NOT NULL,resolution_status TEXT NOT NULL,last_error TEXT NOT NULL DEFAULT '',

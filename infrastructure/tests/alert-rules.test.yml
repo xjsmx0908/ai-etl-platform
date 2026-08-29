@@ -156,3 +156,37 @@ tests:
               condition: retention_failed
             exp_annotations:
               summary: Retired index generation cleanup continues to fail
+
+  - name: durable deletion failures and expired leases trigger alerts
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_deletion_oldest_age_seconds{instance="etl-worker:8081"}'
+        values: '1900x11'
+      - series: 'ai_etl_deletion_diagnostics{instance="etl-worker:8081",condition="failed"}'
+        values: '1x11'
+      - series: 'ai_etl_deletion_diagnostics{instance="etl-worker:8081",condition="expired_lease"}'
+        values: '1x11'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DocumentDeletionStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A document deletion has remained unfinished for over 30 minutes
+      - eval_time: 10m
+        alertname: DocumentDeletionDependencyFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              condition: failed
+            exp_annotations:
+              summary: Document deletion dependency cleanup continues to fail
+      - eval_time: 5m
+        alertname: DocumentDeletionLeaseExpired
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              condition: expired_lease
+            exp_annotations:
+              summary: Document deletion work is waiting for lease recovery

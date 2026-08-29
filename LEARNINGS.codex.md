@@ -834,3 +834,18 @@ This file is an append-only record of completed PRAR cycles.
   of trusting caller input; malformed visibility responses are unavailable,
   never partially accepted. Deletion recovery and public acceptance remain
   separate P2.4 slices.
+
+## 2026-08-29 - P2.4-D recoverable document deletion
+
+- Perceive: synchronous deletion touched three dependencies before PostgreSQL,
+  left a failed request query-visible, and could not reconstruct partial work.
+- Reason: accept deletion as a PostgreSQL authority change first, then put
+  leases, fencing, progress, retries, and finalization behind one deep deletion
+  module. Keep this lifecycle independent from generation retention.
+- Act: added atomic release revocation/job/audit acceptance, HTTP `202`, exact
+  object-key snapshots, worker-side Qdrant/Elasticsearch/MinIO cleanup, durable
+  partial progress, bounded metrics, and tested alerts.
+- Refine: deletion must also fence late ingestion and approval writers. Queued
+  work is cancelled, active leases delay cleanup, completion cannot auto-publish
+  a pending deletion, and stale collector tokens cannot finalize. Exact object
+  keys avoid ambiguous prefix deletion when document ids share prefixes.

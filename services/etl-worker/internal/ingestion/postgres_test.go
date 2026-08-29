@@ -173,7 +173,7 @@ func TestPostgresStoreCompletesOnlyMatchingProcessingJob(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectQuery("UPDATE documents SET status").
 		WithArgs("tenant-a", "doc-1", "completed", "", done, "tenant-a/doc-1/version.txt").
-		WillReturnRows(pgxmock.NewRows([]string{"knowledge_space_id"}).AddRow("policies"))
+		WillReturnRows(pgxmock.NewRows([]string{"knowledge_space_id", "deletion_status"}).AddRow("policies", "active"))
 	mock.ExpectCommit()
 	if err := NewPostgresStore(mock).Complete(context.Background(), task, done); err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -197,7 +197,7 @@ func TestPostgresStoreCompletionAutomaticallyPublishesDefaultSpaceRelease(t *tes
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectQuery("UPDATE documents SET status").
 		WithArgs("tenant-a", "doc-1", "completed", "", done, task.FilePath).
-		WillReturnRows(pgxmock.NewRows([]string{"knowledge_space_id"}).AddRow("user-uploads"))
+		WillReturnRows(pgxmock.NewRows([]string{"knowledge_space_id", "deletion_status"}).AddRow("user-uploads", "active"))
 	mock.ExpectQuery("WITH candidate AS").
 		WithArgs("tenant-a", "doc-1", "job-1").
 		WillReturnRows(pgxmock.NewRows([]string{

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/agent"
+	"ai-etl-pipeline/internal/deletionworkflow"
 	"ai-etl-pipeline/internal/indexmanifest"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -64,6 +65,10 @@ type Metrics struct {
 	GenerationReconciliations *prometheus.CounterVec
 	GenerationRetentions      *prometheus.CounterVec
 	GenerationRollbacks       *prometheus.CounterVec
+	DeletionJobs              *prometheus.GaugeVec
+	DeletionDiagnostics       *prometheus.GaugeVec
+	DeletionOldestAge         prometheus.Gauge
+	DeletionOutcomes          *prometheus.CounterVec
 
 	// Query metrics
 	QueryDuration          *prometheus.HistogramVec
@@ -221,6 +226,18 @@ func New(namespace string) *Metrics {
 		GenerationRollbacks: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace, Subsystem: "generation", Name: "rollbacks_total",
 			Help: "Completed index generation rollback outcomes",
+		}, []string{"outcome"}),
+		DeletionJobs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "deletion", Name: "jobs", Help: "Durable document deletion jobs by lifecycle state",
+		}, []string{"state"}),
+		DeletionDiagnostics: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "deletion", Name: "diagnostics", Help: "Current durable deletion diagnostics",
+		}, []string{"condition"}),
+		DeletionOldestAge: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "deletion", Name: "oldest_age_seconds", Help: "Age of the oldest unfinished document deletion",
+		}),
+		DeletionOutcomes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Subsystem: "deletion", Name: "outcomes_total", Help: "Document deletion collector outcomes",
 		}, []string{"outcome"}),
 		QueryDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -385,6 +402,10 @@ func New(namespace string) *Metrics {
 		m.GenerationReconciliations,
 		m.GenerationRetentions,
 		m.GenerationRollbacks,
+		m.DeletionJobs,
+		m.DeletionDiagnostics,
+		m.DeletionOldestAge,
+		m.DeletionOutcomes,
 		m.QueryDuration,
 		m.QueryFailures,
 		m.RetrievalCount,
@@ -465,6 +486,24 @@ func (m *Metrics) ObserveRollback(outcome indexmanifest.RollbackOutcome) {
 		m.GenerationRollbacks.WithLabelValues(string(outcome)).Inc()
 	default:
 		m.GenerationRollbacks.WithLabelValues("failed").Inc()
+	}
+}
+
+func (m *Metrics) SetDeletionOperations(snapshot deletionworkflow.OperationsSnapshot) {
+	m.DeletionJobs.WithLabelValues("pending").Set(float64(snapshot.Pending))
+	m.DeletionJobs.WithLabelValues("processing").Set(float64(snapshot.Processing))
+	m.DeletionDiagnostics.WithLabelValues("failed").Set(float64(snapshot.Failed))
+	m.DeletionDiagnostics.WithLabelValues("expired_lease").Set(float64(snapshot.ExpiredLeases))
+	m.DeletionOldestAge.Set(nonNegativeDuration(snapshot.OldestAge).Seconds())
+}
+
+func (m *Metrics) ObserveDeletion(report deletionworkflow.Report, err error) {
+	if err != nil {
+		m.DeletionOutcomes.WithLabelValues("pass_failed").Inc()
+		return
+	}
+	for outcome, count := range map[string]int{"completed": report.Completed, "failed": report.Failed, "conflicted": report.Conflicted} {
+		m.DeletionOutcomes.WithLabelValues(outcome).Add(float64(count))
 	}
 }
 

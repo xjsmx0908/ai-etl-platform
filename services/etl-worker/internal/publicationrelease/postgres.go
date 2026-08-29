@@ -188,6 +188,7 @@ func (s *PostgresStore) PublishAutomatic(ctx context.Context, version VersionIde
 		last_error='',updated_at=now()
 	FROM candidate c
 	WHERE r.tenant_id=$1 AND r.document_id=$2 AND r.current_version_id=$3
+		AND EXISTS (SELECT 1 FROM documents d WHERE d.tenant_id=r.tenant_id AND d.doc_id=r.document_id AND d.deletion_status='active')
 		AND r.resolution_status='resolved'
 	RETURNING r.tenant_id,r.document_id,r.current_version_id,
 		COALESCE(r.published_version_id,''),COALESCE(r.published_generation_id,''),
