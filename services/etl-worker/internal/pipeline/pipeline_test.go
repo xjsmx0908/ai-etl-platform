@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/model"
@@ -72,6 +73,16 @@ func (vectorEmbedder) Embed(_ context.Context, c *model.Chunk) error {
 	return nil
 }
 func (vectorEmbedder) Close() error { return nil }
+
+type partialVectorEmbedder struct{}
+
+func (partialVectorEmbedder) Embed(_ context.Context, c *model.Chunk) error {
+	if c.Index == 0 {
+		c.Vector = []float64{0.1, 0.2, 0.3}
+	}
+	return nil
+}
+func (partialVectorEmbedder) Close() error { return nil }
 
 type noopStorer struct{}
 
@@ -157,6 +168,40 @@ type fullTextSinkStub struct {
 	err   error
 }
 
+type generationBuildStub struct {
+	request     indexmanifest.BuildRequest
+	events      []string
+	upsertErr   error
+	completeErr error
+	abortCause  error
+}
+
+func (s *generationBuildStub) Begin(_ context.Context, request indexmanifest.BuildRequest) (indexmanifest.BuildSession, error) {
+	s.request = request
+	s.events = append(s.events, "begin")
+	return s, nil
+}
+
+func (s *generationBuildStub) Identity() indexmanifest.GenerationIdentity {
+	return indexmanifest.GenerationIdentity{GenerationID: "gen-1", VersionIdentity: s.request.Version}
+}
+
+func (s *generationBuildStub) Upsert(_ context.Context, _ model.Chunk) error {
+	s.events = append(s.events, "upsert")
+	return s.upsertErr
+}
+
+func (s *generationBuildStub) Complete(context.Context) error {
+	s.events = append(s.events, "complete")
+	return s.completeErr
+}
+
+func (s *generationBuildStub) Abort(_ context.Context, cause error) error {
+	s.events = append(s.events, "abort")
+	s.abortCause = cause
+	return nil
+}
+
 type ingestionJobStub struct {
 	claim       ingestion.ClaimResult
 	completeErr error
@@ -230,6 +275,105 @@ func baseTestConfig() config.Config {
 		SparseB:         0.75,
 		SparseAvgDL:     256,
 		Environment:     "staging",
+		EmbedModel:      "embed-v1",
+		EmbedDimension:  3,
+		StoreCollection: "documents",
+		ESIndex:         "documents_text",
+	}
+}
+
+func TestProcessTaskDurableGenerationCompletesOnlyAfterStrictBuild(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.Environment = "dev"
+	tmp, err := os.CreateTemp(t.TempDir(), "generation-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tmp.WriteString("generation content"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	build := &generationBuildStub{}
+	p := New(cfg, vectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).
+		WithGenerationBuilder(build)
+	task := model.Task{JobID: "job-1", EventID: "event-1", TenantID: "acme", DocID: "doc-1", FilePath: tmp.Name()}
+	if err := p.processTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(build.events, ","), "begin,upsert,complete"; got != want {
+		t.Fatalf("build events = %q, want %q", got, want)
+	}
+	if build.request.Version.DocumentVersionID != task.JobID || build.request.Definition.EmbeddingModel != cfg.EmbedModel {
+		t.Fatalf("build request = %+v", build.request)
+	}
+}
+
+func TestProcessTaskDurableGenerationAbortsOnProjectionFailure(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.Environment = "dev"
+	tmp, err := os.CreateTemp(t.TempDir(), "generation-fail-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tmp.WriteString("generation content"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	build := &generationBuildStub{upsertErr: errors.New("elasticsearch unavailable")}
+	p := New(cfg, vectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).
+		WithGenerationBuilder(build)
+	err = p.processTask(context.Background(), model.Task{JobID: "job-1", EventID: "event-1", TenantID: "acme", DocID: "doc-1", FilePath: tmp.Name()})
+	if err == nil || build.abortCause == nil {
+		t.Fatalf("process error=%v abort=%v", err, build.abortCause)
+	}
+	if got, want := strings.Join(build.events, ","), "begin,upsert,abort"; got != want {
+		t.Fatalf("build events = %q, want %q", got, want)
+	}
+}
+
+func TestProcessTaskDurableGenerationRejectsMissingEmbeddingVector(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.Environment = "dev"
+	tmp, err := os.CreateTemp(t.TempDir(), "generation-vector-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tmp.WriteString("generation content"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	build := &generationBuildStub{}
+	p := New(cfg, noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).
+		WithGenerationBuilder(build)
+	err = p.processTask(context.Background(), model.Task{JobID: "job-1", EventID: "event-1", TenantID: "acme", DocID: "doc-1", FilePath: tmp.Name()})
+	if err == nil || build.abortCause == nil {
+		t.Fatalf("process error=%v abort=%v", err, build.abortCause)
+	}
+	if strings.Contains(strings.Join(build.events, ","), "complete") {
+		t.Fatalf("incomplete embedding was published: %v", build.events)
+	}
+}
+
+func TestProcessBatchDurableGenerationRejectsPartialVectorSet(t *testing.T) {
+	build := &generationBuildStub{}
+	p := New(baseTestConfig(), partialVectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{})
+	batch := []model.Chunk{
+		{ChunkID: "doc-1_0000", TenantID: "acme", DocID: "doc-1", Index: 0, Content: "first"},
+		{ChunkID: "doc-1_0001", TenantID: "acme", DocID: "doc-1", Index: 1, Content: "second"},
+	}
+	total := 0
+	err := p.processBatch(context.Background(), batch, "doc-1", &total, build)
+	if err == nil {
+		t.Fatal("partial vector set succeeded")
+	}
+	if total != 0 || len(build.events) != 0 {
+		t.Fatalf("partial vector set was written: total=%d events=%v", total, build.events)
 	}
 }
 
@@ -306,8 +450,10 @@ func TestHandleTask_PersistsCompletionBeforeAcknowledging(t *testing.T) {
 
 	events := []string{}
 	jobs := &ingestionJobStub{claim: ingestion.ClaimAcquired, events: &events}
+	build := &generationBuildStub{}
 	p := New(cfg, vectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).
-		WithIngestionJobs(jobs)
+		WithIngestionJobs(jobs).
+		WithGenerationBuilder(build)
 	task := model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1", FilePath: tmp.Name()}
 	p.handleTask(context.Background(), 0, model.TaskWithAck{
 		Task: task, Ack: func() { events = append(events, "ack") }, Nack: func(error) { events = append(events, "nack") },
@@ -471,7 +617,7 @@ func TestProcessBatch_FullTextSinkFailure_DoesNotFailMainPath(t *testing.T) {
 		},
 	}
 
-	if err := p.processBatch(context.Background(), batch, "doc-x", &total); err != nil {
+	if err := p.processBatch(context.Background(), batch, "doc-x", &total, nil); err != nil {
 		t.Fatalf("processBatch should succeed even if fullText sink fails, got: %v", err)
 	}
 	if total != 1 {
@@ -650,7 +796,7 @@ func TestProcessBatch_CheckpointTracksLastStoredChunk(t *testing.T) {
 		{ChunkID: "doc-cp_0001", DocID: "doc-cp", TenantID: "tenant-a", Content: "second"},
 	}
 
-	if err := p.processBatch(context.Background(), batch, "doc-cp", &total); err != nil {
+	if err := p.processBatch(context.Background(), batch, "doc-cp", &total, nil); err != nil {
 		t.Fatalf("processBatch should tolerate a minority store failure, got: %v", err)
 	}
 	if total != 1 {

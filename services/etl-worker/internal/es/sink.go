@@ -11,8 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/model"
 )
+
+// GenerationProjection exposes the strict generation-aware write/read seam.
+// The async queue remains exclusively for legacy ingestion.
+func (s *AsyncSink) GenerationProjection() indexmanifest.Projection { return s.indexer }
 
 // AsyncSink writes full-text chunks with eventual consistency:
 // try immediate index once; on failure push to retry queue.

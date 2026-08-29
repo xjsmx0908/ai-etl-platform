@@ -17,6 +17,7 @@ import (
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/embedder"
 	"ai-etl-pipeline/internal/es"
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/kafka"
 	"ai-etl-pipeline/internal/metrics"
@@ -129,6 +130,7 @@ func main() {
 	// still applied here so worker and API replicas agree on lifecycle state.
 	var docStore docstore.Store
 	var ingestionJobs ingestion.JobStore
+	var generationBuilder indexmanifest.BuildStarter
 	pgPool, err := migrations.Open(context.Background(), cfg.PGDSN)
 	if err != nil {
 		slog.Warn("postgres unavailable; document registry status write-through disabled", "error", err)
@@ -136,13 +138,21 @@ func main() {
 		defer pgPool.Close()
 		docStore = docstore.New(pgPool)
 		ingestionJobs = ingestion.NewPostgresStore(pgPool)
+		qdrantProjection, ok := storer.(indexmanifest.Projection)
+		if !ok {
+			slog.Warn("generation indexing disabled; vector store lacks generation projection")
+		} else {
+			manifestStore := indexmanifest.NewPostgresStore(pgPool)
+			generationBuilder = indexmanifest.NewBuilder(manifestStore, qdrantProjection, fullTextSink.GenerationProjection())
+		}
 	}
 
 	// Build Pipeline
 	p := pipeline.NewWithSinks(cfg, emb, storer, fullTextSink, mc, ckpt, dlq).
 		WithTaskStatusStore(taskStatusStore).
 		WithDocStore(docStore).
-		WithIngestionJobs(ingestionJobs)
+		WithIngestionJobs(ingestionJobs).
+		WithGenerationBuilder(generationBuilder)
 
 	// Start Pipeline
 	ctx, cancel := context.WithCancel(context.Background())

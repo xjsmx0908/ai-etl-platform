@@ -23,13 +23,14 @@ import (
 
 // MemoryStorer provides an in-memory Storer for development and testing.
 type MemoryStorer struct {
-	mu   sync.RWMutex
-	data map[string]model.Chunk
+	mu          sync.RWMutex
+	data        map[string]model.Chunk
+	generations map[string]map[string]model.Chunk
 }
 
 // NewMemoryStorer creates an in-memory store.
 func NewMemoryStorer() *MemoryStorer {
-	return &MemoryStorer{data: make(map[string]model.Chunk)}
+	return &MemoryStorer{data: make(map[string]model.Chunk), generations: make(map[string]map[string]model.Chunk)}
 }
 
 func (s *MemoryStorer) Upsert(_ context.Context, chunk model.Chunk) error {
@@ -48,6 +49,38 @@ func (s *MemoryStorer) Exists(_ context.Context, chunkID string) (bool, error) {
 }
 
 func (s *MemoryStorer) Close() error { return nil }
+
+func (s *MemoryStorer) UpsertGeneration(_ context.Context, identity indexmanifest.GenerationIdentity, chunk model.Chunk) error {
+	if identity.GenerationID == "" || identity.TenantID != chunk.TenantID || identity.DocumentID != chunk.DocID || identity.DocumentVersionID == "" {
+		return indexmanifest.ErrInvalidManifest
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.generations[identity.GenerationID] == nil {
+		s.generations[identity.GenerationID] = make(map[string]model.Chunk)
+	}
+	s.generations[identity.GenerationID][chunk.ChunkID] = chunk
+	return nil
+}
+
+func (s *MemoryStorer) ObserveGeneration(_ context.Context, identity indexmanifest.GenerationIdentity) (indexmanifest.BackendObservation, error) {
+	if identity.GenerationID == "" || identity.TenantID == "" || identity.DocumentID == "" || identity.DocumentVersionID == "" {
+		return indexmanifest.BackendObservation{}, indexmanifest.ErrInvalidManifest
+	}
+	s.mu.RLock()
+	chunks := make([]model.Chunk, 0, len(s.generations[identity.GenerationID]))
+	for _, chunk := range s.generations[identity.GenerationID] {
+		chunks = append(chunks, chunk)
+	}
+	s.mu.RUnlock()
+	digest, err := indexmanifest.ChunkIdentityDigest(identity, chunks)
+	if err != nil {
+		return indexmanifest.BackendObservation{}, err
+	}
+	return indexmanifest.BackendObservation{Count: len(chunks), Digest: digest, ObservedAt: time.Now().UTC()}, nil
+}
+
+var _ indexmanifest.Projection = (*MemoryStorer)(nil)
 
 // Count returns the number of stored chunks.
 func (s *MemoryStorer) Count() int {

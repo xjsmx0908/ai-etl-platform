@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-28); first persistence slice implemented
+Accepted (2026-08-28); pipeline generation integration implemented
 
 ## Context
 
@@ -95,15 +95,25 @@ identity lock, so stale writers fail and a failed activation rolls back
 retirement of the previous generation. Failed builds have a controlled retry
 transition that clears stale backend observations before rebuilding.
 
-The current ETL pipeline is not connected to this module yet. Consequently its
-existing `completed` state does not yet satisfy this ADR's verified-generation
-invariant. Backend observation adapters, pipeline integration, reconciliation,
-rollback/retention, metrics, alerts, and acceptance tests remain later P2.3
-vertical slices.
-
 The second vertical slice adds generation-aware projection adapters. Qdrant
 points and Elasticsearch documents carry tenant, document version, generation,
 and content-hash fields; physical identities include the generation so a rebuild
 cannot overwrite the prior generation. Both adapters enumerate exactly one
 generation and produce the same deterministic digest for verification. Existing
 non-generation writes remain compatible until the pipeline cutover.
+
+The third vertical slice connects durable outbox ingestion to a generation
+builder. It persists an unsealed `building` manifest before the first backend
+write, streams idempotent generation-scoped writes to both backends, seals the
+expected count/digest after parsing, verifies both observations, and activates
+with expected-current compare-and-set. Generation IDs are deterministic over
+the durable job identity and complete build configuration, so redelivery repairs
+the same generation. Any embedding, Qdrant, Elasticsearch, verification, or
+activation failure prevents durable job completion and records a failed build.
+Legacy non-outbox messages retain their existing compatibility path.
+The manifest also persists the active predecessor observed when the build first
+starts; delayed retries cannot adopt a newer winner and overwrite it.
+
+Query filtering by active generation, reconciliation/repair, rollback and
+retention cleanup, bounded metrics/alerts, and the remaining acceptance matrix
+are subsequent P2.3 slices.

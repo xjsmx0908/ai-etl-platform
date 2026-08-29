@@ -665,3 +665,19 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: keep legacy writes unchanged and defer pipeline `completed` semantics
   until manifest creation, verification, and restart behavior are integrated in
   one later slice. This limits the cutover seam while preserving compatibility.
+
+## 2026-08-28 - P2.3 pipeline generation integration
+
+- Perceive: expected chunk identity is unknown until streaming parse finishes,
+  but creating the manifest after backend writes leaves unowned projection data.
+- Reason: use a two-stage manifest lifecycle: persist immutable build identity
+  before writes, then seal expected count/digest after parsing. Hide ordering,
+  verification, and activation behind one generation-build interface.
+- Act: added deterministic configuration-bound generation IDs, strict dual
+  projection writes, idempotent sealing, verification, CAS activation, worker
+  wiring, and a development projection adapter. Durable job completion now
+  follows successful generation activation.
+- Refine: generation retries must rewrite every deterministic chunk rather than
+  trust legacy chunk-ID checkpoints. Partial embedding and Elasticsearch errors
+  must fail closed; the old eventual-consistency path remains only for legacy
+  messages. Read-side active-generation filtering remains a separate slice.
