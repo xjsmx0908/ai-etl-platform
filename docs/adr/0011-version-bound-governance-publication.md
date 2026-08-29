@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-29); P2.4-A release model implemented
+Accepted (2026-08-29); P2.4-A release model and P2.4-B exact approval implemented
 
 ## Context
 
@@ -107,5 +107,14 @@ current version and expected revision, so an intervening replacement or
 publication makes it stale. The migration backfills only exact object/job and
 active-generation matches. Multiple candidates abort migration; old rows with
 no provable durable identity are retained as `unresolved` for fail-closed later
-integration. P2.4-B will bind assessment and approval to this candidate, and
-P2.4-C will enforce the published release at the query seam.
+integration.
+
+P2.4-B replaces document-level count assessment with a PostgreSQL candidate
+for the current version's sealed, healthy active manifest. The Agent's durable
+approval arguments bind the exact version, generation, expected chunk count and
+digest, and release revision; tenant identity still comes only from the
+authenticated actor. At approval, one transaction locks and revalidates that
+manifest, advances the release compare-and-set, changes document publication
+state, stores an idempotency-key/request-hash binding, and appends the success
+audit. Failure or staleness rolls back every write. P2.4-C will enforce the
+published release at the query seam.

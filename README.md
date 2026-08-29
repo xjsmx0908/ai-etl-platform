@@ -205,8 +205,8 @@ python3 scripts/load-corpus.py --api-base http://localhost:8080 --username admin
 前端在 `WEB_HOST_PORT`（默认 3100，3000 被其他项目占用时用 3100）。浏览器只访问前端端口，
 `/api/*` 由 Next route handler 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。
 功能：问答（SSE 流式 + 引用展开）、文档管理（列表/搜索/删除）、用户管理（admin）、
-数据接入、系统可观测、检索质量、Agent 文档发布治理（受管草稿检查、四眼审批、
-幂等发布与审计）。
+数据接入、系统可观测、检索质量、Agent 文档发布治理（受管草稿的精确版本/索引代次
+检查、四眼审批、事务化幂等发布与审计）。
 
 公网 HTTPS 入口为 `https://rag.ipuau.com`。宿主机 Nginx 配置模板位于
 `deploy/nginx/rag.ipuau.com.conf`，反向代理到 Web Compose 服务的宿主机端口

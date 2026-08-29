@@ -800,3 +800,21 @@ This file is an append-only record of completed PRAR cycles.
   schema upgrade. Full Go tests, race checks, formatting, vet, and disposable
   PostgreSQL integration tests pass. No query policy, deployment, or retention
   setting changed in this slice.
+
+## 2026-08-29 - P2.4-B exact-candidate approval
+
+- Perceive: publication assessment trusted mutable document-level index counts,
+  approval persisted only a document id, and document state, cache invalidation,
+  and audit were separate best-effort side effects.
+- Reason: keep Agent and HTTP callers on a small immutable-candidate interface;
+  hide manifest health, release CAS, locking, idempotency, and atomic audit in a
+  PostgreSQL publication module.
+- Act: bound assessment and durable approval to version, generation, sealed
+  count/digest, and release revision. Added approval-time row locking and exact
+  revalidation, atomic document/release/audit commit, and an idempotency-key plus
+  request-hash binding for safe response-loss replay.
+- Refine: a key alone did not prove that a retry carried identical arguments,
+  and an unlocked manifest left a validation/commit race. Candidate hashing and
+  a shared manifest lock close both gaps. Focused Agent/module tests, disposable
+  PostgreSQL transaction tests, and the full Go suite pass. Query cutover,
+  deployment, and retention remain out of scope.

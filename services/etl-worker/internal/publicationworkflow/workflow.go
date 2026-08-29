@@ -23,17 +23,24 @@ type Actor struct {
 	Role     string
 }
 
-type IndexCounts struct {
-	Vector int `json:"vector"`
-	Text   int `json:"text"`
+// Candidate is the immutable version/generation identity reviewed by an
+// administrator. Tenant identity is supplied by the authenticated actor and
+// is deliberately not accepted from tool arguments.
+type Candidate struct {
+	DocumentID          string `json:"document_id"`
+	DocumentVersionID   string `json:"document_version_id"`
+	GenerationID        string `json:"generation_id"`
+	ExpectedChunkCount  int    `json:"expected_chunk_count"`
+	ExpectedChunkDigest string `json:"expected_chunk_digest"`
+	ReleaseRevision     int64  `json:"release_revision"`
 }
 
 type Assessment struct {
-	DocumentID       string      `json:"document_id"`
-	KnowledgeSpaceID string      `json:"knowledge_space_id"`
-	Ready            bool        `json:"ready"`
-	Blockers         []string    `json:"blockers"`
-	IndexCounts      IndexCounts `json:"index_counts"`
+	DocumentID       string     `json:"document_id"`
+	KnowledgeSpaceID string     `json:"knowledge_space_id"`
+	Ready            bool       `json:"ready"`
+	Blockers         []string   `json:"blockers"`
+	Candidate        *Candidate `json:"candidate,omitempty"`
 }
 
 type PublicationResult struct {
@@ -45,18 +52,18 @@ type DocumentReader interface {
 	Get(ctx context.Context, tenantID, docID string) (docstore.Document, bool, error)
 }
 
-type IndexInspector interface {
-	CountDocumentChunks(ctx context.Context, tenantID, docID string) (IndexCounts, error)
+type CandidateReader interface {
+	CurrentCandidate(ctx context.Context, tenantID, docID string) (Candidate, bool, error)
 }
 
 type Publisher interface {
-	Publish(ctx context.Context, actor Actor, docID, idempotencyKey string) error
+	Publish(ctx context.Context, actor Actor, candidate Candidate, idempotencyKey string) error
 }
 
 type Workflow struct {
-	documents DocumentReader
-	indexes   IndexInspector
-	publisher Publisher
+	documents  DocumentReader
+	candidates CandidateReader
+	publisher  Publisher
 }
 
 func (w *Workflow) WithPublisher(publisher Publisher) *Workflow {
@@ -64,35 +71,31 @@ func (w *Workflow) WithPublisher(publisher Publisher) *Workflow {
 	return w
 }
 
-func New(documents DocumentReader, indexes IndexInspector) *Workflow {
-	return &Workflow{documents: documents, indexes: indexes}
+func New(documents DocumentReader, candidates CandidateReader) *Workflow {
+	return &Workflow{documents: documents, candidates: candidates}
 }
 
-func (w *Workflow) PublishApproved(ctx context.Context, actor Actor, docID, idempotencyKey string) (PublicationResult, error) {
+func (w *Workflow) PublishApproved(ctx context.Context, actor Actor, candidate Candidate, idempotencyKey string) (PublicationResult, error) {
 	if !strings.EqualFold(strings.TrimSpace(actor.Role), "admin") {
 		return PublicationResult{}, ErrAdminRequired
 	}
 	if w == nil || w.publisher == nil {
 		return PublicationResult{}, fmt.Errorf("publication publisher is not configured")
 	}
-	assessment, err := w.Assess(ctx, actor, docID)
-	if err != nil {
-		return PublicationResult{}, err
-	}
-	if !assessment.Ready {
-		return PublicationResult{}, fmt.Errorf("%w: %s", ErrNotReady, strings.Join(assessment.Blockers, ","))
+	if !validCandidate(candidate) {
+		return PublicationResult{}, fmt.Errorf("%w: invalid exact candidate", ErrNotReady)
 	}
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return PublicationResult{}, fmt.Errorf("idempotency key is required")
 	}
-	if err := w.publisher.Publish(ctx, actor, assessment.DocumentID, idempotencyKey); err != nil {
+	if err := w.publisher.Publish(ctx, actor, candidate, idempotencyKey); err != nil {
 		return PublicationResult{}, err
 	}
-	return PublicationResult{DocumentID: assessment.DocumentID, PublicationStatus: "published"}, nil
+	return PublicationResult{DocumentID: candidate.DocumentID, PublicationStatus: "published"}, nil
 }
 
 func (w *Workflow) Assess(ctx context.Context, actor Actor, docID string) (Assessment, error) {
-	if w == nil || w.documents == nil || w.indexes == nil {
+	if w == nil || w.documents == nil || w.candidates == nil {
 		return Assessment{}, fmt.Errorf("publication workflow is not configured")
 	}
 	tenantID := strings.TrimSpace(actor.TenantID)
@@ -107,7 +110,7 @@ func (w *Workflow) Assess(ctx context.Context, actor Actor, docID string) (Asses
 	if !found || doc.TenantID != tenantID {
 		return Assessment{}, ErrNotFound
 	}
-	counts, err := w.indexes.CountDocumentChunks(ctx, tenantID, docID)
+	candidate, candidateFound, err := w.candidates.CurrentCandidate(ctx, tenantID, docID)
 	if err != nil {
 		return Assessment{}, err
 	}
@@ -130,20 +133,27 @@ func (w *Workflow) Assess(ctx context.Context, actor Actor, docID string) (Asses
 	if doc.EffectiveDate.IsZero() {
 		blockers = append(blockers, "effective_date_required")
 	}
-	if counts.Vector <= 0 {
-		blockers = append(blockers, "vector_index_missing")
+	if !candidateFound || !validCandidate(candidate) || candidate.DocumentID != doc.DocID {
+		blockers = append(blockers, "exact_candidate_unavailable")
 	}
-	if counts.Text <= 0 {
-		blockers = append(blockers, "text_index_missing")
-	}
-	if counts.Vector != counts.Text {
-		blockers = append(blockers, "index_count_mismatch")
+	var readyCandidate *Candidate
+	if len(blockers) == 0 {
+		readyCandidate = &candidate
 	}
 	return Assessment{
 		DocumentID:       doc.DocID,
 		KnowledgeSpaceID: doc.KnowledgeSpaceID,
 		Ready:            len(blockers) == 0,
 		Blockers:         blockers,
-		IndexCounts:      counts,
+		Candidate:        readyCandidate,
 	}, nil
+}
+
+func validCandidate(candidate Candidate) bool {
+	return strings.TrimSpace(candidate.DocumentID) != "" &&
+		strings.TrimSpace(candidate.DocumentVersionID) != "" &&
+		strings.TrimSpace(candidate.GenerationID) != "" &&
+		candidate.ExpectedChunkCount > 0 &&
+		strings.TrimSpace(candidate.ExpectedChunkDigest) != "" &&
+		candidate.ReleaseRevision > 0
 }

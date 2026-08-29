@@ -20,7 +20,7 @@ const (
 
 type PublicationWorkflow interface {
 	Assess(context.Context, publicationworkflow.Actor, string) (publicationworkflow.Assessment, error)
-	PublishApproved(context.Context, publicationworkflow.Actor, string, string) (publicationworkflow.PublicationResult, error)
+	PublishApproved(context.Context, publicationworkflow.Actor, publicationworkflow.Candidate, string) (publicationworkflow.PublicationResult, error)
 }
 
 func registerPublicationWorkflowTools(registry *agent.Registry, workflow PublicationWorkflow) error {
@@ -47,12 +47,23 @@ func registerPublicationWorkflowTools(registry *agent.Registry, workflow Publica
 		Name: publishDocumentToolName, Description: "Publish a ready managed-space draft after explicit administrator approval.",
 		RequiredPermissions: []string{"agent"}, Timeout: 20 * time.Second, Idempotent: true,
 		SideEffect: true, RequiresApproval: true,
-		Parameters: agent.JSONSchema{Type: "object", Required: []string{"document_id"}, Properties: map[string]agent.SchemaProperty{
-			"document_id": {Type: "string", Description: "Ready tenant-scoped document id."},
+		Parameters: agent.JSONSchema{Type: "object", Required: []string{
+			"document_id", "document_version_id", "generation_id", "expected_chunk_count",
+			"expected_chunk_digest", "release_revision",
+		}, Properties: map[string]agent.SchemaProperty{
+			"document_id":           {Type: "string", Description: "Ready tenant-scoped document id."},
+			"document_version_id":   {Type: "string", Description: "Reviewed durable ingestion version."},
+			"generation_id":         {Type: "string", Description: "Reviewed active index generation."},
+			"expected_chunk_count":  {Type: "integer", Description: "Reviewed sealed chunk count."},
+			"expected_chunk_digest": {Type: "string", Description: "Reviewed sealed chunk identity digest."},
+			"release_revision":      {Type: "integer", Description: "Reviewed document release revision."},
 		}},
 	}, func(ctx context.Context, inv agent.ToolInvocation) (agent.ToolResult, error) {
-		docID, _ := inv.Arguments["document_id"].(string)
-		result, err := workflow.PublishApproved(ctx, publicationActor(inv), docID, inv.IdempotencyKey)
+		candidate, err := candidateFromMap(inv.Arguments)
+		if err != nil {
+			return agent.ToolResult{}, err
+		}
+		result, err := workflow.PublishApproved(ctx, publicationActor(inv), candidate, inv.IdempotencyKey)
 		if err != nil {
 			return agent.ToolResult{}, err
 		}
@@ -81,12 +92,36 @@ func (GovernancePlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecis
 		if !ready {
 			return agent.PlanDecision{Type: agent.DecisionFinal, Final: last.ToolResult.Content}, nil
 		}
-		return agent.PlanDecision{Type: agent.DecisionToolCall, ToolName: publishDocumentToolName, Arguments: args}, nil
+		candidateData, ok := last.ToolResult.Data["candidate"].(map[string]interface{})
+		if !ok {
+			return agent.PlanDecision{}, fmt.Errorf("ready assessment has no exact candidate")
+		}
+		candidate, err := candidateFromMap(candidateData)
+		if err != nil || candidate.DocumentID != docID {
+			return agent.PlanDecision{}, fmt.Errorf("ready assessment has invalid exact candidate")
+		}
+		candidateArgs, err := json.Marshal(candidate)
+		if err != nil {
+			return agent.PlanDecision{}, err
+		}
+		return agent.PlanDecision{Type: agent.DecisionToolCall, ToolName: publishDocumentToolName, Arguments: candidateArgs}, nil
 	case publishDocumentToolName:
 		return agent.PlanDecision{Type: agent.DecisionFinal, Final: last.ToolResult.Content}, nil
 	default:
 		return agent.PlanDecision{}, fmt.Errorf("unexpected governance tool %q", last.ToolName)
 	}
+}
+
+func candidateFromMap(values map[string]interface{}) (publicationworkflow.Candidate, error) {
+	payload, err := json.Marshal(values)
+	if err != nil {
+		return publicationworkflow.Candidate{}, fmt.Errorf("encode exact publication candidate: %w", err)
+	}
+	var candidate publicationworkflow.Candidate
+	if err := json.Unmarshal(payload, &candidate); err != nil {
+		return publicationworkflow.Candidate{}, fmt.Errorf("decode exact publication candidate: %w", err)
+	}
+	return candidate, nil
 }
 
 type routingPlanner struct {
