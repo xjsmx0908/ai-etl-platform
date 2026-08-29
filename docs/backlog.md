@@ -250,6 +250,25 @@ P2.4-C outcome (2026-08-29):
 - Added handler, release, ingestion, and PostgreSQL continuity tests. P2.4-D
   recoverable deletion and P2.4-E public-interface acceptance remain next.
 
+P2.4-D implementation plan (approved 2026-08-29):
+
+1. Replace synchronous document deletion with one PostgreSQL acceptance
+   transaction that revokes the published release, marks the catalog row
+   deletion-pending, creates or replays a deletion job, and appends its immutable
+   audit event. HTTP returns acceptance only after this fail-closed commit.
+2. Put job claiming, lease/fencing, per-Qdrant/Elasticsearch/object-store
+   progress, retry diagnostics, and final authoritative cleanup behind one
+   `deletionworkflow` store interface.
+3. Run a bounded collector in the existing worker process. Dependency deletes
+   are exact and idempotent; a stale lease cannot record progress, and the
+   document/release/job rows are removed only after every dependency succeeds.
+4. Add bounded PostgreSQL snapshots, Prometheus metrics, and alerts for pending,
+   failed, old, and expired-lease deletion work. Retention remains disabled.
+5. Verify through the accepted seams: `DELETE /v1/documents/{id}`, the durable
+   deletion store, and collector dependency adapters. Cover tenant isolation,
+   request replay, immediate query invisibility, partial failure/restart, stale
+   fencing, and final cleanup before the full project quality suite.
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
