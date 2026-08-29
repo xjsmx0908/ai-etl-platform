@@ -49,9 +49,43 @@ func TestPostgresStoreAdmitRollsBackWhenOutboxWriteFails(t *testing.T) {
 	mock.ExpectExec("INSERT INTO ingestion_jobs").
 		WithArgs("job-1", "event-1", "tenant-a", "doc-1", "sha256:request-1", pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("INSERT INTO document_releases").
+		WithArgs("tenant-a", "doc-1", "job-1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"tenant_id", "document_id", "current_version_id", "published_version_id",
+			"published_generation_id", "revision", "resolution_status", "last_error", "updated_at",
+		}).AddRow("tenant-a", "doc-1", "job-1", "", "", int64(1), "resolved", "", time.Now()))
 	mock.ExpectExec("INSERT INTO ingestion_outbox").
 		WithArgs("event-1", "job-1", "tenant-a", "doc-1", pgxmock.AnyArg()).
 		WillReturnError(errors.New("disk full"))
+	mock.ExpectRollback()
+
+	if _, err := NewPostgresStore(mock).Admit(context.Background(), testSubmission()); err == nil {
+		t.Fatal("expected admission failure")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreAdmitRollsBackWhenCurrentReleaseWriteFails(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer mock.Close()
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WithArgs("tenant-a/doc-1").WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("SELECT job_id,event_id,tenant_id,doc_id,request_signature FROM ingestion_jobs").
+		WithArgs("job-1").WillReturnRows(pgxmock.NewRows([]string{"job_id", "event_id", "tenant_id", "doc_id", "request_signature"}))
+	mock.ExpectExec("INSERT INTO documents").WithArgs(anyArgs(24)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO ingestion_jobs").
+		WithArgs("job-1", "event-1", "tenant-a", "doc-1", "sha256:request-1", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("INSERT INTO document_releases").
+		WithArgs("tenant-a", "doc-1", "job-1").WillReturnError(errors.New("release write failed"))
 	mock.ExpectRollback()
 
 	if _, err := NewPostgresStore(mock).Admit(context.Background(), testSubmission()); err == nil {
@@ -264,6 +298,12 @@ func expectAdmissionWrites(mock pgxmock.PgxPoolIface) {
 	mock.ExpectExec("INSERT INTO ingestion_jobs").
 		WithArgs("job-1", "event-1", "tenant-a", "doc-1", "sha256:request-1", pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery("INSERT INTO document_releases").
+		WithArgs("tenant-a", "doc-1", "job-1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"tenant_id", "document_id", "current_version_id", "published_version_id",
+			"published_generation_id", "revision", "resolution_status", "last_error", "updated_at",
+		}).AddRow("tenant-a", "doc-1", "job-1", "", "", int64(1), "resolved", "", time.Now()))
 	mock.ExpectExec("INSERT INTO ingestion_outbox").
 		WithArgs("event-1", "job-1", "tenant-a", "doc-1", pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))

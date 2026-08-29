@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-29); implementation requires plan approval
+Accepted (2026-08-29); P2.4-A release model implemented
 
 ## Context
 
@@ -91,3 +91,21 @@ with old-release continuity, stale-approval rejection, approved cutover,
 durable deletion, immutable audit correlation, tenant isolation, restart, and
 Kafka/Qdrant/Elasticsearch/MinIO failure recovery. No production deployment or
 retention enablement is part of this ADR.
+
+## Implementation progress
+
+P2.4-A adds one `document_releases` row per tenant/document with separate
+current and published version identity, the published generation, a monotonic
+revision, and explicit resolution status. Durable upload admission records the
+current version in the same PostgreSQL transaction as the document, ingestion
+job, and outbox event. Replaying the same version is idempotent; a replacement
+increments the revision while retaining the prior published release.
+
+The PostgreSQL release module exposes tenant-scoped lookup, current-version
+recording, and compare-and-set publication. A candidate must match both the
+current version and expected revision, so an intervening replacement or
+publication makes it stale. The migration backfills only exact object/job and
+active-generation matches. Multiple candidates abort migration; old rows with
+no provable durable identity are retained as `unresolved` for fail-closed later
+integration. P2.4-B will bind assessment and approval to this candidate, and
+P2.4-C will enforce the published release at the query seam.

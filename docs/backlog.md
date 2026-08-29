@@ -137,7 +137,7 @@ P2.3 progress (2026-08-28):
   rollback/retention cleanup, bounded metrics/alerts, and the full ADR
   acceptance matrix. Reconciliation/repair is now implemented below.
 
-P2.4 proposed plan (2026-08-29; awaiting approval):
+P2.4 approved plan (2026-08-29; P2.4-A implemented):
 
 The governing decision is [ADR 0011](adr/0011-version-bound-governance-publication.md).
 P2.4 integrates the existing P2.1 publication workflow with P2.2 durable
@@ -201,7 +201,25 @@ Expected implementation areas (exact files may be refined after red tests):
 `internal/migrations`, `internal/publicationworkflow`, `internal/indexmanifest`,
 `internal/query`, `internal/agentapi`, `internal/audit`, `cmd/api`, worker
 wiring, `scripts`, `infrastructure/rules`, and governance/architecture docs.
-No implementation slice starts until ADR 0011 and this plan are approved.
+ADR 0011 and this plan are approved. Each subsequent slice remains separately
+reviewable and must pass its own test and merge gates before the next cutover.
+
+P2.4-A outcome (2026-08-29):
+
+- Added a PostgreSQL-owned release record that separates the latest admitted
+  version from the exact version/generation currently approved for queries.
+- Durable admission records `current_version_id` in the same transaction as
+  the document, ingestion job, and outbox event. Same-version replay is
+  idempotent; replacement advances the revision without changing the published
+  release.
+- Added tenant-scoped lookup and revision-based publication CAS. A stale
+  candidate cannot publish after any intervening replacement or publication.
+- Added deterministic migration behavior: a unique legacy object/job plus
+  active generation is backfilled, multiple candidates abort migration, and
+  absent historical proof is retained explicitly as `unresolved`.
+- CI runs the new PostgreSQL integration tests against PostgreSQL 16. Full Go
+  tests, race detection, formatting, and `go vet` pass. Query visibility and
+  approval behavior remain unchanged until P2.4-B/C consume this release seam.
 
 P2.3 backend projection slice (2026-08-28):
 
