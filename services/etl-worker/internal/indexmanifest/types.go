@@ -93,6 +93,7 @@ type Manifest struct {
 	Attempts                                                                       int
 	LastError                                                                      string
 	CreatedAt, LastAttemptAt, VerifiedAt, ActivatedAt                              time.Time
+	ReconcileClaimToken                                                            string
 }
 
 var (

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-28); pipeline and active-generation query integration implemented
+Accepted (2026-08-28); pipeline, active-generation reads, and reconciliation implemented
 
 ## Context
 
@@ -124,5 +124,21 @@ generation queryable until cache expiry. Documents that have never had a
 manifest retain legacy read compatibility; once a document is managed, legacy
 points fail closed. PostgreSQL lookup failures also fail the query closed.
 
-Reconciliation/repair, rollback and retention cleanup, bounded metrics/alerts,
-and the remaining acceptance matrix are subsequent P2.3 slices.
+The fifth vertical slice reconciles active generations in bounded, leased
+batches. PostgreSQL uses fair ordering, `FOR UPDATE SKIP LOCKED`, and a fencing
+token so multiple workers cannot finish the same claim. Each pass observes
+Qdrant and Elasticsearch independently and persists the resulting count,
+digest, timestamp, and diagnostic. A known divergence immediately makes that
+generation fail closed at the query visibility seam while leaving it active,
+so no partial replacement is published.
+
+Repair atomically reopens the original durable ingestion job and outbox event.
+The relay therefore republishes the exact admitted task and the worker rewrites
+the same deterministic generation; the manifest never attempts to reconstruct
+chunks from a digest. Pending replays are not duplicated, consecutive repair
+attempts are bounded, and a healthy observation resets the attempt count.
+After a replay, durable job completion requires fresh observations from both
+backends and an exact match before the reconciliation error is cleared.
+
+Rollback and retention cleanup, bounded metrics/alerts, and the remaining
+acceptance matrix are subsequent P2.3 slices.

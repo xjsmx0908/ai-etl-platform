@@ -29,6 +29,7 @@ type PostgresStore struct{ q db.Querier }
 func NewPostgresStore(q db.Querier) *PostgresStore { return &PostgresStore{q: q} }
 
 var _ Store = (*PostgresStore)(nil)
+var _ ReconciliationStore = (*PostgresStore)(nil)
 
 func (s *PostgresStore) Begin(ctx context.Context, manifest Manifest) (Manifest, error) {
 	if err := validateUnsealedBuildDefinition(manifest); err != nil {
@@ -128,10 +129,11 @@ func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, 
 	type manifestRef struct {
 		version, generation string
 		state               ManifestState
+		reconcileError      string
 	}
 	manifests := make(map[string][]manifestRef)
 	if len(docIDs) > 0 {
-		rows, err := s.q.Query(ctx, `SELECT document_id,document_version_id,generation_id,state FROM index_manifests
+		rows, err := s.q.Query(ctx, `SELECT document_id,document_version_id,generation_id,state,last_reconcile_error FROM index_manifests
 WHERE tenant_id=$1 AND document_id = ANY($2)`, tenantID, docIDs)
 		if err != nil {
 			return nil, fmt.Errorf("resolve index visibility: %w", err)
@@ -140,10 +142,11 @@ WHERE tenant_id=$1 AND document_id = ANY($2)`, tenantID, docIDs)
 		for rows.Next() {
 			var docID, versionID, generationID string
 			var state ManifestState
-			if err := rows.Scan(&docID, &versionID, &generationID, &state); err != nil {
+			var reconcileError string
+			if err := rows.Scan(&docID, &versionID, &generationID, &state, &reconcileError); err != nil {
 				return nil, fmt.Errorf("scan index visibility: %w", err)
 			}
-			manifests[docID] = append(manifests[docID], manifestRef{version: versionID, generation: generationID, state: state})
+			manifests[docID] = append(manifests[docID], manifestRef{version: versionID, generation: generationID, state: state, reconcileError: reconcileError})
 		}
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("iterate index visibility: %w", err)
@@ -159,13 +162,160 @@ WHERE tenant_id=$1 AND document_id = ANY($2)`, tenantID, docIDs)
 			continue
 		}
 		for _, entry := range entries {
-			if entry.state == StateActive && entry.version == ref.DocumentVersionID && entry.generation == ref.GenerationID {
+			if entry.state == StateActive && entry.reconcileError == "" && entry.version == ref.DocumentVersionID && entry.generation == ref.GenerationID {
 				visible[i] = true
 				break
 			}
 		}
 	}
 	return visible, nil
+}
+
+func (s *PostgresStore) ClaimReconciliation(ctx context.Context, claim ReconciliationClaim) ([]Manifest, error) {
+	if claim.Limit <= 0 {
+		claim.Limit = 100
+	}
+	if claim.Lease <= 0 {
+		claim.Lease = time.Minute
+	}
+	if claim.Token == "" {
+		return nil, ErrInvalidManifest
+	}
+	rows, err := s.q.Query(ctx, `WITH candidates AS (
+	SELECT generation_id FROM index_manifests
+	WHERE state='active' AND (reconcile_lease_until IS NULL OR reconcile_lease_until <= now())
+	ORDER BY last_reconciled_at NULLS FIRST, created_at
+	FOR UPDATE SKIP LOCKED LIMIT $1
+)
+UPDATE index_manifests AS m SET reconcile_lease_until=now()+$2::interval,reconcile_claim_token=$3
+FROM candidates AS c WHERE m.generation_id=c.generation_id
+RETURNING m.generation_id,m.tenant_id,m.document_id,m.document_version_id,
+m.chunker_version,m.embedding_model,m.vector_dimension,m.schema_version,
+m.collection_version,m.index_version,m.expected_active_generation_id,
+m.expected_chunk_count,m.expected_chunk_digest,m.state`, claim.Limit, claim.Lease.String(), claim.Token)
+	if err != nil {
+		return nil, fmt.Errorf("claim manifest reconciliation: %w", err)
+	}
+	defer rows.Close()
+	manifests := make([]Manifest, 0, claim.Limit)
+	for rows.Next() {
+		manifest, err := scanManifest(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan claimed manifest: %w", err)
+		}
+		manifest.ReconcileClaimToken = claim.Token
+		manifests = append(manifests, manifest)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimed manifests: %w", err)
+	}
+	return manifests, nil
+}
+
+func (s *PostgresStore) FinishReconciliation(ctx context.Context, result ReconciliationResult, maxRepairs int) (RepairDisposition, error) {
+	m := result.Manifest
+	if m.GenerationID == "" || m.TenantID == "" || m.DocumentID == "" || m.DocumentVersionID == "" || m.ReconcileClaimToken == "" {
+		return "", ErrInvalidManifest
+	}
+	if maxRepairs <= 0 {
+		maxRepairs = 3
+	}
+	if result.ReconcileAfter <= 0 {
+		result.ReconcileAfter = 5 * time.Minute
+	}
+	if result.Healthy {
+		if !observationMatches(m, result.Qdrant) || !observationMatches(m, result.Elasticsearch) {
+			return "", ErrNotReady
+		}
+		tag, err := s.q.Exec(ctx, `UPDATE index_manifests SET qdrant_count=$3,qdrant_digest=$4,qdrant_observed_at=now(),
+elasticsearch_count=$5,elasticsearch_digest=$6,elasticsearch_observed_at=now(),
+last_reconciled_at=now(),last_reconcile_error=$7,reconcile_lease_until=now()+$8::interval,
+reconcile_claim_token='',repair_attempts=0
+WHERE generation_id=$1 AND reconcile_claim_token=$2 AND state='active'`, m.GenerationID,
+			m.ReconcileClaimToken, result.Qdrant.Count, result.Qdrant.Digest,
+			result.Elasticsearch.Count, result.Elasticsearch.Digest, "", result.ReconcileAfter.String())
+		if err != nil {
+			return "", fmt.Errorf("finish healthy reconciliation: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return "", ErrConflict
+		}
+		return RepairNotNeeded, nil
+	}
+	if result.Reason == "" {
+		return "", ErrInvalidManifest
+	}
+	tx, err := s.q.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin divergent reconciliation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var repairAttempts int
+	err = tx.QueryRow(ctx, `UPDATE index_manifests SET qdrant_count=$3,qdrant_digest=NULLIF($4,''),qdrant_observed_at=now(),
+elasticsearch_count=$5,elasticsearch_digest=NULLIF($6,''),elasticsearch_observed_at=now(),
+last_reconciled_at=now(),last_reconcile_error=$7,reconcile_lease_until=now()+$8::interval,reconcile_claim_token=''
+WHERE generation_id=$1 AND reconcile_claim_token=$2 AND state='active'
+RETURNING repair_attempts`, m.GenerationID, m.ReconcileClaimToken, result.Qdrant.Count,
+		result.Qdrant.Digest, result.Elasticsearch.Count, result.Elasticsearch.Digest, result.Reason,
+		result.ReconcileAfter.String()).Scan(&repairAttempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrConflict
+	}
+	if err != nil {
+		return "", fmt.Errorf("record divergent reconciliation: %w", err)
+	}
+	if repairAttempts >= maxRepairs {
+		if err := tx.Commit(ctx); err != nil {
+			return "", fmt.Errorf("commit exhausted reconciliation: %w", err)
+		}
+		return RepairExhausted, nil
+	}
+	var status string
+	var pending bool
+	err = tx.QueryRow(ctx, `SELECT j.status,o.published_at IS NULL
+FROM ingestion_jobs AS j JOIN ingestion_outbox AS o ON o.job_id=j.job_id
+WHERE j.job_id=$1 AND j.tenant_id=$2 AND j.doc_id=$3 FOR UPDATE OF j,o`,
+		m.DocumentVersionID, m.TenantID, m.DocumentID).Scan(&status, &pending)
+	if err != nil {
+		return "", fmt.Errorf("load repair ingestion job: %w", err)
+	}
+	if pending || status == "published" || status == "processing" || status == "queued" {
+		if err := tx.Commit(ctx); err != nil {
+			return "", fmt.Errorf("commit pending reconciliation: %w", err)
+		}
+		return RepairPending, nil
+	}
+	if status != "completed" && status != "failed" {
+		return "", fmt.Errorf("%w: cannot repair ingestion state %s", ErrConflict, status)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE ingestion_jobs SET status='published',lease_until=NULL,completed_at=NULL,error='',updated_at=now()
+WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3 AND status IN ('completed','failed')`,
+		m.DocumentVersionID, m.TenantID, m.DocumentID)
+	if err != nil || tag.RowsAffected() != 1 {
+		if err == nil {
+			err = ErrConflict
+		}
+		return "", fmt.Errorf("reopen repair ingestion job: %w", err)
+	}
+	tag, err = tx.Exec(ctx, `UPDATE ingestion_outbox SET published_at=NULL,claimed_at=NULL,available_at=now()
+WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3`, m.DocumentVersionID, m.TenantID, m.DocumentID)
+	if err != nil || tag.RowsAffected() != 1 {
+		if err == nil {
+			err = ErrConflict
+		}
+		return "", fmt.Errorf("reopen repair outbox: %w", err)
+	}
+	tag, err = tx.Exec(ctx, `UPDATE index_manifests SET repair_attempts=repair_attempts+1 WHERE generation_id=$1`, m.GenerationID)
+	if err != nil || tag.RowsAffected() != 1 {
+		if err == nil {
+			err = ErrConflict
+		}
+		return "", fmt.Errorf("count manifest repair: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit manifest repair: %w", err)
+	}
+	return RepairScheduled, nil
 }
 
 func (s *PostgresStore) Ensure(ctx context.Context, manifest Manifest) error {
@@ -263,6 +413,27 @@ AND elasticsearch_count=expected_chunk_count AND qdrant_digest=expected_chunk_di
 AND elasticsearch_digest=expected_chunk_digest`, generationID)
 	if err != nil {
 		return fmt.Errorf("mark manifest ready: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrNotReady
+	}
+	return nil
+}
+
+func (s *PostgresStore) ConfirmActive(ctx context.Context, generationID string, qdrant, elasticsearch BackendObservation) error {
+	if generationID == "" || qdrant.Count < 0 || qdrant.Digest == "" || elasticsearch.Count < 0 || elasticsearch.Digest == "" {
+		return ErrInvalidManifest
+	}
+	tag, err := s.q.Exec(ctx, `UPDATE index_manifests SET
+qdrant_count=$2,qdrant_digest=$3,qdrant_observed_at=now(),
+elasticsearch_count=$4,elasticsearch_digest=$5,elasticsearch_observed_at=now(),
+last_reconcile_error='',last_reconciled_at=now(),repair_attempts=0,reconcile_claim_token=''
+WHERE generation_id=$1 AND state='active'
+AND expected_chunk_count=$2 AND expected_chunk_digest=$3
+AND expected_chunk_count=$4 AND expected_chunk_digest=$5`, generationID,
+		qdrant.Count, qdrant.Digest, elasticsearch.Count, elasticsearch.Digest)
+	if err != nil {
+		return fmt.Errorf("confirm active generation repair: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
 		return ErrNotReady

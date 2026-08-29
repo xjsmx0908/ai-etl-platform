@@ -209,6 +209,77 @@ func TestPostgresStoreObserveFailRetryAndReadyLifecycle(t *testing.T) {
 	}
 }
 
+func TestPostgresStoreConfirmsMatchingActiveGenerationRepair(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	qdrant := BackendObservation{Count: 2, Digest: "sha256:digest"}
+	elasticsearch := BackendObservation{Count: 2, Digest: "sha256:digest"}
+	mock.ExpectExec("UPDATE index_manifests SET.*last_reconcile_error='',last_reconciled_at=now\\(\\),repair_attempts=0,reconcile_claim_token=''").
+		WithArgs("gen-1", qdrant.Count, qdrant.Digest, elasticsearch.Count, elasticsearch.Digest).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	err = NewPostgresStore(mock).ConfirmActive(context.Background(), "gen-1", qdrant, elasticsearch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreRejectsUnverifiedActiveGenerationRepair(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectExec("UPDATE index_manifests SET").
+		WithArgs("gen-1", 1, "wrong", 2, "sha256:digest").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	err = NewPostgresStore(mock).ConfirmActive(context.Background(), "gen-1",
+		BackendObservation{Count: 1, Digest: "wrong"},
+		BackendObservation{Count: 2, Digest: "sha256:digest"})
+	if !errors.Is(err, ErrNotReady) {
+		t.Fatalf("ConfirmActive error=%v, want ErrNotReady", err)
+	}
+}
+
+func TestPostgresStoreRejectsMismatchedHealthyReconciliation(t *testing.T) {
+	m := testManifest()
+	m.State, m.ReconcileClaimToken = StateActive, "claim-1"
+	_, err := NewPostgresStore(nil).FinishReconciliation(context.Background(), ReconciliationResult{
+		Manifest: m, Healthy: true, ReconcileAfter: 5 * time.Minute,
+		Qdrant:        BackendObservation{Count: 1, Digest: "wrong"},
+		Elasticsearch: BackendObservation{Count: 2, Digest: "sha256:digest"},
+	}, 3)
+	if !errors.Is(err, ErrNotReady) {
+		t.Fatalf("FinishReconciliation error=%v, want ErrNotReady", err)
+	}
+}
+
+func TestPostgresStorePropagatesActiveGenerationConfirmationFailure(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	dbErr := errors.New("database unavailable")
+	mock.ExpectExec("UPDATE index_manifests SET").
+		WithArgs("gen-1", 2, "sha256:digest", 2, "sha256:digest").
+		WillReturnError(dbErr)
+
+	err = NewPostgresStore(mock).ConfirmActive(context.Background(), "gen-1",
+		BackendObservation{Count: 2, Digest: "sha256:digest"},
+		BackendObservation{Count: 2, Digest: "sha256:digest"})
+	if !errors.Is(err, dbErr) {
+		t.Fatalf("ConfirmActive error=%v, want wrapped database error", err)
+	}
+}
+
 func TestPostgresStoreActivationComparesExpectedCurrentGeneration(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -296,17 +367,19 @@ func TestPostgresStoreResolvesCandidateVisibilityInOneBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-	mock.ExpectQuery("SELECT document_id,document_version_id,generation_id,state FROM index_manifests").
+	mock.ExpectQuery("SELECT document_id,document_version_id,generation_id,state,last_reconcile_error FROM index_manifests").
 		WithArgs("acme", []string{"doc-active", "doc-managed", "doc-unmanaged"}).
-		WillReturnRows(pgxmock.NewRows([]string{"document_id", "document_version_id", "generation_id", "state"}).
-			AddRow("doc-active", "job-1", "gen-active", StateActive).
-			AddRow("doc-active", "job-1", "gen-retired", StateRetired).
-			AddRow("doc-managed", "job-2", "gen-building", StateBuilding).
-			AddRow("doc-managed", "job-2", "gen-ready", StateReady).
-			AddRow("doc-managed", "job-2", "gen-failed", StateFailed))
+		WillReturnRows(pgxmock.NewRows([]string{"document_id", "document_version_id", "generation_id", "state", "last_reconcile_error"}).
+			AddRow("doc-active", "job-1", "gen-active", StateActive, "").
+			AddRow("doc-active", "job-1", "gen-unhealthy", StateActive, "projection identity mismatch").
+			AddRow("doc-active", "job-1", "gen-retired", StateRetired, "").
+			AddRow("doc-managed", "job-2", "gen-building", StateBuilding, "").
+			AddRow("doc-managed", "job-2", "gen-ready", StateReady, "").
+			AddRow("doc-managed", "job-2", "gen-failed", StateFailed, ""))
 
 	refs := []GenerationReference{
 		{DocumentID: "doc-active", DocumentVersionID: "job-1", GenerationID: "gen-active"},
+		{DocumentID: "doc-active", DocumentVersionID: "job-1", GenerationID: "gen-unhealthy"},
 		{DocumentID: "doc-active", DocumentVersionID: "job-1", GenerationID: "gen-retired"},
 		{DocumentID: "doc-managed", DocumentVersionID: "job-2", GenerationID: "gen-building"},
 		{DocumentID: "doc-managed", DocumentVersionID: "job-2", GenerationID: "gen-ready"},
@@ -320,11 +393,166 @@ func TestPostgresStoreResolvesCandidateVisibilityInOneBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []bool{true, false, false, false, false, false, true, false, false}
+	want := []bool{true, false, false, false, false, false, false, true, false, false}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("visibility = %v, want %v", got, want)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreClaimsActiveManifestsFairlyWithLease(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State = StateActive
+	m.ExpectedActiveGenerationID = "gen-old"
+	m.ExpectedSealed = true
+	mock.ExpectQuery("WITH candidates AS.*state='active'.*FOR UPDATE SKIP LOCKED.*UPDATE index_manifests").
+		WithArgs(25, "45s", "claim-1").
+		WillReturnRows(immutableManifestRowNullable(m, m.ExpectedChunkCount, m.ExpectedChunkDigest))
+
+	got, err := NewPostgresStore(mock).ClaimReconciliation(context.Background(), ReconciliationClaim{Limit: 25, Lease: 45 * time.Second, Token: "claim-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].GenerationID != m.GenerationID || got[0].State != StateActive || got[0].ReconcileClaimToken != "claim-1" {
+		t.Fatalf("claimed manifests = %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreFinishesHealthyReconciliationWithoutReplay(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State, m.ReconcileClaimToken = StateActive, "claim-1"
+	result := ReconciliationResult{Manifest: m, Healthy: true,
+		Qdrant:         BackendObservation{Count: 2, Digest: "sha256:digest"},
+		Elasticsearch:  BackendObservation{Count: 2, Digest: "sha256:digest"},
+		ReconcileAfter: 5 * time.Minute,
+	}
+	mock.ExpectExec("UPDATE index_manifests SET qdrant_count").WithArgs(
+		m.GenerationID, m.ReconcileClaimToken, 2, "sha256:digest", 2, "sha256:digest", "", "5m0s",
+	).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	got, err := NewPostgresStore(mock).FinishReconciliation(context.Background(), result, 3)
+	if err != nil || got != RepairNotNeeded {
+		t.Fatalf("FinishReconciliation = (%q,%v)", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreSchedulesOneAtomicRepairReplay(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State, m.ReconcileClaimToken = StateActive, "claim-1"
+	result := ReconciliationResult{Manifest: m, Reason: "projection identity mismatch",
+		Qdrant:         BackendObservation{Count: 1, Digest: "wrong"},
+		Elasticsearch:  BackendObservation{Count: 2, Digest: "sha256:digest"},
+		ReconcileAfter: 5 * time.Minute,
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery("UPDATE index_manifests SET qdrant_count").WithArgs(
+		m.GenerationID, m.ReconcileClaimToken, 1, "wrong", 2, "sha256:digest", result.Reason, "5m0s",
+	).WillReturnRows(pgxmock.NewRows([]string{"repair_attempts"}).AddRow(0))
+	mock.ExpectQuery("SELECT j.status,o.published_at IS NULL").WithArgs(
+		m.DocumentVersionID, m.TenantID, m.DocumentID,
+	).WillReturnRows(pgxmock.NewRows([]string{"status", "pending"}).AddRow("completed", false))
+	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'").WithArgs(
+		m.DocumentVersionID, m.TenantID, m.DocumentID,
+	).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE ingestion_outbox SET published_at=NULL").WithArgs(
+		m.DocumentVersionID, m.TenantID, m.DocumentID,
+	).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE index_manifests SET repair_attempts=repair_attempts\\+1").WithArgs(
+		m.GenerationID,
+	).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	got, err := NewPostgresStore(mock).FinishReconciliation(context.Background(), result, 3)
+	if err != nil || got != RepairScheduled {
+		t.Fatalf("FinishReconciliation = (%q,%v)", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreRejectsStaleReconciliationClaim(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State, m.ReconcileClaimToken = StateActive, "stale-claim"
+	mock.ExpectExec("UPDATE index_manifests SET qdrant_count").WithArgs(
+		m.GenerationID, m.ReconcileClaimToken, 2, "sha256:digest", 2, "sha256:digest", "", "5m0s",
+	).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	_, err = NewPostgresStore(mock).FinishReconciliation(context.Background(), ReconciliationResult{
+		Manifest: m, Healthy: true, ReconcileAfter: 5 * time.Minute,
+		Qdrant: BackendObservation{Count: 2, Digest: "sha256:digest"}, Elasticsearch: BackendObservation{Count: 2, Digest: "sha256:digest"},
+	}, 3)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("error = %v, want ErrConflict", err)
+	}
+}
+
+func TestPostgresStoreDoesNotDuplicatePendingRepair(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State, m.ReconcileClaimToken = StateActive, "claim-1"
+	result := ReconciliationResult{Manifest: m, Reason: "mismatch", ReconcileAfter: 5 * time.Minute}
+	mock.ExpectBegin()
+	mock.ExpectQuery("UPDATE index_manifests SET qdrant_count").WithArgs(
+		m.GenerationID, m.ReconcileClaimToken, 0, "", 0, "", result.Reason, "5m0s",
+	).WillReturnRows(pgxmock.NewRows([]string{"repair_attempts"}).AddRow(1))
+	mock.ExpectQuery("SELECT j.status,o.published_at IS NULL").WithArgs(
+		m.DocumentVersionID, m.TenantID, m.DocumentID,
+	).WillReturnRows(pgxmock.NewRows([]string{"status", "pending"}).AddRow("published", true))
+	mock.ExpectCommit()
+	got, err := NewPostgresStore(mock).FinishReconciliation(context.Background(), result, 3)
+	if err != nil || got != RepairPending {
+		t.Fatalf("FinishReconciliation = (%q,%v)", got, err)
+	}
+}
+
+func TestPostgresStoreStopsSchedulingAfterRepairLimit(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State, m.ReconcileClaimToken = StateActive, "claim-1"
+	result := ReconciliationResult{Manifest: m, Reason: "persistent mismatch", ReconcileAfter: 5 * time.Minute}
+	mock.ExpectBegin()
+	mock.ExpectQuery("UPDATE index_manifests SET qdrant_count").WithArgs(
+		m.GenerationID, m.ReconcileClaimToken, 0, "", 0, "", result.Reason, "5m0s",
+	).WillReturnRows(pgxmock.NewRows([]string{"repair_attempts"}).AddRow(3))
+	mock.ExpectCommit()
+	got, err := NewPostgresStore(mock).FinishReconciliation(context.Background(), result, 3)
+	if err != nil || got != RepairExhausted {
+		t.Fatalf("FinishReconciliation = (%q,%v)", got, err)
 	}
 }

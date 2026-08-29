@@ -698,3 +698,26 @@ This file is an append-only record of completed PRAR cycles.
   may expose historical legacy points, but the first manifest permanently
   moves that document under active-generation rules; incomplete identities and
   resolver failures cannot be treated as legacy.
+
+## 2026-08-28 - P2.3 manifest reconciliation and idempotent repair
+
+- Perceive: a manifest contains expected identity evidence, not the source
+  chunks or embeddings, so it cannot safely reconstruct a missing projection.
+  An active generation can also diverge after activation and must stop serving
+  known-bad evidence without prematurely promoting another generation.
+- Reason: keep scanning, fencing, diagnostics, and durable replay scheduling
+  behind the PostgreSQL reconciliation seam. Reuse the original ingestion
+  outbox task to rebuild the same deterministic generation, and treat repair
+  attempts as consecutive failures rather than lifetime retries.
+- Act: added fair leased claims, independent dual-backend observation,
+  fail-closed divergence state, bounded atomic job/outbox reopening, pending
+  replay deduplication, configurable worker scheduling, and fresh dual
+  verification before a repaired active generation can complete and reappear.
+- Refine: returning success merely because a replayed manifest is already
+  `active` is unsafe; the projections may still be incomplete. Active replay
+  completion now observes both backends and conditionally clears the durable
+  error only when count and digest exactly match the sealed expectation.
+- Verification: unit tests and disposable-schema PostgreSQL tests cover lease
+  fencing, single replay scheduling, repair limits, healthy resets, concurrent
+  activation, and active/legacy visibility. Retention and operational
+  metrics/alerts remain separate P2.3 work.
