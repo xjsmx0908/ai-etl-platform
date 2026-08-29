@@ -123,6 +123,7 @@ func (p *PostgresPublication) Publish(ctx context.Context, actor Actor, candidat
 	}
 	tag, err := tx.Exec(ctx, `UPDATE documents SET publication_status='published',updated_at=now()
 		WHERE tenant_id=$1 AND doc_id=$2 AND status='completed' AND doc_status='active'
+			AND deletion_status='active'
 			AND publication_status IN ('draft','published') AND knowledge_space_id<>'' AND knowledge_space_id<>'user-uploads'
 			AND owner<>'' AND effective_date IS NOT NULL`, actor.TenantID, candidate.DocumentID)
 	if err != nil {

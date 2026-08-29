@@ -5,13 +5,26 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/deletionworkflow"
 	"ai-etl-pipeline/internal/docstore"
 )
+
+type deletionAccepterStub struct {
+	job     deletionworkflow.Job
+	request deletionworkflow.AcceptRequest
+	err     error
+}
+
+func (s *deletionAccepterStub) Accept(_ context.Context, request deletionworkflow.AcceptRequest) (deletionworkflow.Job, error) {
+	s.request = request
+	return s.job, s.err
+}
 
 func ctxWithRole(tenant, role string, scopes ...string) context.Context {
 	ctx := context.WithValue(context.Background(), auth.CtxTenantID, tenant)
@@ -200,12 +213,48 @@ func TestHandleDocument_DeleteSuccessRemovesRegistry(t *testing.T) {
 	seedDoc(store, "acme", "doc-1", "internal")
 	handler := handleDocument(testDeleteConfig(t), testQueryService(), noopObjectStore{}, store, nil)
 
-	rec := doRequest(handler, http.MethodDelete, "/v1/documents/doc-1", nil, ctxWithRole("acme", "user", "query", "upload"))
+	rec := doRequest(handler, http.MethodDelete, "/v1/documents/doc-1", nil, ctxWithRole("acme", "admin", "query", "upload"))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
 	}
 	if _, found, _ := store.Get(context.Background(), "acme", "doc-1"); found {
 		t.Fatal("doc must be removed from registry after delete")
+	}
+}
+
+func TestHandleDocument_DeleteAcceptsDurableCleanupBeforeReturning(t *testing.T) {
+	store := newFakeDocStore()
+	seedDoc(store, "acme", "doc-1", "internal")
+	deletion := &deletionAccepterStub{job: deletionworkflow.Job{JobID: "delete-1", State: deletionworkflow.StatePending}}
+	handler := handleDocument(testDeleteConfig(t), testQueryService(), noopObjectStore{}, store, nil, deletion)
+
+	rec := doRequest(handler, http.MethodDelete, "/v1/documents/doc-1", nil,
+		ctxWithRole("acme", "admin", "query", "upload"))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if deletion.request.TenantID != "acme" || deletion.request.DocumentID != "doc-1" || !strings.Contains(rec.Body.String(), "delete-1") {
+		t.Fatalf("request=%+v body=%s", deletion.request, rec.Body.String())
+	}
+	if _, found, _ := store.Get(context.Background(), "acme", "doc-1"); !found {
+		t.Fatal("acceptance must retain registry until dependency cleanup completes")
+	}
+}
+
+func TestHandleDocument_DeleteRejectsAnotherUsersDocument(t *testing.T) {
+	store := newFakeDocStore()
+	if err := store.Upsert(context.Background(), docstore.Document{
+		TenantID: "acme", DocID: "doc-1", Permission: "internal", Status: docstore.StatusCompleted, UploadedBy: "owner-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deletion := &deletionAccepterStub{job: deletionworkflow.Job{JobID: "delete-1", State: deletionworkflow.StatePending}}
+	handler := handleDocument(testDeleteConfig(t), testQueryService(), noopObjectStore{}, store, nil, deletion)
+	ctx := ctxWithRole("acme", "user", "query", "upload")
+	ctx = context.WithValue(ctx, auth.CtxUserID, "other-user")
+	rec := doRequest(handler, http.MethodDelete, "/v1/documents/doc-1", nil, ctx)
+	if rec.Code != http.StatusForbidden || deletion.request.DocumentID != "" {
+		t.Fatalf("status=%d request=%+v body=%s", rec.Code, deletion.request, rec.Body.String())
 	}
 }
 

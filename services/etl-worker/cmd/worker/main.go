@@ -14,6 +14,7 @@ import (
 	"ai-etl-pipeline/internal/checkpoint"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/deletionworkflow"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/embedder"
 	"ai-etl-pipeline/internal/es"
@@ -25,6 +26,7 @@ import (
 	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/pipeline"
 	"ai-etl-pipeline/internal/prometheus"
+	"ai-etl-pipeline/internal/s3"
 	"ai-etl-pipeline/internal/store"
 	"ai-etl-pipeline/internal/taskstatus"
 	"ai-etl-pipeline/internal/tracing"
@@ -134,6 +136,8 @@ func main() {
 	var generationReconciler *indexmanifest.Reconciler
 	var generationRetention *indexmanifest.RetentionCollector
 	var generationOperations generationOperationsReader
+	var deletionCollector *deletionworkflow.Collector
+	var deletionOperations deletionOperationsReader
 	pgPool, err := migrations.Open(context.Background(), cfg.PGDSN)
 	if err != nil {
 		slog.Warn("postgres unavailable; document registry status write-through disabled", "error", err)
@@ -141,6 +145,24 @@ func main() {
 		defer pgPool.Close()
 		docStore = docstore.New(pgPool)
 		ingestionJobs = ingestion.NewPostgresStore(pgPool)
+		objectStore, objectErr := s3.New(s3.Config{
+			Endpoint: cfg.S3Endpoint, AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey,
+			Bucket: cfg.S3Bucket, UseSSL: cfg.S3UseSSL,
+		})
+		qdrantDeleter, qdrantDeleteOK := storer.(deletionworkflow.DocumentDeleter)
+		if objectErr != nil {
+			slog.Warn("document deletion collector disabled; object store unavailable", "error", objectErr)
+		} else if !qdrantDeleteOK {
+			slog.Warn("document deletion collector disabled; vector store lacks document deletion")
+		} else {
+			deletionStore := deletionworkflow.NewPostgresStore(pgPool)
+			deletionOperations = deletionStore
+			deletionCollector = deletionworkflow.NewCollector(
+				deletionStore, qdrantDeleter, fullTextSink, objectStore,
+				deletionworkflow.Options{Interval: cfg.DeletionInterval, Lease: cfg.DeletionLease,
+					BatchSize: cfg.DeletionBatchSize, RetryBackoff: cfg.DeletionRetryBackoff},
+			).WithObserver(prom)
+		}
 		qdrantProjection, ok := storer.(indexmanifest.Projection)
 		if !ok {
 			slog.Warn("generation indexing disabled; vector store lacks generation projection")
@@ -185,6 +207,12 @@ func main() {
 	}
 	if generationRetention != nil {
 		go generationRetention.Run(ctx)
+	}
+	if deletionCollector != nil {
+		go deletionCollector.Run(ctx)
+	}
+	if deletionOperations != nil {
+		go runDeletionOperationsMonitor(ctx, deletionOperations, prom, cfg.IngestionMetricsInterval)
 	}
 	if generationOperations != nil {
 		go runGenerationOperationsMonitor(ctx, generationOperations, prom,
@@ -232,6 +260,37 @@ type generationOperationsReader interface {
 
 type generationOperationsObserver interface {
 	SetGenerationOperations(indexmanifest.OperationsSnapshot)
+}
+
+type deletionOperationsReader interface {
+	OperationsSnapshot(context.Context) (deletionworkflow.OperationsSnapshot, error)
+}
+
+type deletionOperationsObserver interface {
+	SetDeletionOperations(deletionworkflow.OperationsSnapshot)
+}
+
+func runDeletionOperationsMonitor(ctx context.Context, reader deletionOperationsReader, observer deletionOperationsObserver, interval time.Duration) {
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		snapshot, err := reader.OperationsSnapshot(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("deletion operations snapshot failed", "error", err)
+			}
+		} else {
+			observer.SetDeletionOperations(snapshot)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func runGenerationOperationsMonitor(ctx context.Context, reader generationOperationsReader, observer generationOperationsObserver, interval time.Duration, maxRepairs int) {

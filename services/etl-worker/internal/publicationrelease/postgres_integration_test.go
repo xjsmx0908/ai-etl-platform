@@ -113,6 +113,7 @@ func TestPostgresAutomaticPublicationUsesHealthyActiveCurrentGenerationIdempoten
 	defer cleanup()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `
+		CREATE TABLE documents (tenant_id TEXT NOT NULL,doc_id TEXT NOT NULL,deletion_status TEXT NOT NULL,PRIMARY KEY(tenant_id,doc_id));
 		CREATE TABLE document_releases (
 			tenant_id TEXT NOT NULL,document_id TEXT NOT NULL,current_version_id TEXT NOT NULL,
 			published_version_id TEXT,published_generation_id TEXT,revision BIGINT NOT NULL,
@@ -122,6 +123,7 @@ func TestPostgresAutomaticPublicationUsesHealthyActiveCurrentGenerationIdempoten
 			generation_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,document_id TEXT NOT NULL,document_version_id TEXT NOT NULL,
 			expected_chunk_count INT,expected_chunk_digest TEXT,qdrant_count INT,qdrant_digest TEXT,
 			elasticsearch_count INT,elasticsearch_digest TEXT,state TEXT NOT NULL,last_reconcile_error TEXT NOT NULL DEFAULT '');
+		INSERT INTO documents VALUES ('acme','upload-1','active');
 		INSERT INTO document_releases VALUES ('acme','upload-1','job-2','job-1','gen-1',4,'resolved','',now());
 		INSERT INTO index_manifests VALUES
 			('gen-1','acme','upload-1','job-1',2,'sha256:old',2,'sha256:old',2,'sha256:old','active',''),

@@ -13,6 +13,7 @@ import (
 	"ai-etl-pipeline/internal/audit"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/deletionworkflow"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/knowledgecatalog"
@@ -46,6 +47,7 @@ type documentView struct {
 	Owner             string `json:"owner,omitempty"`
 	KnowledgeSpaceID  string `json:"knowledge_space_id"`
 	PublicationStatus string `json:"publication_status"`
+	DeletionStatus    string `json:"deletion_status"`
 }
 
 func toDocView(d docstore.Document) documentView {
@@ -69,6 +71,7 @@ func toDocView(d docstore.Document) documentView {
 		Owner:             d.Owner,
 		KnowledgeSpaceID:  d.KnowledgeSpaceID,
 		PublicationStatus: d.PublicationStatus,
+		DeletionStatus:    d.DeletionStatus,
 	}
 	if !d.CompletedAt.IsZero() {
 		t := d.CompletedAt
@@ -174,7 +177,11 @@ func handleDocuments(docs docstore.Store, qs *query.Service) http.HandlerFunc {
 // handleDocument serves /v1/documents/{doc_id}: GET detail (role-filtered),
 // DELETE (requires upload scope). Both are tenant-scoped: a document in another
 // tenant 404s instead of leaking existence.
-func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjectStore, docs docstore.Store, audits audit.Store) http.HandlerFunc {
+type deletionAccepter interface {
+	Accept(context.Context, deletionworkflow.AcceptRequest) (deletionworkflow.Job, error)
+}
+
+func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjectStore, docs docstore.Store, audits audit.Store, deletion ...deletionAccepter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		docID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/documents/"), "/")
 		if docID == "" {
@@ -216,13 +223,28 @@ func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjec
 				writeError(w, http.StatusForbidden, "missing scope: upload")
 				return
 			}
+			ownedByCaller := doc.UploadedBy != "" && doc.UploadedBy == auth.GetUserID(r.Context())
+			if !canWritePermission(auth.GetPermission(r.Context()), doc.Permission) ||
+				(!isAdminRole(auth.GetPermission(r.Context())) && !ownedByCaller) {
+				writeError(w, http.StatusForbidden, "only the document's uploader or an admin may delete it")
+				return
+			}
+			if len(deletion) > 0 && deletion[0] != nil {
+				job, err := deletion[0].Accept(r.Context(), deletionworkflow.AcceptRequest{
+					TenantID: tenantID, DocumentID: docID, ActorUserID: auth.GetUserID(r.Context()), ActorRole: auth.GetPermission(r.Context()),
+				})
+				if err != nil {
+					slog.Error("document deletion acceptance failed", "doc_id", docID, "error", err)
+					writeError(w, http.StatusServiceUnavailable, "deletion unavailable")
+					return
+				}
+				if err := qs.InvalidateSemanticCache(r.Context()); err != nil {
+					slog.Warn("semantic cache flush failed after deletion acceptance", "doc_id", docID, "error", err)
+				}
+				writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.JobID, "status": job.State})
+				return
+			}
 			deleteDocument(w, r, cfg, qs, s3Client, docs, tenantID, docID)
-			recordAudit(r.Context(), audits, audit.Entry{
-				TenantID: tenantID, ActorUserID: auth.GetUserID(r.Context()),
-				ActorRole: auth.GetPermission(r.Context()),
-				Action:    "delete", ResourceType: "document", ResourceID: docID,
-				Result: audit.ResultSuccess,
-			})
 		case http.MethodPatch:
 			if auth.GetPermission(r.Context()) != "admin" {
 				writeError(w, http.StatusForbidden, "admin role required")

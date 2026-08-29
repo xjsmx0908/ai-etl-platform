@@ -87,3 +87,19 @@ healthy active generation in PostgreSQL and is idempotent on replay. Managed
 replacement uploads retain the old release and must keep the existing
 permission and knowledge space; only a later exact-candidate approval performs
 the release cutover.
+
+## Recoverable document deletion
+
+Migration `0018_recoverable_document_deletion.up.sql` adds
+`documents.deletion_status` and one tenant/document-unique deletion job with
+claim token, lease, retry time, attempts, last error, exact object-key snapshot,
+and per-dependency completion timestamps. `Accept` locks the document and makes
+job creation, release revocation, queued-ingestion cancellation, and immutable
+audit append one transaction. Replays return the existing job.
+
+The ETL worker collector uses `FOR UPDATE SKIP LOCKED` claims and rejects stale
+finish tokens. It waits while any ingestion job holds an active processing
+lease. Partial completion persists successes and schedules a retry; full
+completion appends its audit and deletes the catalog row, whose foreign-key
+cascade removes releases, ingestion state, manifests, and the deletion job.
+Prometheus exposes only fixed state/condition/outcome labels.

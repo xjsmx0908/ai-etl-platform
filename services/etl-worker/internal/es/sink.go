@@ -19,6 +19,10 @@ import (
 // The async queue remains exclusively for legacy ingestion.
 func (s *AsyncSink) GenerationProjection() indexmanifest.Projection { return s.indexer }
 
+func (s *AsyncSink) DeleteDocument(ctx context.Context, tenantID, docID string) error {
+	return s.indexer.DeleteDocument(ctx, tenantID, docID)
+}
+
 // AsyncSink writes full-text chunks with eventual consistency:
 // try immediate index once; on failure push to retry queue.
 type AsyncSink struct {

@@ -28,6 +28,7 @@ import (
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/deletionworkflow"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/idempotency"
@@ -215,6 +216,7 @@ func main() {
 	knowledgeCatalog := knowledgecatalog.New(knowledgecatalog.NewPostgresStore(pgPool))
 	generationVisibility := indexmanifest.NewPostgresStore(pgPool)
 	releaseVisibility := publicationrelease.NewPostgresStore(pgPool)
+	deletionStore := deletionworkflow.NewPostgresStore(pgPool)
 	var generationRollbacker generationRollbacker
 
 	// Initialize auth. The verifier re-validates each token's token_version
@@ -375,7 +377,7 @@ func main() {
 	// the role→permission matrix); DELETE checks upload scope in-handler.
 	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore, qs)))
 	apiV1.Handle("/v1/knowledge-spaces", http.HandlerFunc(handleKnowledgeSpaces(knowledgeCatalog)))
-	apiV1.Handle("/v1/documents/", http.HandlerFunc(handleDocument(cfg, qs, s3Client, docStore, auditStore)))
+	apiV1.Handle("/v1/documents/", http.HandlerFunc(handleDocument(cfg, qs, s3Client, docStore, auditStore, deletionStore)))
 	// Document content search (ES BM25) and chunk-level detail (Qdrant). Both use
 	// long-lived clients: a per-request storer would re-run ensureCollection on
 	// every call.
@@ -954,6 +956,10 @@ func handleUploadWithAdmission(cfg config.Config, qs *query.Service, producer up
 			}
 			if found {
 				replacingExisting = true
+				if existing.DeletionStatus == "pending" {
+					http.Error(w, "document deletion is pending", http.StatusConflict)
+					return
+				}
 				// The caller must be allowed to read the document it is about to
 				// overwrite, and (unless admin) must be the one who uploaded it.
 				// Otherwise any user could wipe a colleague's — or an admin's

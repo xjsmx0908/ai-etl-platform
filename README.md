@@ -213,6 +213,11 @@ python3 scripts/load-corpus.py --api-base http://localhost:8080 --username admin
 PostgreSQL 发布记录指向的健康代次。默认 `user-uploads` 空间在摄取完成后通过同一发布
 记录自动发布，重放安全；替换上传不得改变文档权限或知识空间。
 
+删除接口采用异步可恢复语义：`DELETE /v1/documents/{id}` 成功接纳后返回 HTTP `202`
+和 `job_id`，并立即撤销该文档的查询发布权。worker 随后幂等清理 Qdrant、
+Elasticsearch 和接纳时记录的精确 MinIO object keys；部分失败会保留进度并自动重试，
+所有依赖均确认成功后才删除 PostgreSQL 权威记录。
+
 公网 HTTPS 入口为 `https://rag.ipuau.com`。宿主机 Nginx 配置模板位于
 `deploy/nginx/rag.ipuau.com.conf`，反向代理到 Web Compose 服务的宿主机端口
 `3100`。HTTPS 部署必须在本地 `.env` 设置 `COOKIE_SECURE=true`；证书由宿主机

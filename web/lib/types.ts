@@ -46,6 +46,7 @@ export type Document = {
   owner?: string; // accountable owner, distinct from uploaded_by
   knowledge_space_id: string;
   publication_status: "draft" | "published" | "retired";
+  deletion_status: "active" | "pending";
 };
 
 export type KnowledgeSpace = {

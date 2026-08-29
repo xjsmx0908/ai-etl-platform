@@ -19,13 +19,14 @@ import (
 
 // Client wraps MinIO client for document storage.
 type Client struct {
-	client      *minio.Client
-	bucket      string
-	region      string
-	autoCreate  bool
-	listObjects func(context.Context, string, minio.ListObjectsOptions) <-chan minio.ObjectInfo
-	listMu      sync.Mutex
-	listCursor  string
+	client       *minio.Client
+	bucket       string
+	region       string
+	autoCreate   bool
+	listObjects  func(context.Context, string, minio.ListObjectsOptions) <-chan minio.ObjectInfo
+	removeObject func(context.Context, string, string, minio.RemoveObjectOptions) error
+	listMu       sync.Mutex
+	listCursor   string
 }
 
 // Config holds MinIO connection settings.
@@ -64,11 +65,12 @@ func New(cfg Config) (*Client, error) {
 
 	slog.Info("minio connected", "endpoint", cfg.Endpoint, "bucket", cfg.Bucket)
 	return &Client{
-		client:      mc,
-		bucket:      cfg.Bucket,
-		region:      cfg.Region,
-		autoCreate:  cfg.AutoCreate,
-		listObjects: mc.ListObjects,
+		client:       mc,
+		bucket:       cfg.Bucket,
+		region:       cfg.Region,
+		autoCreate:   cfg.AutoCreate,
+		listObjects:  mc.ListObjects,
+		removeObject: mc.RemoveObject,
 	}, nil
 }
 
@@ -160,6 +162,25 @@ func (c *Client) DeleteByPrefix(ctx context.Context, prefix string) error {
 		}
 		if err := c.client.RemoveObject(ctx, c.bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
 			deleteErr = fmt.Errorf("delete %s: %w", obj.Key, err)
+		}
+	}
+	return deleteErr
+}
+
+// DeleteObjects removes exact immutable keys captured during deletion
+// acceptance; no prefix inference can collide with another document id.
+func (c *Client) DeleteObjects(ctx context.Context, keys []string) error {
+	removeObject := c.removeObject
+	if removeObject == nil {
+		removeObject = c.client.RemoveObject
+	}
+	var deleteErr error
+	for _, key := range keys {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if err := removeObject(ctx, c.bucket, key, minio.RemoveObjectOptions{}); err != nil {
+			deleteErr = fmt.Errorf("delete %s: %w", key, err)
 		}
 	}
 	return deleteErr

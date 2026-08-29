@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-29); P2.4-A, P2.4-B, and P2.4-C implemented
+Accepted (2026-08-29); P2.4-A through P2.4-D implemented
 
 ## Context
 
@@ -124,3 +124,11 @@ unresolved, stale, incomplete, or unhealthy release identity. Replacement
 uploads preserve permission and knowledge-space identity and leave the prior
 release queryable until approved cutover. Completed `user-uploads` versions
 advance the same release record through an idempotent automatic transition.
+
+P2.4-D replaces synchronous best-effort deletion with a PostgreSQL acceptance
+transaction and leased collector. Acceptance returns a durable job only after
+publication authority is revoked, pending ingestion is cancelled, and an audit
+correlation commits. The worker records independent Qdrant, Elasticsearch, and
+exact-object-key progress; partial failure retries only unfinished work. Active
+ingestion leases defer cleanup and stale claim tokens cannot finalize. The
+catalog and release graph are removed only after every dependency succeeds.

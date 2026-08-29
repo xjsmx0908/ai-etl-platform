@@ -18,7 +18,7 @@ func docRowColumns() []string {
 	return []string{"tenant_id", "doc_id", "file_name", "object_key", "file_hash", "file_size",
 		"content_type", "permission", "status", "stage", "chunks_done", "chunks_total", "error",
 		"metadata", "uploaded_by", "created_at", "updated_at", "completed_at",
-		"doc_status", "effective_date", "supersedes", "owner", "knowledge_space_id", "publication_status"}
+		"doc_status", "effective_date", "supersedes", "owner", "knowledge_space_id", "publication_status", "deletion_status"}
 }
 
 func docRow() *pgxmock.Rows {
@@ -26,7 +26,7 @@ func docRow() *pgxmock.Rows {
 		AddRow("acme", "doc-1", "a.pdf", "acme/doc-1.pdf", "abc123", int64(1024), "application/pdf",
 			"internal", "completed", "completed", 4, 4, "", map[string]string{"k": "v"},
 			"u-1", time.Now(), time.Now(), tPtr(time.Now()),
-			"active", tPtr(time.Now()), "", "owner-hr", "user-uploads", "published")
+			"active", tPtr(time.Now()), "", "owner-hr", "user-uploads", "published", "active")
 }
 
 func TestUpsert(t *testing.T) {
@@ -104,7 +104,7 @@ func TestList_WithFilters(t *testing.T) {
 		WillReturnRows(docRow().AddRow("acme", "doc-2", "b.docx", "acme/doc-2.docx", "def", int64(2048),
 			"application/docx", "internal", "completed", "completed", 2, 2, "", map[string]string{},
 			"u-1", time.Now(), time.Now(), tPtr(time.Now()),
-			"superseded", tPtr(time.Now()), "doc-1", "", "user-uploads", "retired"))
+			"superseded", tPtr(time.Now()), "doc-1", "", "user-uploads", "retired", "active"))
 	mock.ExpectQuery("SELECT count").WithArgs("acme", "completed", []string{"internal"}, "%contract%").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 

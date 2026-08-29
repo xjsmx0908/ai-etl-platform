@@ -67,6 +67,7 @@ type Document struct {
 	Owner             string    // accountable owner, distinct from UploadedBy
 	KnowledgeSpaceID  string    // governed tenant-local knowledge space
 	PublicationStatus string    // draft | published | retired
+	DeletionStatus    string    // active | pending
 }
 
 // Governance is the subset of a document's governance state that retrieval needs
@@ -204,7 +205,7 @@ func (s *PgStore) GetByHash(ctx context.Context, tenantID, knowledgeSpaceID, fil
 	}
 	row := s.q.QueryRow(ctx,
 		"SELECT "+documentColumns+` FROM documents
-		 WHERE tenant_id=$1 AND knowledge_space_id=$2 AND file_hash=$3 AND status='completed'
+		 WHERE tenant_id=$1 AND knowledge_space_id=$2 AND file_hash=$3 AND status='completed' AND deletion_status='active'
 		 ORDER BY created_at DESC LIMIT 1`, tenantID, knowledgeSpaceID, fileHash)
 	return scanDocument(row)
 }
@@ -371,7 +372,7 @@ func listWhere(q ListQuery) (string, []any) {
 const documentColumns = `tenant_id, doc_id, file_name, object_key, file_hash, file_size,
 	content_type, permission, status, stage, chunks_done, chunks_total,
 	error, metadata, uploaded_by, created_at, updated_at, completed_at,
-	doc_status, effective_date, supersedes, owner, knowledge_space_id, publication_status`
+	doc_status, effective_date, supersedes, owner, knowledge_space_id, publication_status, deletion_status`
 
 func scanDocument(row pgx.Row) (Document, bool, error) {
 	var d Document
@@ -380,7 +381,7 @@ func scanDocument(row pgx.Row) (Document, bool, error) {
 	err := row.Scan(&d.TenantID, &d.DocID, &d.FileName, &d.ObjectKey, &d.FileHash, &d.FileSize,
 		&d.ContentType, &d.Permission, &d.Status, &d.Stage, &d.ChunksDone, &d.ChunksTotal,
 		&d.Error, &metadata, &d.UploadedBy, &d.CreatedAt, &d.UpdatedAt, &completedAt,
-		&d.DocStatus, &effectiveDate, &d.Supersedes, &d.Owner, &d.KnowledgeSpaceID, &d.PublicationStatus)
+		&d.DocStatus, &effectiveDate, &d.Supersedes, &d.Owner, &d.KnowledgeSpaceID, &d.PublicationStatus, &d.DeletionStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Document{}, false, nil
 	}

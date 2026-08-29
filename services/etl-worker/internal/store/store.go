@@ -90,6 +90,28 @@ func (s *MemoryStorer) DeleteGeneration(_ context.Context, identity indexmanifes
 	return nil
 }
 
+func (s *MemoryStorer) DeleteDocument(_ context.Context, tenantID, docID string) error {
+	if tenantID == "" || docID == "" {
+		return fmt.Errorf("tenant_id and doc_id are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, chunk := range s.data {
+		if chunk.TenantID == tenantID && chunk.DocID == docID {
+			delete(s.data, id)
+		}
+	}
+	for generationID, chunks := range s.generations {
+		for _, chunk := range chunks {
+			if chunk.TenantID == tenantID && chunk.DocID == docID {
+				delete(s.generations, generationID)
+				break
+			}
+		}
+	}
+	return nil
+}
+
 var _ indexmanifest.Projection = (*MemoryStorer)(nil)
 
 // Count returns the number of stored chunks.
@@ -360,6 +382,11 @@ func (q *QdrantStorer) DeleteByDocIDAndTenant(ctx context.Context, tenantID, doc
 		{"key": "tenant_id", "match": map[string]string{"value": tenantID}},
 		{"key": "doc_id", "match": map[string]string{"value": docID}},
 	})
+}
+
+// DeleteDocument satisfies the recoverable deletion dependency seam.
+func (q *QdrantStorer) DeleteDocument(ctx context.Context, tenantID, docID string) error {
+	return q.DeleteByDocIDAndTenant(ctx, tenantID, docID)
 }
 
 func (q *QdrantStorer) deleteByFilter(ctx context.Context, must []map[string]interface{}) error {

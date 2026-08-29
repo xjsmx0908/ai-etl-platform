@@ -101,6 +101,30 @@ groups:
         annotations:
           summary: Retired index generation cleanup continues to fail
 
+      - alert: DocumentDeletionStalled
+        expr: max(ai_etl_deletion_oldest_age_seconds) > 1800
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: A document deletion has remained unfinished for over 30 minutes
+
+      - alert: DocumentDeletionDependencyFailed
+        expr: max by (condition) (ai_etl_deletion_diagnostics{condition="failed"}) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Document deletion dependency cleanup continues to fail
+
+      - alert: DocumentDeletionLeaseExpired
+        expr: max by (condition) (ai_etl_deletion_diagnostics{condition="expired_lease"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Document deletion work is waiting for lease recovery
+
       - alert: CircuitBreakerOpen
         expr: ai_etl_circuit_state == 1
         for: 5m

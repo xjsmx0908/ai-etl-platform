@@ -269,6 +269,22 @@ P2.4-D implementation plan (approved 2026-08-29):
    request replay, immediate query invisibility, partial failure/restart, stale
    fencing, and final cleanup before the full project quality suite.
 
+P2.4-D outcome (2026-08-29):
+
+- `DELETE /v1/documents/{id}` now accepts one durable deletion job and returns
+  HTTP `202`. The same PostgreSQL transaction retires the document, revokes the
+  published release, cancels unstarted ingestion, and appends a correlated
+  audit event; replay returns the existing job.
+- The worker runs a leased collector with fencing and durable progress for
+  Qdrant, Elasticsearch, and exact immutable object keys. Successful dependency
+  work is not repeated; failures remain pending and observable for retry.
+- Active ingestion leases delay cleanup, while ingestion completion and managed
+  approval cannot republish a deletion-pending document. The authoritative
+  document/release/job graph is removed only after all dependencies succeed.
+- Added bounded deletion metrics and tested stalled, dependency-failure, and
+  expired-lease alerts. Generation retention remains disabled and independent.
+- P2.4-E public-interface governance acceptance remains next.
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

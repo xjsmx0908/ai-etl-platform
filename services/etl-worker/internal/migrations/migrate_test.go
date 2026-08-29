@@ -215,6 +215,23 @@ func TestDocumentReleaseMigrationCarriesVersionBoundPublicationInvariants(t *tes
 	}
 }
 
+func TestRecoverableDeletionMigrationCarriesDurableProgressAndClaimFields(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0018_recoverable_document_deletion.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"deletion_status", "CREATE TABLE document_deletion_jobs", "claim_token", "lease_until",
+		"object_keys TEXT[]", "qdrant_deleted_at", "elasticsearch_deleted_at", "objects_deleted_at",
+		"UNIQUE (tenant_id, document_id)", "document_deletion_jobs_claim_idx",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+}
+
 func TestExactCandidatePublicationMigrationCarriesIdempotencyKey(t *testing.T) {
 	body, err := migrationFiles.ReadFile("0017_exact_candidate_publication.up.sql")
 	if err != nil {

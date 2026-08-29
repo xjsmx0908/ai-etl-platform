@@ -219,6 +219,7 @@ func (s *PostgresStore) Claim(ctx context.Context, task model.Task, lease time.D
 			lease_until=now()+$7::interval, updated_at=now(), error=''
 		WHERE job_id=$1 AND event_id=$2 AND tenant_id=$3 AND doc_id=$4
 		  AND task->>'file_path'=$5 AND COALESCE(task->>'file_hash','')=$6
+		  AND EXISTS (SELECT 1 FROM documents d WHERE d.tenant_id=$3 AND d.doc_id=$4 AND d.deletion_status='active')
 		  AND (status IN ('queued','published') OR (status='processing' AND lease_until <= now()))
 		RETURNING status`, task.JobID, task.EventID, task.TenantID, task.DocID, task.FilePath, task.FileHash, lease.String()).Scan(&state)
 	if err == nil {
@@ -280,20 +281,20 @@ func (s *PostgresStore) markJobTerminal(ctx context.Context, task model.Task, st
 	if tag.RowsAffected() == 0 {
 		return ErrInvalidTransition
 	}
-	var knowledgeSpaceID string
+	var knowledgeSpaceID, deletionStatus string
 	err = tx.QueryRow(ctx, `
 		UPDATE documents SET status=$3, stage=$3, error=$4,
 			completed_at=$5, updated_at=now(),
 			publication_status=CASE
-				WHEN $3='completed' AND knowledge_space_id='user-uploads' THEN 'published'
+				WHEN $3='completed' AND knowledge_space_id='user-uploads' AND deletion_status='active' THEN 'published'
 				ELSE publication_status
 			END
 		WHERE tenant_id=$1 AND doc_id=$2 AND object_key=$6
-		RETURNING knowledge_space_id`, task.TenantID, task.DocID, state, message, completedAt, task.FilePath).Scan(&knowledgeSpaceID)
+		RETURNING knowledge_space_id,deletion_status`, task.TenantID, task.DocID, state, message, completedAt, task.FilePath).Scan(&knowledgeSpaceID, &deletionStatus)
 	if err != nil {
 		return fmt.Errorf("mark document %s: %w", state, err)
 	}
-	if state == "completed" && knowledgeSpaceID == "user-uploads" {
+	if state == "completed" && knowledgeSpaceID == "user-uploads" && deletionStatus == "active" {
 		if _, err := publicationrelease.NewPostgresStore(tx).PublishAutomatic(ctx, publicationrelease.VersionIdentity{
 			TenantID: task.TenantID, DocumentID: task.DocID, VersionID: task.JobID,
 		}); err != nil {
