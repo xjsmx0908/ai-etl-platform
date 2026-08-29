@@ -171,10 +171,41 @@ func TestPostgresStoreCompletesOnlyMatchingProcessingJob(t *testing.T) {
 	mock.ExpectExec("UPDATE ingestion_jobs SET status").
 		WithArgs("job-1", "event-1", "tenant-a", "doc-1", "completed", done, "").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec("UPDATE documents SET status").
+	mock.ExpectQuery("UPDATE documents SET status").
 		WithArgs("tenant-a", "doc-1", "completed", "", done, "tenant-a/doc-1/version.txt").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"knowledge_space_id"}).AddRow("policies"))
 	mock.ExpectCommit()
+	if err := NewPostgresStore(mock).Complete(context.Background(), task, done); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreCompletionAutomaticallyPublishesDefaultSpaceRelease(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	task := model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1", FilePath: "tenant-a/doc-1/version.txt"}
+	done := time.Date(2026, 8, 29, 8, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE ingestion_jobs SET status").
+		WithArgs("job-1", "event-1", "tenant-a", "doc-1", "completed", done, "").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectQuery("UPDATE documents SET status").
+		WithArgs("tenant-a", "doc-1", "completed", "", done, task.FilePath).
+		WillReturnRows(pgxmock.NewRows([]string{"knowledge_space_id"}).AddRow("user-uploads"))
+	mock.ExpectQuery("WITH candidate AS").
+		WithArgs("tenant-a", "doc-1", "job-1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"tenant_id", "document_id", "current_version_id", "published_version_id",
+			"published_generation_id", "revision", "resolution_status", "last_error", "updated_at",
+		}).AddRow("tenant-a", "doc-1", "job-1", "job-1", "gen-1", int64(2), "resolved", "", done))
+	mock.ExpectCommit()
+
 	if err := NewPostgresStore(mock).Complete(context.Background(), task, done); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -219,7 +250,7 @@ func TestPostgresStoreTerminalTransitionRollsBackWhenDocumentUpdateFails(t *test
 	mock.ExpectExec("UPDATE ingestion_jobs SET status").
 		WithArgs("job-1", "event-1", "tenant-a", "doc-1", "completed", done, "").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec("UPDATE documents SET status").
+	mock.ExpectQuery("UPDATE documents SET status").
 		WithArgs("tenant-a", "doc-1", "completed", "", done, task.FilePath).
 		WillReturnError(errors.New("document update failed"))
 	mock.ExpectRollback()

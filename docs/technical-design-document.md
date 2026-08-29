@@ -71,3 +71,19 @@ generation, digest, count, health, or revision change. Document publication,
 release CAS, and the immutable success audit commit together. An identical
 idempotency-key/request-hash replay returns success without a second audit or
 revision; a reused key with altered arguments fails closed.
+
+## Published-release query cutover
+
+`publicationrelease.PostgresStore.ResolveVisibility` is the single read-side
+authority. It batch-resolves candidate document/version/generation identities
+for the authenticated tenant and returns visibility only for an exact published
+release whose active manifest is sealed, reconciled, and digest/count-complete
+in Qdrant and Elasticsearch. Resolver errors or malformed result lengths fail
+closed. The retrieval engine applies this before fusion and cache writes; the
+content-search handler applies it before document aggregation.
+
+Durable completion in `user-uploads` calls `PublishAutomatic`, which derives the
+healthy active generation in PostgreSQL and is idempotent on replay. Managed
+replacement uploads retain the old release and must keep the existing
+permission and knowledge space; only a later exact-candidate approval performs
+the release cutover.

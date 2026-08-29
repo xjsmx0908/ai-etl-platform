@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ai-etl-pipeline/internal/indexmanifest"
 )
 
 func TestPostgresReplacementPreservesPublishedReleaseAndRejectsStaleCutover(t *testing.T) {
@@ -102,5 +105,91 @@ func TestPostgresReplacementPreservesPublishedReleaseAndRejectsStaleCutover(t *t
 	if published.CurrentVersionID != "job-2" || published.PublishedVersionID != "job-2" ||
 		published.PublishedGenerationID != "gen-2" || published.Revision != 3 {
 		t.Fatalf("unexpected published release: %+v", published)
+	}
+}
+
+func TestPostgresAutomaticPublicationUsesHealthyActiveCurrentGenerationIdempotently(t *testing.T) {
+	pool, cleanup := publicationReleaseTestPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE document_releases (
+			tenant_id TEXT NOT NULL,document_id TEXT NOT NULL,current_version_id TEXT NOT NULL,
+			published_version_id TEXT,published_generation_id TEXT,revision BIGINT NOT NULL,
+			resolution_status TEXT NOT NULL DEFAULT 'resolved',last_error TEXT NOT NULL DEFAULT '',
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),PRIMARY KEY(tenant_id,document_id));
+		CREATE TABLE index_manifests (
+			generation_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,document_id TEXT NOT NULL,document_version_id TEXT NOT NULL,
+			expected_chunk_count INT,expected_chunk_digest TEXT,qdrant_count INT,qdrant_digest TEXT,
+			elasticsearch_count INT,elasticsearch_digest TEXT,state TEXT NOT NULL,last_reconcile_error TEXT NOT NULL DEFAULT '');
+		INSERT INTO document_releases VALUES ('acme','upload-1','job-2','job-1','gen-1',4,'resolved','',now());
+		INSERT INTO index_manifests VALUES
+			('gen-1','acme','upload-1','job-1',2,'sha256:old',2,'sha256:old',2,'sha256:old','active',''),
+			('gen-2','acme','upload-1','job-2',3,'sha256:new',3,'sha256:new',3,'sha256:new','active','');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresStore(pool)
+	identity := VersionIdentity{TenantID: "acme", DocumentID: "upload-1", VersionID: "job-2"}
+	refs := []indexmanifest.GenerationReference{
+		{DocumentID: "upload-1", DocumentVersionID: "job-1", GenerationID: "gen-1"},
+		{DocumentID: "upload-1", DocumentVersionID: "job-2", GenerationID: "gen-2"},
+	}
+	before, err := store.ResolveVisibility(ctx, "acme", refs)
+	if err != nil {
+		t.Fatalf("resolve before cutover: %v", err)
+	}
+	if !reflect.DeepEqual(before, []bool{true, false}) {
+		t.Fatalf("visibility before cutover=%v, want old release only", before)
+	}
+	first, err := store.PublishAutomatic(ctx, identity)
+	if err != nil {
+		t.Fatalf("automatic publish: %v", err)
+	}
+	replay, err := store.PublishAutomatic(ctx, identity)
+	if err != nil {
+		t.Fatalf("automatic publish replay: %v", err)
+	}
+	if first.PublishedVersionID != "job-2" || first.PublishedGenerationID != "gen-2" || first.Revision != 5 || replay.Revision != 5 {
+		t.Fatalf("first=%+v replay=%+v", first, replay)
+	}
+	after, err := store.ResolveVisibility(ctx, "acme", refs)
+	if err != nil {
+		t.Fatalf("resolve after cutover: %v", err)
+	}
+	if !reflect.DeepEqual(after, []bool{false, true}) {
+		t.Fatalf("visibility after cutover=%v, want replacement release only", after)
+	}
+}
+
+func publicationReleaseTestPool(t *testing.T) (*pgxpool.Pool, func()) {
+	t.Helper()
+	dsn := os.Getenv("GOVERNANCE_RELEASE_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set GOVERNANCE_RELEASE_TEST_DSN to run PostgreSQL release integration tests")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("publicationrelease_auto_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pool, func() {
+		pool.Close()
+		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
 	}
 }

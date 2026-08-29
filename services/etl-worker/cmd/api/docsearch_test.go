@@ -6,12 +6,34 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/store"
 )
+
+type documentSearchVisibilityStub struct {
+	visible map[string]bool
+	err     error
+	count   int
+}
+
+func (s documentSearchVisibilityStub) ResolveVisibility(_ context.Context, _ string, refs []indexmanifest.GenerationReference) ([]bool, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.count > 0 {
+		return make([]bool, s.count), nil
+	}
+	result := make([]bool, len(refs))
+	for i, ref := range refs {
+		result[i] = s.visible[ref.GenerationID]
+	}
+	return result, nil
+}
 
 type fakeChunkLister struct {
 	chunks      map[string][]store.StoredChunk
@@ -184,6 +206,43 @@ func TestHandleDocumentSearch_SuccessAggregatesAndEnriches(t *testing.T) {
 	}
 	if !reflect.DeepEqual(searcher.lastReq.AllowedPermissions, []string{"public", "internal"}) {
 		t.Fatalf("expected allowed [public internal], got %v", searcher.lastReq.AllowedPermissions)
+	}
+}
+
+func TestHandleDocumentSearchFiltersUnpublishedReplacementGeneration(t *testing.T) {
+	docs := newFakeDocStore()
+	seedDoc(docs, "acme", "docA", "internal")
+	searcher := &fakeDocumentSearcher{candidates: []retrieval.Candidate{
+		{DocID: "docA", DocumentVersionID: "job-old", GenerationID: "gen-published", Content: "approved", Score: 0.8},
+		{DocID: "docA", DocumentVersionID: "job-new", GenerationID: "gen-replacement", Content: "unapproved", Score: 0.9},
+	}}
+	handler := handleDocumentSearch(config.Config{RetrievalEnableES: true}, docs, searcher, testQueryService(),
+		documentSearchVisibilityStub{visible: map[string]bool{"gen-published": true}})
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents/search?q=policy", nil)
+	req = req.WithContext(ctxWithRole("acme", "user"))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), "unapproved") || !strings.Contains(rr.Body.String(), "approved") {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleDocumentSearchFailsClosedWhenReleaseVisibilityUnavailable(t *testing.T) {
+	searcher := &fakeDocumentSearcher{candidates: []retrieval.Candidate{{
+		DocID: "docA", DocumentVersionID: "job-1", GenerationID: "gen-1", Content: "must not leak",
+	}}}
+	for _, visibility := range []documentSearchVisibilityStub{
+		{err: context.DeadlineExceeded},
+		{count: 2},
+	} {
+		handler := handleDocumentSearch(config.Config{RetrievalEnableES: true}, newFakeDocStore(), searcher, testQueryService(), visibility)
+		req := httptest.NewRequest(http.MethodGet, "/v1/documents/search?q=policy", nil)
+		req = req.WithContext(ctxWithRole("acme", "user"))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusServiceUnavailable || strings.Contains(rr.Body.String(), "must not leak") {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
 	}
 }
 

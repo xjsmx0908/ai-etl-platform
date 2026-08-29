@@ -818,3 +818,19 @@ This file is an append-only record of completed PRAR cycles.
   a shared manifest lock close both gaps. Focused Agent/module tests, disposable
   PostgreSQL transaction tests, and the full Go suite pass. Query cutover,
   deployment, and retention remain out of scope.
+
+## 2026-08-29 - P2.4-C published-release cutover
+
+- Perceive: generation-aware indexes still allowed a replacement generation to
+  appear in query or content-search results before its approval, while default
+  user uploads needed to retain their automatic-publication behavior.
+- Reason: put one PostgreSQL release resolver at the retrieval seam so Qdrant,
+  Elasticsearch, semantic cache, and document search share exact version and
+  generation authority. Keep the previous release until approved cutover.
+- Act: added fail-closed published-release visibility, idempotent automatic
+  release advancement for `user-uploads`, replacement permission/space
+  invariants, and continuity/search regression tests.
+- Refine: automatic publication derives the active healthy generation instead
+  of trusting caller input; malformed visibility responses are unavailable,
+  never partially accepted. Deletion recovery and public acceptance remain
+  separate P2.4 slices.

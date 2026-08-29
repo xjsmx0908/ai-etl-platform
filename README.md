@@ -208,6 +208,11 @@ python3 scripts/load-corpus.py --api-base http://localhost:8080 --username admin
 数据接入、系统可观测、检索质量、Agent 文档发布治理（受管草稿的精确版本/索引代次
 检查、四眼审批、事务化幂等发布与审计）。
 
+受管文档的替换会先建立新的版本和索引代次，但不会立即影响线上查询；旧的已发布版本
+会持续提供结果，直到新的精确候选通过独立审批并完成原子切换。问答和全文搜索都只读取
+PostgreSQL 发布记录指向的健康代次。默认 `user-uploads` 空间在摄取完成后通过同一发布
+记录自动发布，重放安全；替换上传不得改变文档权限或知识空间。
+
 公网 HTTPS 入口为 `https://rag.ipuau.com`。宿主机 Nginx 配置模板位于
 `deploy/nginx/rag.ipuau.com.conf`，反向代理到 Web Compose 服务的宿主机端口
 `3100`。HTTPS 部署必须在本地 `.env` 设置 `COOKIE_SECURE=true`；证书由宿主机

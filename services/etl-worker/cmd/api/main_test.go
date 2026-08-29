@@ -583,6 +583,23 @@ func TestHandleUploadAllowsReplacingOwnDoc(t *testing.T) {
 	}
 }
 
+func TestHandleUploadRejectsReplacementPermissionChange(t *testing.T) {
+	docs := newFakeDocStore()
+	if err := docs.Upsert(context.Background(), docstore.Document{
+		TenantID: "tenant-a", DocID: "mine-001", Permission: "confidential",
+		KnowledgeSpaceID: "user-uploads", Status: docstore.StatusCompleted, UploadedBy: "admin1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := uploadRequest(t, "mine.txt", "new content", "internal", "mine-001", "tenant-a", "admin1", "admin")
+	rr := httptest.NewRecorder()
+	handler := handleUpload(testUploadConfig(), testQueryService(), &countingProducer{}, &pruningObjectStore{}, noopIdempotencyStore{}, nil, docs, nil)
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s, want replacement policy conflict", rr.Code, rr.Body.String())
+	}
+}
+
 // A row backfilled by reconciliation has no uploader on record. Unknown
 // ownership must not read as open ownership, or any user could claim every
 // pre-registry document by guessing its doc_id.

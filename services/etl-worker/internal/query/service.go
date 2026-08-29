@@ -83,9 +83,9 @@ func (s *Service) WithKnowledgeCatalog(catalog *knowledgecatalog.Catalog) *Servi
 	return s
 }
 
-// WithGenerationVisibility makes every backend and semantic-cache candidate
-// pass the active-generation read gate before it can become query evidence.
-func (s *Service) WithGenerationVisibility(resolver retrieval.VisibilityResolver) *Service {
+// WithReleaseVisibility makes every backend and semantic-cache candidate pass
+// the exact published-release gate before it can become query evidence.
+func (s *Service) WithReleaseVisibility(resolver retrieval.VisibilityResolver) *Service {
 	s.retriever.WithVisibilityResolver(resolver)
 	return s
 }

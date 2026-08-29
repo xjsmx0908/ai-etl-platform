@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-29); P2.4-A release model and P2.4-B exact approval implemented
+Accepted (2026-08-29); P2.4-A, P2.4-B, and P2.4-C implemented
 
 ## Context
 
@@ -116,5 +116,11 @@ digest, and release revision; tenant identity still comes only from the
 authenticated actor. At approval, one transaction locks and revalidates that
 manifest, advances the release compare-and-set, changes document publication
 state, stores an idempotency-key/request-hash binding, and appends the success
-audit. Failure or staleness rolls back every write. P2.4-C will enforce the
-published release at the query seam.
+audit. Failure or staleness rolls back every write.
+
+P2.4-C enforces the published release at both the RAG retrieval and
+Elasticsearch document-search seams. Visibility fails closed on missing,
+unresolved, stale, incomplete, or unhealthy release identity. Replacement
+uploads preserve permission and knowledge-space identity and leave the prior
+release queryable until approved cutover. Completed `user-uploads` versions
+advance the same release record through an idempotent automatic transition.

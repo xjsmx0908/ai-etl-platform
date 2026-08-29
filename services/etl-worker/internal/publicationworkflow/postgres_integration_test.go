@@ -37,6 +37,9 @@ func TestPostgresPublicationCommitsExactCandidateAndAuditOnce(t *testing.T) {
 	if err := publication.Publish(context.Background(), actor, candidate, "agent:run-1:2:publish_document"); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
+	if _, found, err := publication.CurrentCandidate(context.Background(), "acme", "policy-1"); err != nil || found {
+		t.Fatalf("published current release remained approvable found=%t err=%v", found, err)
+	}
 	if err := publication.Publish(context.Background(), actor, candidate, "agent:run-1:2:publish_document"); err != nil {
 		t.Fatalf("replay publish: %v", err)
 	}

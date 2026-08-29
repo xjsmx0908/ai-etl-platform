@@ -43,6 +43,7 @@ func (p *PostgresPublication) CurrentCandidate(ctx context.Context, tenantID, do
 		JOIN index_manifests m ON m.tenant_id=r.tenant_id
 			AND m.document_id=r.document_id AND m.document_version_id=r.current_version_id
 		WHERE r.tenant_id=$1 AND r.document_id=$2 AND r.resolution_status='resolved'
+			AND (r.published_version_id IS NULL OR r.published_version_id<>r.current_version_id)
 			AND m.state='active' AND m.expected_chunk_count > 0
 			AND m.expected_chunk_digest IS NOT NULL AND m.expected_chunk_digest <> ''
 			AND m.last_reconcile_error=''
@@ -122,7 +123,7 @@ func (p *PostgresPublication) Publish(ctx context.Context, actor Actor, candidat
 	}
 	tag, err := tx.Exec(ctx, `UPDATE documents SET publication_status='published',updated_at=now()
 		WHERE tenant_id=$1 AND doc_id=$2 AND status='completed' AND doc_status='active'
-			AND publication_status='draft' AND knowledge_space_id<>'' AND knowledge_space_id<>'user-uploads'
+			AND publication_status IN ('draft','published') AND knowledge_space_id<>'' AND knowledge_space_id<>'user-uploads'
 			AND owner<>'' AND effective_date IS NOT NULL`, actor.TenantID, candidate.DocumentID)
 	if err != nil {
 		return fmt.Errorf("publish governed document: %w", err)

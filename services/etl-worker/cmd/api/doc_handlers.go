@@ -14,6 +14,7 @@ import (
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/knowledgecatalog"
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/retrieval"
@@ -352,7 +353,7 @@ type documentSearchResultView struct {
 // handleDocumentSearch serves GET /v1/documents/search?q=: full-text content
 // search over indexed chunks, aggregated to document level. Requires ES to be
 // enabled; enrichment comes from the tenant-scoped registry.
-func handleDocumentSearch(cfg config.Config, docs docstore.Store, searcher documentSearcher, qs *query.Service) http.HandlerFunc {
+func handleDocumentSearch(cfg config.Config, docs docstore.Store, searcher documentSearcher, qs *query.Service, visibility ...retrieval.VisibilityResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -392,6 +393,29 @@ func handleDocumentSearch(cfg config.Config, docs docstore.Store, searcher docum
 			slog.Error("document search failed", "q", q, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
+		}
+		if len(visibility) > 0 && visibility[0] != nil && len(candidates) > 0 {
+			refs := make([]indexmanifest.GenerationReference, len(candidates))
+			for i, candidate := range candidates {
+				refs[i] = indexmanifest.GenerationReference{
+					DocumentID:        candidate.DocID,
+					DocumentVersionID: candidate.DocumentVersionID,
+					GenerationID:      candidate.GenerationID,
+				}
+			}
+			visible, err := visibility[0].ResolveVisibility(r.Context(), tenantID, refs)
+			if err != nil || len(visible) != len(candidates) {
+				slog.Error("document search publication visibility failed", "error", err)
+				writeError(w, http.StatusServiceUnavailable, "publication visibility unavailable")
+				return
+			}
+			filtered := make([]retrieval.Candidate, 0, len(candidates))
+			for i, candidate := range candidates {
+				if visible[i] {
+					filtered = append(filtered, candidate)
+				}
+			}
+			candidates = filtered
 		}
 
 		// Aggregate chunk candidates by document.
