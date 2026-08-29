@@ -67,6 +67,14 @@ type GenerationIdentity struct {
 	GenerationID string
 }
 
+// GenerationReference identifies the projection generation that produced a
+// retrieval candidate. Empty generation/version fields represent legacy data.
+type GenerationReference struct {
+	DocumentID        string
+	DocumentVersionID string
+	GenerationID      string
+}
+
 type ActivationTarget struct {
 	Version                    VersionIdentity
 	GenerationID               string

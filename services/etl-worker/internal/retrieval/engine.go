@@ -8,11 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/sparse"
 	platformtracing "ai-etl-pipeline/internal/tracing"
 	"go.opentelemetry.io/otel/attribute"
@@ -29,10 +31,18 @@ type Engine struct {
 	retrievers    map[string]Retriever
 	cache         SourceCache
 	reranker      Reranker
+	visibility    VisibilityResolver
 	timeout       time.Duration
 	candidateK    int
 	defaultTopK   int
 	tracer        trace.Tracer
+}
+
+// WithVisibilityResolver enables active-generation filtering for backend and
+// cached candidates. Query API wiring must provide the PostgreSQL adapter.
+func (e *Engine) WithVisibilityResolver(resolver VisibilityResolver) *Engine {
+	e.visibility = resolver
+	return e
 }
 
 // NewEngine wires the retrieval engine from environment-backed configuration.
@@ -174,6 +184,18 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 		cacheSpan.End()
 		slog.Warn("retrieval cache lookup failed", "tenant_id", req.TenantID, "error", err)
 	} else if ok && len(sources) > 0 {
+		sources, err = e.visibleCandidates(cacheCtx, req.TenantID, sources)
+		if err != nil {
+			cacheSpan.RecordError(err)
+			cacheSpan.SetStatus(codes.Error, "generation visibility failed")
+			cacheSpan.End()
+			return Result{}, err
+		}
+		if len(sources) == 0 {
+			cacheSpan.SetAttributes(attribute.Bool("cache.hit", true), attribute.Int("cache.result_count", 0))
+			cacheSpan.End()
+			goto cacheMiss
+		}
 		selected, diversity := diversifyCandidates(sources, req.TopK, defaultMaxChunksPerDocument)
 		cacheSpan.SetAttributes(attribute.Bool("cache.hit", true), attribute.Int("cache.result_count", len(sources)))
 		cacheSpan.End()
@@ -192,6 +214,7 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 		cacheSpan.End()
 	}
 
+cacheMiss:
 	_, routeSpan := tracer.Start(ctx, "Retrieval.Route")
 	sparseVector := e.sparseEncoder.Encode(req.Question)
 	route := RouteQuery(req.Question, e.hasRetriever(SourceElasticsearch))
@@ -258,7 +281,6 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 			continue
 		}
 		results[result.name] = result.candidates
-		backendCandidateCounts[result.name] = len(result.candidates)
 	}
 	if len(results) == 0 && len(partialErrors) > 0 {
 		result := Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}
@@ -267,6 +289,13 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 			result.StageDiagnostics = &diagnostics
 		}
 		return result, fmt.Errorf("all retrieval backends failed: %s", strings.Join(partialErrors, "; "))
+	}
+	results, err = e.visibleBackendResults(ctx, req.TenantID, results)
+	if err != nil {
+		return Result{}, err
+	}
+	for name, candidates := range results {
+		backendCandidateCounts[name] = len(candidates)
 	}
 
 	_, fusionSpan := tracer.Start(ctx, "Retrieval.Fusion")
@@ -375,6 +404,80 @@ func (e *Engine) Retrieve(ctx context.Context, req Request) (result Result, err 
 func (e *Engine) Close() error {
 	e.httpClient.CloseIdleConnections()
 	return e.cache.Close()
+}
+
+func (e *Engine) visibleCandidates(ctx context.Context, tenantID string, candidates []Candidate) ([]Candidate, error) {
+	if e.visibility == nil || len(candidates) == 0 {
+		return candidates, nil
+	}
+	refs := make([]indexmanifest.GenerationReference, len(candidates))
+	for i, candidate := range candidates {
+		refs[i] = indexmanifest.GenerationReference{
+			DocumentID:        candidate.DocID,
+			DocumentVersionID: candidate.DocumentVersionID,
+			GenerationID:      candidate.GenerationID,
+		}
+	}
+	visible, err := e.visibility.ResolveVisibility(ctx, tenantID, refs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve candidate generation visibility: %w", err)
+	}
+	if len(visible) != len(candidates) {
+		return nil, fmt.Errorf("resolve candidate generation visibility: invalid result count")
+	}
+	filtered := make([]Candidate, 0, len(candidates))
+	for i, candidate := range candidates {
+		if visible[i] {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered, nil
+}
+
+func (e *Engine) visibleBackendResults(ctx context.Context, tenantID string, results map[string][]Candidate) (map[string][]Candidate, error) {
+	if e.visibility == nil {
+		return results, nil
+	}
+	names := make([]string, 0, len(results))
+	for name := range results {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	type locatedCandidate struct {
+		backend   string
+		candidate Candidate
+	}
+	all := make([]locatedCandidate, 0)
+	for _, name := range names {
+		for _, candidate := range results[name] {
+			all = append(all, locatedCandidate{backend: name, candidate: candidate})
+		}
+	}
+	refs := make([]indexmanifest.GenerationReference, len(all))
+	for i, item := range all {
+		refs[i] = indexmanifest.GenerationReference{
+			DocumentID:        item.candidate.DocID,
+			DocumentVersionID: item.candidate.DocumentVersionID,
+			GenerationID:      item.candidate.GenerationID,
+		}
+	}
+	visible, err := e.visibility.ResolveVisibility(ctx, tenantID, refs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve candidate generation visibility: %w", err)
+	}
+	if len(visible) != len(all) {
+		return nil, fmt.Errorf("resolve candidate generation visibility: invalid result count")
+	}
+	filtered := make(map[string][]Candidate, len(results))
+	for _, name := range names {
+		filtered[name] = make([]Candidate, 0, len(results[name]))
+	}
+	for i, item := range all {
+		if visible[i] {
+			filtered[item.backend] = append(filtered[item.backend], item.candidate)
+		}
+	}
+	return filtered, nil
 }
 
 func (e *Engine) hasRetriever(name string) bool {

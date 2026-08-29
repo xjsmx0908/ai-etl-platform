@@ -27,8 +27,8 @@ func Fuse(results map[string][]Candidate, route Route, limit int) []Candidate {
 			continue
 		}
 		for i, candidate := range candidates {
-			key := candidate.ChunkID
-			if key == "" {
+			key := candidate.GenerationID + "\x00" + candidate.ChunkID
+			if key == "\x00" {
 				key = candidate.Source + ":" + candidate.DocID + ":" + candidate.Content
 			}
 			if key == "::" {

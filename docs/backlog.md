@@ -130,9 +130,8 @@ P2.3 progress (2026-08-28):
   jobs; failed builds can be retried after clearing observations; stale
   activation writers are rejected using expected-current CAS. A real PostgreSQL
   concurrency test verifies that only one competing activation succeeds.
-- Remaining P2.3 slices: active-generation query filtering, reconciler and
-  repair, rollback/retention cleanup, bounded metrics/alerts, and the full ADR
-  acceptance matrix.
+- Remaining P2.3 slices: reconciler and repair, rollback/retention cleanup,
+  bounded metrics/alerts, and the full ADR acceptance matrix.
 
 P2.3 backend projection slice (2026-08-28):
 
@@ -159,9 +158,22 @@ P2.3 pipeline integration slice (2026-08-28):
 - Redelivery targets the same generation and idempotently rewrites all chunks;
   it no longer trusts legacy chunk-ID checkpoints. Build configuration changes
   deterministically create a different generation.
-- Remaining: query only the active generation, add background repair and
-  retention, expose manifest metrics/alerts, and finish crash/reindex/rollback
-  acceptance coverage.
+- Remaining: add background repair and retention, expose manifest
+  metrics/alerts, and finish crash/reindex/rollback acceptance coverage.
+
+P2.3 active-generation query slice (2026-08-28):
+
+- Qdrant and Elasticsearch retrieval candidates now preserve durable document
+  version and generation identity; Qdrant dense relevance and fusion keys are
+  generation-scoped so repeated deterministic chunk IDs cannot collide.
+- Query retrieval batches candidates through the PostgreSQL manifest read
+  seam before fusion. Only an exact active identity is admitted; stale and all
+  non-active states fail closed.
+- Semantic-cache hits pass through the same gate on every read. Documents with
+  no manifest retain legacy compatibility, while managed legacy points,
+  malformed identities, and manifest lookup failures are rejected.
+- Remaining: reconciler/repair, rollback and retention cleanup, manifest
+  metrics/alerts, and the remaining crash/reindex/rollback acceptance matrix.
 
 ## 2026-08-24 - P1.9 Business Gold Approval and Safety Refusal
 

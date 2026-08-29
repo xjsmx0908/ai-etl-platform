@@ -38,7 +38,7 @@ func TestElasticRetriever_SearchFiltersTenantAndPermission(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"hits":{"hits":[{"_score":4.2,"_source":{"chunk_id":"c1","doc_id":"d1","tenant_id":"tenant-a","content":"hello"}}]}}`))
+		_, _ = w.Write([]byte(`{"hits":{"hits":[{"_score":4.2,"_source":{"chunk_id":"c1","doc_id":"d1","document_version_id":"job-1","generation_id":"gen-1","tenant_id":"tenant-a","content":"hello"}}]}}`))
 	}))
 	defer srv.Close()
 
@@ -63,6 +63,9 @@ func TestElasticRetriever_SearchFiltersTenantAndPermission(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ChunkID != "c1" || got[0].Source != SourceElasticsearch {
 		t.Fatalf("unexpected candidates: %+v", got)
+	}
+	if got[0].DocumentVersionID != "job-1" || got[0].GenerationID != "gen-1" {
+		t.Fatalf("expected generation identity on candidate, got %+v", got[0])
 	}
 }
 

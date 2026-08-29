@@ -31,6 +31,7 @@ import (
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/idempotency"
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/kafka"
 	"ai-etl-pipeline/internal/knowledgecatalog"
@@ -211,6 +212,7 @@ func main() {
 	admissionStore := ingestion.NewPostgresStore(pgPool)
 	auditStore := audit.New(pgPool)
 	knowledgeCatalog := knowledgecatalog.New(knowledgecatalog.NewPostgresStore(pgPool))
+	generationVisibility := indexmanifest.NewPostgresStore(pgPool)
 
 	// Initialize auth. The verifier re-validates each token's token_version
 	// against the user store so password resets revoke outstanding tokens.
@@ -298,7 +300,10 @@ func main() {
 	// superseded/archived documents from the evidence set and disclose conflicting
 	// sources — governance the chunk index cannot express, because chunk payloads
 	// are written once at ingest and never updated in place.
-	qs := query.NewServiceWithObserver(cfg, prom).WithGovernance(docStore).WithKnowledgeCatalog(knowledgeCatalog)
+	qs := query.NewServiceWithObserver(cfg, prom).
+		WithGovernance(docStore).
+		WithKnowledgeCatalog(knowledgeCatalog).
+		WithGenerationVisibility(generationVisibility)
 	taskStatusStore, err := newTaskStatusStore(cfg)
 	if err != nil {
 		slog.Error("failed to create task status store", "error", err)

@@ -83,6 +83,13 @@ func (s *Service) WithKnowledgeCatalog(catalog *knowledgecatalog.Catalog) *Servi
 	return s
 }
 
+// WithGenerationVisibility makes every backend and semantic-cache candidate
+// pass the active-generation read gate before it can become query evidence.
+func (s *Service) WithGenerationVisibility(resolver retrieval.VisibilityResolver) *Service {
+	s.retriever.WithVisibilityResolver(resolver)
+	return s
+}
+
 // ResolveKnowledgeSpace exposes the catalog decision to the upload handler so
 // reads and writes share one policy module.
 func (s *Service) ResolveKnowledgeSpace(ctx context.Context, requestedSpaceID string, access AccessContext, capability knowledgecatalog.Capability) (knowledgecatalog.Space, error) {

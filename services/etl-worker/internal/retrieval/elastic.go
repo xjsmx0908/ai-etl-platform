@@ -106,7 +106,7 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 		"query": map[string]interface{}{
 			"bool": boolQuery,
 		},
-		"_source": []string{"chunk_id", "doc_id", "tenant_id", "content", "file_hash", "metadata"},
+		"_source": []string{"chunk_id", "doc_id", "document_version_id", "generation_id", "tenant_id", "content", "file_hash", "metadata"},
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -140,12 +140,14 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 			Hits []struct {
 				Score  float64 `json:"_score"`
 				Source struct {
-					ChunkID  string                 `json:"chunk_id"`
-					DocID    string                 `json:"doc_id"`
-					TenantID string                 `json:"tenant_id"`
-					Content  string                 `json:"content"`
-					FileHash string                 `json:"file_hash"`
-					Metadata map[string]interface{} `json:"metadata"`
+					ChunkID           string                 `json:"chunk_id"`
+					DocID             string                 `json:"doc_id"`
+					DocumentVersionID string                 `json:"document_version_id"`
+					GenerationID      string                 `json:"generation_id"`
+					TenantID          string                 `json:"tenant_id"`
+					Content           string                 `json:"content"`
+					FileHash          string                 `json:"file_hash"`
+					Metadata          map[string]interface{} `json:"metadata"`
 				} `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
@@ -161,14 +163,16 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 			"metadata":  hit.Source.Metadata,
 		}, req.ExactSchemaFields)
 		candidates = append(candidates, Candidate{
-			ChunkID:  hit.Source.ChunkID,
-			DocID:    hit.Source.DocID,
-			Content:  hit.Source.Content,
-			TenantID: hit.Source.TenantID,
-			Score:    hit.Score,
-			Source:   SourceElasticsearch,
-			Rank:     i + 1,
-			Metadata: metadata,
+			ChunkID:           hit.Source.ChunkID,
+			DocID:             hit.Source.DocID,
+			DocumentVersionID: hit.Source.DocumentVersionID,
+			GenerationID:      hit.Source.GenerationID,
+			Content:           hit.Source.Content,
+			TenantID:          hit.Source.TenantID,
+			Score:             hit.Score,
+			Source:            SourceElasticsearch,
+			Rank:              i + 1,
+			Metadata:          metadata,
 		})
 	}
 	return candidates, nil

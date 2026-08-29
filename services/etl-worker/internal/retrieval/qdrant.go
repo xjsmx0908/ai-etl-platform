@@ -101,6 +101,12 @@ func (r *QdrantRetriever) Search(ctx context.Context, req SearchRequest) ([]Cand
 		if v, ok := p.Payload["doc_id"].(string); ok {
 			c.DocID = v
 		}
+		if v, ok := p.Payload["document_version_id"].(string); ok {
+			c.DocumentVersionID = v
+		}
+		if v, ok := p.Payload["generation_id"].(string); ok {
+			c.GenerationID = v
+		}
 		if v, ok := p.Payload["content"].(string); ok {
 			c.Content = v
 		}
@@ -120,7 +126,7 @@ func (r *QdrantRetriever) Search(ctx context.Context, req SearchRequest) ([]Cand
 		return candidates, nil
 	}
 	for i := range candidates {
-		if s, ok := denseScores[candidates[i].ChunkID]; ok {
+		if s, ok := denseScores[candidates[i].GenerationID+"\x00"+candidates[i].ChunkID]; ok {
 			candidates[i].Relevance = s
 			candidates[i].RelevanceSource = SourceQdrant
 		}
@@ -180,7 +186,7 @@ func (r *QdrantRetriever) denseCosineScores(ctx context.Context, req SearchReque
 		"query":        req.DenseVector,
 		"using":        "dense",
 		"limit":        limit,
-		"with_payload": []string{"chunk_id"},
+		"with_payload": []string{"chunk_id", "generation_id"},
 		"filter":       filter,
 	}
 	points, err := r.postQuery(ctx, body)
@@ -190,7 +196,8 @@ func (r *QdrantRetriever) denseCosineScores(ctx context.Context, req SearchReque
 	out := make(map[string]float64, len(points))
 	for _, p := range points {
 		if cid, ok := p.Payload["chunk_id"].(string); ok {
-			out[cid] = p.Score
+			generation, _ := p.Payload["generation_id"].(string)
+			out[generation+"\x00"+cid] = p.Score
 		}
 	}
 	return out, nil

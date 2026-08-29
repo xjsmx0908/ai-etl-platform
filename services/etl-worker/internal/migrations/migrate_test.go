@@ -144,6 +144,22 @@ func TestSealableIndexManifestMigrationAllowsPreWriteManifest(t *testing.T) {
 	}
 }
 
+func TestIndexManifestVisibilityLookupMigrationSupportsBatchReads(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0013_index_manifest_visibility_lookup.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE INDEX index_manifests_visibility_lookup_idx",
+		"ON index_manifests (tenant_id, document_id)",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.
