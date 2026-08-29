@@ -30,6 +30,8 @@ func NewPostgresStore(q db.Querier) *PostgresStore { return &PostgresStore{q: q}
 
 var _ Store = (*PostgresStore)(nil)
 var _ ReconciliationStore = (*PostgresStore)(nil)
+var _ RollbackStore = (*PostgresStore)(nil)
+var _ RetentionStore = (*PostgresStore)(nil)
 
 func (s *PostgresStore) Begin(ctx context.Context, manifest Manifest) (Manifest, error) {
 	if err := validateUnsealedBuildDefinition(manifest); err != nil {
@@ -467,7 +469,8 @@ WHERE tenant_id=$1 AND document_id=$2 AND document_version_id=$3 AND state='acti
 		return ErrConflict
 	}
 	if current != "" {
-		tag, err := tx.Exec(ctx, `UPDATE index_manifests SET state='retired'
+		tag, err := tx.Exec(ctx, `UPDATE index_manifests SET state='retired',retired_at=now(),
+reconcile_claim_token='',reconcile_lease_until=NULL
 WHERE tenant_id=$1 AND document_id=$2 AND document_version_id=$3
 AND generation_id=$4 AND state='active'`, target.Version.TenantID, target.Version.DocumentID,
 			target.Version.DocumentVersionID, current)
@@ -478,7 +481,7 @@ AND generation_id=$4 AND state='active'`, target.Version.TenantID, target.Versio
 			return ErrConflict
 		}
 	}
-	tag, err := tx.Exec(ctx, `UPDATE index_manifests SET state='active', activated_at=now()
+	tag, err := tx.Exec(ctx, `UPDATE index_manifests SET state='active',activated_at=now(),retired_at=NULL
 WHERE tenant_id=$1 AND document_id=$2 AND document_version_id=$3
 AND generation_id=$4 AND state='ready'`, target.Version.TenantID, target.Version.DocumentID,
 		target.Version.DocumentVersionID, target.GenerationID)
@@ -490,6 +493,187 @@ AND generation_id=$4 AND state='ready'`, target.Version.TenantID, target.Version
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit manifest activation: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) RollbackTarget(ctx context.Context, request RollbackRequest) (Manifest, error) {
+	v := request.Version
+	if v.TenantID == "" || v.DocumentID == "" || v.DocumentVersionID == "" ||
+		request.TargetGenerationID == "" || request.ExpectedActiveGenerationID == "" ||
+		request.TargetGenerationID == request.ExpectedActiveGenerationID || request.Window <= 0 ||
+		request.Lease <= 0 || request.ClaimToken == "" {
+		return Manifest{}, ErrInvalidManifest
+	}
+	row := s.q.QueryRow(ctx, `UPDATE index_manifests SET retention_lease_until=now()+$7::interval,retention_claim_token=$8
+WHERE generation_id=$1 AND tenant_id=$2 AND document_id=$3 AND document_version_id=$4
+AND state='retired' AND retired_at >= now()-$6::interval
+AND EXISTS (SELECT 1 FROM index_manifests active WHERE active.tenant_id=$2
+AND active.document_id=$3 AND active.document_version_id=$4
+AND active.generation_id=$5 AND active.state='active')
+AND qdrant_deleted_at IS NULL AND elasticsearch_deleted_at IS NULL
+AND (retention_lease_until IS NULL OR retention_lease_until <= now())
+RETURNING generation_id,tenant_id,document_id,document_version_id,chunker_version,
+embedding_model,vector_dimension,schema_version,collection_version,index_version,
+expected_active_generation_id,expected_chunk_count,expected_chunk_digest,state`, request.TargetGenerationID,
+		v.TenantID, v.DocumentID, v.DocumentVersionID, request.ExpectedActiveGenerationID,
+		request.Window.String(), request.Lease.String(), request.ClaimToken)
+	manifest, err := scanManifest(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Manifest{}, ErrConflict
+	}
+	if err != nil {
+		return Manifest{}, fmt.Errorf("protect rollback target: %w", err)
+	}
+	manifest.RetentionClaimToken = request.ClaimToken
+	return manifest, nil
+}
+
+func (s *PostgresStore) Rollback(ctx context.Context, commit RollbackCommit) error {
+	r := commit.Request
+	v := r.Version
+	if v.TenantID == "" || v.DocumentID == "" || v.DocumentVersionID == "" ||
+		r.TargetGenerationID == "" || r.ExpectedActiveGenerationID == "" || r.ClaimToken == "" ||
+		commit.Qdrant.Count < 0 || commit.Qdrant.Digest == "" ||
+		commit.Elasticsearch.Count < 0 || commit.Elasticsearch.Digest == "" {
+		return ErrInvalidManifest
+	}
+	tx, err := s.q.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin generation rollback: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	lockID := v.TenantID + "/" + v.DocumentVersionID
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockID); err != nil {
+		return fmt.Errorf("lock generation rollback: %w", err)
+	}
+	var current string
+	err = tx.QueryRow(ctx, `SELECT generation_id FROM index_manifests
+WHERE tenant_id=$1 AND document_id=$2 AND document_version_id=$3 AND state='active'`,
+		v.TenantID, v.DocumentID, v.DocumentVersionID).Scan(&current)
+	if err != nil {
+		return fmt.Errorf("load active generation for rollback: %w", err)
+	}
+	if current != r.ExpectedActiveGenerationID {
+		return ErrConflict
+	}
+	tag, err := tx.Exec(ctx, `UPDATE index_manifests SET state='retired',retired_at=now(),
+reconcile_claim_token='',reconcile_lease_until=NULL
+WHERE tenant_id=$1 AND document_id=$2 AND document_version_id=$3
+AND generation_id=$4 AND state='active'`, v.TenantID, v.DocumentID, v.DocumentVersionID, current)
+	if err != nil {
+		return fmt.Errorf("retire current generation for rollback: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	tag, err = tx.Exec(ctx, `UPDATE index_manifests SET state='active',activated_at=now(),retired_at=NULL,
+qdrant_count=$6,qdrant_digest=$7,qdrant_observed_at=now(),
+elasticsearch_count=$8,elasticsearch_digest=$9,elasticsearch_observed_at=now(),
+last_reconcile_error='',last_reconciled_at=now(),repair_attempts=0,
+reconcile_claim_token='',reconcile_lease_until=NULL,
+retention_claim_token='',retention_lease_until=NULL
+WHERE tenant_id=$1 AND document_id=$2 AND document_version_id=$3
+AND generation_id=$4 AND state='retired' AND retention_claim_token=$5
+AND retention_lease_until > now()
+AND retired_at >= now()-$10::interval
+AND expected_chunk_count=$6 AND expected_chunk_digest=$7
+AND expected_chunk_count=$8 AND expected_chunk_digest=$9`, v.TenantID, v.DocumentID,
+		v.DocumentVersionID, r.TargetGenerationID, r.ClaimToken,
+		commit.Qdrant.Count, commit.Qdrant.Digest, commit.Elasticsearch.Count, commit.Elasticsearch.Digest,
+		r.Window.String())
+	if err != nil {
+		return fmt.Errorf("promote rollback generation: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit generation rollback: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ClaimRetention(ctx context.Context, claim RetentionClaim) ([]Manifest, error) {
+	if claim.Window <= 0 || claim.Token == "" {
+		return nil, ErrInvalidManifest
+	}
+	if claim.Limit <= 0 {
+		claim.Limit = 100
+	}
+	if claim.Lease <= 0 {
+		claim.Lease = 5 * time.Minute
+	}
+	rows, err := s.q.Query(ctx, `WITH candidates AS (
+	SELECT generation_id FROM index_manifests
+	WHERE state='retired' AND retired_at < now()-$1::interval
+	AND (retention_lease_until IS NULL OR retention_lease_until <= now())
+	ORDER BY retired_at,created_at FOR UPDATE SKIP LOCKED LIMIT $2
+)
+UPDATE index_manifests AS m SET retention_lease_until=now()+$3::interval,retention_claim_token=$4
+FROM candidates AS c WHERE m.generation_id=c.generation_id
+RETURNING m.generation_id,m.tenant_id,m.document_id,m.document_version_id,
+m.chunker_version,m.embedding_model,m.vector_dimension,m.schema_version,
+m.collection_version,m.index_version,m.expected_active_generation_id,
+m.expected_chunk_count,m.expected_chunk_digest,m.state,
+m.qdrant_deleted_at,m.elasticsearch_deleted_at`, claim.Window.String(), claim.Limit,
+		claim.Lease.String(), claim.Token)
+	if err != nil {
+		return nil, fmt.Errorf("claim retained generations: %w", err)
+	}
+	defer rows.Close()
+	manifests := make([]Manifest, 0, claim.Limit)
+	for rows.Next() {
+		manifest, err := scanRetentionManifest(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan retained generation: %w", err)
+		}
+		manifest.RetentionClaimToken = claim.Token
+		manifests = append(manifests, manifest)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate retained generations: %w", err)
+	}
+	return manifests, nil
+}
+
+func (s *PostgresStore) FinishRetention(ctx context.Context, result RetentionResult) error {
+	m := result.Manifest
+	if m.GenerationID == "" || m.RetentionClaimToken == "" {
+		return ErrInvalidManifest
+	}
+	if result.QdrantDeleted && result.ElasticsearchDeleted && result.Reason == "" {
+		tag, err := s.q.Exec(ctx, `DELETE FROM index_manifests
+WHERE generation_id=$1 AND retention_claim_token=$2 AND state='retired'
+AND retention_lease_until > now()`, m.GenerationID, m.RetentionClaimToken)
+		if err != nil {
+			return fmt.Errorf("delete retained manifest: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrConflict
+		}
+		return nil
+	}
+	if result.Reason == "" {
+		return ErrInvalidManifest
+	}
+	if result.RetryAfter <= 0 {
+		result.RetryAfter = time.Hour
+	}
+	tag, err := s.q.Exec(ctx, `UPDATE index_manifests SET
+qdrant_deleted_at=CASE WHEN $3 THEN COALESCE(qdrant_deleted_at,now()) ELSE qdrant_deleted_at END,
+elasticsearch_deleted_at=CASE WHEN $4 THEN COALESCE(elasticsearch_deleted_at,now()) ELSE elasticsearch_deleted_at END,
+retention_last_error=$5,retention_attempts=retention_attempts+1,
+retention_lease_until=now()+$6::interval,retention_claim_token=''
+WHERE generation_id=$1 AND retention_claim_token=$2 AND state='retired'
+AND retention_lease_until > now()`, m.GenerationID,
+		m.RetentionClaimToken, result.QdrantDeleted, result.ElasticsearchDeleted,
+		result.Reason, result.RetryAfter.String())
+	if err != nil {
+		return fmt.Errorf("record retained generation cleanup: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrConflict
 	}
 	return nil
 }
@@ -531,6 +715,30 @@ func scanManifest(row pgx.Row) (Manifest, error) {
 		manifest.ExpectedChunkCount = int(expectedCount.Int64)
 		manifest.ExpectedChunkDigest = expectedDigest.String
 		manifest.ExpectedSealed = true
+	}
+	return manifest, err
+}
+
+func scanRetentionManifest(row pgx.Row) (Manifest, error) {
+	var manifest Manifest
+	var expectedCount sql.NullInt64
+	var expectedDigest sql.NullString
+	var qdrantDeletedAt, elasticsearchDeletedAt sql.NullTime
+	err := row.Scan(&manifest.GenerationID, &manifest.TenantID, &manifest.DocumentID,
+		&manifest.DocumentVersionID, &manifest.ChunkerVersion, &manifest.EmbeddingModel,
+		&manifest.VectorDimension, &manifest.SchemaVersion, &manifest.CollectionVersion,
+		&manifest.IndexVersion, &manifest.ExpectedActiveGenerationID, &expectedCount,
+		&expectedDigest, &manifest.State, &qdrantDeletedAt, &elasticsearchDeletedAt)
+	if expectedCount.Valid && expectedDigest.Valid {
+		manifest.ExpectedChunkCount = int(expectedCount.Int64)
+		manifest.ExpectedChunkDigest = expectedDigest.String
+		manifest.ExpectedSealed = true
+	}
+	if qdrantDeletedAt.Valid {
+		manifest.QdrantDeletedAt = qdrantDeletedAt.Time
+	}
+	if elasticsearchDeletedAt.Valid {
+		manifest.ElasticsearchDeletedAt = elasticsearchDeletedAt.Time
 	}
 	return manifest, err
 }

@@ -213,6 +213,7 @@ func main() {
 	auditStore := audit.New(pgPool)
 	knowledgeCatalog := knowledgecatalog.New(knowledgecatalog.NewPostgresStore(pgPool))
 	generationVisibility := indexmanifest.NewPostgresStore(pgPool)
+	var generationRollbacker generationRollbacker
 
 	// Initialize auth. The verifier re-validates each token's token_version
 	// against the user store so password resets revoke outstanding tokens.
@@ -319,6 +320,23 @@ func main() {
 		ElasticsearchAPIKey:  cfg.ESAPIKey,
 		ElasticsearchIndex:   cfg.ESIndex,
 	})
+	if cfg.IndexRetentionWindow > 0 {
+		rollbackQdrant, rollbackQdrantErr := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension)
+		rollbackElasticsearch, rollbackElasticsearchErr := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+		if rollbackQdrantErr != nil || rollbackElasticsearchErr != nil {
+			slog.Warn("generation rollback unavailable", "qdrant_error", rollbackQdrantErr, "elasticsearch_error", rollbackElasticsearchErr)
+			if rollbackQdrant != nil {
+				_ = rollbackQdrant.Close()
+			}
+			if rollbackElasticsearch != nil {
+				_ = rollbackElasticsearch.Close()
+			}
+		} else {
+			defer rollbackQdrant.Close()
+			defer rollbackElasticsearch.Close()
+			generationRollbacker = indexmanifest.NewRollbacker(generationVisibility, rollbackQdrant, rollbackElasticsearch)
+		}
+	}
 	publicationWorkflow := publicationworkflow.New(docStore, publicationInspector).
 		WithPublisher(newDocumentPublisher(docStore, qs, auditStore))
 	agentSvc, err := agentapi.NewServiceWithDependencies(cfg, qs, taskStatusStore, prom, agentapi.Dependencies{
@@ -385,6 +403,8 @@ func main() {
 	apiV1.Handle("/v1/users/", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUser(userStore))))
 	apiV1.Handle("/v1/tenants", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleTenants(userStore))))
 	apiV1.Handle("/v1/audit", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleAuditList(auditStore))))
+	apiV1.Handle("/v1/index-generations/rollback", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(
+		handleGenerationRollback(generationRollbacker, qs, auditStore, cfg.IndexRetentionWindow))))
 
 	// Apply middleware chain: version → JWT auth → rate limit → route scope checks → CORS → timeout.
 	// Wrapper execution is outside-in, so compose in reverse.

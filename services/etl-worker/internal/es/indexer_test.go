@@ -333,6 +333,58 @@ func TestHTTPIndexerGenerationProjectionObservesIdentityDigest(t *testing.T) {
 	}
 }
 
+func TestHTTPIndexerDeletesOnlyExactGeneration(t *testing.T) {
+	identity := indexmanifest.GenerationIdentity{GenerationID: "gen-old", VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	if err := idx.DeleteGeneration(context.Background(), identity); err != nil {
+		t.Fatal(err)
+	}
+	filters := got["query"].(map[string]interface{})["bool"].(map[string]interface{})["filter"].([]interface{})
+	seen := map[string]string{}
+	for _, raw := range filters {
+		for key, value := range raw.(map[string]interface{})["term"].(map[string]interface{}) {
+			seen[key] = value.(string)
+		}
+	}
+	if seen["tenant_id"] != "tenant-a" || seen["doc_id"] != "doc" || seen["document_version_id"] != "job-1" || seen["generation_id"] != "gen-old" {
+		t.Fatalf("generation delete query=%+v", got)
+	}
+}
+
+func TestHTTPIndexerGenerationDeleteRejectsPartialFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_, _ = w.Write([]byte(`{"timed_out":false,"failures":[{"cause":{"reason":"shard unavailable"}}]}`))
+	}))
+	defer srv.Close()
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	identity := indexmanifest.GenerationIdentity{GenerationID: "gen-old", VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+	if err := idx.DeleteGeneration(context.Background(), identity); err == nil {
+		t.Fatal("partial Elasticsearch delete reported success")
+	}
+}
+
 func TestHTTPIndexer_EnsureIndex_CreatesWhenMissing(t *testing.T) {
 	headCount := 0
 	createCount := 0

@@ -80,6 +80,16 @@ func (s *MemoryStorer) ObserveGeneration(_ context.Context, identity indexmanife
 	return indexmanifest.BackendObservation{Count: len(chunks), Digest: digest, ObservedAt: time.Now().UTC()}, nil
 }
 
+func (s *MemoryStorer) DeleteGeneration(_ context.Context, identity indexmanifest.GenerationIdentity) error {
+	if identity.GenerationID == "" || identity.TenantID == "" || identity.DocumentID == "" || identity.DocumentVersionID == "" {
+		return indexmanifest.ErrInvalidManifest
+	}
+	s.mu.Lock()
+	delete(s.generations, identity.GenerationID)
+	s.mu.Unlock()
+	return nil
+}
+
 var _ indexmanifest.Projection = (*MemoryStorer)(nil)
 
 // Count returns the number of stored chunks.
@@ -256,7 +266,47 @@ func (q *QdrantStorer) ObserveGeneration(ctx context.Context, identity indexmani
 	return indexmanifest.BackendObservation{Count: len(identities), Digest: digest, ObservedAt: time.Now().UTC()}, nil
 }
 
+func (q *QdrantStorer) DeleteGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity) error {
+	if identity.GenerationID == "" || identity.TenantID == "" || identity.DocumentID == "" || identity.DocumentVersionID == "" {
+		return indexmanifest.ErrInvalidManifest
+	}
+	return q.deleteGenerationByFilter(ctx, []map[string]interface{}{
+		{"key": "tenant_id", "match": map[string]string{"value": identity.TenantID}},
+		{"key": "doc_id", "match": map[string]string{"value": identity.DocumentID}},
+		{"key": "document_version_id", "match": map[string]string{"value": identity.DocumentVersionID}},
+		{"key": "generation_id", "match": map[string]string{"value": identity.GenerationID}},
+	})
+}
+
+func (q *QdrantStorer) deleteGenerationByFilter(ctx context.Context, must []map[string]interface{}) error {
+	if len(must) == 0 {
+		return fmt.Errorf("delete filter is required")
+	}
+	body := map[string]interface{}{"filter": map[string]interface{}{"must": must}}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal generation delete filter: %w", err)
+	}
+	url := fmt.Sprintf("%s/collections/%s/points/delete?wait=true", q.endpoint, q.collection)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	q.setHeaders(req)
+	resp, err := q.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("qdrant generation delete request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("qdrant generation delete error %d: %s", resp.StatusCode, string(respBody))
+}
+
 var _ indexmanifest.Projection = (*QdrantStorer)(nil)
+var _ indexmanifest.GenerationDeleter = (*QdrantStorer)(nil)
 
 // Exists checks if a vector point already exists by chunk ID.
 func (q *QdrantStorer) Exists(ctx context.Context, chunkID string) (bool, error) {

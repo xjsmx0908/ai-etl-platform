@@ -177,6 +177,24 @@ func TestIndexManifestReconciliationMigrationSupportsLeasedRepair(t *testing.T) 
 	}
 }
 
+func TestIndexGenerationRetentionMigrationStartsRollbackWindowAtRetirement(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0015_index_generation_retention.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"retired_at", "retention_lease_until", "retention_claim_token",
+		"qdrant_deleted_at", "elasticsearch_deleted_at", "retention_attempts",
+		"retention_last_error", "UPDATE index_manifests SET retired_at=now() WHERE state='retired'",
+		"CREATE INDEX index_manifests_retention_claim_idx", "WHERE state='retired'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.

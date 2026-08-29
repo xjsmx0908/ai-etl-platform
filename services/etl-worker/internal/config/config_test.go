@@ -52,6 +52,10 @@ func TestLoad_Defaults(t *testing.T) {
 		t.Fatalf("unexpected index reconciliation defaults: enabled=%v interval=%v lease=%v batch=%d max_repairs=%d",
 			cfg.IndexReconcileEnabled, cfg.IndexReconcileInterval, cfg.IndexReconcileLease, cfg.IndexReconcileBatchSize, cfg.IndexReconcileMaxRepairs)
 	}
+	if cfg.IndexRetentionEnabled || cfg.IndexRetentionWindow != 0 || cfg.IndexRetentionInterval != time.Hour || cfg.IndexRetentionLease != 30*time.Minute || cfg.IndexRetentionBatchSize != 20 {
+		t.Fatalf("unexpected index retention defaults: enabled=%v window=%v interval=%v lease=%v batch=%d",
+			cfg.IndexRetentionEnabled, cfg.IndexRetentionWindow, cfg.IndexRetentionInterval, cfg.IndexRetentionLease, cfg.IndexRetentionBatchSize)
+	}
 	if cfg.TaskStatusStore != TaskStatusStoreAuto {
 		t.Errorf("expected TaskStatusStore=auto, got %s", cfg.TaskStatusStore)
 	}
@@ -493,6 +497,39 @@ func TestValidate_RejectsUnsafeIndexReconciliationSettings(t *testing.T) {
 				t.Fatal("expected invalid reconciliation settings to fail")
 			}
 		})
+	}
+}
+
+func TestLoad_IndexRetentionOverrides(t *testing.T) {
+	t.Setenv("INDEX_RETENTION_ENABLED", "true")
+	t.Setenv("INDEX_RETENTION_WINDOW", "720h")
+	t.Setenv("INDEX_RETENTION_INTERVAL", "2h")
+	t.Setenv("INDEX_RETENTION_LEASE", "20m")
+	t.Setenv("INDEX_RETENTION_BATCH_SIZE", "50")
+	cfg := Load()
+	if !cfg.IndexRetentionEnabled || cfg.IndexRetentionWindow != 30*24*time.Hour || cfg.IndexRetentionInterval != 2*time.Hour || cfg.IndexRetentionLease != 20*time.Minute || cfg.IndexRetentionBatchSize != 50 {
+		t.Fatalf("unexpected index retention overrides: %+v", cfg)
+	}
+}
+
+func TestValidate_RequiresExplicitRetentionWindowBeforeCleanup(t *testing.T) {
+	cfg := Load()
+	cfg.IndexRetentionEnabled = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("enabled cleanup without retention window must fail")
+	}
+	cfg.IndexRetentionWindow = 30 * 24 * time.Hour
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("configured retention rejected: %v", err)
+	}
+}
+
+func TestValidate_RequiresRetentionLeaseToCoverClaimedBatch(t *testing.T) {
+	cfg := Load()
+	cfg.IndexRetentionBatchSize = 20
+	cfg.IndexRetentionLease = 15 * time.Minute
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("lease equal to worst-case batch duration must fail")
 	}
 }
 

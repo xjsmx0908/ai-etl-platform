@@ -94,6 +94,8 @@ type Manifest struct {
 	LastError                                                                      string
 	CreatedAt, LastAttemptAt, VerifiedAt, ActivatedAt                              time.Time
 	ReconcileClaimToken                                                            string
+	RetentionClaimToken                                                            string
+	QdrantDeletedAt, ElasticsearchDeletedAt                                        time.Time
 }
 
 var (

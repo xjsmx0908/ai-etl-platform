@@ -150,6 +150,40 @@ func TestQdrantGenerationProjectionObservesIdentityDigest(t *testing.T) {
 	}
 }
 
+func TestQdrantDeletesOnlyExactGeneration(t *testing.T) {
+	identity := indexmanifest.GenerationIdentity{GenerationID: "gen-old", VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Query().Get("wait") != "true" {
+			t.Error("generation delete must wait for acknowledgement")
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	qs, err := NewQdrantStorer(srv.URL, "", "docs", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qs.Close()
+	if err := qs.DeleteGeneration(context.Background(), identity); err != nil {
+		t.Fatal(err)
+	}
+	must := got["filter"].(map[string]interface{})["must"].([]interface{})
+	seen := map[string]string{}
+	for _, raw := range must {
+		condition := raw.(map[string]interface{})
+		seen[condition["key"].(string)] = condition["match"].(map[string]interface{})["value"].(string)
+	}
+	if seen["tenant_id"] != "tenant-a" || seen["doc_id"] != "doc" || seen["document_version_id"] != "job-1" || seen["generation_id"] != "gen-old" {
+		t.Fatalf("generation delete filter=%+v", got)
+	}
+}
+
 // Exists must map 200 -> true and 404 -> false.
 func TestQdrantExists(t *testing.T) {
 	var wantStatus int

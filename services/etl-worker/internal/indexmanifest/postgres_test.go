@@ -344,6 +344,70 @@ func TestPostgresStoreActivationAcceptsExpectedNoActiveGeneration(t *testing.T) 
 	}
 }
 
+func TestPostgresStoreProtectsRetiredRollbackTargetWithinWindow(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.GenerationID, m.State = "gen-retired", StateRetired
+	m.ActivatedAt = time.Now().UTC().Add(-24 * time.Hour)
+	request := RollbackRequest{
+		Version:            VersionIdentity{TenantID: m.TenantID, DocumentID: m.DocumentID, DocumentVersionID: m.DocumentVersionID},
+		TargetGenerationID: m.GenerationID, ExpectedActiveGenerationID: "gen-active",
+		Window: 7 * 24 * time.Hour, Lease: 5 * time.Minute, ClaimToken: "retention-1",
+	}
+	mock.ExpectQuery("UPDATE index_manifests SET retention_lease_until").WithArgs(
+		m.GenerationID, m.TenantID, m.DocumentID, m.DocumentVersionID,
+		"gen-active", "168h0m0s", "5m0s", "retention-1",
+	).WillReturnRows(immutableManifestRowNullable(m, m.ExpectedChunkCount, m.ExpectedChunkDigest))
+
+	got, err := NewPostgresStore(mock).RollbackTarget(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GenerationID != m.GenerationID || got.RetentionClaimToken != request.ClaimToken {
+		t.Fatalf("target = %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreRollsBackWithExpectedActiveAndFencedTarget(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	request := RollbackRequest{
+		Version:            VersionIdentity{TenantID: "acme", DocumentID: "doc-1", DocumentVersionID: "job-1"},
+		TargetGenerationID: "gen-retired", ExpectedActiveGenerationID: "gen-active",
+		Window: 7 * 24 * time.Hour, Lease: 5 * time.Minute, ClaimToken: "retention-1",
+	}
+	commit := RollbackCommit{Request: request,
+		Qdrant:        BackendObservation{Count: 2, Digest: "sha256:digest"},
+		Elasticsearch: BackendObservation{Count: 2, Digest: "sha256:digest"},
+	}
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs("acme/job-1").WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("SELECT generation_id").WithArgs("acme", "doc-1", "job-1").WillReturnRows(pgxmock.NewRows([]string{"generation_id"}).AddRow("gen-active"))
+	mock.ExpectExec("UPDATE index_manifests SET state='retired'").WithArgs("acme", "doc-1", "job-1", "gen-active").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE index_manifests SET state='active'").WithArgs(
+		"acme", "doc-1", "job-1", "gen-retired", "retention-1",
+		2, "sha256:digest", 2, "sha256:digest", "168h0m0s",
+	).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	if err := NewPostgresStore(mock).Rollback(context.Background(), commit); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgresStoreResolvesOnlyActiveGeneration(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -422,6 +486,82 @@ func TestPostgresStoreClaimsActiveManifestsFairlyWithLease(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].GenerationID != m.GenerationID || got[0].State != StateActive || got[0].ReconcileClaimToken != "claim-1" {
 		t.Fatalf("claimed manifests = %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreClaimsOnlyExpiredRetiredGenerations(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.GenerationID, m.State = "gen-old", StateRetired
+	m.ExpectedSealed = true
+	mock.ExpectQuery("WITH candidates AS.*state='retired'.*retired_at < now\\(\\)-.*FOR UPDATE SKIP LOCKED.*UPDATE index_manifests").
+		WithArgs("168h0m0s", 25, "5m0s", "retention-1").WillReturnRows(
+		pgxmock.NewRows([]string{
+			"generation_id", "tenant_id", "document_id", "document_version_id", "chunker_version",
+			"embedding_model", "vector_dimension", "schema_version", "collection_version", "index_version",
+			"expected_active_generation_id", "expected_chunk_count", "expected_chunk_digest", "state",
+			"qdrant_deleted_at", "elasticsearch_deleted_at",
+		}).AddRow(m.GenerationID, m.TenantID, m.DocumentID, m.DocumentVersionID, m.ChunkerVersion,
+			m.EmbeddingModel, m.VectorDimension, m.SchemaVersion, m.CollectionVersion, m.IndexVersion,
+			m.ExpectedActiveGenerationID, m.ExpectedChunkCount, m.ExpectedChunkDigest, m.State, nil, nil))
+
+	got, err := NewPostgresStore(mock).ClaimRetention(context.Background(), RetentionClaim{
+		Window: 7 * 24 * time.Hour, Limit: 25, Lease: 5 * time.Minute, Token: "retention-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].GenerationID != m.GenerationID || got[0].RetentionClaimToken != "retention-1" {
+		t.Fatalf("claimed=%+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStorePersistsPartialRetentionProgress(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.GenerationID, m.State, m.RetentionClaimToken = "gen-old", StateRetired, "retention-1"
+	result := RetentionResult{Manifest: m, QdrantDeleted: true, Reason: "delete elasticsearch: unavailable", RetryAfter: time.Hour}
+	mock.ExpectExec("UPDATE index_manifests SET.*qdrant_deleted_at=CASE.*retention_last_error").WithArgs(
+		m.GenerationID, m.RetentionClaimToken, true, false, result.Reason, "1h0m0s",
+	).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	if err := NewPostgresStore(mock).FinishRetention(context.Background(), result); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreDeletesManifestOnlyAfterBothProjectionDeletes(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.GenerationID, m.State, m.RetentionClaimToken = "gen-old", StateRetired, "retention-1"
+	mock.ExpectExec("DELETE FROM index_manifests").WithArgs(m.GenerationID, m.RetentionClaimToken).
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+
+	if err := NewPostgresStore(mock).FinishRetention(context.Background(), RetentionResult{
+		Manifest: m, QdrantDeleted: true, ElasticsearchDeleted: true,
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

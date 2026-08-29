@@ -159,6 +159,11 @@ type Config struct {
 	IndexReconcileLease      time.Duration
 	IndexReconcileBatchSize  int
 	IndexReconcileMaxRepairs int
+	IndexRetentionEnabled    bool
+	IndexRetentionWindow     time.Duration
+	IndexRetentionInterval   time.Duration
+	IndexRetentionLease      time.Duration
+	IndexRetentionBatchSize  int
 
 	// Redis (shared default; used as fallback for cache/state below)
 	RedisAddr     string
@@ -338,6 +343,11 @@ func Load() Config {
 		IndexReconcileLease:      EnvDuration("INDEX_RECONCILE_LEASE", 30*time.Minute),
 		IndexReconcileBatchSize:  EnvInt("INDEX_RECONCILE_BATCH_SIZE", 20),
 		IndexReconcileMaxRepairs: EnvInt("INDEX_RECONCILE_MAX_REPAIRS", 3),
+		IndexRetentionEnabled:    EnvBool("INDEX_RETENTION_ENABLED", false),
+		IndexRetentionWindow:     EnvDuration("INDEX_RETENTION_WINDOW", 0),
+		IndexRetentionInterval:   EnvDuration("INDEX_RETENTION_INTERVAL", time.Hour),
+		IndexRetentionLease:      EnvDuration("INDEX_RETENTION_LEASE", 30*time.Minute),
+		IndexRetentionBatchSize:  EnvInt("INDEX_RETENTION_BATCH_SIZE", 20),
 
 		// Redis: REDIS_* is the shared default; REDIS_CACHE_*/REDIS_STATE_*
 		// override it so evictable cache and durable state can be separated.
@@ -508,6 +518,16 @@ func (c Config) Validate() error {
 		c.IndexReconcileBatchSize < 1 || c.IndexReconcileBatchSize > 1000 ||
 		c.IndexReconcileMaxRepairs < 1 || c.IndexReconcileMaxRepairs > 20 {
 		return fmt.Errorf("index reconciliation interval must be > 0, lease must exceed interval, batch must be 1..1000, and max repairs must be 1..20")
+	}
+	if c.IndexRetentionWindow < 0 || c.IndexRetentionInterval <= 0 || c.IndexRetentionLease <= 0 ||
+		c.IndexRetentionBatchSize < 1 || c.IndexRetentionBatchSize > 1000 {
+		return fmt.Errorf("index retention window must be >= 0, interval/lease must be > 0, and batch must be 1..1000")
+	}
+	if c.IndexRetentionEnabled && c.IndexRetentionWindow <= 0 {
+		return fmt.Errorf("INDEX_RETENTION_WINDOW must be explicitly configured when retention cleanup is enabled")
+	}
+	if c.IndexRetentionLease <= time.Duration(c.IndexRetentionBatchSize)*45*time.Second {
+		return fmt.Errorf("INDEX_RETENTION_LEASE must exceed the configured batch worst-case projection timeout")
 	}
 	worstCaseProcessing := c.PipelineTimeout * time.Duration(c.MaxRetries+1)
 	for attempt := 1; attempt <= c.MaxRetries; attempt++ {
