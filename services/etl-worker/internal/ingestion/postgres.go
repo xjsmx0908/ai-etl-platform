@@ -10,6 +10,7 @@ import (
 	"ai-etl-pipeline/internal/db"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/publicationrelease"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -62,6 +63,11 @@ func (s *PostgresStore) Admit(ctx context.Context, sub Submission) (Receipt, err
 		INSERT INTO ingestion_jobs (job_id,event_id,tenant_id,doc_id,request_signature,task)
 		VALUES ($1,$2,$3,$4,$5,$6::jsonb)`, sub.JobID, sub.EventID, sub.Document.TenantID, sub.Document.DocID, sub.RequestSignature, string(taskJSON)); err != nil {
 		return Receipt{}, fmt.Errorf("insert ingestion job: %w", err)
+	}
+	if _, err := publicationrelease.NewPostgresStore(tx).RecordCurrent(ctx, publicationrelease.VersionIdentity{
+		TenantID: sub.Document.TenantID, DocumentID: sub.Document.DocID, VersionID: sub.JobID,
+	}); err != nil {
+		return Receipt{}, fmt.Errorf("record current document version: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO ingestion_outbox (event_id,job_id,tenant_id,doc_id,task)

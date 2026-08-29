@@ -782,3 +782,21 @@ This file is an append-only record of completed PRAR cycles.
 - Verification: focused TDD tests, promtool rule tests, a disposable PostgreSQL
   lifecycle test, and the full project quality suite cover the final P2.3
   engineering gate. Production rollout remains separately controlled.
+
+## 2026-08-29 - P2.4-A version-bound release model
+
+- Perceive: durable ingestion could replace the mutable document row while the
+  prior publication state remained unchanged, and active generation uniqueness
+  was version-scoped. No PostgreSQL identity named the one approved release.
+- Reason: keep current admission and published authority as separate pointers
+  behind one small release interface. Use a monotonic revision for stale
+  candidate rejection and update current identity in the admission transaction.
+- Act: added the release schema and PostgreSQL module, atomic admission wiring,
+  idempotent current-version recording, tenant-scoped lookup, and publication
+  compare-and-set. Migration resolves only exact object/job/generation matches.
+- Refine: distinguish ambiguity from missing legacy evidence. Multiple possible
+  versions or generations abort migration; no provable history becomes an
+  explicit unresolved row so later governance fails closed without blocking the
+  schema upgrade. Full Go tests, race checks, formatting, vet, and disposable
+  PostgreSQL integration tests pass. No query policy, deployment, or retention
+  setting changed in this slice.

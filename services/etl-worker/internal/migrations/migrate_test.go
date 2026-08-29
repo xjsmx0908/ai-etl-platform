@@ -195,6 +195,26 @@ func TestIndexGenerationRetentionMigrationStartsRollbackWindowAtRetirement(t *te
 	}
 }
 
+func TestDocumentReleaseMigrationCarriesVersionBoundPublicationInvariants(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0016_document_releases.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE TABLE document_releases", "current_version_id", "published_version_id",
+		"published_generation_id", "revision BIGINT", "resolution_status",
+		"document_releases_published_identity_pair", "document_releases_resolved_current",
+		"REFERENCES ingestion_jobs", "REFERENCES index_manifests",
+		"ambiguous current document version", "ambiguous published generation",
+		"j.task->>'file_path'=d.object_key", "WHERE published_version_id IS NOT NULL",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.
