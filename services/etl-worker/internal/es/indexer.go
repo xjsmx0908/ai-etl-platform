@@ -11,17 +11,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/model"
 )
 
 // HTTPIndexer writes chunk documents to Elasticsearch.
 type HTTPIndexer struct {
-	address string
-	apiKey  string
-	index   string
-	client  *http.Client
+	address               string
+	apiKey                string
+	index                 string
+	client                *http.Client
+	generationMappingOnce sync.Once
+	generationMappingErr  error
 }
 
 const cjkIndexVersion = "v2"
@@ -154,6 +158,129 @@ func (i *HTTPIndexer) IndexChunk(ctx context.Context, chunk model.Chunk) error {
 	return fmt.Errorf("es index failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
+func (i *HTTPIndexer) UpsertGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity, chunk model.Chunk) error {
+	if identity.GenerationID == "" || identity.TenantID != chunk.TenantID || identity.DocumentID != chunk.DocID || identity.DocumentVersionID == "" {
+		return indexmanifest.ErrInvalidManifest
+	}
+	if err := i.ensureGenerationMappingOnce(ctx); err != nil {
+		return err
+	}
+	doc := mapChunkToESDoc(chunk)
+	doc.DocumentVersionID = identity.DocumentVersionID
+	doc.GenerationID = identity.GenerationID
+	doc.ContentHash = indexmanifest.ContentHash(chunk.Content)
+	data, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("marshal generation document: %w", err)
+	}
+	docID := url.PathEscape(identity.GenerationID + "__" + chunk.ChunkID)
+	endpoint := fmt.Sprintf("%s/%s/_doc/%s?refresh=wait_for", i.address, pathEscape(i.index), docID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	i.setHeaders(req)
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("es generation index: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("es generation index failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+}
+
+func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity) (indexmanifest.BackendObservation, error) {
+	if identity.GenerationID == "" || identity.TenantID == "" || identity.DocumentID == "" || identity.DocumentVersionID == "" {
+		return indexmanifest.BackendObservation{}, indexmanifest.ErrInvalidManifest
+	}
+	if err := i.ensureGenerationMappingOnce(ctx); err != nil {
+		return indexmanifest.BackendObservation{}, err
+	}
+	refreshReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/%s/_refresh", i.address, pathEscape(i.index)), nil)
+	if err != nil {
+		return indexmanifest.BackendObservation{}, err
+	}
+	i.setHeaders(refreshReq)
+	refreshResp, err := i.client.Do(refreshReq)
+	if err != nil {
+		return indexmanifest.BackendObservation{}, fmt.Errorf("es generation refresh: %w", err)
+	}
+	refreshResp.Body.Close()
+	if refreshResp.StatusCode < 200 || refreshResp.StatusCode >= 300 {
+		return indexmanifest.BackendObservation{}, fmt.Errorf("es generation refresh status=%d", refreshResp.StatusCode)
+	}
+	query := map[string]interface{}{"size": 500, "_source": []string{"chunk_id", "chunk_index", "content_hash"}, "sort": []string{"_doc"}, "query": map[string]interface{}{"bool": map[string]interface{}{"filter": []map[string]interface{}{
+		{"term": map[string]string{"tenant_id": identity.TenantID}}, {"term": map[string]string{"doc_id": identity.DocumentID}}, {"term": map[string]string{"document_version_id": identity.DocumentVersionID}}, {"term": map[string]string{"generation_id": identity.GenerationID}},
+	}}}}
+	data, _ := json.Marshal(query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/%s/_search?scroll=1m", i.address, pathEscape(i.index)), bytes.NewReader(data))
+	if err != nil {
+		return indexmanifest.BackendObservation{}, err
+	}
+	i.setHeaders(req)
+	identities := []indexmanifest.ChunkIdentity{}
+	var scrollID string
+	for {
+		resp, err := i.client.Do(req)
+		if err != nil {
+			return indexmanifest.BackendObservation{}, fmt.Errorf("es generation search: %w", err)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return indexmanifest.BackendObservation{}, fmt.Errorf("es generation search status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var page struct {
+			ScrollID string `json:"_scroll_id"`
+			Hits     struct {
+				Hits []struct {
+					Source struct {
+						ChunkID     string `json:"chunk_id"`
+						ChunkIndex  int    `json:"chunk_index"`
+						ContentHash string `json:"content_hash"`
+					} `json:"_source"`
+				} `json:"hits"`
+			} `json:"hits"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if err != nil {
+			return indexmanifest.BackendObservation{}, fmt.Errorf("decode es generation: %w", err)
+		}
+		scrollID = page.ScrollID
+		if len(page.Hits.Hits) == 0 {
+			break
+		}
+		for _, hit := range page.Hits.Hits {
+			identities = append(identities, indexmanifest.ChunkIdentity{ChunkID: hit.Source.ChunkID, Index: hit.Source.ChunkIndex, ContentHash: hit.Source.ContentHash})
+		}
+		scrollData, _ := json.Marshal(map[string]string{"scroll": "1m", "scroll_id": scrollID})
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, i.address+"/_search/scroll", bytes.NewReader(scrollData))
+		if err != nil {
+			return indexmanifest.BackendObservation{}, err
+		}
+		i.setHeaders(req)
+	}
+	if scrollID != "" {
+		clearData, _ := json.Marshal(map[string][]string{"scroll_id": {scrollID}})
+		clearReq, _ := http.NewRequestWithContext(ctx, http.MethodDelete, i.address+"/_search/scroll", bytes.NewReader(clearData))
+		i.setHeaders(clearReq)
+		if clearResp, clearErr := i.client.Do(clearReq); clearErr == nil {
+			clearResp.Body.Close()
+		}
+	}
+	digest, err := indexmanifest.IdentityDigest(identity, identities)
+	if err != nil {
+		return indexmanifest.BackendObservation{}, err
+	}
+	return indexmanifest.BackendObservation{Count: len(identities), Digest: digest, ObservedAt: time.Now().UTC()}, nil
+}
+
+var _ indexmanifest.Projection = (*HTTPIndexer)(nil)
+
 func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 	headURL := fmt.Sprintf("%s/%s", i.address, pathEscape(i.index))
 	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, headURL, nil)
@@ -194,9 +321,12 @@ func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 				"chunk_index": map[string]string{
 					"type": "integer",
 				},
-				"file_hash":  map[string]string{"type": "keyword"},
-				"created_at": map[string]string{"type": "date"},
-				"metadata":   map[string]string{"type": "flattened"},
+				"file_hash":           map[string]string{"type": "keyword"},
+				"document_version_id": map[string]string{"type": "keyword"},
+				"generation_id":       map[string]string{"type": "keyword"},
+				"content_hash":        map[string]string{"type": "keyword"},
+				"created_at":          map[string]string{"type": "date"},
+				"metadata":            map[string]string{"type": "flattened"},
 			},
 		},
 	}
@@ -258,6 +388,43 @@ func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 	return nil
 }
 
+func (i *HTTPIndexer) ensureGenerationMappings(ctx context.Context) error {
+	data, err := json.Marshal(map[string]interface{}{"properties": generationMappings()})
+	if err != nil {
+		return fmt.Errorf("marshal generation mappings: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, fmt.Sprintf("%s/%s/_mapping", i.address, pathEscape(i.index)), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	i.setHeaders(req)
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("update generation mappings: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("update generation mappings failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
+}
+
+func (i *HTTPIndexer) ensureGenerationMappingOnce(ctx context.Context) error {
+	i.generationMappingOnce.Do(func() {
+		i.generationMappingErr = i.ensureGenerationMappings(ctx)
+	})
+	return i.generationMappingErr
+}
+
+func generationMappings() map[string]interface{} {
+	return map[string]interface{}{
+		"document_version_id": map[string]string{"type": "keyword"},
+		"generation_id":       map[string]string{"type": "keyword"},
+		"content_hash":        map[string]string{"type": "keyword"},
+	}
+}
+
 func pathEscape(segment string) string {
 	return url.PathEscape(strings.TrimSpace(segment))
 }
@@ -270,15 +437,18 @@ func (i *HTTPIndexer) setHeaders(req *http.Request) {
 }
 
 type esChunkDoc struct {
-	ChunkID    string            `json:"chunk_id"`
-	DocID      string            `json:"doc_id"`
-	TenantID   string            `json:"tenant_id"`
-	Content    string            `json:"content"`
-	Permission string            `json:"permission"`
-	ChunkIndex int               `json:"chunk_index"`
-	FileHash   string            `json:"file_hash,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	CreatedAt  string            `json:"created_at"`
+	ChunkID           string            `json:"chunk_id"`
+	DocID             string            `json:"doc_id"`
+	TenantID          string            `json:"tenant_id"`
+	Content           string            `json:"content"`
+	Permission        string            `json:"permission"`
+	ChunkIndex        int               `json:"chunk_index"`
+	FileHash          string            `json:"file_hash,omitempty"`
+	DocumentVersionID string            `json:"document_version_id,omitempty"`
+	GenerationID      string            `json:"generation_id,omitempty"`
+	ContentHash       string            `json:"content_hash,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	CreatedAt         string            `json:"created_at"`
 }
 
 func mapChunkToESDoc(chunk model.Chunk) esChunkDoc {

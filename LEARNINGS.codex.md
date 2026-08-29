@@ -650,3 +650,18 @@ This file is an append-only record of completed PRAR cycles.
   integration. Durable ingestion `job_id` is the authoritative document-version
   key, enforced together with tenant/document identity by a composite foreign
   key. Mock SQL tests were supplemented by a disposable-schema PostgreSQL race.
+
+## 2026-08-28 - P2.3 generation-aware backend projections
+
+- Perceive: a durable manifest is useful only if backend observations can be
+  scoped to one generation; reusing `chunk_id` alone would let a rebuild replace
+  or mix with the prior active projection.
+- Reason: define one projection interface with two adapters. Put generation and
+  document-version identity in both physical document IDs and payload filters,
+  and compute observations from sorted chunk IDs/content hashes.
+- Act: added generation-aware Qdrant and Elasticsearch upsert/scroll methods,
+  content-hash payload fields, mapping upgrades, and a verifier that records both
+  observations before readiness.
+- Refine: keep legacy writes unchanged and defer pipeline `completed` semantics
+  until manifest creation, verification, and restart behavior are integrated in
+  one later slice. This limits the cutover seam while preserving compatibility.

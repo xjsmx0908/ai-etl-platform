@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/model"
 )
 
@@ -75,6 +76,77 @@ func TestQdrantUpsertIncludesSparseVector(t *testing.T) {
 	vectors := got["points"].([]interface{})[0].(map[string]interface{})["vector"].(map[string]interface{})
 	if _, ok := vectors["sparse"]; !ok {
 		t.Fatal("expected sparse vector in upsert")
+	}
+}
+
+func TestQdrantGenerationProjectionUsesGenerationScopedIdentity(t *testing.T) {
+	var points []map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var body struct {
+			Points []map[string]interface{} `json:"points"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		points = append(points, body.Points...)
+		if r.URL.Query().Get("wait") != "true" {
+			t.Error("generation upsert must wait for acknowledgement")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	qs, err := NewQdrantStorer(srv.URL, "", "docs", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qs.Close()
+	chunk := model.Chunk{ChunkID: "doc_0000", DocID: "doc", TenantID: "tenant-a", Content: "hello", Index: 0, Vector: []float64{.1, .2}}
+	for _, generationID := range []string{"gen-1", "gen-2"} {
+		identity := indexmanifest.GenerationIdentity{GenerationID: generationID, VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+		if err := qs.UpsertGeneration(context.Background(), identity, chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(points) != 2 || points[0]["id"] == points[1]["id"] {
+		t.Fatalf("generation point IDs are not distinct: %+v", points)
+	}
+	payload := points[0]["payload"].(map[string]interface{})
+	if payload["generation_id"] != "gen-1" || payload["document_version_id"] != "job-1" || payload["content_hash"] != indexmanifest.ContentHash("hello") {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestQdrantGenerationProjectionObservesIdentityDigest(t *testing.T) {
+	identity := indexmanifest.GenerationIdentity{GenerationID: "gen-1", VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		filter := body["filter"].(map[string]interface{})
+		if len(filter["must"].([]interface{})) != 4 {
+			t.Fatalf("generation filter=%+v", filter)
+		}
+		_, _ = w.Write([]byte(`{"result":{"points":[{"payload":{"chunk_id":"doc_0001","index":1,"content_hash":"` + indexmanifest.ContentHash("second") + `"}},{"payload":{"chunk_id":"doc_0000","index":0,"content_hash":"` + indexmanifest.ContentHash("first") + `"}}],"next_page_offset":null}}`))
+	}))
+	defer srv.Close()
+	qs, err := NewQdrantStorer(srv.URL, "", "docs", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := qs.ObserveGeneration(context.Background(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := indexmanifest.IdentityDigest(identity, []indexmanifest.ChunkIdentity{{ChunkID: "doc_0000", Index: 0, ContentHash: indexmanifest.ContentHash("first")}, {ChunkID: "doc_0001", Index: 1, ContentHash: indexmanifest.ContentHash("second")}})
+	if got.Count != 2 || got.Digest != want {
+		t.Fatalf("observation=%+v want count=2 digest=%s", got, want)
 	}
 }
 
