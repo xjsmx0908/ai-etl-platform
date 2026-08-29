@@ -696,3 +696,32 @@ func TestPostgresStoreStopsSchedulingAfterRepairLimit(t *testing.T) {
 		t.Fatalf("FinishReconciliation = (%q,%v)", got, err)
 	}
 }
+
+func TestPostgresStoreGenerationOperationsSnapshotIsBoundedAndDurable(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery("SELECT state,count\\(\\*\\),.*oldest_age_seconds.*FROM index_manifests").
+		WillReturnRows(pgxmock.NewRows([]string{"state", "count", "oldest_age_seconds"}).
+			AddRow("building", 2, 95.0).
+			AddRow("active", 7, 30.0).
+			AddRow("failed", 3, 360.0))
+	mock.ExpectQuery("SELECT.*backend_diverged.*repair_exhausted.*retention_failed").
+		WithArgs(3).WillReturnRows(pgxmock.NewRows([]string{
+		"backend_diverged", "repair_exhausted", "retention_failed",
+	}).AddRow(4, 1, 2))
+
+	got, err := NewPostgresStore(mock).OperationsSnapshot(context.Background(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifests[StateActive] != 7 || got.OldestAge[StateBuilding] != 95*time.Second ||
+		got.BackendDiverged != 4 || got.RepairExhausted != 1 || got.RetentionFailed != 2 {
+		t.Fatalf("snapshot = %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

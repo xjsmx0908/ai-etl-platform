@@ -133,6 +133,7 @@ func main() {
 	var generationBuilder indexmanifest.BuildStarter
 	var generationReconciler *indexmanifest.Reconciler
 	var generationRetention *indexmanifest.RetentionCollector
+	var generationOperations generationOperationsReader
 	pgPool, err := migrations.Open(context.Background(), cfg.PGDSN)
 	if err != nil {
 		slog.Warn("postgres unavailable; document registry status write-through disabled", "error", err)
@@ -145,13 +146,14 @@ func main() {
 			slog.Warn("generation indexing disabled; vector store lacks generation projection")
 		} else {
 			manifestStore := indexmanifest.NewPostgresStore(pgPool)
+			generationOperations = manifestStore
 			elasticsearchProjection := fullTextSink.GenerationProjection()
 			generationBuilder = indexmanifest.NewBuilder(manifestStore, qdrantProjection, elasticsearchProjection)
 			if cfg.IndexReconcileEnabled {
 				generationReconciler = indexmanifest.NewReconciler(manifestStore, qdrantProjection, elasticsearchProjection, indexmanifest.ReconcilerOptions{
 					BatchSize: cfg.IndexReconcileBatchSize, Interval: cfg.IndexReconcileInterval,
 					Lease: cfg.IndexReconcileLease, MaxRepairs: cfg.IndexReconcileMaxRepairs,
-				})
+				}).WithObserver(prom)
 			}
 			if cfg.IndexRetentionEnabled {
 				qdrantDeleter, qdrantOK := storer.(indexmanifest.GenerationDeleter)
@@ -162,7 +164,7 @@ func main() {
 					generationRetention = indexmanifest.NewRetentionCollector(manifestStore, qdrantDeleter, elasticsearchDeleter, indexmanifest.RetentionOptions{
 						Window: cfg.IndexRetentionWindow, Interval: cfg.IndexRetentionInterval,
 						Lease: cfg.IndexRetentionLease, BatchSize: cfg.IndexRetentionBatchSize,
-					})
+					}).WithObserver(prom)
 				}
 			}
 		}
@@ -183,6 +185,10 @@ func main() {
 	}
 	if generationRetention != nil {
 		go generationRetention.Run(ctx)
+	}
+	if generationOperations != nil {
+		go runGenerationOperationsMonitor(ctx, generationOperations, prom,
+			cfg.IngestionMetricsInterval, cfg.IndexReconcileMaxRepairs)
 	}
 
 	p.Run(ctx, source)
@@ -218,6 +224,37 @@ func main() {
 	mc.Stop()
 	mc.Summary()
 	slog.Info("worker shutdown complete")
+}
+
+type generationOperationsReader interface {
+	OperationsSnapshot(context.Context, int) (indexmanifest.OperationsSnapshot, error)
+}
+
+type generationOperationsObserver interface {
+	SetGenerationOperations(indexmanifest.OperationsSnapshot)
+}
+
+func runGenerationOperationsMonitor(ctx context.Context, reader generationOperationsReader, observer generationOperationsObserver, interval time.Duration, maxRepairs int) {
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		snapshot, err := reader.OperationsSnapshot(ctx, maxRepairs)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("generation operations snapshot failed", "error", err)
+			}
+		} else {
+			observer.SetGenerationOperations(snapshot)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func startMetricsServer(port int, prom *prometheus.Metrics) *http.Server {

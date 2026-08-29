@@ -57,6 +57,10 @@ type ReconciliationReport struct {
 	Conflicted      int
 }
 
+type ReconciliationObserver interface {
+	ObserveReconciliation(ReconciliationReport, error)
+}
+
 // Reconciler observes active projections and delegates durable, bounded replay
 // scheduling to its store. It never reconstructs chunks from manifest hashes.
 type Reconciler struct {
@@ -64,6 +68,12 @@ type Reconciler struct {
 	qdrant        Projection
 	elasticsearch Projection
 	options       ReconcilerOptions
+	observer      ReconciliationObserver
+}
+
+func (r *Reconciler) WithObserver(observer ReconciliationObserver) *Reconciler {
+	r.observer = observer
+	return r
 }
 
 func NewReconciler(store ReconciliationStore, qdrant, elasticsearch Projection, options ReconcilerOptions) *Reconciler {
@@ -71,15 +81,24 @@ func NewReconciler(store ReconciliationStore, qdrant, elasticsearch Projection, 
 }
 
 func (r *Reconciler) RunOnce(ctx context.Context) (ReconciliationReport, error) {
+	var report ReconciliationReport
+	var runErr error
+	defer func() {
+		if r.observer != nil {
+			r.observer.ObserveReconciliation(report, runErr)
+		}
+	}()
 	if r.store == nil || r.qdrant == nil || r.elasticsearch == nil {
-		return ReconciliationReport{}, ErrInvalidManifest
+		runErr = ErrInvalidManifest
+		return report, runErr
 	}
 	claim := ReconciliationClaim{Limit: r.options.BatchSize, Lease: r.options.Lease, Token: newReconciliationToken()}
 	manifests, err := r.store.ClaimReconciliation(ctx, claim)
 	if err != nil {
-		return ReconciliationReport{}, fmt.Errorf("claim manifest reconciliation: %w", err)
+		runErr = fmt.Errorf("claim manifest reconciliation: %w", err)
+		return report, runErr
 	}
-	report := ReconciliationReport{Checked: len(manifests)}
+	report = ReconciliationReport{Checked: len(manifests)}
 	for _, manifest := range manifests {
 		identity := GenerationIdentity{GenerationID: manifest.GenerationID, VersionIdentity: VersionIdentity{
 			TenantID: manifest.TenantID, DocumentID: manifest.DocumentID, DocumentVersionID: manifest.DocumentVersionID,
@@ -106,7 +125,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) (ReconciliationReport, error) 
 				report.Conflicted++
 				continue
 			}
-			return report, fmt.Errorf("finish manifest reconciliation: %w", finishErr)
+			runErr = fmt.Errorf("finish manifest reconciliation: %w", finishErr)
+			return report, runErr
 		}
 		if result.Healthy {
 			report.Healthy++

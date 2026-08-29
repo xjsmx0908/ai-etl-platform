@@ -678,6 +678,49 @@ AND retention_lease_until > now()`, m.GenerationID,
 	return nil
 }
 
+// OperationsSnapshot returns current generation health without resource-level
+// dimensions, keeping downstream metrics bounded as tenants and documents grow.
+func (s *PostgresStore) OperationsSnapshot(ctx context.Context, maxRepairs int) (OperationsSnapshot, error) {
+	if maxRepairs < 1 {
+		return OperationsSnapshot{}, ErrInvalidManifest
+	}
+	snapshot := OperationsSnapshot{
+		Manifests: make(map[ManifestState]int, 5),
+		OldestAge: make(map[ManifestState]time.Duration, 5),
+	}
+	rows, err := s.q.Query(ctx, `SELECT state,count(*),
+COALESCE(EXTRACT(EPOCH FROM max(now()-created_at)),0) AS oldest_age_seconds
+FROM index_manifests GROUP BY state`)
+	if err != nil {
+		return OperationsSnapshot{}, fmt.Errorf("snapshot generation states: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var state ManifestState
+		var count int
+		var oldestSeconds float64
+		if err := rows.Scan(&state, &count, &oldestSeconds); err != nil {
+			return OperationsSnapshot{}, fmt.Errorf("scan generation state snapshot: %w", err)
+		}
+		snapshot.Manifests[state] = count
+		snapshot.OldestAge[state] = time.Duration(oldestSeconds * float64(time.Second))
+	}
+	if err := rows.Err(); err != nil {
+		return OperationsSnapshot{}, fmt.Errorf("iterate generation state snapshot: %w", err)
+	}
+	err = s.q.QueryRow(ctx, `SELECT
+	count(*) FILTER (WHERE state='active' AND last_reconcile_error<>'') AS backend_diverged,
+count(*) FILTER (WHERE state='active' AND last_reconcile_error<>'' AND repair_attempts >= $1) AS repair_exhausted,
+count(*) FILTER (WHERE state='retired' AND retention_last_error<>'') AS retention_failed
+FROM index_manifests`, maxRepairs).Scan(
+		&snapshot.BackendDiverged, &snapshot.RepairExhausted, &snapshot.RetentionFailed,
+	)
+	if err != nil {
+		return OperationsSnapshot{}, fmt.Errorf("snapshot generation diagnostics: %w", err)
+	}
+	return snapshot, nil
+}
+
 func validateBuildDefinition(manifest Manifest) error {
 	if err := validateUnsealedBuildDefinition(manifest); err != nil ||
 		manifest.ExpectedChunkCount < 0 || manifest.ExpectedChunkDigest == "" {

@@ -3,6 +3,7 @@ package indexmanifest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -14,6 +15,16 @@ type reconciliationStoreStub struct {
 	results      []ReconciliationResult
 	disposition  RepairDisposition
 	finishErrors map[string]error
+}
+
+type reconciliationObserverStub struct {
+	reports []ReconciliationReport
+	errors  []error
+}
+
+func (o *reconciliationObserverStub) ObserveReconciliation(report ReconciliationReport, err error) {
+	o.reports = append(o.reports, report)
+	o.errors = append(o.errors, err)
 }
 
 func (s *reconciliationStoreStub) ClaimReconciliation(context.Context, ReconciliationClaim) ([]Manifest, error) {
@@ -116,5 +127,26 @@ func TestReconcilerRecordsHealthyActiveGenerationWithoutRepair(t *testing.T) {
 	}
 	if store.results[0].Qdrant.Count != 2 || store.results[0].Elasticsearch.Digest != "sha256:expected" {
 		t.Fatalf("observations not persisted: %+v", store.results[0])
+	}
+}
+
+func TestReconcilerPublishesOneBoundedReportPerPass(t *testing.T) {
+	manifest := Manifest{
+		GenerationID: "gen-1", TenantID: "acme", DocumentID: "doc-1", DocumentVersionID: "job-1",
+		ExpectedChunkCount: 1, ExpectedChunkDigest: "expected", State: StateActive,
+	}
+	store := &reconciliationStoreStub{manifests: []Manifest{manifest}}
+	matching := reconciliationProjectionStub{byGeneration: map[string]BackendObservation{
+		"gen-1": {Count: 1, Digest: "expected"},
+	}}
+	observer := &reconciliationObserverStub{}
+	reconciler := NewReconciler(store, matching, matching, ReconcilerOptions{BatchSize: 1, Lease: time.Minute}).WithObserver(observer)
+
+	report, err := reconciler.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observer.reports) != 1 || !reflect.DeepEqual(observer.reports[0], report) || observer.errors[0] != nil {
+		t.Fatalf("observed reports=%+v errors=%+v", observer.reports, observer.errors)
 	}
 }

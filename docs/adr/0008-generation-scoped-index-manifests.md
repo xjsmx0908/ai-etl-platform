@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-28); pipeline, reads, reconciliation, rollback, and retention implemented
+Accepted (2026-08-28); P2.3 implementation and acceptance gate complete
 
 ## Context
 
@@ -156,5 +156,10 @@ manifest is deleted only after both deletes succeed. Source objects and durable
 ingestion records remain outside this cleanup. Automatic cleanup is disabled by
 default and cannot be enabled without an explicitly approved positive window.
 
-Bounded metrics/alerts and the remaining acceptance matrix are subsequent P2.3
-slices.
+The final slice exposes bounded-cardinality manifest state, age, divergence,
+repair, rollback, and retention metrics. No tenant, document, or generation
+identity is used as a Prometheus label. Sustained stalled builds, failed
+manifests, backend divergence, exhausted repairs, and retention failures have
+tested alert rules. The crash replay, reindex, rollback, and garbage-collection
+matrix is maintained in `docs/index-generation-acceptance.md`; CI runs the
+PostgreSQL lifecycle tests against a disposable PostgreSQL 16 service.

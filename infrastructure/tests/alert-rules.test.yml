@@ -82,3 +82,77 @@ tests:
               severity: critical
             exp_annotations:
               summary: Durable ingestion work is waiting for lease recovery
+
+  - name: stalled generation build and failed manifest trigger operational alerts
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_generation_oldest_age_seconds{instance="etl-worker:8081",state="building"}'
+        values: '1200x16'
+      - series: 'ai_etl_generation_manifests{instance="etl-worker:8081",state="failed"}'
+        values: '2x16'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: IndexGenerationBuildStalled
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: IndexGenerationBuildStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              state: building
+            exp_annotations:
+              summary: An index generation has remained building for over 15 minutes
+      - eval_time: 15m
+        alertname: IndexGenerationFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              state: failed
+            exp_annotations:
+              summary: Failed index generation manifests require investigation
+
+  - name: persistent projection divergence and exhausted repair trigger critical alerts
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_generation_diagnostics{instance="etl-worker:8081",condition="backend_diverged"}'
+        values: '1x11'
+      - series: 'ai_etl_generation_diagnostics{instance="etl-worker:8081",condition="repair_exhausted"}'
+        values: '1x11'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: IndexGenerationBackendDiverged
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: IndexGenerationBackendDiverged
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              condition: backend_diverged
+            exp_annotations:
+              summary: Active index generations remain inconsistent across search backends
+      - eval_time: 5m
+        alertname: IndexGenerationRepairExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              condition: repair_exhausted
+            exp_annotations:
+              summary: Automatic index generation repair attempts are exhausted
+
+  - name: persistent retired generation cleanup failures trigger warning
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_generation_diagnostics{instance="etl-worker:8081",condition="retention_failed"}'
+        values: '2x31'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: IndexGenerationRetentionFailed
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: IndexGenerationRetentionFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              condition: retention_failed
+            exp_annotations:
+              summary: Retired index generation cleanup continues to fail

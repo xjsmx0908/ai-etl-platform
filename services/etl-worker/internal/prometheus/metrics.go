@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/agent"
+	"ai-etl-pipeline/internal/indexmanifest"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -55,6 +56,14 @@ type Metrics struct {
 	IngestionOutboxOldestAge prometheus.Gauge
 	IngestionJobs            *prometheus.GaugeVec
 	IngestionExpiredLeases   prometheus.Gauge
+
+	// Generation metrics intentionally use only fixed lifecycle/outcome labels.
+	GenerationManifests       *prometheus.GaugeVec
+	GenerationOldestAge       *prometheus.GaugeVec
+	GenerationDiagnostics     *prometheus.GaugeVec
+	GenerationReconciliations *prometheus.CounterVec
+	GenerationRetentions      *prometheus.CounterVec
+	GenerationRollbacks       *prometheus.CounterVec
 
 	// Query metrics
 	QueryDuration          *prometheus.HistogramVec
@@ -189,6 +198,30 @@ func New(namespace string) *Metrics {
 			Namespace: namespace, Subsystem: "ingestion", Name: "expired_processing_leases",
 			Help: "Processing ingestion jobs whose recovery lease has expired",
 		}),
+		GenerationManifests: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "generation", Name: "manifests",
+			Help: "Durable index generation manifests by lifecycle state",
+		}, []string{"state"}),
+		GenerationOldestAge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "generation", Name: "oldest_age_seconds",
+			Help: "Age of the oldest durable index generation by lifecycle state",
+		}, []string{"state"}),
+		GenerationDiagnostics: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "generation", Name: "diagnostics",
+			Help: "Current durable index generation health diagnostics",
+		}, []string{"condition"}),
+		GenerationReconciliations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Subsystem: "generation", Name: "reconciliations_total",
+			Help: "Completed index generation reconciliation outcomes",
+		}, []string{"outcome"}),
+		GenerationRetentions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Subsystem: "generation", Name: "retentions_total",
+			Help: "Completed retired index generation cleanup outcomes",
+		}, []string{"outcome"}),
+		GenerationRollbacks: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Subsystem: "generation", Name: "rollbacks_total",
+			Help: "Completed index generation rollback outcomes",
+		}, []string{"outcome"}),
 		QueryDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: namespace,
@@ -346,6 +379,12 @@ func New(namespace string) *Metrics {
 		m.IngestionOutboxOldestAge,
 		m.IngestionJobs,
 		m.IngestionExpiredLeases,
+		m.GenerationManifests,
+		m.GenerationOldestAge,
+		m.GenerationDiagnostics,
+		m.GenerationReconciliations,
+		m.GenerationRetentions,
+		m.GenerationRollbacks,
 		m.QueryDuration,
 		m.QueryFailures,
 		m.RetrievalCount,
@@ -376,6 +415,57 @@ func (m *Metrics) SetIngestionOperations(pending, retried int, oldestAge time.Du
 		m.IngestionJobs.WithLabelValues(status).Set(float64(jobs[status]))
 	}
 	m.IngestionExpiredLeases.Set(float64(expiredLeases))
+}
+
+// SetGenerationOperations replaces the current durable generation health
+// snapshot. Only fixed state and condition labels are emitted.
+func (m *Metrics) SetGenerationOperations(snapshot indexmanifest.OperationsSnapshot) {
+	for _, state := range []indexmanifest.ManifestState{
+		indexmanifest.StateBuilding, indexmanifest.StateReady, indexmanifest.StateFailed,
+		indexmanifest.StateActive, indexmanifest.StateRetired,
+	} {
+		m.GenerationManifests.WithLabelValues(string(state)).Set(float64(snapshot.Manifests[state]))
+		m.GenerationOldestAge.WithLabelValues(string(state)).Set(nonNegativeDuration(snapshot.OldestAge[state]).Seconds())
+	}
+	m.GenerationDiagnostics.WithLabelValues("backend_diverged").Set(float64(snapshot.BackendDiverged))
+	m.GenerationDiagnostics.WithLabelValues("repair_exhausted").Set(float64(snapshot.RepairExhausted))
+	m.GenerationDiagnostics.WithLabelValues("retention_failed").Set(float64(snapshot.RetentionFailed))
+}
+
+func (m *Metrics) ObserveReconciliation(report indexmanifest.ReconciliationReport, err error) {
+	if err != nil {
+		m.GenerationReconciliations.WithLabelValues("pass_failed").Inc()
+		return
+	}
+	for outcome, count := range map[string]int{
+		"healthy": report.Healthy, "diverged": report.Diverged,
+		"repair_scheduled": report.RepairScheduled, "repair_pending": report.RepairPending,
+		"repair_exhausted": report.RepairExhausted, "conflicted": report.Conflicted,
+	} {
+		m.GenerationReconciliations.WithLabelValues(outcome).Add(float64(count))
+	}
+}
+
+func (m *Metrics) ObserveRetention(report indexmanifest.RetentionReport, err error) {
+	if err != nil {
+		m.GenerationRetentions.WithLabelValues("pass_failed").Inc()
+		return
+	}
+	for outcome, count := range map[string]int{
+		"deleted": report.Deleted, "failed": report.Failed, "conflicted": report.Conflicted,
+	} {
+		m.GenerationRetentions.WithLabelValues(outcome).Add(float64(count))
+	}
+}
+
+func (m *Metrics) ObserveRollback(outcome indexmanifest.RollbackOutcome) {
+	switch outcome {
+	case indexmanifest.RollbackSucceeded, indexmanifest.RollbackConflict,
+		indexmanifest.RollbackNotReady, indexmanifest.RollbackFailed:
+		m.GenerationRollbacks.WithLabelValues(string(outcome)).Inc()
+	default:
+		m.GenerationRollbacks.WithLabelValues("failed").Inc()
+	}
 }
 
 // Handler returns an HTTP handler for the /metrics endpoint.

@@ -334,7 +334,7 @@ func main() {
 		} else {
 			defer rollbackQdrant.Close()
 			defer rollbackElasticsearch.Close()
-			generationRollbacker = indexmanifest.NewRollbacker(generationVisibility, rollbackQdrant, rollbackElasticsearch)
+			generationRollbacker = indexmanifest.NewRollbacker(generationVisibility, rollbackQdrant, rollbackElasticsearch).WithObserver(prom)
 		}
 	}
 	publicationWorkflow := publicationworkflow.New(docStore, publicationInspector).

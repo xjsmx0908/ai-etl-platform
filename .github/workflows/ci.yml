@@ -19,6 +19,22 @@ jobs:
   go:
     name: Go Checks (etl-worker)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      INDEX_MANIFEST_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
     defaults:
       run:
         working-directory: services/etl-worker

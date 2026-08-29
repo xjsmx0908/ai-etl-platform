@@ -37,6 +37,16 @@ type BackendObservation struct {
 	ObservedAt time.Time
 }
 
+// OperationsSnapshot is a bounded-cardinality view of durable generation
+// health. Map keys are the fixed manifest state enum, never resource identity.
+type OperationsSnapshot struct {
+	Manifests       map[ManifestState]int
+	OldestAge       map[ManifestState]time.Duration
+	BackendDiverged int
+	RepairExhausted int
+	RetentionFailed int
+}
+
 // Projection is the generation-aware seam implemented by each derived index.
 type Projection interface {
 	UpsertGeneration(context.Context, GenerationIdentity, model.Chunk) error
