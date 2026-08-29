@@ -37,6 +37,14 @@ type loginResponse struct {
 	User      loginUser `json:"user"`
 }
 
+func newPlatformAuthenticator(cfg config.Config, users userstore.Store) auth.Authenticator {
+	return auth.NewVerifierWithPolicy(
+		cfg.JWTSecret,
+		users,
+		auth.IdentityPolicyForEnvironment(cfg.Environment),
+	)
+}
+
 // openPostgres connects to PostgreSQL and applies pending migrations. The query
 // API treats a missing/unhealthy registry as fatal (it owns the registry); the
 // worker treats it as optional and warns instead.

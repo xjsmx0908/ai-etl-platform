@@ -5,6 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestVerifyValidToken(t *testing.T) {
@@ -55,6 +58,27 @@ func TestVerifyRejectsWrongSecret(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	if _, err := v.Verify(req); err == nil {
 		t.Fatal("expected error for token signed with different secret")
+	}
+}
+
+func TestVerifyRejectsAlternativeHMACAlgorithm(t *testing.T) {
+	secret := "test-secret-32-chars-minimum-length"
+	claims := Claims{
+		TenantID: "tenant-a", UserID: "user-1", Permission: "user",
+		AuthenticationMethod: AuthenticationMethodLocal,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS512, claims).SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("sign HS512 token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	if _, err := NewVerifier(secret).Verify(req); err == nil {
+		t.Fatal("expected exact HS256 enforcement")
 	}
 }
 

@@ -40,11 +40,12 @@ func ScopesForRole(role string) []string {
 func IssueToken(secret, userID, username, role, tenantID string, tokenVersion int) (string, time.Time, error) {
 	expiresAt := time.Now().Add(tokenLifetime)
 	claims := Claims{
-		TenantID:     tenantID,
-		UserID:       userID,
-		Permission:   role,
-		Scopes:       ScopesForRole(role),
-		TokenVersion: tokenVersion,
+		TenantID:             tenantID,
+		UserID:               userID,
+		Permission:           role,
+		Scopes:               ScopesForRole(role),
+		TokenVersion:         tokenVersion,
+		AuthenticationMethod: AuthenticationMethodLocal,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

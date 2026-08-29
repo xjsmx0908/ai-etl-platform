@@ -870,3 +870,23 @@ This file is an append-only record of completed PRAR cycles.
 - Verification: nine harness contract tests, syntax/Compose checks, and the
   isolated full-stack run passed all six scenarios with a secret-free JSON
   report. No deployment or generation-retention change was made.
+
+## 2026-08-29 - P2.5-A policy-owned principal baseline
+
+- Perceive: middleware accepted a signed token's tenant, role, and scopes as
+  authorization facts and intentionally allowed unknown users for evaluation;
+  the same behavior would permit claim-based authority and test identities in
+  production.
+- Reason: authenticate through one provider-neutral interface and return an
+  internal `Principal`. Keep identity proof in adapters, authorization facts in
+  internal stores, and knowledge-space membership in the catalog.
+- Act: marked local/test/legacy methods, rebuilt known-user authority from
+  PostgreSQL, applied a production fail-closed policy, enforced exact HS256,
+  and made shared middleware depend only on the `Authenticator` interface.
+- Refine: declaring an interface while keeping middleware on the JWT verifier
+  would force a future OIDC adapter to duplicate context and scope behavior.
+  Moving middleware to the seam makes adapter replacement real and testable.
+- Verification: focused identity and Query API tests cover claim injection,
+  algorithm confusion, unknown/inactive/revoked users, production test/legacy
+  rejection, and non-production evaluation compatibility. Enterprise provider
+  integration remains correctly blocked on ADR 0009 decisions.

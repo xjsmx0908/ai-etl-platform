@@ -321,6 +321,42 @@ P2.4-E outcome (completed 2026-08-29):
 - Updated the existing smoke test to accept asynchronous deletion via HTTP
   `202` and poll for final `404`. No deployment or retention enablement occurred.
 
+P2.5-A implementation plan (approved 2026-08-29):
+
+1. Introduce one provider-neutral identity module interface that returns a
+   policy-owned `Principal`: internal tenant and subject IDs, internal role,
+   authentication method, and granted capabilities. Existing authorization and
+   knowledge-space membership remain outside the authentication adapter.
+2. Mark platform-issued sessions as `local` and offline evaluator credentials
+   as `test`; reserve `federated` and `service` identities without implementing
+   a provider adapter in this slice. Preserve development, staging, and explicit
+   evaluation compatibility.
+3. In the production authentication policy, reject test/legacy credentials,
+   unknown internal subjects, inactive users, and token-version mismatches. For
+   a known subject, derive tenant, role, and capabilities from the internal user
+   record rather than trusting mutable token claims.
+4. Test through two approved seams: the identity module interface and protected
+   HTTP middleware behavior. Cover claim tampering, unknown/inactive subjects,
+   test-token rejection, revocation, and non-production evaluator compatibility.
+5. Update configuration and architecture documentation and run the complete
+   Go race/vet, Python, Web, Compose, observability, and diff gates. Do not add
+   OIDC/SCIM, select an IdP, enable production federation, or deploy this slice.
+
+P2.5-A outcome (completed 2026-08-29):
+
+- Added a provider-neutral `Authenticator` interface and policy-owned
+  `Principal`, with shared HTTP middleware that no longer depends on one token
+  adapter's claims shape.
+- Platform sessions identify `local`, `test`, and legacy authentication. Exact
+  HS256 validation rejects alternate HMAC algorithms.
+- Known subjects derive tenant, role, and capabilities from PostgreSQL. The
+  production policy rejects test/legacy credentials, unknown/inactive users,
+  and revoked token versions; non-production keeps evaluator compatibility.
+- Added identity-interface, middleware, and Query API construction tests for
+  privilege-claim injection and every fail-closed path in this slice.
+- OIDC/SCIM, service identities, production local-login disablement, provider
+  mapping, MFA/session policy, and break-glass remain pending IdP/policy input.
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
