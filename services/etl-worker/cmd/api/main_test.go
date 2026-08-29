@@ -198,6 +198,61 @@ type noopObjectStore struct{}
 func (noopObjectStore) Upload(context.Context, string, io.Reader, int64, string) error { return nil }
 func (noopObjectStore) DeleteByPrefix(context.Context, string) error                   { return nil }
 
+type operationsReaderStub struct {
+	snapshot ingestion.OperationsSnapshot
+	called   chan struct{}
+}
+
+func (s *operationsReaderStub) OperationsSnapshot(context.Context) (ingestion.OperationsSnapshot, error) {
+	select {
+	case s.called <- struct{}{}:
+	default:
+	}
+	return s.snapshot, nil
+}
+
+type operationsObserverStub struct {
+	observed chan ingestion.OperationsSnapshot
+}
+
+func (s *operationsObserverStub) SetIngestionOperations(pending, retried int, oldest time.Duration, jobs map[string]int, expired int) {
+	s.observed <- ingestion.OperationsSnapshot{
+		PendingOutbox: pending, RetriedOutbox: retried, OldestOutboxAge: oldest,
+		Jobs: jobs, ExpiredProcessingLeases: expired,
+	}
+}
+
+func TestIngestionOperationsMonitorPublishesPostgresSnapshot(t *testing.T) {
+	want := ingestion.OperationsSnapshot{
+		PendingOutbox: 4, RetriedOutbox: 2, OldestOutboxAge: 90 * time.Second,
+		Jobs: map[string]int{"processing": 3}, ExpiredProcessingLeases: 1,
+	}
+	reader := &operationsReaderStub{snapshot: want, called: make(chan struct{}, 1)}
+	observer := &operationsObserverStub{observed: make(chan ingestion.OperationsSnapshot, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runIngestionOperationsMonitor(ctx, reader, observer, time.Hour)
+		close(done)
+	}()
+
+	select {
+	case got := <-observer.observed:
+		if got.PendingOutbox != want.PendingOutbox || got.RetriedOutbox != want.RetriedOutbox ||
+			got.OldestOutboxAge != want.OldestOutboxAge || got.ExpiredProcessingLeases != want.ExpiredProcessingLeases {
+			t.Fatalf("observed snapshot = %+v, want %+v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("monitor did not publish its initial snapshot")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("monitor did not stop after cancellation")
+	}
+}
+
 func testUploadConfig() config.Config {
 	return config.Config{MaxUploadSize: 1 << 20, MultipartMaxMemoryBytes: 64 << 10}
 }

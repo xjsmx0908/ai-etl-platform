@@ -86,6 +86,25 @@ func TestIngestionJobLifecycleMigrationCarriesConsumerInvariants(t *testing.T) {
 	}
 }
 
+func TestObjectReferenceLookupMigrationSupportsBoundedCleanup(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0010_document_object_key_index.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE INDEX", "documents", "object_key", "WHERE object_key <> ''",
+		"ingestion_jobs", "task->>'file_path'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("migration missing object-reference invariant %q", required)
+		}
+	}
+	if strings.Contains(sql, "WHERE status IN") {
+		t.Error("admitted object reference index must include terminal jobs")
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.

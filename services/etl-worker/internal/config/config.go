@@ -142,14 +142,18 @@ type Config struct {
 	AgentPlannerMaxTokens int
 
 	// Kafka
-	KafkaBrokers            string
-	KafkaTopic              string
-	KafkaGroupID            string
-	KafkaDLQTopic           string
-	OutboxRelayBatchSize    int
-	OutboxRelayPollInterval time.Duration
-	OutboxRelayLease        time.Duration
-	IngestionJobLease       time.Duration
+	KafkaBrokers             string
+	KafkaTopic               string
+	KafkaGroupID             string
+	KafkaDLQTopic            string
+	OutboxRelayBatchSize     int
+	OutboxRelayPollInterval  time.Duration
+	OutboxRelayLease         time.Duration
+	IngestionJobLease        time.Duration
+	IngestionMetricsInterval time.Duration
+	OrphanCleanupInterval    time.Duration
+	OrphanCleanupGracePeriod time.Duration
+	OrphanCleanupBatchSize   int
 
 	// Redis (shared default; used as fallback for cache/state below)
 	RedisAddr     string
@@ -312,14 +316,18 @@ func Load() Config {
 		AgentPlannerMaxTokens: EnvInt("AGENT_PLANNER_MAX_TOKENS", 512),
 
 		// Kafka
-		KafkaBrokers:            EnvStr("KAFKA_BROKERS", "localhost:9092"),
-		KafkaTopic:              EnvStr("KAFKA_TOPIC", "doc-processing"),
-		KafkaGroupID:            EnvStr("KAFKA_GROUP_ID", "etl-pipeline"),
-		KafkaDLQTopic:           EnvStr("KAFKA_DLQ_TOPIC", "doc-processing-dlq"),
-		OutboxRelayBatchSize:    EnvInt("OUTBOX_RELAY_BATCH_SIZE", 50),
-		OutboxRelayPollInterval: EnvDuration("OUTBOX_RELAY_POLL_INTERVAL", 500*time.Millisecond),
-		OutboxRelayLease:        EnvDuration("OUTBOX_RELAY_LEASE", 30*time.Second),
-		IngestionJobLease:       EnvDuration("INGESTION_JOB_LEASE", 30*time.Minute),
+		KafkaBrokers:             EnvStr("KAFKA_BROKERS", "localhost:9092"),
+		KafkaTopic:               EnvStr("KAFKA_TOPIC", "doc-processing"),
+		KafkaGroupID:             EnvStr("KAFKA_GROUP_ID", "etl-pipeline"),
+		KafkaDLQTopic:            EnvStr("KAFKA_DLQ_TOPIC", "doc-processing-dlq"),
+		OutboxRelayBatchSize:     EnvInt("OUTBOX_RELAY_BATCH_SIZE", 50),
+		OutboxRelayPollInterval:  EnvDuration("OUTBOX_RELAY_POLL_INTERVAL", 500*time.Millisecond),
+		OutboxRelayLease:         EnvDuration("OUTBOX_RELAY_LEASE", 30*time.Second),
+		IngestionJobLease:        EnvDuration("INGESTION_JOB_LEASE", 30*time.Minute),
+		IngestionMetricsInterval: EnvDuration("INGESTION_METRICS_INTERVAL", 15*time.Second),
+		OrphanCleanupInterval:    EnvDuration("ORPHAN_CLEANUP_INTERVAL", 15*time.Minute),
+		OrphanCleanupGracePeriod: EnvDuration("ORPHAN_CLEANUP_GRACE_PERIOD", 24*time.Hour),
+		OrphanCleanupBatchSize:   EnvInt("ORPHAN_CLEANUP_BATCH_SIZE", 100),
 
 		// Redis: REDIS_* is the shared default; REDIS_CACHE_*/REDIS_STATE_*
 		// override it so evictable cache and durable state can be separated.
@@ -480,8 +488,11 @@ func (c Config) Validate() error {
 	if c.TaskStatusTTL <= 0 {
 		return fmt.Errorf("TASK_STATUS_TTL must be > 0, got %s", c.TaskStatusTTL)
 	}
-	if c.OutboxRelayBatchSize <= 0 || c.OutboxRelayPollInterval <= 0 || c.OutboxRelayLease <= 0 || c.IngestionJobLease <= 0 {
+	if c.OutboxRelayBatchSize <= 0 || c.OutboxRelayPollInterval <= 0 || c.OutboxRelayLease <= 0 || c.IngestionJobLease <= 0 || c.IngestionMetricsInterval <= 0 {
 		return fmt.Errorf("outbox relay settings and ingestion job lease must be > 0")
+	}
+	if c.OrphanCleanupInterval <= 0 || c.OrphanCleanupGracePeriod <= 0 || c.OrphanCleanupBatchSize < 1 || c.OrphanCleanupBatchSize > 1000 {
+		return fmt.Errorf("orphan cleanup interval/grace must be > 0 and batch size between 1 and 1000")
 	}
 	worstCaseProcessing := c.PipelineTimeout * time.Duration(c.MaxRetries+1)
 	for attempt := 1; attempt <= c.MaxRetries; attempt++ {

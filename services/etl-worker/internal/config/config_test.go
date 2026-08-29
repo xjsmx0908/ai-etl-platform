@@ -41,6 +41,13 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.TaskStatusTTL != 7*24*time.Hour {
 		t.Errorf("expected TaskStatusTTL=168h, got %v", cfg.TaskStatusTTL)
 	}
+	if cfg.IngestionMetricsInterval != 15*time.Second {
+		t.Errorf("expected IngestionMetricsInterval=15s, got %v", cfg.IngestionMetricsInterval)
+	}
+	if cfg.OrphanCleanupInterval != 15*time.Minute || cfg.OrphanCleanupGracePeriod != 24*time.Hour || cfg.OrphanCleanupBatchSize != 100 {
+		t.Errorf("unexpected orphan cleanup defaults: interval=%v grace=%v batch=%d",
+			cfg.OrphanCleanupInterval, cfg.OrphanCleanupGracePeriod, cfg.OrphanCleanupBatchSize)
+	}
 	if cfg.TaskStatusStore != TaskStatusStoreAuto {
 		t.Errorf("expected TaskStatusStore=auto, got %s", cfg.TaskStatusStore)
 	}
@@ -436,6 +443,38 @@ func TestValidate_IngestionJobLeaseCoversRetryWindow(t *testing.T) {
 	cfg.IngestionJobLease += time.Second
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("lease exceeding retry window should pass: %v", err)
+	}
+}
+
+func TestLoad_IngestionOperationsOverrides(t *testing.T) {
+	t.Setenv("INGESTION_METRICS_INTERVAL", "5s")
+	t.Setenv("ORPHAN_CLEANUP_INTERVAL", "30m")
+	t.Setenv("ORPHAN_CLEANUP_GRACE_PERIOD", "48h")
+	t.Setenv("ORPHAN_CLEANUP_BATCH_SIZE", "250")
+
+	cfg := Load()
+	if cfg.IngestionMetricsInterval != 5*time.Second || cfg.OrphanCleanupInterval != 30*time.Minute ||
+		cfg.OrphanCleanupGracePeriod != 48*time.Hour || cfg.OrphanCleanupBatchSize != 250 {
+		t.Fatalf("unexpected ingestion operations overrides: metrics=%v interval=%v grace=%v batch=%d",
+			cfg.IngestionMetricsInterval, cfg.OrphanCleanupInterval, cfg.OrphanCleanupGracePeriod, cfg.OrphanCleanupBatchSize)
+	}
+}
+
+func TestValidate_RejectsUnsafeIngestionOperationsSettings(t *testing.T) {
+	for name, mutate := range map[string]func(*Config){
+		"metrics interval": func(c *Config) { c.IngestionMetricsInterval = 0 },
+		"cleanup interval": func(c *Config) { c.OrphanCleanupInterval = 0 },
+		"cleanup grace":    func(c *Config) { c.OrphanCleanupGracePeriod = 0 },
+		"batch below min":  func(c *Config) { c.OrphanCleanupBatchSize = 0 },
+		"batch above max":  func(c *Config) { c.OrphanCleanupBatchSize = 1001 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Load()
+			mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected unsafe ingestion operations settings to fail")
+			}
+		})
 	}
 }
 

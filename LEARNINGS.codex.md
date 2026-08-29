@@ -603,3 +603,24 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: configuration validation tests must exercise deployed combinations,
   not only application defaults. Compose syntax validation cannot prove that a
   service accepts the resulting environment.
+
+## 2026-08-27 - P2.2 ingestion operations and crash recovery
+
+- Perceive: durable admission and idempotent consumption still lacked signals
+  for stuck work, bounded cleanup for the object/PostgreSQL gap, and acceptance
+  evidence across a relay/API crash after HTTP `202`.
+- Reason: operational metrics must come from authoritative PostgreSQL state and
+  avoid tenant/document labels. Cleanup must fail closed, scan fairly, and
+  protect every object owned by an admitted job—including terminal history—until
+  an explicit generation-retention policy exists.
+- Act: added snapshot gauges and sustained alert rules, an indexed catalog/job
+  reference check, fair bounded MinIO collection, configuration boundaries, and
+  an isolated crash E2E that interrupts Kafka, worker, and Query API progress.
+- Refine: a batch limit applied before candidate filtering can starve cleanup;
+  a current-document-only reference check can delete queued or historical
+  admitted versions. Keep object candidates version-scoped, retain a scan
+  cursor, and treat database uncertainty as a no-delete result.
+- Verification: Go race tests, full Go tests and vet, 117 script tests, parser
+  and reranker pytest suites, Compose overlays, Prometheus config/rules, and the
+  real isolated crash-recovery flow passed. Generation activation remains a
+  separate ADR 0008 phase and is not claimed by this slice.

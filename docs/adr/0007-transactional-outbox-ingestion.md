@@ -97,5 +97,17 @@ terminal state before acknowledging Kafka. Repeated terminal events are ACKed
 without reprocessing; active duplicates are retried, and expired leases are
 recoverable. Partition offsets advance only across the completed prefix of
 messages actually fetched, preventing concurrent workers from committing past
-an earlier NACK. Scheduled orphan collection, outbox/job metrics and alerts, and
-the isolated crash-point E2E gate remain open.
+an earlier NACK. At that slice boundary, scheduled orphan collection, outbox/job
+metrics and alerts, and the isolated crash-point E2E gate remained open.
+
+The third P2.2 slice adds PostgreSQL-derived, bounded-cardinality operational
+metrics for pending/retried outbox events, oldest pending age, job states, and
+expired processing leases, with sustained alert rules covered by `promtool`.
+A scheduled collector scans old versioned objects in fair bounded batches and
+deletes only objects proven absent from both the current document catalog and
+all admitted jobs; database uncertainty fails closed. Terminal admitted
+versions are intentionally retained until generation retention owns deletion.
+An isolated acceptance run proved that an upload accepted with HTTP `202` while
+Kafka and the worker were unavailable survived an API/relay stop and reached
+`completed:published` after restart. Generation-scoped replacement safety and
+the broader crash matrix remain governed by ADR 0008 and later hardening.

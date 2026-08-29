@@ -80,10 +80,34 @@ P2.2 progress (2026-08-27):
 - Aligned the deployed ingestion lease with the Compose pipeline retry window:
   the worker now defaults to a 75-minute lease for a roughly 60-minute worst
   case, and a configuration regression test guards Compose and example files.
-- Remaining: scheduled orphan collection, outbox/job lag and retry metrics with
-  alerts, isolated crash-point E2E,
-  and generation activation before failed mid-index replacements can be called
-  atomically safe.
+- Added bounded-cardinality PostgreSQL snapshots and Prometheus metrics for
+  outbox backlog/retries/age, durable job states, and expired processing leases,
+  plus sustained-failure alert rules verified with `promtool`.
+- Added scheduled, bounded orphan collection for old versioned objects that are
+  absent from both the document catalog and every admitted ingestion job.
+  Reference lookups are index-backed and fail closed; MinIO batches retain a
+  fair scan cursor. Admitted terminal versions remain protected until an
+  explicit generation-retention policy owns their deletion.
+- Added and passed isolated crash-point E2E: Kafka and the worker are stopped,
+  upload still returns HTTP `202`, the API/relay is then stopped, and restarting
+  Kafka/API/worker eventually reaches `completed:published` through public APIs.
+- Remaining: ADR 0008 generation activation before failed mid-index
+  replacements can be called atomically safe. Outbox retention/archival and
+  additional crash points remain later operational hardening, not claims of
+  this slice.
+
+P2.2 third-slice implementation plan (approved 2026-08-27):
+
+1. Expose durable PostgreSQL snapshots for pending/retried outbox events, oldest
+   event age, job states, and expired processing leases; publish them through
+   bounded-cardinality Prometheus metrics.
+2. Alert on sustained old outbox work, repeated publication attempts, and
+   expired processing leases, with `promtool` rule tests.
+3. Add a scheduled object collector that deletes only versioned objects older
+   than a grace period and proven unreferenced by the current document catalog.
+4. Add an isolated crash-recovery acceptance script that starts from HTTP `202`,
+   interrupts relay/worker progress, and verifies eventual terminal state via
+   public APIs after restart.
 
 No implementation phase starts merely because this backlog entry exists. Each
 ADR must first be reviewed, its open decisions resolved, and its phase-specific

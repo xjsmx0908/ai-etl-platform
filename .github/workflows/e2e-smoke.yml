@@ -20,3 +20,8 @@ jobs:
         run: scripts/e2e-smoke.sh
         env:
           MAX_WAIT_SECONDS: 240
+
+      - name: Run ingestion crash-recovery acceptance
+        run: scripts/e2e-ingestion-crash.sh
+        env:
+          MAX_WAIT_SECONDS: 240

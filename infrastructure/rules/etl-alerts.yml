@@ -37,6 +37,30 @@ groups:
             full-text index. Query results may silently miss full-text hits.
             Investigate ES connectivity and consider re-indexing affected docs.
 
+      - alert: IngestionOutboxStalled
+        expr: max(ai_etl_ingestion_outbox_oldest_age_seconds) > 300
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Ingestion outbox publication has been stalled for 10 minutes
+
+      - alert: IngestionOutboxRetrying
+        expr: max(ai_etl_ingestion_outbox_retried) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ingestion outbox events continue to require publication retries
+
+      - alert: IngestionProcessingLeaseExpired
+        expr: max(ai_etl_ingestion_expired_processing_leases) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Durable ingestion work is waiting for lease recovery
+
       - alert: CircuitBreakerOpen
         expr: ai_etl_circuit_state == 1
         for: 5m

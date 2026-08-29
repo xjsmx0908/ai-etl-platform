@@ -142,6 +142,63 @@ func (s *PostgresStore) Release(ctx context.Context, eventID string, nextAttempt
 	return err
 }
 
+func (s *PostgresStore) OperationsSnapshot(ctx context.Context) (OperationsSnapshot, error) {
+	snapshot := OperationsSnapshot{Jobs: map[string]int{
+		"queued": 0, "published": 0, "processing": 0, "completed": 0, "failed": 0,
+	}}
+	var oldestAge float64
+	if err := s.q.QueryRow(ctx, `
+		SELECT COUNT(*)::int,
+		       COUNT(*) FILTER (WHERE attempts > 0)::int,
+		       COALESCE(EXTRACT(EPOCH FROM (now()-MIN(created_at))),0)::double precision
+		FROM ingestion_outbox WHERE published_at IS NULL`).Scan(
+		&snapshot.PendingOutbox, &snapshot.RetriedOutbox, &oldestAge,
+	); err != nil {
+		return OperationsSnapshot{}, fmt.Errorf("snapshot ingestion outbox: %w", err)
+	}
+	snapshot.OldestOutboxAge = time.Duration(oldestAge * float64(time.Second))
+	rows, err := s.q.Query(ctx, `SELECT status, COUNT(*)::int FROM ingestion_jobs GROUP BY status`)
+	if err != nil {
+		return OperationsSnapshot{}, fmt.Errorf("snapshot ingestion jobs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return OperationsSnapshot{}, err
+		}
+		if _, known := snapshot.Jobs[status]; known {
+			snapshot.Jobs[status] = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return OperationsSnapshot{}, err
+	}
+	if err := s.q.QueryRow(ctx, `
+		SELECT COUNT(*)::int FROM ingestion_jobs
+		WHERE status='processing' AND lease_until <= now()`).Scan(&snapshot.ExpiredProcessingLeases); err != nil {
+		return OperationsSnapshot{}, fmt.Errorf("snapshot expired ingestion leases: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (s *PostgresStore) IsObjectReferenced(ctx context.Context, objectKey string) (bool, error) {
+	if objectKey == "" {
+		return false, ErrInvalidSubmission
+	}
+	var referenced bool
+	if err := s.q.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM documents WHERE object_key=$1)
+		    OR EXISTS(
+		        SELECT 1 FROM ingestion_jobs
+		        WHERE task->>'file_path'=$1
+		    )`, objectKey).Scan(&referenced); err != nil {
+		return false, fmt.Errorf("check document object reference: %w", err)
+	}
+	return referenced, nil
+}
+
 func (s *PostgresStore) Claim(ctx context.Context, task model.Task, lease time.Duration) (ClaimResult, error) {
 	if task.JobID == "" || task.EventID == "" || task.TenantID == "" || task.DocID == "" || task.FilePath == "" {
 		return "", ErrInvalidSubmission
