@@ -59,10 +59,12 @@ func TestSCIMReadDoesNotHideStaleProvisioning(t *testing.T) {
 	handler := m.SCIMMiddleware("workforce", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	m.SCIMLastSuccess.WithLabelValues("workforce").Set(1)
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/scim/v2/Users?filter=x", nil))
-	if got := gaugeValue(t, m.SCIMLastSuccess.WithLabelValues("workforce")); got != 1 {
+	if got := gaugeValue(t, m.SCIMLastSuccess.WithLabelValues("workforce")); got != 0 {
 		t.Fatalf("successful read changed last provisioning success to %v", got)
+	}
+	if got := gaugeValue(t, m.SCIMEnabledSince.WithLabelValues("workforce")); got <= 0 {
+		t.Fatalf("SCIM enabled timestamp=%v want positive", got)
 	}
 }
 

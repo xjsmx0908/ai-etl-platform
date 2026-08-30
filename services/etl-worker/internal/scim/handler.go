@@ -101,6 +101,7 @@ func NewHandler(config Config, provisioner identitylifecycle.Provisioner, direct
 		}
 		handler.tokenDigests = append(handler.tokenDigests, sha256.Sum256([]byte(token)))
 	}
+	clear(config.BearerTokens)
 	handler.config.BearerTokens = nil
 	return handler, nil
 }
@@ -382,9 +383,11 @@ func sourceVersion(r *http.Request) string { return strings.TrimSpace(r.Header.G
 
 func correlationID(r *http.Request) string {
 	if value := strings.TrimSpace(r.Header.Get("X-Request-ID")); len(value) <= maxMetadataLen {
-		return value
+		if value != "" {
+			return value
+		}
 	}
-	return ""
+	return uuid.NewString()
 }
 
 func resourceID(connectorID, subject string) string {

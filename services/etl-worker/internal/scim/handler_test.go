@@ -64,15 +64,19 @@ func (s *lifecycleStub) Apply(_ context.Context, command identitylifecycle.Lifec
 
 func TestUsersHTTPPutGetConflictAndBearerRotation(t *testing.T) {
 	adapter := newLifecycleStub()
+	tokens := []string{"retiring-secret", "current-secret"}
 	handler, err := NewHandler(Config{
 		ConnectorID: "workforce", Issuer: "https://idp.example.com/realms/acme",
-		SubjectAttribute: "externalId", BearerTokens: []string{"retiring-secret", "current-secret"}, MaxBodyBytes: 32 << 10,
+		SubjectAttribute: "externalId", BearerTokens: tokens, MaxBodyBytes: 32 << 10,
 	}, adapter, adapter)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if handler.config.BearerTokens != nil {
 		t.Fatal("handler retained raw bearer credentials")
+	}
+	if tokens[0] != "" || tokens[1] != "" {
+		t.Fatal("constructor retained caller bearer credentials")
 	}
 	created := scimRequest(t, handler, http.MethodPost, "/scim/v2/Users", `{
 		"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],
@@ -242,6 +246,11 @@ func TestUsersHTTPCreateLookupPatchDelete(t *testing.T) {
 		adapter.calls[0].IdempotencyKey != adapter.calls[1].IdempotencyKey || adapter.calls[0].Identity.Subject != "oidc-subject-42" ||
 		adapter.calls[2].Active == nil || *adapter.calls[2].Active {
 		t.Fatalf("unexpected lifecycle calls: %+v", adapter.calls)
+	}
+	for _, command := range adapter.calls {
+		if command.CorrelationID == "" {
+			t.Fatalf("missing server correlation ID: %+v", command)
+		}
 	}
 }
 

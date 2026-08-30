@@ -72,6 +72,7 @@ type Metrics struct {
 	SCIMRequests              *prometheus.CounterVec
 	SCIMRequestDuration       *prometheus.HistogramVec
 	SCIMLastSuccess           *prometheus.GaugeVec
+	SCIMEnabledSince          *prometheus.GaugeVec
 
 	// Query metrics
 	QueryDuration          *prometheus.HistogramVec
@@ -255,6 +256,10 @@ func New(namespace string) *Metrics {
 			Namespace: namespace, Subsystem: "scim", Name: "last_success_unixtime",
 			Help: "Unix timestamp of the most recent successful SCIM lifecycle request",
 		}, []string{"connector"}),
+		SCIMEnabledSince: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "scim", Name: "enabled_since_unixtime",
+			Help: "Unix timestamp when the SCIM connector became ready",
+		}, []string{"connector"}),
 		QueryDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: namespace,
@@ -425,6 +430,7 @@ func New(namespace string) *Metrics {
 		m.SCIMRequests,
 		m.SCIMRequestDuration,
 		m.SCIMLastSuccess,
+		m.SCIMEnabledSince,
 		m.QueryDuration,
 		m.QueryFailures,
 		m.RetrievalCount,
@@ -446,9 +452,10 @@ func New(namespace string) *Metrics {
 }
 
 func (m *Metrics) SCIMMiddleware(connector string, next http.Handler) http.Handler {
-	// Start the staleness window when this connector becomes ready. A later
-	// successful request advances it; a never-used connector alerts after 24h.
-	m.SCIMLastSuccess.WithLabelValues(connector).Set(float64(time.Now().Unix()))
+	// Publish readiness separately so startup cannot masquerade as a successful
+	// synchronization. The alert falls back to this timestamp until first sync.
+	m.SCIMLastSuccess.WithLabelValues(connector).Set(0)
+	m.SCIMEnabledSince.WithLabelValues(connector).Set(float64(time.Now().Unix()))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}

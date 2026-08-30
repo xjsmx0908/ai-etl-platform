@@ -984,3 +984,7 @@ This file is an append-only record of completed PRAR cycles.
   masking stale synchronization, audit carries a bounded request correlation
   ID, and explicit tenant-isolation/HTTP-concurrency tests supplement the
   PostgreSQL replay proof. Origin constants also centralize lifecycle ownership.
+- Re-review tightened those guarantees: the constructor clears the caller's
+  credential slice, readiness and successful synchronization use distinct
+  timestamps so restarts cannot fake success, and the server generates a
+  correlation ID when the provider omits or overflows `X-Request-ID`.

@@ -134,7 +134,7 @@ groups:
           summary: SCIM lifecycle requests continue to fail
 
       - alert: SCIMSynchronizationStale
-        expr: time() - ai_etl_scim_last_success_unixtime > 86400
+        expr: time() - ((ai_etl_scim_last_success_unixtime > 0) or on(connector) ai_etl_scim_enabled_since_unixtime) > 86400
         for: 30m
         labels:
           severity: warning
