@@ -71,6 +71,9 @@ func TestUsersHTTPPutGetConflictAndBearerRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if handler.config.BearerTokens != nil {
+		t.Fatal("handler retained raw bearer credentials")
+	}
 	created := scimRequest(t, handler, http.MethodPost, "/scim/v2/Users", `{
 		"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],
 		"userName":"alice@example.com","externalId":"oidc-subject-42","active":true}`, "retiring-secret")
@@ -129,6 +132,37 @@ func TestUsersHTTPRejectsUnboundedIdentifiers(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("oversized idempotency key status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUsersHTTPConcurrentCreateReplayConverges(t *testing.T) {
+	adapter := newLifecycleStub()
+	handler, err := NewHandler(Config{
+		ConnectorID: "workforce", Issuer: "https://idp.example.com", SubjectAttribute: "externalId",
+		BearerTokens: []string{"scim-secret"}, MaxBodyBytes: 32 << 10,
+	}, adapter, adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"userName":"alice","externalId":"subject","active":true}`
+	responses := make([]*httptest.ResponseRecorder, 2)
+	var wait sync.WaitGroup
+	for index := range responses {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			responses[index] = scimRequest(t, handler, http.MethodPost, "/scim/v2/Users", body, "scim-secret")
+		}()
+	}
+	wait.Wait()
+	for _, response := range responses {
+		if response.Code != http.StatusCreated {
+			t.Fatalf("concurrent replay status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	if len(adapter.calls) != 2 || adapter.calls[0].IdempotencyKey != adapter.calls[1].IdempotencyKey ||
+		adapter.calls[0].ProviderResourceID != adapter.calls[1].ProviderResourceID {
+		t.Fatalf("concurrent replay commands=%+v", adapter.calls)
 	}
 }
 

@@ -54,6 +54,7 @@ type LifecycleCommand struct {
 	Active             *bool
 	SourceVersion      string
 	IdempotencyKey     string
+	CorrelationID      string `json:"-"`
 }
 
 type LifecycleResult struct {
@@ -186,6 +187,7 @@ func (p *PostgresProvisioner) Apply(ctx context.Context, command LifecycleComman
 		Result: audit.ResultSuccess, Detail: map[string]any{
 			"connector_id": command.ConnectorID, "internal_user_id": result.InternalUserID,
 			"provider_resource_hash": identifierHash(command.ProviderResourceID), "source_version": result.SourceVersion,
+			"correlation_id": command.CorrelationID,
 		},
 	}); err != nil {
 		return LifecycleResult{}, fmt.Errorf("%w: audit", ErrUnavailable)
@@ -216,7 +218,7 @@ func validateCommand(command LifecycleCommand) error {
 	}
 	if len(command.ConnectorID) > 128 || len(command.ProviderResourceID) > 256 || len(command.IdempotencyKey) > 256 ||
 		len(command.Username) > 256 || stringPointerLength(command.DisplayName) > 512 || stringPointerLength(command.Email) > 320 || len(command.SourceVersion) > 256 ||
-		len(command.Identity.Issuer) > 2048 || len(command.Identity.Subject) > 512 {
+		len(command.Identity.Issuer) > 2048 || len(command.Identity.Subject) > 512 || len(command.CorrelationID) > 256 {
 		return ErrInvalid
 	}
 	if command.Operation == OperationCreate && (strings.TrimSpace(command.Username) == "" || command.Active == nil) {

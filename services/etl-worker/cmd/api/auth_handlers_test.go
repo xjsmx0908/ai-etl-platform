@@ -175,7 +175,7 @@ func TestHandleLoginRejectsFederatedOnlyUser(t *testing.T) {
 	if err != nil || !found {
 		t.Fatal("seed user")
 	}
-	user.Origin = "scim"
+	user.Origin = userstore.OriginSCIM
 	store.byID[user.ID] = user
 	store.byName["alice"] = user
 	recorder := doLogin(handleLogin(testAuthConfig(), store, nil), "alice", "s3cret-pw")

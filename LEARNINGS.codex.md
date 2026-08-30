@@ -979,3 +979,8 @@ This file is an append-only record of completed PRAR cycles.
   3, Web audit/lint/build, Compose overlays, Prometheus/Alertmanager/Grafana,
   both Trivy CRITICAL gates, and the 47-case deterministic full-stack eval all
   passed; the eval reported 100% pass, answer, retrieval, and negative rates.
+- Final review closed four spec gaps before handoff: raw bearer values are
+  discarded after hashing, SCIM mutation latency is measured without reads
+  masking stale synchronization, audit carries a bounded request correlation
+  ID, and explicit tenant-isolation/HTTP-concurrency tests supplement the
+  PostgreSQL replay proof. Origin constants also centralize lifecycle ownership.

@@ -29,6 +29,8 @@ const (
 	RoleAdmin    = "admin"
 	RoleUser     = "user"
 	RoleReadonly = "readonly"
+	OriginLocal  = "local"
+	OriginSCIM   = "scim"
 )
 
 // User is one row of the users table. PasswordHash is the bcrypt hash, never a
@@ -161,7 +163,7 @@ func (s *PgStore) List(ctx context.Context, tenantID string, limit, offset int) 
 // Create inserts a user and back-fills id/created_at/updated_at on the argument.
 func (s *PgStore) Create(ctx context.Context, u *User) error {
 	if u.Origin == "" {
-		u.Origin = "local"
+		u.Origin = OriginLocal
 	}
 	err := s.q.QueryRow(ctx,
 		`INSERT INTO users (username, password_hash, role, tenant_id, active, origin, display_name, email)

@@ -233,7 +233,7 @@ func handleUpdateUser(w http.ResponseWriter, r *http.Request, users userstore.St
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	if target.Origin == "scim" && (req.Active != nil || req.TenantID != nil) {
+	if target.Origin == userstore.OriginSCIM && (req.Active != nil || req.TenantID != nil) {
 		writeError(w, http.StatusConflict, "SCIM owns user lifecycle and tenant")
 		return
 	}
@@ -263,7 +263,7 @@ func handleDeleteUser(w http.ResponseWriter, r *http.Request, users userstore.St
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	if target.Origin == "scim" {
+	if target.Origin == userstore.OriginSCIM {
 		writeError(w, http.StatusConflict, "SCIM owns user lifecycle")
 		return
 	}
@@ -289,7 +289,7 @@ func handleSetPassword(w http.ResponseWriter, r *http.Request, users userstore.S
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	if user.Origin == "scim" {
+	if user.Origin == userstore.OriginSCIM {
 		writeError(w, http.StatusConflict, "SCIM users do not have local passwords")
 		return
 	}

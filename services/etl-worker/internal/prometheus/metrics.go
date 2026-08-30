@@ -70,6 +70,7 @@ type Metrics struct {
 	DeletionOldestAge         prometheus.Gauge
 	DeletionOutcomes          *prometheus.CounterVec
 	SCIMRequests              *prometheus.CounterVec
+	SCIMRequestDuration       *prometheus.HistogramVec
 	SCIMLastSuccess           *prometheus.GaugeVec
 
 	// Query metrics
@@ -245,6 +246,11 @@ func New(namespace string) *Metrics {
 			Namespace: namespace, Subsystem: "scim", Name: "requests_total",
 			Help: "SCIM lifecycle requests by bounded operation and result",
 		}, []string{"connector", "operation", "result"}),
+		SCIMRequestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace, Subsystem: "scim", Name: "request_duration_seconds",
+			Help:    "SCIM lifecycle request duration by bounded operation and result",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"connector", "operation", "result"}),
 		SCIMLastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace, Subsystem: "scim", Name: "last_success_unixtime",
 			Help: "Unix timestamp of the most recent successful SCIM lifecycle request",
@@ -417,6 +423,7 @@ func New(namespace string) *Metrics {
 		m.DeletionOldestAge,
 		m.DeletionOutcomes,
 		m.SCIMRequests,
+		m.SCIMRequestDuration,
 		m.SCIMLastSuccess,
 		m.QueryDuration,
 		m.QueryFailures,
@@ -443,6 +450,7 @@ func (m *Metrics) SCIMMiddleware(connector string, next http.Handler) http.Handl
 	// successful request advances it; a never-used connector alerts after 24h.
 	m.SCIMLastSuccess.WithLabelValues(connector).Set(float64(time.Now().Unix()))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(recorder, r)
 		result := "success"
@@ -456,7 +464,8 @@ func (m *Metrics) SCIMMiddleware(connector string, next http.Handler) http.Handl
 			operation = "other"
 		}
 		m.SCIMRequests.WithLabelValues(connector, operation, result).Inc()
-		if result == "success" {
+		m.SCIMRequestDuration.WithLabelValues(connector, operation, result).Observe(time.Since(started).Seconds())
+		if result == "success" && operation != "get" {
 			m.SCIMLastSuccess.WithLabelValues(connector).Set(float64(time.Now().Unix()))
 		}
 	})

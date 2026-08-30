@@ -140,7 +140,7 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store) h
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
-		if user.Origin != "" && user.Origin != "local" {
+		if user.Origin != "" && user.Origin != userstore.OriginLocal {
 			auth.VerifyPassword("", req.Password)
 			recordAudit(r.Context(), audits, audit.Entry{
 				TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,

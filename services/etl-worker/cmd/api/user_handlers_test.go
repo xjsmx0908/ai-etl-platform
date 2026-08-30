@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"ai-etl-pipeline/internal/auth"
+	"ai-etl-pipeline/internal/userstore"
 )
 
 func ctxWithTenant(tenant string) context.Context {
@@ -205,7 +206,7 @@ func TestHandleUserRejectsLifecycleChangesForSCIMUser(t *testing.T) {
 	if !found {
 		t.Fatal("alice not seeded")
 	}
-	user.Origin = "scim"
+	user.Origin = userstore.OriginSCIM
 	store.byID[user.ID], store.byName["alice"] = user, user
 	handler := handleUser(store)
 	for _, request := range []struct {

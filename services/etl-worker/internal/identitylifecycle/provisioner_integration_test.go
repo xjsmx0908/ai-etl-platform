@@ -36,7 +36,7 @@ func TestProvisionerCreateReplayDeactivateTombstoneAndReactivate(t *testing.T) {
 		Operation: OperationCreate, ConnectorID: "workforce", ProviderResourceID: "provider-user-42",
 		Identity: externalidentity.ExternalIdentity{Issuer: policy.Issuer, Subject: "oidc-subject-42"},
 		Username: "alice@example.com", DisplayName: stringPointer("Alice"), Email: stringPointer("alice@example.com"),
-		Active: boolPointer(true), SourceVersion: "v1", IdempotencyKey: "create-42",
+		Active: boolPointer(true), SourceVersion: "v1", IdempotencyKey: "create-42", CorrelationID: "request-42",
 	}
 	created, err := provisioner.Apply(ctx, create)
 	if err != nil {
@@ -119,14 +119,15 @@ func TestProvisionerCreateReplayDeactivateTombstoneAndReactivate(t *testing.T) {
 	if err != nil || cleared.DisplayName != "" || cleared.Email != "" {
 		t.Fatalf("clear profile=%+v err=%v", cleared, err)
 	}
-	var auditCount, identifierLeaks int
+	var auditCount, identifierLeaks, correlationCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER (
-		WHERE detail::text LIKE '%oidc-subject-42%' OR detail::text LIKE '%provider-user-42%') FROM audit_logs
-		WHERE action LIKE 'identity.lifecycle.%'`).Scan(&auditCount, &identifierLeaks); err != nil {
+		WHERE detail::text LIKE '%oidc-subject-42%' OR detail::text LIKE '%provider-user-42%'),
+		count(*) FILTER (WHERE detail->>'correlation_id'='request-42') FROM audit_logs
+		WHERE action LIKE 'identity.lifecycle.%'`).Scan(&auditCount, &identifierLeaks, &correlationCount); err != nil {
 		t.Fatal(err)
 	}
-	if auditCount != 6 || identifierLeaks != 0 {
-		t.Fatalf("audit_count=%d identifier_leaks=%d", auditCount, identifierLeaks)
+	if auditCount != 6 || identifierLeaks != 0 || correlationCount != 1 {
+		t.Fatalf("audit_count=%d identifier_leaks=%d correlation_count=%d", auditCount, identifierLeaks, correlationCount)
 	}
 }
 
@@ -164,6 +165,39 @@ func TestProvisionerFailsClosedAndRollsBackLifecycleConflicts(t *testing.T) {
 		}
 		if tenant != "acme" {
 			t.Fatalf("connector tenant changed to %q", tenant)
+		}
+	})
+
+	t.Run("connector cannot mutate another tenant resource", func(t *testing.T) {
+		pool, cleanup := lifecyclePool(t)
+		defer cleanup()
+		ctx := context.Background()
+		if _, err := pool.Exec(ctx, `INSERT INTO tenants(id,name) VALUES('acme','Acme'),('other','Other')`); err != nil {
+			t.Fatal(err)
+		}
+		for _, policy := range []ConnectorPolicy{
+			{ID: "workforce", TenantID: "acme", Issuer: "https://idp.example.com/acme", SubjectAttribute: "externalId", DefaultRole: "readonly"},
+			{ID: "contractors", TenantID: "other", Issuer: "https://idp.example.com/other", SubjectAttribute: "externalId", DefaultRole: "readonly"},
+		} {
+			if err := EnsureConnector(ctx, pool, policy); err != nil {
+				t.Fatal(err)
+			}
+		}
+		provisioner := NewPostgresProvisioner(pool)
+		create := lifecycleCreate("resource-a", "subject-a", "alice@example.com", "create-a")
+		create.Identity.Issuer = "https://idp.example.com/acme"
+		if _, err := provisioner.Apply(ctx, create); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provisioner.Apply(ctx, LifecycleCommand{
+			Operation: OperationUpdate, ConnectorID: "contractors", ProviderResourceID: "resource-a",
+			Active: boolPointer(false), IdempotencyKey: "cross-tenant-update",
+		}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("cross-tenant update error=%v", err)
+		}
+		resource, err := provisioner.Get(ctx, "workforce", "resource-a")
+		if err != nil || !resource.Active || resource.TenantID != "acme" {
+			t.Fatalf("original resource=%+v err=%v", resource, err)
 		}
 	})
 

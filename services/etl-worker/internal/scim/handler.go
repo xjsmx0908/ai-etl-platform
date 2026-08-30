@@ -101,6 +101,7 @@ func NewHandler(config Config, provisioner identitylifecycle.Provisioner, direct
 		}
 		handler.tokenDigests = append(handler.tokenDigests, sha256.Sum256([]byte(token)))
 	}
+	handler.config.BearerTokens = nil
 	return handler, nil
 }
 
@@ -155,7 +156,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		Operation: identitylifecycle.OperationCreate, ConnectorID: h.config.ConnectorID,
 		ProviderResourceID: resourceID(h.config.ConnectorID, user.ExternalID), Identity: externalidentity.ExternalIdentity{Issuer: h.config.Issuer, Subject: user.ExternalID},
 		Username: user.UserName, DisplayName: stringPointer(user.DisplayName), Email: stringPointer(primaryEmail(user.Emails)), Active: &user.Active,
-		SourceVersion: sourceVersion(r),
+		SourceVersion: sourceVersion(r), CorrelationID: correlationID(r),
 	}
 	var ok bool
 	command.IdempotencyKey, ok = h.requestIdempotencyKey(w, r, command)
@@ -211,7 +212,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, id string) {
 
 func (h *Handler) update(w http.ResponseWriter, r *http.Request, id string) {
 	command := identitylifecycle.LifecycleCommand{Operation: identitylifecycle.OperationUpdate,
-		ConnectorID: h.config.ConnectorID, ProviderResourceID: id, SourceVersion: sourceVersion(r)}
+		ConnectorID: h.config.ConnectorID, ProviderResourceID: id, SourceVersion: sourceVersion(r), CorrelationID: correlationID(r)}
 	if r.Method == http.MethodPut {
 		var user User
 		if !h.decode(w, r, &user) {
@@ -274,7 +275,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request, id string) {
 func (h *Handler) remove(w http.ResponseWriter, r *http.Request, id string) {
 	command := identitylifecycle.LifecycleCommand{
 		Operation: identitylifecycle.OperationDelete, ConnectorID: h.config.ConnectorID,
-		ProviderResourceID: id, SourceVersion: sourceVersion(r),
+		ProviderResourceID: id, SourceVersion: sourceVersion(r), CorrelationID: correlationID(r),
 	}
 	var ok bool
 	command.IdempotencyKey, ok = h.requestIdempotencyKey(w, r, command)
@@ -378,6 +379,13 @@ func (h *Handler) requestIdempotencyKey(w http.ResponseWriter, r *http.Request, 
 }
 
 func sourceVersion(r *http.Request) string { return strings.TrimSpace(r.Header.Get("If-Match")) }
+
+func correlationID(r *http.Request) string {
+	if value := strings.TrimSpace(r.Header.Get("X-Request-ID")); len(value) <= maxMetadataLen {
+		return value
+	}
+	return ""
+}
 
 func resourceID(connectorID, subject string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(connectorID+":"+subject)).String()
