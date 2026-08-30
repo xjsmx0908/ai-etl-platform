@@ -216,3 +216,17 @@ or have their lifecycle/tenant changed through the admin API.
 Production stays blocked until a chosen IdP passes the complete SCIM lifecycle
 to OIDC login acceptance flow and its ownership, SLA, retention, reconciliation,
 and credential-rotation policies are approved.
+
+## P2.5-E production identity acceptance design
+
+The production decision is evidence-driven rather than encoded as another
+provider abstraction. Candidate IdPs are compared against the existing OIDC,
+external-directory, and lifecycle interfaces. Provider configuration may vary,
+but exact issuer/subject identity, connector-owned tenant/default role, atomic
+revocation/tombstone behavior, and fail-closed errors cannot vary.
+
+The staging gate observes one composed SCIM-to-OIDC lifecycle through public
+interfaces and retains a signed, secret-free bundle tied to provider profile,
+platform commit/images, owners, expiry, and rollback evidence. Provider and
+policy selection, implementation, and production enablement remain blocked on
+separate approval; no new runtime seam or deployment is introduced here.

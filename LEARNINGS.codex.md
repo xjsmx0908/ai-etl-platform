@@ -988,3 +988,25 @@ This file is an append-only record of completed PRAR cycles.
   credential slice, readiness and successful synchronization use distinct
   timestamps so restarts cannot fake success, and the server generates a
   correlation ID when the provider omits or overflows `X-Request-ID`.
+
+## 2026-08-30 - P2.5-E production identity acceptance design
+
+- Perceive: provider-neutral OIDC and SCIM modules are complete, but production
+  identity still depends on business-owned provider, tenancy, subject, privacy,
+  SLA, retention, rotation, MFA/session, and emergency-access decisions.
+- Reason: preserve the three existing deep module interfaces. Compare true
+  external IdPs at their adapters and accept them only through the same composed
+  SCIM-to-internal-identity-to-OIDC seam used by staging evidence.
+- Act: documented a weighted Entra ID/Okta/Keycloak evidence matrix, mandatory
+  rejection gates, named decision owners, a public-interface lifecycle/outage/
+  rotation sequence, signed evidence bundle, expiry triggers, and later P2.5-F
+  through J slices.
+- Refine: Keycloak's passed OIDC protocol exercise does not prove a production
+  SCIM profile or make it the default choice. Product documentation alone is
+  not acceptance evidence, and proposed numeric policies remain unapproved
+  until their enterprise owners sign them.
+- Review: successful SCIM mutation age is not authoritative reconciliation
+  evidence. P2.5-J now owns drift comparison, retry, missed-run alerting, and a
+  distinct completion signal. The public template is an index for private,
+  hashed, signed evidence, and concurrency acceptance fixes one explicit
+  idempotency key.

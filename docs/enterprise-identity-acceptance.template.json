@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "decision": "pending",
+  "acceptance_id": "",
+  "provider": {
+    "product": "",
+    "version_or_sku": "",
+    "tenant_or_realm_alias": "",
+    "oidc_issuer": "",
+    "scim_profile_sha256": "",
+    "sanitized_configuration_sha256": ""
+  },
+  "platform": {
+    "commit": "",
+    "query_api_image_digest": "",
+    "web_image_digest": ""
+  },
+  "scores": {
+    "enterprise_ownership": null,
+    "oidc_interoperability": null,
+    "scim_profile_compatibility": null,
+    "stable_subject_equality": null,
+    "mfa_session_logout_policy": null,
+    "rotation_and_audit": null,
+    "availability_residency_cost": null
+  },
+  "approved_policy": {
+    "connector_id": "",
+    "internal_tenant_id": "",
+    "subject_attribute": "externalId",
+    "default_role": "readonly",
+    "stored_profile": [],
+    "provisioning_mode": "scim_only",
+    "deactivation_sla_seconds": null,
+    "reconciliation_interval_seconds": null,
+    "tombstone_retention_days": null,
+    "credential_rotation_days": null,
+    "credential_overlap_seconds": null
+  },
+  "acceptance_results": {
+    "oidc_protocol": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "create_to_login_identity": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "update_and_concurrent_replay": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "deactivate_and_session_revocation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "constrained_reactivation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "delete_and_identifier_reuse": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "credential_and_jwks_rotation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "dependency_outages": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "redaction_audit_and_metrics": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "authoritative_reconciliation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""}
+  },
+  "evidence_bundle_sha256": "",
+  "decision_matrix_evidence_id": "",
+  "decision_matrix_sha256": "",
+  "sla_summary": {
+    "deactivation_observed_seconds": null,
+    "reconciliation_observed_seconds": null,
+    "missed_run_alert_observed_seconds": null
+  },
+  "correlation_id_evidence_id": "",
+  "rollback_rehearsed_at": "",
+  "rollback_owner_role": "",
+  "approved_at": "",
+  "expires_at": "",
+  "approvals": {
+    "identity_owner": "",
+    "tenant_owner": "",
+    "security_owner": "",
+    "privacy_or_legal_owner": "",
+    "operations_owner": ""
+  },
+  "signature": {
+    "mechanism": "",
+    "signed_manifest_sha256": "",
+    "detached_signature_sha256": "",
+    "signed_at": ""
+  }
+}
