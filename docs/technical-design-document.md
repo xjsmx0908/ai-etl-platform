@@ -282,3 +282,20 @@ P2.5-G 负责紧急访问，P2.5-J 负责选定提供方适配器和 staging 证
 实现拆为组目录模型、真实提供方适配器、映射管理、有效权限、缓存/对账/告警及
 shadow/canary 迁移切片。同步、嵌套、审批、撤权 SLA、上限和缓存值均为 `Pending`；
 本阶段不实现或启用真实组授权。
+
+## P2.5-I 企业服务与工作负载身份设计
+
+[企业服务与工作负载身份设计](enterprise-workload-identity-design.md)定义未来
+`workloadidentity` 深层模块：在一个 Authenticate 接口后隐藏 JWT/mTLS/SPIFFE
+验证、独立注册表、精确 issuer/subject/audience、grant 交集、生命周期、撤权修订和
+审计。`auth.Principal` 必须区分 human/workload，人类专用路由和机器路由分别门禁；
+机器不创建 user、不使用会话/组/紧急访问，也不获得平台 admin。
+
+知识空间使用独立 workload grant；用户触发的 Kafka/Agent 操作持久化有期限的委托
+grant，绑定发起人、执行 workload、租户、资源、动作和策略修订，执行敏感副作用与
+长任务检查点时重新验证。Parser/Reranker/告警共享 token、基础设施账号和供应方 key
+按调用方与环境拆分；资源凭据不能转换为平台 Principal。
+
+实现拆为 Principal/注册表、协议适配器、细粒度 grant、知识空间授权、异步委托、
+内部 HTTP 迁移、基础设施 ACL/TLS 及真实轮换验收。信任域、协议、能力、TTL、审批、
+缓存和迁移值均为 `Pending`；本阶段不签发或启用生产机器凭据。
