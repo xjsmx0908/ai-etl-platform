@@ -533,6 +533,29 @@ P2.5-G 企业紧急访问设计（2026-08-30 提议）：
    直到安全、身份、连续性、SRE、SOC、合规、法务和租户责任人批准。
 8. 评审 [企业紧急访问设计](enterprise-emergency-access-design.md)。
 
+P2.5-H 企业组到知识空间授权设计（2026-08-30 提议）：
+
+1. 记录当前事实：知识目录只读取直接 `knowledge_space_members`，平台 admin 绕过
+   成员表；没有成员管理路由，OIDC 不解析组，SCIM Users 明确拒绝 groups/roles。
+2. 设计 `groupdirectory` 完整快照模块。选定提供方适配器处理 SCIM Groups/目录
+   分页和差异；模块验证连接器租户、稳定组 ID、成员 subject、版本、完整性和幂等，
+   原子更新组/成员/同步状态/审计并为删除组保留 tombstone。
+3. 设计租户 `groupmapping` 模块，把稳定 `(connector_id, provider_group_id)` 映射
+   到同租户知识空间 reader/contributor/manager。raw claim、组名、域名、路径不能
+   选择租户、平台角色、全局 scope、紧急或服务身份能力。
+4. 保留现有直接成员作为独立来源；`knowledgecatalog` 每次 Resolve/List 合并直接
+   与当前完整组授权，同一空间取最高角色并保留来源。删除一个来源不误删另一来源，
+   最后来源撤销后下一请求立即拒绝。
+5. token overage、省略、分页不完整、版本倒退和同步失败的候选快照不能替换上一个
+   完整版本或解释为权威空集；只有上一个完整快照可在批准陈旧窗口内继续使用，
+   超过窗口后组派生授权失败关闭，直接授权保持独立有效。
+6. 短期授权缓存绑定映射/快照修订，通过事务 outbox 失效；管理写入需要高风险重新
+   认证、幂等审计和提权审批。先 shadow 比较，再按 reader → contributor/manager
+   canary 迁移，回滚只停用组来源并恢复明确记录的直接成员快照。
+7. 组协议、稳定 ID、嵌套/动态语义、审批、同步/撤权 SLA、上限、缓存和证据保留
+   均为 `Pending`；P2.5-J 必须验证真实分页、overage、撤权、对账和回滚。
+8. 评审 [企业组到知识空间授权设计](enterprise-group-authorization-design.md)。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

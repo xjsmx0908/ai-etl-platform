@@ -174,8 +174,9 @@ one policy responsibility:
 2. P2.5-G：拟议的可审计、限时紧急访问保管、事故租约和演练契约见
    [企业紧急访问设计](enterprise-emergency-access-design.md)；企业责任人仍须
    批准所有 `Pending` 值，且 P2.5-J 必须引用有效演练证据。
-3. P2.5-H: tenant-owned group-to-knowledge-space mapping; never global role or
-   tenant inference from raw provider groups.
+3. P2.5-H：拟议的租户企业组到知识空间授权、完整快照和撤权契约见
+   [企业组到知识空间授权设计](enterprise-group-authorization-design.md)；raw
+   provider group 永远不能推导租户或平台角色，P2.5-J 必须保留真实同步证据。
 4. P2.5-I: workload/service identity with distinct audiences, credentials,
    capabilities, rotation, and no browser session reuse.
 5. P2.5-J: selected-provider adapter/configuration, authoritative reconciliation

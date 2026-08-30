@@ -263,3 +263,20 @@ P2.5-G 负责紧急访问，P2.5-J 负责选定提供方适配器和 staging 证
 实现推迟并拆为租约数据模型、证明/保管适配器、独立认证、最小恢复处理器、通知/
 复盘证据及隔离演练切片。所有人数、quorum、时限、认证方式、网络和告警参数均为
 `Pending`；本设计不创建真实恢复身份或密钥，也不覆盖基础设施灾难恢复。
+
+## P2.5-H 企业组到知识空间授权设计
+
+[企业组到知识空间授权设计](enterprise-group-authorization-design.md)定义未来
+`groupdirectory` 完整快照模块、租户 `groupmapping` 模块及
+`knowledgecatalog` 有效权限合并。映射键固定为连接器和稳定 provider group ID，
+只能授予同租户空间的 reader/contributor/manager；raw OIDC group claim、显示名、
+域名和路径不能授予权限或推导租户/平台角色。
+
+现有 `knowledge_space_members` 保持直接授权，组授权独立持久化。Resolve/List 每次
+读取当前直接成员、完整组快照和活跃映射，同一空间取最高允许角色并保留来源修订；
+组移除、映射删除、用户/空间/连接器停用或快照过期后下一请求撤权。短期缓存绑定
+映射/快照修订并由事务 outbox 失效，状态不可验证时回源 PostgreSQL。
+
+实现拆为组目录模型、真实提供方适配器、映射管理、有效权限、缓存/对账/告警及
+shadow/canary 迁移切片。同步、嵌套、审批、撤权 SLA、上限和缓存值均为 `Pending`；
+本阶段不实现或启用真实组授权。

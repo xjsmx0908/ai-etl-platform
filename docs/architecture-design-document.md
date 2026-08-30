@@ -140,6 +140,18 @@ tenant or authorization policy.
 存储或控制面故障属于独立基础设施灾难恢复，不通过应用后门解决。人数、quorum、
 时限、认证器、动作白名单和保管位置保持企业输入 `Pending`。
 
+拟议的 P2.5-H `groupdirectory` 模块把选定提供方的 SCIM Groups 或后台目录数据
+转换为连接器范围内完整、有版本的组成员快照。OIDC raw group claim 只用于诊断，
+不能授权。`groupmapping` 模块由租户管理员把稳定 `(connector_id,
+provider_group_id)` 映射到同租户知识空间的 reader/contributor/manager；显示名、
+邮箱域、组路径和提供方组织均不能选择租户、平台角色或 scope。
+
+现有 `knowledge_space_members` 保持直接用户授权来源；组、成员和映射使用独立来源
+记录。`knowledgecatalog` 在每次 Resolve/List 内合并直接授权与当前完整组快照的
+活跃映射，同一空间按 reader < contributor < manager 取最高角色，并保留来源
+解释。删除一个来源不会误删另一个来源；最后来源撤销、用户/组/空间/连接器停用或
+快照超过批准陈旧窗口后，下一次请求失败关闭。授权结果不进入长寿命平台会话。
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment

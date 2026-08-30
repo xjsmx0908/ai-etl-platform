@@ -151,6 +151,11 @@ Kafka、进程及存储依赖中断。结果写入 `artifacts/governance-accepta
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。
 该设计不创建紧急账号或密钥，也不提供数据库、shell 或基础设施后门。
 
+租户企业组到知识空间 reader/contributor/manager 的待审批同步、映射、撤权和
+迁移设计见
+[`docs/enterprise-group-authorization-design.md`](docs/enterprise-group-authorization-design.md)。
+raw IdP group claim 不直接授权，也不推导租户或平台角色。
+
 ### 6. 评测闭环
 
 ```bash

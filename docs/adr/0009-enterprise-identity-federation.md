@@ -45,6 +45,8 @@ detailed in
 [企业会话安全设计](../enterprise-session-security-design.md)。
 拟议的紧急访问保管、租约、最小权限和演练契约详见
 [企业紧急访问设计](../enterprise-emergency-access-design.md)。
+拟议的租户企业组到知识空间授权契约详见
+[企业组到知识空间授权设计](../enterprise-group-authorization-design.md)。
 
 The Web BFF retains an HttpOnly, Secure, SameSite session cookie. Local login is
 disabled in the production profile except for a separately controlled,
@@ -74,6 +76,8 @@ explicit test/evaluation profiles.
 - SCIM-only versus approved just-in-time provisioning fallback.
 - 批准 P2.5-G 的独立保管、多方审批、租约到期、最小恢复动作、告警、演练和
   复盘策略；所有人数与数值仍为 `Pending`。
+- 批准 P2.5-H 的组权威来源、稳定 ID、嵌套语义、租户映射审批、同步/撤权
+  SLA、缓存和对账策略；所有数值仍为 `Pending`。
 
 ## Acceptance gate
 
@@ -94,3 +98,7 @@ P2.5-F 提议与提供方无关的会话策略接缝和持久会话注册表，�
 P2.5-G 提议独立 `emergencyaccess` 模块、无常驻权限的短期事故租约和失败关闭
 审计，但不创建账号、凭据或生产入口。基础设施灾难恢复不由应用紧急访问绕过；
 P2.5-J 必须引用仍有效的紧急访问演练证据。
+
+P2.5-H 提议权威组快照、租户拥有的稳定组映射和 `knowledgecatalog` 当前有效权限
+计算。OIDC raw group claim 不直接授权，组不能选择租户或平台角色；本阶段不启用
+真实组同步，P2.5-J 必须用选定提供方验证分页、overage、撤权和回滚。
