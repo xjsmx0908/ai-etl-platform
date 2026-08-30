@@ -43,6 +43,26 @@ creates a default `user-uploads` production space per tenant and quarantines
 This design preserves the accepted lean Compose architecture. Kubernetes or a
 service mesh is not required for knowledge correctness.
 
+## Identity Principal Module
+
+`internal/auth` exposes one provider-neutral `Authenticator` interface that
+returns a policy-owned `Principal`: internal tenant and subject IDs, internal
+role, authentication method, and capabilities. Shared HTTP middleware consumes
+only this interface, so future OIDC and service-identity adapters do not own or
+duplicate authorization context construction.
+
+The current platform-token adapter marks local-login sessions as `local` and
+offline evaluator credentials as `test`. For known subjects, tenant, role, and
+capabilities are always rebuilt from PostgreSQL; signed token claims cannot
+elevate internal authority. Production rejects test and legacy credentials,
+unknown subjects, inactive users, and token-version mismatches. Non-production
+profiles retain explicit evaluator compatibility.
+
+Knowledge-space membership remains authoritative in `knowledgecatalog`, not in
+the principal or browser token. OIDC/SCIM, provider group mapping, service
+identity, production local-login disablement, MFA/session policy, and
+break-glass controls remain gated by ADR 0009's open enterprise decisions.
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment

@@ -221,7 +221,7 @@ func main() {
 
 	// Initialize auth. The verifier re-validates each token's token_version
 	// against the user store so password resets revoke outstanding tokens.
-	verifier := auth.NewVerifierWithStore(cfg.JWTSecret, userStore)
+	verifier := newPlatformAuthenticator(cfg, userStore)
 
 	// Opt-in one-shot backfill of the registry from existing Qdrant vectors
 	// (legacy data present before PostgreSQL was introduced).
@@ -407,7 +407,7 @@ func main() {
 	// Wrapper execution is outside-in, so compose in reverse.
 	handler := http.Handler(apiV1)
 	handler = rateLimiter.Middleware(handler)
-	handler = verifier.Middleware()(handler)
+	handler = auth.Middleware(verifier)(handler)
 	handler = middleware.APIVersion("1")(handler)
 	handler = middleware.CORS(cfg.CORSAllowedOrigins)(handler)
 	handler = middleware.Timeout(cfg.HTTPHandlerTimeout)(handler)

@@ -119,3 +119,24 @@ images while developing the harness, but release evidence should use the
 default clean build. Unit contract tests run under the existing
 `python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v` CI step; the
 dependency-heavy exercise remains an explicit release command.
+
+## P2.5-A principal and production identity policy
+
+`auth.Authenticator` has one method, `Authenticate(*http.Request) (Principal,
+error)`. `auth.Middleware` is adapter-neutral and writes both the complete
+principal and compatibility tenant/user/role/scope values into request context.
+The HS256 platform-token adapter validates an exact algorithm, expiry, and
+signature before applying environment policy.
+
+`IssueToken` marks password-authenticated sessions `local`; test helpers mark
+offline credentials `test`; missing method claims are `legacy`. In production,
+only known active local subjects are accepted in this slice. PostgreSQL owns
+tenant, role, capabilities, and token-version revocation even when signed claims
+disagree. Outside production, local, test, and legacy credentials remain
+available for migration and deterministic evaluation.
+
+Focused tests exercise the identity interface and protected HTTP middleware,
+including algorithm confusion, claim-based privilege injection, unknown and
+inactive users, revocation, legacy/test rejection, and non-production
+compatibility. No OIDC/SCIM adapter, production federation, or deployment is
+part of this slice.

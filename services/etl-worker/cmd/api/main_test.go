@@ -154,6 +154,27 @@ func TestRequireScopes(t *testing.T) {
 	}
 }
 
+func TestNewPlatformAuthenticatorUsesProductionIdentityPolicy(t *testing.T) {
+	store := newFakeUserStore()
+	verifier := newPlatformAuthenticator(config.Config{
+		Environment: "production",
+		JWTSecret:   "test-secret",
+	}, store)
+	token, err := auth.GenerateTestToken("test-secret", "forged", "offline", []string{auth.ScopeAdmin})
+	if err != nil {
+		t.Fatalf("GenerateTestToken: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/audit", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+	auth.Middleware(verifier)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("production test identity reached protected handler")
+	})).ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", recorder.Code)
+	}
+}
+
 func TestBuildUploadRequestSignature(t *testing.T) {
 	a := buildUploadRequestSignature("tenant-a", "Report.PDF", 1024, "application/pdf", "internal", map[string]string{"contract_no": "CN-2026-0001"})
 	b := buildUploadRequestSignature("tenant-a", "report.pdf", 1024, "application/pdf", "internal", map[string]string{"contract_no": "CN-2026-0001"})

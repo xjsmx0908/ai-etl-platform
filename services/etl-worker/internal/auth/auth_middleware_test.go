@@ -5,14 +5,25 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ai-etl-pipeline/internal/userstore"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // fakeUserLookup is a minimal userstore.Store that only serves GetByID; all
 // other methods are no-ops. It is used to exercise token-version revocation.
 type fakeUserLookup struct {
 	users map[string]userstore.User
+}
+
+type authenticatorStub struct {
+	principal Principal
+	err       error
+}
+
+func (s authenticatorStub) Authenticate(*http.Request) (Principal, error) {
+	return s.principal, s.err
 }
 
 var _ userstore.Store = (*fakeUserLookup)(nil)
@@ -74,6 +85,37 @@ func TestMiddleware_AcceptsCurrentTokenVersion(t *testing.T) {
 	}
 }
 
+func TestAuthenticateReturnsPolicyOwnedPrincipal(t *testing.T) {
+	lookup := &fakeUserLookup{users: map[string]userstore.User{
+		"u-1": {
+			ID: "u-1", Username: "alice", Role: "user", TenantID: "acme",
+			Active: true, TokenVersion: 3,
+		},
+	}}
+	v := NewVerifierWithStore("test-secret", lookup)
+	// These signed claims deliberately overstate Alice's internal authority.
+	token, _, err := IssueToken("test-secret", "u-1", "alice", "admin", "other-tenant", 3)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	principal, err := v.Authenticate(req)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if principal.SubjectID != "u-1" || principal.TenantID != "acme" || principal.Role != "user" {
+		t.Fatalf("principal did not use internal authority: %+v", principal)
+	}
+	if principal.AuthenticationMethod != AuthenticationMethodLocal {
+		t.Fatalf("expected local authentication, got %q", principal.AuthenticationMethod)
+	}
+	if hasScope(principal.Capabilities, ScopeAdmin) {
+		t.Fatalf("token-injected admin capability survived: %v", principal.Capabilities)
+	}
+}
+
 func TestMiddleware_RejectsRevokedToken(t *testing.T) {
 	// The user's password was reset, bumping token_version 0 -> 1. The token
 	// below was issued at version 0 and must now be rejected.
@@ -101,6 +143,143 @@ func TestMiddleware_AllowsUserAbsentFromDB(t *testing.T) {
 	}
 	if code := middlewareRequest(t, v, token); code != http.StatusOK {
 		t.Fatalf("expected 200 for offline user, got %d", code)
+	}
+}
+
+func TestProductionMiddlewareRejectsUnknownTestPrincipal(t *testing.T) {
+	lookup := &fakeUserLookup{users: map[string]userstore.User{}}
+	v := NewVerifierWithPolicy("test-secret", lookup, ProductionIdentityPolicy())
+	token, err := GenerateTestTokenWithPermission(
+		"test-secret", "untrusted-tenant", "offline-user", "admin", []string{ScopeAdmin},
+	)
+	if err != nil {
+		t.Fatalf("GenerateTestTokenWithPermission: %v", err)
+	}
+	if code := middlewareRequest(t, v, token); code != http.StatusUnauthorized {
+		t.Fatalf("expected production test principal rejection, got %d", code)
+	}
+}
+
+func TestProductionMiddlewareAcceptsKnownLocalPrincipal(t *testing.T) {
+	lookup := &fakeUserLookup{users: map[string]userstore.User{
+		"u-1": {ID: "u-1", Role: "readonly", TenantID: "acme", Active: true, TokenVersion: 2},
+	}}
+	v := NewVerifierWithPolicy("test-secret", lookup, ProductionIdentityPolicy())
+	token, _, err := IssueToken("test-secret", "u-1", "alice", "readonly", "acme", 2)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if code := middlewareRequest(t, v, token); code != http.StatusOK {
+		t.Fatalf("expected known local principal acceptance, got %d", code)
+	}
+}
+
+func TestNonProductionMiddlewareKeepsExplicitTestCompatibility(t *testing.T) {
+	lookup := &fakeUserLookup{users: map[string]userstore.User{}}
+	v := NewVerifierWithPolicy("test-secret", lookup, NonProductionIdentityPolicy())
+	token, err := GenerateTestToken("test-secret", "eval", "offline-user", []string{ScopeQuery})
+	if err != nil {
+		t.Fatalf("GenerateTestToken: %v", err)
+	}
+	if code := middlewareRequest(t, v, token); code != http.StatusOK {
+		t.Fatalf("expected explicit non-production test compatibility, got %d", code)
+	}
+}
+
+func TestProductionMiddlewareRejectsLegacyCredentialForKnownUser(t *testing.T) {
+	lookup := &fakeUserLookup{users: map[string]userstore.User{
+		"u-1": {ID: "u-1", Role: "user", TenantID: "acme", Active: true},
+	}}
+	v := NewVerifierWithPolicy("test-secret", lookup, ProductionIdentityPolicy())
+	claims := Claims{
+		TenantID: "acme", UserID: "u-1", Permission: "user", Scopes: []string{ScopeQuery},
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))},
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("sign legacy token: %v", err)
+	}
+	if code := middlewareRequest(t, v, token); code != http.StatusUnauthorized {
+		t.Fatalf("expected legacy production credential rejection, got %d", code)
+	}
+}
+
+func TestNonProductionMiddlewareAcceptsLegacyCredentialDuringMigration(t *testing.T) {
+	lookup := &fakeUserLookup{users: map[string]userstore.User{
+		"u-1": {ID: "u-1", Role: "user", TenantID: "acme", Active: true},
+	}}
+	v := NewVerifierWithPolicy("test-secret", lookup, NonProductionIdentityPolicy())
+	claims := Claims{
+		TenantID: "acme", UserID: "u-1", Permission: "user", Scopes: []string{ScopeQuery},
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))},
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("sign legacy token: %v", err)
+	}
+	if code := middlewareRequest(t, v, token); code != http.StatusOK {
+		t.Fatalf("expected non-production legacy migration compatibility, got %d", code)
+	}
+}
+
+func TestMiddlewareInjectsPolicyOwnedPrincipal(t *testing.T) {
+	lookup := &fakeUserLookup{users: map[string]userstore.User{
+		"u-1": {ID: "u-1", Role: "readonly", TenantID: "acme", Active: true, TokenVersion: 4},
+	}}
+	v := NewVerifierWithPolicy("test-secret", lookup, ProductionIdentityPolicy())
+	token, _, err := IssueToken("test-secret", "u-1", "alice", "admin", "forged", 4)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+	var got Principal
+	v.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = GetPrincipal(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	if got.TenantID != "acme" || got.SubjectID != "u-1" || got.Role != "readonly" ||
+		got.AuthenticationMethod != AuthenticationMethodLocal || hasScope(got.Capabilities, ScopeAdmin) {
+		t.Fatalf("unexpected principal context: %+v", got)
+	}
+}
+
+func TestIdentityPolicyForEnvironment(t *testing.T) {
+	for _, environment := range []string{"production", "Production", " production "} {
+		production := IdentityPolicyForEnvironment(environment)
+		if !production.RequireKnownSubject || production.AllowedMethods[AuthenticationMethodTest] {
+			t.Fatalf("%q policy is not fail closed: %+v", environment, production)
+		}
+	}
+	for _, environment := range []string{"dev", "staging", "evaluation"} {
+		policy := IdentityPolicyForEnvironment(environment)
+		if policy.RequireKnownSubject || !policy.AllowedMethods[AuthenticationMethodTest] {
+			t.Fatalf("%s should retain explicit test compatibility: %+v", environment, policy)
+		}
+	}
+}
+
+func TestMiddlewareConsumesProviderNeutralAuthenticator(t *testing.T) {
+	authenticator := authenticatorStub{principal: Principal{
+		TenantID: "acme", SubjectID: "federated-user", Role: "user",
+		AuthenticationMethod: AuthenticationMethodFederated,
+		Capabilities:         []string{ScopeQuery},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	recorder := httptest.NewRecorder()
+	var got Principal
+	Middleware(authenticator, ScopeQuery)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = GetPrincipal(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK || got.AuthenticationMethod != AuthenticationMethodFederated {
+		t.Fatalf("provider-neutral authenticator was not consumed: status=%d principal=%+v", recorder.Code, got)
 	}
 }
 

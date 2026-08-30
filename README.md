@@ -205,6 +205,11 @@ npm run dev                        # http://localhost:3000
 route handler 从 cookie 读 token 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。
 首启 bootstrap admin 由后端 `BOOTSTRAP_ADMIN_*` 创建；admin 登录后在「用户管理」创建用户。
 
+认证后的授权上下文由 provider-neutral `Principal` 提供。`production` 会拒绝
+测试/旧格式 token、未知或停用的内部用户，并从内部用户记录重新计算租户、角色和
+capabilities；非生产环境保留显式评测 token 兼容。当前仍是本地登录基线，尚未接入
+OIDC、SCIM、服务身份或企业 MFA 策略，不应视为企业 SSO 已启用。
+
 部署（compose 服务）：
 
 ```bash
