@@ -489,6 +489,10 @@ P2.5-E enterprise identity production acceptance design (proposed 2026-08-30):
    separately approved P2.5-F through J slices.
 6. Review the proposal in
    [enterprise-identity-production-acceptance.md](enterprise-identity-production-acceptance.md).
+7. P2.5-J must add IdP-authoritative reconciliation, distinct last-completed and
+   failure evidence, drift/retry/missed-run tests, and the real staging run.
+   Existing SCIM last-success age measures mutation activity only and cannot
+   satisfy the reconciliation gate.
 
 P2.3 backend projection slice (2026-08-28):
 

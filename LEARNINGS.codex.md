@@ -1005,3 +1005,8 @@ This file is an append-only record of completed PRAR cycles.
   SCIM profile or make it the default choice. Product documentation alone is
   not acceptance evidence, and proposed numeric policies remain unapproved
   until their enterprise owners sign them.
+- Review: successful SCIM mutation age is not authoritative reconciliation
+  evidence. P2.5-J now owns drift comparison, retry, missed-run alerting, and a
+  distinct completion signal. The public template is an index for private,
+  hashed, signed evidence, and concurrency acceptance fixes one explicit
+  idempotency key.

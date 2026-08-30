@@ -38,18 +38,28 @@
     "credential_overlap_seconds": null
   },
   "acceptance_results": {
-    "oidc_protocol": "not_run",
-    "create_to_login_identity": "not_run",
-    "update_and_concurrent_replay": "not_run",
-    "deactivate_and_session_revocation": "not_run",
-    "constrained_reactivation": "not_run",
-    "delete_and_identifier_reuse": "not_run",
-    "credential_and_jwks_rotation": "not_run",
-    "dependency_outages": "not_run",
-    "redaction_audit_and_metrics": "not_run"
+    "oidc_protocol": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "create_to_login_identity": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "update_and_concurrent_replay": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "deactivate_and_session_revocation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "constrained_reactivation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "delete_and_identifier_reuse": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "credential_and_jwks_rotation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "dependency_outages": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "redaction_audit_and_metrics": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "authoritative_reconciliation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""}
   },
   "evidence_bundle_sha256": "",
+  "decision_matrix_evidence_id": "",
+  "decision_matrix_sha256": "",
+  "sla_summary": {
+    "deactivation_observed_seconds": null,
+    "reconciliation_observed_seconds": null,
+    "missed_run_alert_observed_seconds": null
+  },
+  "correlation_id_evidence_id": "",
   "rollback_rehearsed_at": "",
+  "rollback_owner_role": "",
   "approved_at": "",
   "expires_at": "",
   "approvals": {
@@ -58,5 +68,11 @@
     "security_owner": "",
     "privacy_or_legal_owner": "",
     "operations_owner": ""
+  },
+  "signature": {
+    "mechanism": "",
+    "signed_manifest_sha256": "",
+    "detached_signature_sha256": "",
+    "signed_at": ""
   }
 }

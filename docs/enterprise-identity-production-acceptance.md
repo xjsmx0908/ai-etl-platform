@@ -86,7 +86,7 @@ Every row is `Pending`; a recommendation is not approval.
 | Stored profile | `userName`, display name, primary email only; no groups/roles | Privacy + tenant owner | Pending |
 | Provisioning mode | SCIM-only; JIT stays disabled | Security | Pending |
 | Deactivation SLA | End-to-end provider deactivation committed within 5 minutes; platform revocation immediate on receipt | Identity operations | Pending |
-| Reconciliation | At least every 24 hours, alert after one missed interval | Identity operations | Pending |
+| Reconciliation | IdP-authoritative scheduled comparison at least every 24 hours; alert after one missed run; repair only through normal lifecycle commands | Identity operations | Pending; mechanism implemented in P2.5-J |
 | Tombstone retention | Retain for the longer of audit retention or account-identifier reuse risk; no automatic purge yet | Legal/security | Pending |
 | Credential rotation | 90 days maximum, 24-hour old/new overlap, then explicit retirement | Security operations | Pending |
 
@@ -109,7 +109,8 @@ support diagnostics but cannot prove acceptance.
    resource and successful OIDC login resolve to the same internal user and
    fixed tenant with the connector's default role.
 4. Update `userName`, display name, email, and active state; replay the same
-   request concurrently and prove one identity, one binding, and no elevation.
+   request concurrently with one explicit shared `Idempotency-Key` and prove one
+   identity, one binding, one audit mutation, and no elevation.
 5. Deactivate the user; prove an existing platform session fails on its next
    protected request and a fresh OIDC login fails. Measure provider-to-platform
    receipt against the approved SLA.
@@ -125,6 +126,16 @@ support diagnostics but cannot prove acceptance.
 10. Confirm logs, metrics, reports, and audit omit credentials and external
     subjects while retaining connector, operation, result, correlation ID,
     latency, last-success age, and internal user identity.
+11. After P2.5-J supplies the approved reconciliation mechanism, create drift in
+    both directions: one IdP-disabled/platform-active identity and one
+    IdP-absent platform resource. Prove the next scheduled/demand run detects
+    both, applies only approved lifecycle transitions, is idempotent on retry,
+    records completion age, and alerts when a run is missed.
+
+The current `ai_etl_scim_last_success_unixtime` metric records successful SCIM
+mutation activity; it is not evidence that an authoritative full reconciliation
+completed. Production remains blocked until P2.5-J adds a distinct reconciliation
+completion/failure signal and step 11 passes.
 
 ## Evidence and Promotion Gate
 
@@ -137,9 +148,12 @@ Retain one secret-free, immutable acceptance bundle containing:
 - platform commit and image digests plus rollback owner and expiry date.
 
 Use [enterprise-identity-acceptance.template.json](enterprise-identity-acceptance.template.json)
-as the public-safe schema. Store the completed, signed artifact in an approved
-private evidence system; do not commit real tenant aliases, personal names, or
-configuration exports to this repository.
+as the public-safe index/manifest for the private bundle, not as the bundle
+itself. Each evidence reference records only an approved private-system object
+ID, digest, outcome, and timestamps; signatures record their mechanism and
+detached-signature digest. Store the completed artifacts in an approved private
+evidence system. Do not commit real tenant aliases, personal names, request
+payloads, or configuration exports to this repository.
 
 Security and identity owners must sign the same bundle. Evidence expires after
 90 days, a provider/profile change, subject-mapping change, or relevant platform
@@ -161,5 +175,6 @@ one policy responsibility:
    tenant inference from raw provider groups.
 4. P2.5-I: workload/service identity with distinct audiences, credentials,
    capabilities, rotation, and no browser session reuse.
-5. P2.5-J: selected-provider adapter/configuration and the staging acceptance
-   run. Production enablement and deployment require a later explicit approval.
+5. P2.5-J: selected-provider adapter/configuration, authoritative reconciliation
+   with distinct completion evidence, and the staging acceptance run. Production
+   enablement and deployment require a later explicit approval.
