@@ -115,6 +115,23 @@ internal identity to current OIDC login decision. Tests and promotion evidence
 cross that same seam, preserving provider replacement without duplicating
 tenant or authorization policy.
 
+The proposed P2.5-F `session` module sits after credential authentication and
+before risk-sensitive handlers. Its small interface establishes, authenticates,
+reauthenticates, and revokes platform sessions while hiding idle/absolute
+expiry, assurance freshness, rotation, and durable revocation. Provider
+adapters translate exact `acr`, `amr`, and `auth_time` semantics into
+provider-neutral authentication evidence; raw claims never enter handler or
+authorization interfaces. Route registration supplies a policy action/risk
+class and receives allow, deny, or reauthenticate.
+
+Production browser credentials must resolve a unique session ID through the
+durable registry on every request and fail closed when that state is
+unavailable. PostgreSQL user and knowledge-catalog state remain authoritative
+for mutable access. Local revocation precedes optional IdP logout, so provider
+failure cannot preserve platform access. Approved lifetimes, assurance mappings,
+and migration cohorts remain external inputs; the current stateless 24-hour JWT
+is verified current behavior, not the target enterprise session architecture.
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment

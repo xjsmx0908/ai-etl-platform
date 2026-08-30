@@ -230,3 +230,24 @@ interfaces and retains a signed, secret-free bundle tied to provider profile,
 platform commit/images, owners, expiry, and rollback evidence. Provider and
 policy selection, implementation, and production enablement remain blocked on
 separate approval; no new runtime seam or deployment is introduced here.
+
+## P2.5-F enterprise session security design
+
+[Enterprise Session Security Design](enterprise-session-security-design.md)
+specifies a future registry-backed platform session with a unique session ID,
+idle and absolute expiry, authentication freshness, provider-neutral assurance,
+credential rotation, and per-session/all-session revocation. The proposed deep
+session module returns allow, deny, or reauthenticate for a policy action;
+business handlers do not parse provider claims or implement expiry logic.
+
+The selected OIDC adapter must translate its exact `acr`, `amr`, and `auth_time`
+contract into approved internal authentication evidence. High-risk actions bind
+a new state/nonce/PKCE transaction to the current session and require the same
+internal subject before rotating the credential. Logout revokes locally and
+clears the cookie before optional validated RP-initiated provider logout.
+
+Implementation is intentionally deferred into separately reviewed schema,
+registry authentication, assurance/reauthentication, logout, and cohort-
+migration slices. All numeric lifetimes, factor mappings, device limits, and
+cutover periods remain `Pending`; P2.5-G owns break-glass and P2.5-J owns the
+selected-provider adapter and staging evidence.

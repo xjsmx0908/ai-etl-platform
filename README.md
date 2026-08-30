@@ -141,6 +141,12 @@ Kafka、进程及存储依赖中断。结果写入 `artifacts/governance-accepta
 [`docs/governance-acceptance.md`](docs/governance-acceptance.md)。此命令是显式
 发布验收，不会部署服务或启用 generation retention。
 
+企业身份仍为默认关闭状态。生产 IdP 验收门槛见
+[`docs/enterprise-identity-production-acceptance.md`](docs/enterprise-identity-production-acceptance.md)，
+会话、MFA、重新认证、退出和双认证迁移的待审批设计见
+[`docs/enterprise-session-security-design.md`](docs/enterprise-session-security-design.md)。
+两份文档均不代表已选择或启用真实 IdP。
+
 ### 6. 评测闭环
 
 ```bash

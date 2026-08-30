@@ -1010,3 +1010,19 @@ This file is an append-only record of completed PRAR cycles.
   distinct completion signal. The public template is an index for private,
   hashed, signed evidence, and concurrency acceptance fixes one explicit
   idempotency key.
+
+## 2026-08-30 - P2.5-F enterprise session security design
+
+- Perceive: the current browser session is a fixed 24-hour HS256 JWT and cookie;
+  current-user lookup supplies user-wide deactivation/version revocation, but
+  logout only clears the cookie and there is no individual durable session.
+- Reason: authentication protocol evidence, session policy, and business action
+  risk change for different reasons. Keep provider claim translation in the
+  adapter and put expiry, freshness, rotation, and revocation behind one deep,
+  provider-neutral session interface.
+- Act: documented a registry-backed target model, separate session clocks,
+  approved-assurance requirement, risk-based reauthentication, local-first
+  logout, exact-identity cohort migration, and explicit implementation slices.
+- Refine: the existing 24-hour lifetime is not enterprise approval. All numeric
+  values and selected-provider `acr`/`amr`/`auth_time` semantics remain pending;
+  missing evidence fails closed, while break-glass stays isolated in P2.5-G.

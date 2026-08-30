@@ -41,6 +41,8 @@ remaining enterprise inputs are detailed in
 Provider selection, policy approval, and the real staging evidence contract are
 detailed in
 [Enterprise Identity Production Acceptance](../enterprise-identity-production-acceptance.md).
+The proposed MFA, session, reauthentication, logout, and migration contract is
+detailed in [Enterprise Session Security Design](../enterprise-session-security-design.md).
 
 The Web BFF retains an HttpOnly, Secure, SameSite session cookie. Local login is
 disabled in the production profile except for a separately controlled,
@@ -65,7 +67,8 @@ explicit test/evaluation profiles.
 - Production identity provider and supported SCIM features. Keycloak is only
   the first standards-compatibility acceptance target.
 - External organization-to-tenant mapping and domain ownership proof.
-- Required MFA, session lifetime, reauthentication, and logout behavior.
+- Approval of the P2.5-F MFA evidence, session lifetime, reauthentication,
+  logout, and dual-auth migration values; every numeric value remains pending.
 - SCIM-only versus approved just-in-time provisioning fallback.
 - Break-glass custody, expiry, alerting, and review process.
 
@@ -80,3 +83,8 @@ P2.5-E does not resolve the open decisions. It defines the comparison evidence,
 named approvals, expiry rules, and staging lifecycle sequence required to close
 them. Keycloak's completed OIDC protocol run is baseline evidence only and does
 not select it as the production IdP or prove a production SCIM profile.
+
+P2.5-F proposes a provider-neutral session-policy seam and durable session
+registry, but does not approve the policy values or implement production
+identity. P2.5-G separately owns break-glass access; P2.5-J must bind the chosen
+provider's exact assurance/logout behavior and retain staging evidence.

@@ -494,6 +494,31 @@ P2.5-E enterprise identity production acceptance design (proposed 2026-08-30):
    Existing SCIM last-success age measures mutation activity only and cannot
    satisfy the reconciliation gate.
 
+P2.5-F enterprise session security design (proposed 2026-08-30):
+
+1. Record the current limitation precisely: a fixed 24-hour platform JWT and
+   matching HttpOnly cookie, user-wide `token_version` revocation, and
+   cookie-only logout; no session ID, registry, idle expiry, assurance state,
+   reauthentication, or per-device revocation exists yet.
+2. Put session establishment, authentication decisions, freshness, rotation,
+   and revocation behind one provider-neutral deep module. Provider adapters
+   translate exact `acr`/`amr`/`auth_time` behavior; handlers see only an
+   internal action and allow, deny, or reauthenticate.
+3. Require a durable production session registry with unique session IDs,
+   separate idle/absolute/freshness clocks, per-session and all-session
+   revocation, current internal authority, and fail-closed lookup.
+4. Revoke the platform session before cookie clearing and optional validated
+   RP-initiated IdP logout. An IdP outage cannot block local logout.
+5. Migrate named cohorts only after exact external binding and observed staging
+   evidence. Production cutover disables passwords and invalidates local
+   sessions; rollback never silently restores passwords or bypasses MFA.
+6. Keep assurance mappings, all numeric lifetimes/limits, cohorts, and cutover
+   dates `Pending` until security, identity, product, privacy, support, and
+   operations owners approve them. P2.5-G owns break-glass; P2.5-J owns the
+   selected-provider implementation and evidence.
+7. Review the proposal in
+   [enterprise-session-security-design.md](enterprise-session-security-design.md).
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

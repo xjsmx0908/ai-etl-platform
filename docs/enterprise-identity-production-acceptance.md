@@ -168,8 +168,10 @@ plan. Provider selection occurs only after the named enterprise owners supply
 and approve its evidence. Later changes remain separate so each module keeps
 one policy responsibility:
 
-1. P2.5-F: MFA, session lifetime, reauthentication, RP-initiated logout, and
-   dual-auth migration policy.
+1. P2.5-F: the proposed MFA, session lifetime, reauthentication, RP-initiated
+   logout, and dual-auth migration contract is documented in
+   [Enterprise Session Security Design](enterprise-session-security-design.md);
+   enterprise owners must still approve every pending value.
 2. P2.5-G: audited, time-bounded break-glass custody and exercises.
 3. P2.5-H: tenant-owned group-to-knowledge-space mapping; never global role or
    tenant inference from raw provider groups.
