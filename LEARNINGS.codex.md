@@ -938,3 +938,20 @@ This file is an append-only record of completed PRAR cycles.
   flow also passed against Keycloak 26.3.3 over HTTPS. Review then caught and
   closed redirect-based client-secret exposure, same-`kid` JWKS rotation,
   browser/backend TTL drift, and insecure federated-cookie configuration.
+
+## 2026-08-30 - P2.5-D identity lifecycle design
+
+- Perceive: OIDC now proves a pre-bound identity, but the current user model has
+  globally unique local usernames, mandatory password hashes, and no durable
+  provisioning ownership or deprovisioning tombstone.
+- Reason: isolate provider protocol from internal lifecycle authority. A deep
+  provisioning module should atomically own the user, external binding,
+  revocation, idempotency, tombstone, and audit transition; a SCIM adapter only
+  translates requests into that seam.
+- Act: documented connector-to-tenant binding, least-privilege defaults, exact
+  subject mapping, immediate revocation, retained tombstones, bounded SCIM
+  behavior, operational evidence, and two proposed test seams.
+- Refine: neither email/userName nor organization/group claims safely identify
+  tenant, authorization, or OIDC subject across providers. Those mappings and a
+  possible JIT fallback remain explicit enterprise decisions before code is
+  implemented.

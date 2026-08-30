@@ -35,6 +35,9 @@ separately reviewed future adapter.
 Provisioning will use SCIM when supported by the chosen provider. A constrained
 just-in-time adapter may be added only as a separately reviewed fallback. Service
 workloads use distinct client credentials and audiences, not browser sessions.
+The proposed lifecycle module, authority rules, deprovisioning semantics, and
+remaining enterprise inputs are detailed in
+[Enterprise Identity Lifecycle Design](../identity-lifecycle-design.md).
 
 The Web BFF retains an HttpOnly, Secure, SameSite session cookie. Local login is
 disabled in the production profile except for a separately controlled,
