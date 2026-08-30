@@ -140,3 +140,28 @@ including algorithm confusion, claim-based privilege injection, unknown and
 inactive users, revocation, legacy/test rejection, and non-production
 compatibility. No OIDC/SCIM adapter, production federation, or deployment is
 part of this slice.
+
+## P2.5-B external identity bindings
+
+Migration `0019_external_identity_bindings.up.sql` gives each normalized
+`(issuer, external_subject)` pair one global binding and uses a composite
+user/tenant foreign key to make cross-tenant rows unrepresentable. Issuers must
+be absolute HTTPS URLs with no userinfo, query, or fragment. Scheme and host are
+lowercased; issuer paths and exact case-sensitive subjects are preserved.
+
+`externalidentity.Directory.Resolve` is the future provider adapter's mapping
+seam. It joins the binding to the current active user and returns a federated
+policy principal whose capabilities are derived from the current internal role.
+It never validates a token. `externalidentity.Manager` owns list/create/delete,
+tenant-admin checks, normalization, conflicts, and atomic mutation audit.
+
+The authenticated management routes are:
+
+- `GET /v1/users/{user_id}/external-identities`
+- `POST /v1/users/{user_id}/external-identities` with `issuer` and `subject`
+- `DELETE /v1/users/{user_id}/external-identities/{binding_id}`
+
+All require the existing admin capability. PostgreSQL integration tests cover
+global uniqueness, live role/active state, tenant isolation, and rollback when
+either create or delete audit fails. A concrete IdP, OIDC/JWKS, SCIM/JIT, group
+mapping, production enablement, and deployment remain outside this slice.

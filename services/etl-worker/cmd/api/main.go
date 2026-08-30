@@ -31,6 +31,7 @@ import (
 	"ai-etl-pipeline/internal/deletionworkflow"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/es"
+	"ai-etl-pipeline/internal/externalidentity"
 	"ai-etl-pipeline/internal/idempotency"
 	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/ingestion"
@@ -213,6 +214,7 @@ func main() {
 	docStore := docstore.New(pgPool)
 	admissionStore := ingestion.NewPostgresStore(pgPool)
 	auditStore := audit.New(pgPool)
+	externalIdentityManager := externalidentity.NewPostgresManager(pgPool)
 	knowledgeCatalog := knowledgecatalog.New(knowledgecatalog.NewPostgresStore(pgPool))
 	generationVisibility := indexmanifest.NewPostgresStore(pgPool)
 	releaseVisibility := publicationrelease.NewPostgresStore(pgPool)
@@ -397,6 +399,8 @@ func main() {
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
 	apiV1.Handle("/v1/users", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUsers(userStore))))
+	apiV1.Handle("/v1/users/{userID}/external-identities", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleExternalIdentities(externalIdentityManager))))
+	apiV1.Handle("/v1/users/{userID}/external-identities/{bindingID}", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleExternalIdentities(externalIdentityManager))))
 	apiV1.Handle("/v1/users/", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUser(userStore))))
 	apiV1.Handle("/v1/tenants", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleTenants(userStore))))
 	apiV1.Handle("/v1/audit", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleAuditList(auditStore))))

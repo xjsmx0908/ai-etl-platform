@@ -12,6 +12,7 @@ class GenerationAcceptanceContractTests(unittest.TestCase):
         )
 
         self.assertIn("INDEX_MANIFEST_TEST_DSN", workflow)
+        self.assertIn("EXTERNAL_IDENTITY_TEST_DSN", workflow)
         self.assertIn("postgres:16-alpine", workflow)
 
     def test_acceptance_matrix_maps_every_required_scenario_to_automated_evidence(self):
