@@ -1039,3 +1039,19 @@ This file is an append-only record of completed PRAR cycles.
   在副作用前持久化幂等意图，再调用受限适配器并收敛外部不确定结果。
 - 审查：规范与规格双轴均通过；独立故障域、多人控制、认证器持有证明、短期租约、
   最小动作、失败关闭、通知、复盘和 canary 演练没有遗留可行动缺口。
+
+## 2026-08-30 - P2.5-H 企业组到知识空间授权设计
+
+- 感知：当前知识目录只有直接成员，manager 无成员管理路由；OIDC 不解析组，SCIM
+  Users 拒绝 groups/roles，因此不存在可直接启用的权威组授权输入。
+- 推理：稳定外部组、租户拥有的映射和请求时有效权限因不同原因变化。分别放入
+  `groupdirectory`、`groupmapping` 和现有 `knowledgecatalog` 接缝，raw token
+  claim 只用于诊断。
+- 行动：定义完整版本快照、稳定组 ID/tombstone、同租户空间角色映射、直接/组来源
+  合并、最高允许角色、下一请求撤权、修订绑定缓存、对账及 shadow/canary 迁移。
+- 改进：组 claim overage 或省略不是空成员集合；超过批准陈旧窗口时只让组派生
+  授权失败关闭，不能误删仍有效的人工直接授权。
+- 审查修正：异步 outbox 不能单独保证下一请求撤权，缓存 allow 必须先通过同步修订
+  栅栏；跨页目录同步需要 snapshot token/watermark 或首尾版本变化即整轮重试；回滚
+  直接成员必须逐条 CAS 且冲突转人工对账；验收补充重新认证、审批分离、重放和即时
+  删除/降级测试。
