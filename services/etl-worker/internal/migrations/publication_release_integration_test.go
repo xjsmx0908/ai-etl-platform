@@ -20,15 +20,28 @@ func TestAllMigrationsApplyOnFreshSchema(t *testing.T) {
 	if err := Up(context.Background(), &db.Pool{Pool: pool}); err != nil {
 		t.Fatalf("apply all migrations: %v", err)
 	}
-	var applied bool
+	var applied, identityBindingsApplied, identityTenantFKApplied bool
 	if err := pool.QueryRow(context.Background(), `SELECT EXISTS (
 		SELECT 1 FROM information_schema.columns
 		WHERE table_schema=current_schema() AND table_name='document_releases'
 			AND column_name='last_publication_request_hash')`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if !applied {
-		t.Fatal("exact-candidate publication migration was not applied")
+	if err := pool.QueryRow(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.tables
+		WHERE table_schema=current_schema() AND table_name='external_identity_bindings')`).Scan(&identityBindingsApplied); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT EXISTS (
+		SELECT 1 FROM information_schema.table_constraints
+		WHERE table_schema=current_schema() AND table_name='external_identity_bindings'
+			AND constraint_name='external_identity_bindings_user_tenant_fk'
+			AND constraint_type='FOREIGN KEY')`).Scan(&identityTenantFKApplied); err != nil {
+		t.Fatal(err)
+	}
+	if !applied || !identityBindingsApplied || !identityTenantFKApplied {
+		t.Fatalf("fresh migrations incomplete: publication=%t identity_bindings=%t identity_tenant_fk=%t",
+			applied, identityBindingsApplied, identityTenantFKApplied)
 	}
 }
 

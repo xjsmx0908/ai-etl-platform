@@ -890,3 +890,22 @@ This file is an append-only record of completed PRAR cycles.
   algorithm confusion, unknown/inactive/revoked users, production test/legacy
   rejection, and non-production evaluation compatibility. Enterprise provider
   integration remains correctly blocked on ADR 0009 decisions.
+
+## 2026-08-30 - P2.5-B external identity binding foundation
+
+- Perceive: the principal seam reserved federated authentication, but there was
+  no durable provider identifier mapping and the chosen IdP remained unknown.
+- Reason: isolate stable identity mapping from provider credential validation.
+  Store only issuer, exact subject, and internal user identity; resolve mutable
+  authorization from the current user row on every authentication.
+- Act: added tenant-safe bindings, a fail-closed directory, and admin management
+  whose create/delete audit records share the mutation transaction. Subject is
+  available to tenant admins for management but deliberately omitted from audit.
+- Refine: a handler-only tenant check is insufficient for alternate callers,
+  and skipped integration tests are not a CI gate. The management module repeats
+  admin/tenant enforcement, while CI now supplies the real PostgreSQL test DSN.
+  Go format/vet/full/race, fresh PostgreSQL migrations, 128 script tests,
+  Parser 32, Reranker 1, Webhook 3, Web audit/lint/build, Compose, Prometheus,
+  Alertmanager, and Grafana checks passed. The deterministic full-stack eval
+  could not start because the host filesystem had no free space; no provider
+  adapter, federation enablement, or deployment occurred.

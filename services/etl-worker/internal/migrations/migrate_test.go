@@ -248,6 +248,25 @@ func TestExactCandidatePublicationMigrationCarriesIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestExternalIdentityBindingsMigrationCarriesAuthorityInvariants(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0019_external_identity_bindings.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE TABLE external_identity_bindings", "issuer TEXT NOT NULL",
+		"external_subject TEXT NOT NULL", "internal_user_id UUID NOT NULL",
+		"UNIQUE (issuer, external_subject)", "UNIQUE (id, tenant_id)",
+		"users_identity_tenant_key", "FOREIGN KEY (internal_user_id, tenant_id)",
+		"ON DELETE CASCADE", "external_identity_bindings_tenant_user_idx",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("external identity migration missing %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.

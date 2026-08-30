@@ -36,6 +36,7 @@ jobs:
     env:
       INDEX_MANIFEST_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
       GOVERNANCE_RELEASE_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
+      EXTERNAL_IDENTITY_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
     defaults:
       run:
         working-directory: services/etl-worker

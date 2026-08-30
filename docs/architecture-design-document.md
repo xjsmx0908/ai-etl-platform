@@ -63,6 +63,20 @@ the principal or browser token. OIDC/SCIM, provider group mapping, service
 identity, production local-login disablement, MFA/session policy, and
 break-glass controls remain gated by ADR 0009's open enterprise decisions.
 
+`internal/externalidentity` adds the provider-neutral mapping below the future
+credential adapter. A normalized HTTPS issuer and exact, case-sensitive subject
+map to one internal user. Resolution joins the current user row, so disabling a
+user or changing their tenant/role takes effect immediately; missing, invalid,
+inactive, and unavailable mappings fail closed. The binding stores no copied
+role or capabilities.
+
+Tenant administrators manage bindings through
+`/v1/users/{user_id}/external-identities`. The module rechecks administrator
+role and tenant ownership even after HTTP authorization. Creates and deletes
+commit with their audit event in one PostgreSQL transaction, and audit details
+omit the external subject. This mapping seam does not validate OIDC tokens or
+enable federation by itself.
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment

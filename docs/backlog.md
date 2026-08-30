@@ -357,6 +357,41 @@ P2.5-A outcome (completed 2026-08-29):
 - OIDC/SCIM, service identities, production local-login disablement, provider
   mapping, MFA/session policy, and break-glass remain pending IdP/policy input.
 
+P2.5-B implementation plan (approved 2026-08-30):
+
+1. Add a durable, provider-neutral mapping from one normalized external
+   `(issuer, subject)` pair to exactly one tenant-scoped internal user. Enforce
+   database uniqueness and tenant/user referential integrity; retain subject
+   case because OIDC subject identifiers are case-sensitive.
+2. Put normalization, lookup, active-user validation, and fail-closed error
+   semantics behind a narrow identity-resolution module interface. Resolve
+   mutable tenant and role authority from the current internal user row rather
+   than copying it into the external binding.
+3. Add tenant-admin HTTP management for listing, creating, and deleting a
+   user's bindings. The module independently enforces administrator role and
+   tenant ownership. Binding mutations and their security audit records commit
+   in the same PostgreSQL transaction; audit failure rolls back the mutation.
+4. Test through the two approved seams: the identity-resolution module
+   interface and authenticated/authorized HTTP management. Add real PostgreSQL
+   integration coverage for normalization, uniqueness, current role and active
+   state, tenant isolation, and transactional audit.
+5. Update identity architecture and operating documentation and run the full
+   repository gates. Do not select or integrate an IdP, validate OIDC tokens,
+   add JWKS/SCIM/JIT/group mapping, enable production federation, or deploy.
+
+P2.5-B outcome (completed 2026-08-30):
+
+- Added a tenant-safe external identity binding schema with global
+  issuer/subject uniqueness and a composite user/tenant foreign key.
+- Added a provider-neutral directory that returns current internal authority
+  and fails closed for invalid, unknown, inactive, or unavailable identities.
+- Added admin-only list/create/delete routes. The management module independently
+  enforces role and tenant ownership; create/delete and subject-free audit
+  records commit in one PostgreSQL transaction.
+- Added module, protected HTTP, migration, and real PostgreSQL tests. OIDC/JWKS,
+  SCIM/JIT, provider/group selection, production federation, and deployment
+  remain gated by ADR 0009 decisions.
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
