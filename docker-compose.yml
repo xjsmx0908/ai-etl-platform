@@ -425,6 +425,14 @@ services:
       - OIDC_CLIENT_SECRET_FILE=/run/secrets/oidc_client_secret
       - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-}
       - OIDC_TRANSACTION_TTL=${OIDC_TRANSACTION_TTL:-5m}
+      - SCIM_ENABLED=${SCIM_ENABLED:-false}
+      - SCIM_CONNECTOR_ID=${SCIM_CONNECTOR_ID:-}
+      - SCIM_TENANT_ID=${SCIM_TENANT_ID:-}
+      - SCIM_ISSUER=${SCIM_ISSUER:-}
+      - SCIM_SUBJECT_ATTRIBUTE=${SCIM_SUBJECT_ATTRIBUTE:-externalId}
+      - SCIM_DEFAULT_ROLE=${SCIM_DEFAULT_ROLE:-readonly}
+      - SCIM_BEARER_TOKENS_FILE=/run/secrets/scim_bearer_tokens
+      - SCIM_MAX_BODY_KB=${SCIM_MAX_BODY_KB:-64}
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TOPIC=${KAFKA_TOPIC:-doc-processing}
       - INGESTION_METRICS_INTERVAL=${INGESTION_METRICS_INTERVAL:-15s}
@@ -503,6 +511,7 @@ services:
     secrets:
       - jwt_secret
       - oidc_client_secret
+      - scim_bearer_tokens
       - embed_api_key
       - llm_api_key
       - store_api_key
@@ -611,6 +620,8 @@ secrets:
     file: ${JWT_SECRET_FILE_PATH:-./secrets/examples/jwt_secret}
   oidc_client_secret:
     file: ${OIDC_CLIENT_SECRET_FILE_PATH:-./secrets/examples/oidc_client_secret}
+  scim_bearer_tokens:
+    file: ${SCIM_BEARER_TOKENS_FILE_PATH:-./secrets/examples/scim_bearer_tokens}
   pg_password:
     file: ${PG_PASSWORD_FILE_PATH:-./secrets/examples/pg_password}
   pg_dsn:

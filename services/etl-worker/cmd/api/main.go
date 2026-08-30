@@ -33,6 +33,7 @@ import (
 	"ai-etl-pipeline/internal/es"
 	"ai-etl-pipeline/internal/externalidentity"
 	"ai-etl-pipeline/internal/idempotency"
+	"ai-etl-pipeline/internal/identitylifecycle"
 	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/ingestion"
 	"ai-etl-pipeline/internal/kafka"
@@ -47,6 +48,7 @@ import (
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/s3"
+	"ai-etl-pipeline/internal/scim"
 	"ai-etl-pipeline/internal/store"
 	"ai-etl-pipeline/internal/taskstatus"
 	"ai-etl-pipeline/internal/tracing"
@@ -252,6 +254,27 @@ func main() {
 		}
 		oidcFlow = oidcauth.NewFlow(oidcAuthenticator, transactionStore, cfg.OIDCTransactionTTL)
 	}
+	var scimHandler http.Handler
+	if cfg.SCIMEnabled {
+		policy := identitylifecycle.ConnectorPolicy{
+			ID: cfg.SCIMConnectorID, TenantID: cfg.SCIMTenantID, Issuer: cfg.SCIMIssuer,
+			SubjectAttribute: cfg.SCIMSubjectAttribute, DefaultRole: cfg.SCIMDefaultRole,
+		}
+		if err := identitylifecycle.EnsureConnector(context.Background(), pgPool, policy); err != nil {
+			slog.Error("failed to configure SCIM connector", "error", err)
+			os.Exit(1)
+		}
+		lifecycle := identitylifecycle.NewPostgresProvisioner(pgPool)
+		scimHandler, err = scim.NewHandler(scim.Config{
+			ConnectorID: cfg.SCIMConnectorID, Issuer: cfg.SCIMIssuer,
+			SubjectAttribute: cfg.SCIMSubjectAttribute, BearerTokens: cfg.SCIMBearerTokens,
+			MaxBodyBytes: cfg.SCIMMaxBodyBytes,
+		}, lifecycle, lifecycle)
+		if err != nil {
+			slog.Error("failed to initialize SCIM", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	// Opt-in one-shot backfill of the registry from existing Qdrant vectors
 	// (legacy data present before PostgreSQL was introduced).
@@ -396,6 +419,11 @@ func main() {
 			middleware.Timeout(30*time.Second)(handleOIDCStart(oidcFlow))))
 		mux.Handle("/v1/auth/oidc/callback", middleware.CORS(cfg.CORSAllowedOrigins)(
 			middleware.Timeout(30*time.Second)(handleOIDCCallback(cfg, oidcFlow, userStore, auditStore))))
+	}
+	if scimHandler != nil {
+		wrappedSCIM := prom.SCIMMiddleware(cfg.SCIMConnectorID, middleware.Timeout(30*time.Second)(scimHandler))
+		mux.Handle("/scim/v2/Users", wrappedSCIM)
+		mux.Handle("/scim/v2/Users/", wrappedSCIM)
 	}
 
 	// API v1 routes (auth required)

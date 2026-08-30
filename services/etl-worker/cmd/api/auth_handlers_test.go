@@ -168,6 +168,22 @@ func TestHandleLogin_ProductionOIDCDisablesOrdinaryPasswordLogin(t *testing.T) {
 	}
 }
 
+func TestHandleLoginRejectsFederatedOnlyUser(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", "readonly", "acme", true)
+	user, found, err := store.GetByUsername(context.Background(), "alice")
+	if err != nil || !found {
+		t.Fatal("seed user")
+	}
+	user.Origin = "scim"
+	store.byID[user.ID] = user
+	store.byName["alice"] = user
+	recorder := doLogin(handleLogin(testAuthConfig(), store, nil), "alice", "s3cret-pw")
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected federated-only password rejection, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestHandleCurrentSessionReturnsCurrentInternalUser(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "unused", userstore.RoleAdmin, "acme", true)

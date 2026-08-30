@@ -69,6 +69,8 @@ type Metrics struct {
 	DeletionDiagnostics       *prometheus.GaugeVec
 	DeletionOldestAge         prometheus.Gauge
 	DeletionOutcomes          *prometheus.CounterVec
+	SCIMRequests              *prometheus.CounterVec
+	SCIMLastSuccess           *prometheus.GaugeVec
 
 	// Query metrics
 	QueryDuration          *prometheus.HistogramVec
@@ -239,6 +241,14 @@ func New(namespace string) *Metrics {
 		DeletionOutcomes: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace, Subsystem: "deletion", Name: "outcomes_total", Help: "Document deletion collector outcomes",
 		}, []string{"outcome"}),
+		SCIMRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Subsystem: "scim", Name: "requests_total",
+			Help: "SCIM lifecycle requests by bounded operation and result",
+		}, []string{"connector", "operation", "result"}),
+		SCIMLastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "scim", Name: "last_success_unixtime",
+			Help: "Unix timestamp of the most recent successful SCIM lifecycle request",
+		}, []string{"connector"}),
 		QueryDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: namespace,
@@ -406,6 +416,8 @@ func New(namespace string) *Metrics {
 		m.DeletionDiagnostics,
 		m.DeletionOldestAge,
 		m.DeletionOutcomes,
+		m.SCIMRequests,
+		m.SCIMLastSuccess,
 		m.QueryDuration,
 		m.QueryFailures,
 		m.RetrievalCount,
@@ -424,6 +436,30 @@ func New(namespace string) *Metrics {
 	)
 
 	return m
+}
+
+func (m *Metrics) SCIMMiddleware(connector string, next http.Handler) http.Handler {
+	// Start the staleness window when this connector becomes ready. A later
+	// successful request advances it; a never-used connector alerts after 24h.
+	m.SCIMLastSuccess.WithLabelValues(connector).Set(float64(time.Now().Unix()))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		result := "success"
+		if recorder.statusCode >= http.StatusBadRequest {
+			result = "failure"
+		}
+		operation := strings.ToLower(r.Method)
+		switch operation {
+		case "get", "post", "put", "patch", "delete":
+		default:
+			operation = "other"
+		}
+		m.SCIMRequests.WithLabelValues(connector, operation, result).Inc()
+		if result == "success" {
+			m.SCIMLastSuccess.WithLabelValues(connector).Set(float64(time.Now().Unix()))
+		}
+	})
 }
 
 // SetIngestionOperations publishes one bounded-cardinality snapshot of durable

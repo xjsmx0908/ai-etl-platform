@@ -440,7 +440,7 @@ P2.5-C outcome (completed 2026-08-30):
   enablement, SCIM/JIT, groups, service identities, MFA/session policy,
   break-glass, and deployment remain later reviewed work.
 
-P2.5-D identity lifecycle design (proposed 2026-08-30):
+P2.5-D identity lifecycle provisioning (implemented 2026-08-30):
 
 1. Put user creation, external binding, deactivation, session revocation,
    tombstone retention, idempotency, and audit behind one provider-neutral
@@ -457,9 +457,17 @@ P2.5-D identity lifecycle design (proposed 2026-08-30):
 5. Test through the lifecycle module and SCIM HTTP seams, then require a real
    selected-provider lifecycle-to-OIDC acceptance run before production use.
 6. Keep JIT, group authorization, service identities, production enablement,
-   MFA/session policy, and break-glass outside this slice. Implementation waits
-   for approval of the decisions in
+   MFA/session policy, and break-glass outside this slice. Production waits for
+   selected-provider acceptance and the decisions in
    [identity-lifecycle-design.md](identity-lifecycle-design.md).
+7. Added migration `0020`, an atomic PostgreSQL lifecycle provisioner, a
+   default-off bounded `/scim/v2/Users` adapter, SCIM-owned account safeguards,
+   credential overlap, metrics, and sustained-failure/staleness alerts. Unit
+   and real PostgreSQL tests cover replay, rollback, revocation, tombstones,
+   constrained reactivation, replacement semantics, and HTTP error behavior.
+8. Remaining production gate: select the IdP and connector owner, approve its
+   stable subject mapping/default role/retention/SLA/rotation policy, then run a
+   real SCIM create-update-deactivate-reactivate-to-OIDC acceptance exercise.
 
 P2.3 backend projection slice (2026-08-28):
 

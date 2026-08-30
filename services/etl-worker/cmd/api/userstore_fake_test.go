@@ -65,6 +65,9 @@ func (f *fakeUserStore) Create(_ context.Context, u *userstore.User) error {
 	}
 	f.nextID++
 	u.ID = fmt.Sprintf("u-%d", f.nextID)
+	if u.Origin == "" {
+		u.Origin = "local"
+	}
 	u.CreatedAt = time.Now()
 	u.UpdatedAt = time.Now()
 	f.byName[key] = *u

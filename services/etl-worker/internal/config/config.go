@@ -213,6 +213,14 @@ type Config struct {
 	OIDCClientSecret        string
 	OIDCRedirectURI         string
 	OIDCTransactionTTL      time.Duration
+	SCIMEnabled             bool
+	SCIMConnectorID         string
+	SCIMTenantID            string
+	SCIMIssuer              string
+	SCIMSubjectAttribute    string
+	SCIMDefaultRole         string
+	SCIMBearerTokens        []string
+	SCIMMaxBodyBytes        int64
 	S3Endpoint              string
 	S3AccessKey             string
 	S3SecretKey             string
@@ -402,6 +410,14 @@ func Load() Config {
 		OIDCClientSecret:        EnvSecret("OIDC_CLIENT_SECRET", ""),
 		OIDCRedirectURI:         strings.TrimSpace(EnvStr("OIDC_REDIRECT_URI", "")),
 		OIDCTransactionTTL:      EnvDuration("OIDC_TRANSACTION_TTL", 5*time.Minute),
+		SCIMEnabled:             EnvBool("SCIM_ENABLED", false),
+		SCIMConnectorID:         strings.TrimSpace(EnvStr("SCIM_CONNECTOR_ID", "")),
+		SCIMTenantID:            strings.TrimSpace(EnvStr("SCIM_TENANT_ID", "")),
+		SCIMIssuer:              strings.TrimSpace(EnvStr("SCIM_ISSUER", "")),
+		SCIMSubjectAttribute:    strings.TrimSpace(EnvStr("SCIM_SUBJECT_ATTRIBUTE", "externalId")),
+		SCIMDefaultRole:         strings.TrimSpace(EnvStr("SCIM_DEFAULT_ROLE", "readonly")),
+		SCIMBearerTokens:        secretCSV("SCIM_BEARER_TOKENS"),
+		SCIMMaxBodyBytes:        int64(EnvInt("SCIM_MAX_BODY_KB", 64)) * 1024,
 		S3Endpoint:              EnvStr("S3_ENDPOINT", "localhost:9000"),
 		S3AccessKey:             EnvSecret("S3_ACCESS_KEY", "minioadmin"),
 		S3SecretKey:             EnvSecret("S3_SECRET_KEY", "minioadmin"),
@@ -675,6 +691,23 @@ func (c Config) ValidateAPI() error {
 			return fmt.Errorf("OIDC_REDIRECT_URI must be an absolute HTTPS URL without userinfo, query, or fragment")
 		}
 	}
+	if c.SCIMEnabled {
+		if c.SCIMConnectorID == "" || c.SCIMTenantID == "" || c.SCIMIssuer == "" || len(c.SCIMBearerTokens) == 0 {
+			return fmt.Errorf("SCIM_CONNECTOR_ID, SCIM_TENANT_ID, SCIM_ISSUER, and SCIM_BEARER_TOKENS are required when SCIM_ENABLED=true")
+		}
+		if !validOIDCHTTPSURL(c.SCIMIssuer) {
+			return fmt.Errorf("SCIM_ISSUER must be an absolute HTTPS URL without userinfo, query, or fragment")
+		}
+		if c.SCIMSubjectAttribute != "externalId" {
+			return fmt.Errorf("SCIM_SUBJECT_ATTRIBUTE must be externalId in this implementation")
+		}
+		if c.SCIMDefaultRole != "readonly" && c.SCIMDefaultRole != "user" {
+			return fmt.Errorf("SCIM_DEFAULT_ROLE must be readonly or user")
+		}
+		if c.SCIMMaxBodyBytes <= 0 || c.SCIMMaxBodyBytes > 1<<20 {
+			return fmt.Errorf("SCIM_MAX_BODY_KB must produce a limit greater than zero and at most 1 MiB")
+		}
+	}
 	if c.Environment != "production" {
 		return nil
 	}
@@ -828,6 +861,21 @@ func EnvCSV(key, defaultVal string) []string {
 		v := strings.TrimSpace(part)
 		if v != "" {
 			values = append(values, v)
+		}
+	}
+	return values
+}
+
+func secretCSV(key string) []string {
+	raw := EnvSecret(key, "")
+	if strings.TrimSpace(raw) == "" {
+		return []string{}
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			values = append(values, value)
 		}
 	}
 	return values

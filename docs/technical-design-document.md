@@ -194,3 +194,25 @@ remain outside this slice. Automated protocol coverage uses a real TLS OIDC
 test provider. The opt-in `TestKeycloakAuthorizationCodeAcceptance` gate also
 passed against Keycloak 26.3.3 over HTTPS; its environment variables keep realm
 credentials out of source control and ordinary CI.
+
+## P2.5-D identity lifecycle provisioning
+
+Migration `0020_identity_lifecycle.up.sql` records connector policy, provider
+resource ownership, retained tombstones, and idempotent responses. The
+`identitylifecycle.Provisioner` commits user creation or mutation, exact
+issuer/subject binding, session revocation, lifecycle ownership, success audit,
+and replay state in one PostgreSQL transaction. A connector is permanently
+bound to one tenant and issuer; only its configured `readonly` or `user` role
+may be assigned at create time.
+
+The default-off `/scim/v2/Users` adapter supports exact `userName` lookup, GET,
+POST, PUT, bounded PATCH, and DELETE. It authenticates against overlapping
+secret-file credentials, rejects role/group and unknown-field injection, and
+maps only explicit `externalId` to the exact OIDC subject. DELETE retains the
+binding and resource tombstone; reactivation requires the same connector,
+resource, issuer, and subject. SCIM-owned users cannot receive a local password
+or have their lifecycle/tenant changed through the admin API.
+
+Production stays blocked until a chosen IdP passes the complete SCIM lifecycle
+to OIDC login acceptance flow and its ownership, SLA, retention, reconciliation,
+and credential-rotation policies are approved.

@@ -942,6 +942,31 @@ func TestValidateAPI_OIDCRejectsUnsafeIssuerAndRedirect(t *testing.T) {
 	}
 }
 
+func TestValidateAPI_SCIMRequiresExplicitSafeConnectorPolicy(t *testing.T) {
+	cfg := Load()
+	cfg.SCIMEnabled = true
+	cfg.SCIMConnectorID = "workforce"
+	cfg.SCIMTenantID = "acme"
+	cfg.SCIMIssuer = "http://idp.example.com"
+	cfg.SCIMSubjectAttribute = "externalId"
+	cfg.SCIMDefaultRole = "readonly"
+	cfg.SCIMBearerTokens = []string{"secret"}
+	cfg.SCIMMaxBodyBytes = 64 << 10
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected unsafe SCIM issuer to be rejected")
+	}
+	cfg.SCIMIssuer = "https://idp.example.com"
+	cfg.SCIMSubjectAttribute = "userName"
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected implicit userName subject mapping to be rejected")
+	}
+	cfg.SCIMSubjectAttribute = "externalId"
+	cfg.SCIMDefaultRole = "admin"
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected privileged SCIM default role to be rejected")
+	}
+}
+
 func TestValidateAPI_ProductionMissingPGDSN(t *testing.T) {
 	cfg := Load()
 	cfg.Environment = "production"
