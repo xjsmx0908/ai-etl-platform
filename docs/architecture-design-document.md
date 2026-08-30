@@ -115,22 +115,17 @@ internal identity to current OIDC login decision. Tests and promotion evidence
 cross that same seam, preserving provider replacement without duplicating
 tenant or authorization policy.
 
-The proposed P2.5-F `session` module sits after credential authentication and
-before risk-sensitive handlers. Its small interface establishes, authenticates,
-reauthenticates, and revokes platform sessions while hiding idle/absolute
-expiry, assurance freshness, rotation, and durable revocation. Provider
-adapters translate exact `acr`, `amr`, and `auth_time` semantics into
-provider-neutral authentication evidence; raw claims never enter handler or
-authorization interfaces. Route registration supplies a policy action/risk
-class and receives allow, deny, or reauthenticate.
+拟议的 P2.5-F `session` 模块位于凭据认证之后、高风险处理器之前。其小型接口
+建立、认证、重新认证和撤销平台会话，并隐藏空闲/绝对到期、认证保证新鲜度、
+轮换及持久撤销。提供方适配器把精确 `acr`、`amr`、`auth_time` 语义转换为
+与提供方无关的认证证据；原始声明不得进入处理器或授权接口。路由注册提供策略
+操作/风险类别，并接收 allow、deny 或 reauthenticate。
 
-Production browser credentials must resolve a unique session ID through the
-durable registry on every request and fail closed when that state is
-unavailable. PostgreSQL user and knowledge-catalog state remain authoritative
-for mutable access. Local revocation precedes optional IdP logout, so provider
-failure cannot preserve platform access. Approved lifetimes, assurance mappings,
-and migration cohorts remain external inputs; the current stateless 24-hour JWT
-is verified current behavior, not the target enterprise session architecture.
+每个生产请求都必须通过持久注册表解析浏览器凭据中的唯一会话 ID；状态不可用时
+失败关闭。PostgreSQL 用户和知识目录状态仍是可变访问权限的权威来源。本地撤销
+先于可选 IdP 退出，因此提供方故障不能保留平台访问权。批准后的寿命、认证保证
+映射和迁移批次仍是外部输入；当前无状态 24 小时 JWT 是已核实的现状，而不是
+目标企业会话架构。
 
 ## Version-bound Publication Module
 

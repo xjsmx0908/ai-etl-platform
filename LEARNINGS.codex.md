@@ -1011,18 +1011,16 @@ This file is an append-only record of completed PRAR cycles.
   hashed, signed evidence, and concurrency acceptance fixes one explicit
   idempotency key.
 
-## 2026-08-30 - P2.5-F enterprise session security design
+## 2026-08-30 - P2.5-F 企业会话安全设计
 
-- Perceive: the current browser session is a fixed 24-hour HS256 JWT and cookie;
-  current-user lookup supplies user-wide deactivation/version revocation, but
-  logout only clears the cookie and there is no individual durable session.
-- Reason: authentication protocol evidence, session policy, and business action
-  risk change for different reasons. Keep provider claim translation in the
-  adapter and put expiry, freshness, rotation, and revocation behind one deep,
-  provider-neutral session interface.
-- Act: documented a registry-backed target model, separate session clocks,
-  approved-assurance requirement, risk-based reauthentication, local-first
-  logout, exact-identity cohort migration, and explicit implementation slices.
-- Refine: the existing 24-hour lifetime is not enterprise approval. All numeric
-  values and selected-provider `acr`/`amr`/`auth_time` semantics remain pending;
-  missing evidence fails closed, while break-glass stays isolated in P2.5-G.
+- 感知：当前浏览器会话是固定 24 小时的 HS256 JWT 和 Cookie；当前用户查询支持
+  用户级停用/版本撤销，但退出只清除 Cookie，且不存在独立持久会话。
+- 推理：认证协议证据、会话策略和业务操作风险因不同原因变化。提供方声明转换留在
+  适配器中，把到期、新鲜度、轮换和撤销放到一个深层、与提供方无关的会话接口后。
+- 行动：记录由注册表支持的目标模型、独立会话时钟、认证保证批准要求、风险驱动
+  重新认证、本地优先退出、精确身份批次迁移及明确实现切片。
+- 改进：现有 24 小时寿命不代表企业批准。所有数值和选定提供方的
+  `acr`/`amr`/`auth_time` 语义仍为 `Pending`；缺少证据时失败关闭，而紧急访问
+  保持隔离在 P2.5-G。
+- 评审：IdP 会话寿命必须独立审批和验证；生产切换前要演练不会导致全员锁死的
+  联邦配置回滚目标；首次建会话和重新认证都要覆盖认证保证的强弱正反例。

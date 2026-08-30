@@ -231,23 +231,18 @@ platform commit/images, owners, expiry, and rollback evidence. Provider and
 policy selection, implementation, and production enablement remain blocked on
 separate approval; no new runtime seam or deployment is introduced here.
 
-## P2.5-F enterprise session security design
+## P2.5-F 企业会话安全设计
 
-[Enterprise Session Security Design](enterprise-session-security-design.md)
-specifies a future registry-backed platform session with a unique session ID,
-idle and absolute expiry, authentication freshness, provider-neutral assurance,
-credential rotation, and per-session/all-session revocation. The proposed deep
-session module returns allow, deny, or reauthenticate for a policy action;
-business handlers do not parse provider claims or implement expiry logic.
+[企业会话安全设计](enterprise-session-security-design.md)规定未来由注册表支持的
+平台会话：唯一会话 ID、空闲与绝对到期、认证新鲜度、与提供方无关的认证保证、
+凭据轮换，以及逐会话/全会话撤销。拟议的深层会话模块针对策略操作返回 allow、
+deny 或 reauthenticate；业务处理器不解析提供方声明，也不实现到期逻辑。
 
-The selected OIDC adapter must translate its exact `acr`, `amr`, and `auth_time`
-contract into approved internal authentication evidence. High-risk actions bind
-a new state/nonce/PKCE transaction to the current session and require the same
-internal subject before rotating the credential. Logout revokes locally and
-clears the cookie before optional validated RP-initiated provider logout.
+选定的 OIDC 适配器必须把其精确 `acr`、`amr`、`auth_time` 契约转换为经批准的
+内部认证证据。高风险操作将新的 state/nonce/PKCE 事务绑定到当前会话，并在
+轮换凭据前要求相同内部 subject。退出先在本地撤销并清除 Cookie，再执行可选且
+经验证的 RP 发起提供方退出。
 
-Implementation is intentionally deferred into separately reviewed schema,
-registry authentication, assurance/reauthentication, logout, and cohort-
-migration slices. All numeric lifetimes, factor mappings, device limits, and
-cutover periods remain `Pending`; P2.5-G owns break-glass and P2.5-J owns the
-selected-provider adapter and staging evidence.
+实现有意推迟并拆为单独评审的数据库结构、注册表认证、认证保证/重新认证、退出和
+批次迁移切片。所有数值寿命、因子映射、设备上限和切换周期保持 `Pending`；
+P2.5-G 负责紧急访问，P2.5-J 负责选定提供方适配器和 staging 证据。

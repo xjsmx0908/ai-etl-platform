@@ -1,161 +1,138 @@
-# Enterprise Session Security Design
+# 企业会话安全设计
 
-## Status and Scope
+## 状态与范围
 
-Proposed for review (P2.5-F). This design defines the enterprise MFA, session,
-reauthentication, logout, and dual-auth migration contract. It does not select
-or configure an identity provider (IdP), set production credentials, implement
-break-glass access, enable federation, or deploy the platform. Every numeric
-policy below remains `Pending` until the named enterprise owner approves it.
+提议评审（P2.5-F）。本文定义企业 MFA、会话、重新认证、退出和双认证
+迁移契约；不选择或配置身份提供方（IdP），不设置生产凭据，不实现紧急
+访问，不启用身份联邦，也不部署平台。下文所有数值策略均保持 `Pending`，
+直到指定的企业责任人批准。
 
-## Verified Current State
+## 已核实的当前状态
 
-The platform issues HS256 JWTs with a fixed 24-hour lifetime and stores them in
-the Web BFF's `ai_etl_token` HttpOnly, SameSite=Lax cookie. Tokens identify the
-authentication method and user `token_version`; protected requests re-read the
-current PostgreSQL user, so deactivation or a version increment revokes all of
-that user's tokens on the next request.
+平台签发固定有效期为 24 小时的 HS256 JWT，并由 Web BFF 将其保存到
+HttpOnly、SameSite=Lax 的 `ai_etl_token` Cookie。令牌记录认证方式和用户
+`token_version`；受保护请求会重新读取 PostgreSQL 当前用户，因此停用用户或
+递增版本后，该用户全部令牌会在下一次请求时失效。
 
-There is no unique session ID, session registry, idle timeout, assurance or
-`auth_time` state, privileged-action reauthentication, or per-device
-revocation. Logout only expires the browser cookie; the JWT remains valid until
-expiry or user-wide revocation. OIDC currently requests only `openid` and
-validates identity protocol claims, but does not parse or retain `acr`, `amr`,
-or `auth_time`. Production with OIDC enabled rejects password login; staging
-allows local and federated sessions for migration.
+当前没有唯一会话 ID、会话注册表、空闲超时、认证保证或 `auth_time` 状态、
+高风险操作重新认证及逐设备撤销。退出仅使浏览器 Cookie 过期；JWT 在到期或
+用户级撤销前仍然有效。OIDC 当前只请求 `openid` 并验证身份协议声明，但不
+解析或保留 `acr`、`amr`、`auth_time`。生产环境启用 OIDC 后拒绝密码登录；
+staging 为迁移保留本地和联邦会话。
 
-## Security Invariants
+## 安全不变量
 
-1. The IdP enforces enrollment and authentication factors. The platform still
-   fails closed unless the selected provider adapter supplies approved,
-   provider-neutral assurance and a trustworthy authentication time.
-2. Role, group, tenant, email, and login success never imply MFA. Internal
-   PostgreSQL authority remains the source of tenant, role, and capabilities.
-3. An IdP outage cannot prevent local session revocation. A session-store
-   outage in production denies access rather than accepting an unchecked JWT.
-4. Provider tokens and raw assurance claims never reach business handlers or
-   browser JavaScript. Logs and audit events contain policy outcomes and stable
-   internal IDs, not tokens or raw external subjects.
-5. Idle expiry, absolute expiry, authentication freshness, IdP session lifetime,
-   and cookie lifetime are separate controls with separately tested semantics.
+1. IdP 负责强制注册和使用认证因子，但平台仍须从选定提供方适配器获得经批准、
+   与提供方无关的认证保证和可信认证时间，否则失败关闭。
+2. 角色、组、租户、邮箱和登录成功均不能推导出 MFA。内部 PostgreSQL 权限仍是
+   租户、角色和能力的权威来源。
+3. IdP 故障不能阻止本地会话撤销；生产会话存储故障时拒绝访问，而不是接受未
+   检查的 JWT。
+4. 提供方令牌和原始认证保证声明不得进入业务处理器或浏览器 JavaScript。日志
+   与审计只记录策略结果和稳定内部 ID，不记录令牌或原始外部 subject。
+5. 空闲到期、绝对到期、认证新鲜度、IdP 会话寿命和 Cookie 寿命是独立控制项，
+   必须分别验证其语义。
 
-## Session Policy Seam
+## 会话策略接缝
 
-Add a deep `session` module behind a small, provider-neutral interface. Its
-conceptual operations are `Establish(principal, evidence)`,
-`Authenticate(credential, action)`, and `Revoke(credential, scope)`. The module
-owns session state, expiry, assurance, rotation, revocation, and audit decisions.
-`Authenticate` returns an internal principal plus one of `allow`, `deny`, or
-`reauthenticate`; it never returns provider claims.
+在一个小型、与提供方无关的接口后新增深层 `session` 模块。其概念操作为
+`Establish(principal, evidence)`、`Authenticate(credential, action)` 和
+`Revoke(credential, scope)`。模块负责会话状态、到期、认证保证、轮换、撤销
+和审计决策。`Authenticate` 返回内部 principal 以及 `allow`、`deny` 或
+`reauthenticate`，绝不返回提供方声明。
 
-The OIDC adapter translates the selected provider's exact `acr`, `amr`, and
-`auth_time` semantics into an approved `AuthenticationEvidence` value. This
-translation is configuration reviewed in P2.5-J, not a generic claim allowlist.
-HTTP route registration maps each action to a policy-owned risk class. Handlers
-therefore ask for an action such as `identity.binding.change` and do not know
-which IdP or authentication method satisfied it.
+OIDC 适配器将选定提供方的精确 `acr`、`amr`、`auth_time` 语义转换为经批准的
+`AuthenticationEvidence`。该转换是 P2.5-J 评审的配置，不是通用声明允许列表。
+HTTP 路由注册把每项操作映射到策略拥有的风险类别。因此处理器只请求类似
+`identity.binding.change` 的操作，不知道由哪个 IdP 或认证方式满足要求。
 
-## Durable Session Model
+## 持久会话模型
 
-Replace acceptance of a self-contained browser JWT with a registry-backed
-platform credential. A signed credential may remain during migration, but it
-must contain a unique, unguessable session ID and every production request must
-resolve that ID through the session module. The durable record contains:
+以注册表支持的平台凭据取代对自包含浏览器 JWT 的直接接受。迁移期间可以保留
+签名凭据，但其中必须包含唯一且不可猜测的会话 ID；每个生产请求都必须通过
+会话模块解析该 ID。持久记录包含：
 
-- session ID, internal tenant/user IDs, and authentication method;
-- created, authenticated, last-seen, absolute-expiry, and revoked timestamps;
-- provider-neutral assurance level and methods, plus policy version;
-- revocation reason, credential rotation generation, and minimal audit
-  correlation; and
-- no provider access token, refresh token, password, raw external subject, or
-  authorization snapshot.
+- 会话 ID、内部租户/用户 ID 和认证方式；
+- 创建、认证、最后活动、绝对到期和撤销时间；
+- 与提供方无关的认证保证级别与方式，以及策略版本；
+- 撤销原因、凭据轮换代次和最少审计关联信息；
+- 不保存提供方 access token、refresh token、密码、原始外部 subject 或权限
+  快照。
 
-Mutable role and capabilities continue to come from the user and knowledge
-catalog stores. Last-seen persistence may be coalesced, but the documented
-maximum write interval must not extend the approved idle timeout. Establishment
-and successful reauthentication rotate the credential to prevent fixation.
+可变角色与能力继续来自用户存储和知识目录。最后活动时间可以合并写入，但记录的
+最大写入间隔不得延长已批准的空闲超时。建立会话和成功重新认证都要轮换凭据，
+防止会话固定攻击。
 
-## Policy Decisions Requiring Approval
+## 待批准的策略决策
 
-| Decision | Required owner | Approved value/status |
+| 决策 | 必需责任人 | 批准值/状态 |
 | --- | --- | --- |
-| Accepted MFA assurance and factor combinations per IdP | Security + identity | Pending |
-| Ordinary-session idle timeout | Security + product | Pending |
-| Ordinary-session absolute lifetime | Security + product | Pending |
-| Privileged authentication freshness | Security | Pending |
-| Cookie lifetime and renewal behavior | Security | Pending |
-| Concurrent-session/device limit | Security + support | Pending |
-| User self-service session visibility/revocation | Product + privacy | Pending |
-| RP-initiated and optional back-channel logout profile | Identity + security | Pending |
-| Dual-auth cohort, observation period, and cutover date | Identity + operations | Pending |
+| 每个 IdP 可接受的 MFA 认证保证与因子组合 | 安全 + 身份 | Pending |
+| 普通会话空闲超时 | 安全 + 产品 | Pending |
+| 普通会话绝对寿命 | 安全 + 产品 | Pending |
+| 高风险操作认证新鲜度 | 安全 | Pending |
+| IdP 会话/SSO 寿命与续期行为 | 身份 + 安全 | Pending |
+| Cookie 寿命与续期行为 | 安全 | Pending |
+| 并发会话/设备上限 | 安全 + 支持 | Pending |
+| 用户自助查看/撤销会话 | 产品 + 隐私 | Pending |
+| RP 发起及可选 back-channel 退出配置 | 身份 + 安全 | Pending |
+| 双认证批次、观察期和切换日期 | 身份 + 运维 | Pending |
 
-Blank decisions block P2.5-J staging acceptance and production enablement. The
-current 24-hour value is observed behavior, not an approved enterprise default.
+任何空白决策都会阻止 P2.5-J staging 验收和生产启用。当前 24 小时只是已观察到
+的行为，不是经批准的企业默认值。
 
-## Reauthentication and High-Risk Actions
+## 重新认证与高风险操作
 
-At minimum, identity/binding administration, role changes, publication
-approval, governed deletion, agent execution approval, credential rotation,
-and session-wide revocation require a reviewed risk classification. A high-risk
-request without sufficiently fresh approved assurance returns
-`reauthenticate`, not `forbidden` and not a silent redirect from an API call.
+至少要对身份/绑定管理、角色变更、发布批准、受治理删除、Agent 执行批准、凭据
+轮换和全会话撤销进行风险分类评审。缺少足够新鲜且获批准认证保证的高风险请求
+返回 `reauthenticate`，而不是 `forbidden`，API 调用也不得静默重定向。
 
-The Web BFF starts a new state/nonce/PKCE transaction bound server-side to the
-current session, intended action, and safe return path. The provider adapter
-requests fresh authentication and the required assurance using only mechanisms
-verified for that IdP. Callback completion must prove transaction single use,
-the same internal subject, approved evidence, and freshness before rotating the
-platform session. Subject changes terminate the flow. Missing or ambiguous
-`auth_time`/assurance evidence fails closed for the privileged action.
+Web BFF 发起新的 state/nonce/PKCE 事务，并在服务端将其绑定到当前会话、目标
+操作和安全返回路径。提供方适配器只能使用已针对该 IdP 验证的机制请求新认证和
+所需认证保证。回调完成前必须证明事务只使用一次、内部 subject 相同、证据获批
+且足够新鲜，再轮换平台会话。subject 变化立即终止流程。`auth_time` 或认证保证
+缺失、含糊时，高风险操作失败关闭。
 
-State-changing Web routes must also enforce an explicit same-origin/CSRF
-control; SameSite cookies alone are not the complete privileged-action defense.
+改变状态的 Web 路由还必须执行明确的同源/CSRF 控制；SameSite Cookie 不能单独
+构成完整的高风险操作防御。
 
-## Logout and Revocation
+## 退出与撤销
 
-Logout order is fixed: atomically revoke the platform session with its audit
-outcome, expire the cookie, then optionally redirect through the selected
-provider's validated RP-initiated logout endpoint. Provider timeout or failure
-cannot undo local revocation or block the local completion response.
-Post-logout redirects use a configured same-origin allowlist and single-use
-state.
+退出顺序固定为：在同一原子操作中撤销平台会话并记录审计结果，使 Cookie 过期，
+然后可选地重定向到选定提供方经验证的 RP-initiated logout 端点。提供方超时或
+失败不能撤销本地处理结果，也不能阻止返回本地完成响应。退出后的重定向使用已
+配置的同源允许列表和单次使用 state。
 
-The interface distinguishes current-session logout, user-requested other-device
-revocation, and security/admin all-session revocation. User deactivation and
-credential compromise retain the existing user-wide `token_version` kill
-switch. Whether an encrypted, TTL-bounded ID-token hint is needed for provider
-logout is a P2.5-J adapter decision; it is never session authority and is never
-returned to client JavaScript.
+接口区分当前会话退出、用户主动撤销其他设备，以及安全/管理员发起的全会话撤销。
+用户停用和凭据泄露继续使用现有用户级 `token_version` 总开关。提供方退出是否
+需要加密且 TTL 有界的 ID-token hint，由 P2.5-J 的适配器决策；它绝不是会话
+权限来源，也不得返回浏览器 JavaScript。
 
-## Dual-Auth Migration and Rollback
+## 双认证迁移与回滚
 
-1. Inventory active local users, owners, last use, role, tenant, and external
-   binding status without exporting password hashes or personal data.
-2. Bind exact `(issuer, subject)` identities through the reviewed lifecycle;
-   never auto-link by email, display name, domain, or group.
-3. Migrate named staging and tenant cohorts. Measure federated success/failure,
-   reauthentication, logout, deactivation latency, and help-desk recovery for
-   the approved observation period.
-4. Block new password creation, prove every in-scope administrator has a tested
-   federated identity, then disable production password login and invalidate
-   remaining local sessions.
-5. Retain a signed cohort/cutover record. Rollback disables the faulty federated
-   entry point and follows an approved recovery runbook; it must not silently
-   reactivate passwords, reset user lifecycle ownership, or bypass MFA.
+1. 盘点活跃本地用户、责任人、最后使用时间、角色、租户和外部绑定状态，不导出
+   密码哈希或个人数据。
+2. 通过已评审的生命周期绑定精确 `(issuer, subject)` 身份；不得按邮箱、显示名、
+   域名或组自动关联。
+3. 迁移指定 staging 和租户批次。在获批观察期内测量联邦登录成功/失败、重新认证、
+   退出、停用延迟和服务台恢复情况。
+4. 禁止创建新密码，证明范围内每个管理员都有经过测试的联邦身份，并且已经指定、
+   演练一个已验证的联邦配置回滚目标或其他获批的非紧急访问恢复路径；然后关闭
+   生产密码登录并使剩余本地会话失效。
+5. 保留签名的批次/切换记录。回滚必须恢复上述已验证目标并遵循获批恢复手册；
+   不得只关闭联邦入口，也不得静默恢复密码、重置用户生命周期所有权或绕过 MFA。
 
-Emergency access is intentionally deferred to P2.5-G. It cannot be implemented
-as an undocumented exception to the migration or session policy.
+紧急访问明确推迟到 P2.5-G，不能作为迁移或会话策略的未记录例外来实现。
 
-## Acceptance and Delivery Slices
+## 验收与交付切片
 
-Implementation should proceed as separately reviewed slices: schema and session
-module; registry-backed authentication and expiry; assurance translation and
-reauthentication; local and RP-initiated logout; then cohort migration tooling.
-Each slice must preserve default-off OIDC and local deterministic evaluation.
+实现应拆成独立评审的切片：数据库结构和会话模块；注册表支持的认证与到期；认证
+保证转换与重新认证；本地及 RP 发起退出；最后是批次迁移工具。每个切片必须保持
+OIDC 默认关闭，并保留本地确定性评测能力。
 
-Acceptance tests cover idle and absolute boundaries, clock skew, credential
-rotation, fixation and replay, stale assurance, wrong-subject reauthentication,
-per-session versus all-session revocation, concurrent requests, store/IdP
-outages, CSRF, safe redirects, audit redaction, deactivation, and rollback.
-P2.5-J must additionally retain selected-provider evidence for MFA enforcement,
-fresh login, logout, lifecycle revocation, and dual-auth cutover rehearsal.
+验收测试覆盖空闲与绝对到期边界、时钟偏移、凭据轮换、固定与重放、不同 subject
+重新认证、逐会话与全会话撤销、并发请求、存储/IdP 故障、CSRF、安全重定向、
+审计脱敏、停用和回滚。建立会话与重新认证都必须证明获批 `acr`/`amr`/`auth_time`
+组合成功，缺失、弱、未批准、含糊或降级的证据无法建立或刷新会话。P2.5-J 还必须
+保留选定提供方的 IdP 会话/SSO 寿命及续期边界、MFA 强制、新登录、退出、生命周期
+撤销及双认证切换演练证据。
