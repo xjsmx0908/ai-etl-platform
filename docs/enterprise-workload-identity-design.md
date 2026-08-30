@@ -108,9 +108,11 @@ grant 单独保存 workload、audience、能力、可选知识空间/资源约�
 ## 凭据签发、验证与轮换
 
 推荐顺序为：同集群工作负载使用经批准信任域的 SPIFFE/mTLS；外部业务自动化使用企业
-授权服务器的 Client Credentials，并优先采用 mTLS 或 `private_key_jwt`；无法支持的
-系统才在有期限例外下使用 secret。是否采用 SPIFFE、授权服务器、算法、token TTL、
-证书 TTL、时钟偏差、JWKS 缓存及例外期限均为 `Pending`。
+授权服务器的 Client Credentials，并以 mTLS 或 DPoP 绑定 access token。`private_key_jwt`
+只认证 token endpoint 客户端，不能单独约束已签发的 bearer token；使用它时仍须结合
+mTLS/DPoP，或作为有期限 bearer 例外启用批准的重放防护。无法支持的系统才在有期限
+例外下使用 secret。是否采用 SPIFFE、授权服务器、算法、token TTL、证书 TTL、时钟
+偏差、JWKS 缓存及例外期限均为 `Pending`。
 
 接收方验证 TLS、issuer、单一 audience、subject、时间、算法、key usage 和 sender
 binding，再由内部注册表解析。JWT access token 应采用明确 profile；不得接受 ID token、
@@ -125,13 +127,15 @@ token 自然过期；记录影响范围、最后使用、轮换所有者和完�
 ## 委托与异步执行
 
 用户触发的 Kafka/Agent 操作不能把浏览器 token 放入消息，也不能只依赖 worker 自身
-权限。接收请求时创建不可变、有期限的 `DelegationGrant`，绑定发起人、执行 workload、
-租户、资源/知识空间、动作、策略修订、请求摘要、最大使用次数和到期时间；消息只携带
-内部 grant ID、任务 ID 和防篡改关联信息。
+权限。接收请求的同一签发事务必须重新读取当前人类权限和执行 workload grant，并要求
+目标资源/动作是两者交集的子集；任一来源不可用、已撤销或不包含目标都拒绝。随后创建
+不可变、有期限的 `DelegationGrant`，绑定发起人、执行 workload、租户、资源/知识空间、
+动作、两侧策略修订、请求摘要、最大使用次数和到期时间；消息只携带内部 grant ID、
+任务 ID 和防篡改关联信息。
 
-执行器每次产生敏感副作用前验证自己的 workload 身份和 grant 当前状态。用户停用、
-空间撤权、任务取消、审批撤回或 grant 到期后失败关闭。长任务在检查点重新验证，不能
-因为最初已入队就永久保留权限。
+执行器每次产生敏感副作用前重新计算“发起者当前权限 ∩ 执行 workload 当前 grant ∩
+委托范围”。用户停用、权限/空间撤权、workload grant 删除、任务取消、审批撤回或
+委托到期后失败关闭。长任务在检查点重新验证，不能因为最初已入队就永久保留权限。
 
 Agent 高风险工具记录 `initiator_human_id`、`executor_workload_id` 和 grant；审批必须
 绑定确切工具/参数摘要、策略和期限。workload 不能批准自己的请求，工具也不能用执行器
@@ -188,10 +192,13 @@ credential/grant 修订、结果、原因码、相关 ID 和时间，不记录 t
 验收至少覆盖：issuer/subject/audience/algorithm 混淆，多 audience，ID/browser token
 注入，跨租户/跨环境/跨知识空间，伪造 scope/role/group，未知/停用/过期 workload，
 grant 删除与下一请求撤权，注册表/issuer/JWKS/时钟/网络故障，密钥轮换与紧急吊销，
-共享 secret 退役，重放与并发幂等，以及审计无凭据泄漏。
+共享 secret 退役，重放与并发幂等，以及审计无凭据泄漏。sender-constrained 验收必须
+证明 token 在不同私钥/连接上拒绝，并证明只使用 `private_key_jwt` 的 bearer 不会被误
+标为已绑定。
 
-委托验收还必须覆盖用户入队后停用、空间撤权、任务取消、长任务复验、审批过期/撤回、
-执行器更换和 workload 自审批；基础设施验收证明每个身份只能访问指定 topic、bucket、
+委托验收还必须覆盖发起者从未拥有目标权限、请求超出发起者或执行器能力、用户入队后
+停用、权限/空间撤权、任务取消、长任务复验、审批过期/撤回、执行器更换和 workload
+自审批；基础设施验收证明每个身份只能访问指定 topic、bucket、
 database/schema/index。P2.5-J 必须绑定选定提供方/信任域、真实凭据、平台 commit/image、
 策略修订、轮换与回滚证据，任何相关变更都会使证据失效。
 

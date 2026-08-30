@@ -568,12 +568,13 @@ P2.5-I 企业服务与工作负载身份设计（2026-08-30 提议）：
 3. 业务 workload 固定租户，平台 workload 固定环境/platform scope；知识空间使用
    独立 service grant 且必须显式指定空间。数据库/Kafka/存储和供应方凭据只访问对应
    资源，不能转换为平台 Principal。
-4. 优先短期 sender-constrained mTLS/SPIFFE 或 private-key OAuth 证明；静态 secret
-   只作有期限迁移例外。每次请求同步校验 workload/grant/credential 撤权修订，轮换
-   canary 后吊销旧指纹，泄露时不等待 token 自然到期。
+4. 优先短期 sender-constrained mTLS/SPIFFE 或 mTLS/DPoP 绑定的 OAuth token；
+   `private_key_jwt` 不能单独约束 access token，静态/bearer secret 只作有期限迁移
+   例外。每次请求同步校验 workload/grant/credential 修订，泄露时立即撤权。
 5. Kafka/Agent 使用有期限 `DelegationGrant`，绑定 human initiator、executor
-   workload、租户、资源/空间、动作、策略修订和请求摘要；消息不携带浏览器 token，
-   敏感副作用及长任务检查点重新验证，workload 不能自审批。
+   workload、租户、资源/空间、动作、策略修订和请求摘要；签发与每次副作用都要求
+   委托是发起者当前权限与执行器 grant 交集的子集，消息不携带浏览器 token，
+   workload 不能自审批。
 6. 先资产清单和 shadow，再迁移 Parser/Reranker/告警、业务自动化、异步委托及基础
    设施 ACL/TLS。回滚不得恢复泄露/过期 secret，也不能放宽 audience/tenant/能力。
 7. 信任域、授权服务器、协议、能力词表、TTL、审批、重放防护、复验频率和证据保留

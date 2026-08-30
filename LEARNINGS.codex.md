@@ -1066,3 +1066,6 @@ This file is an append-only record of completed PRAR cycles.
   同步撤权栅栏、短期 sender-constrained 凭据、轮换及基础设施身份迁移。
 - 改进：异步任务必须同时记录人类发起者、执行 workload 和有界委托；浏览器 token
   不进入队列，worker 自身身份也不能成为跨租户的永久代理权限。
+- 审查修正：委托签发和每次副作用都必须受发起者当前权限与执行器 grant 的交集约束；
+  `private_key_jwt` 只认证客户端，必须另用 mTLS/DPoP 绑定 access token，或按 bearer
+  例外执行重放防护，不能把它误当成 sender-constrained 证明。

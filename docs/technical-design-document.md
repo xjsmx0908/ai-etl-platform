@@ -293,7 +293,8 @@ shadow/canary 迁移切片。同步、嵌套、审批、撤权 SLA、上限和�
 
 知识空间使用独立 workload grant；用户触发的 Kafka/Agent 操作持久化有期限的委托
 grant，绑定发起人、执行 workload、租户、资源、动作和策略修订，执行敏感副作用与
-长任务检查点时重新验证。Parser/Reranker/告警共享 token、基础设施账号和供应方 key
+长任务检查点时重新验证发起者当前权限与执行器 grant 的交集。Parser/Reranker/告警
+共享 token、基础设施账号和供应方 key
 按调用方与环境拆分；资源凭据不能转换为平台 Principal。
 
 实现拆为 Principal/注册表、协议适配器、细粒度 grant、知识空间授权、异步委托、
