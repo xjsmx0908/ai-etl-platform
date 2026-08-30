@@ -165,3 +165,32 @@ All require the existing admin capability. PostgreSQL integration tests cover
 global uniqueness, live role/active state, tenant isolation, and rollback when
 either create or delete audit fails. A concrete IdP, OIDC/JWKS, SCIM/JIT, group
 mapping, production enablement, and deployment remain outside this slice.
+
+## P2.5-C OIDC authorization-code adapter
+
+`internal/oidcauth.Authenticator.Authenticate(ctx, CodeExchange)` is the deep
+provider seam. Construction loads HTTPS discovery and an allowed RSA signing
+set. Authentication exchanges a code with its PKCE verifier, accepts only
+RS256, and requires exact issuer, client audience, expiry, issued-at, nonce,
+subject, and key id. An unknown key id or cached-key signature failure triggers
+at most one JWKS refresh before full validation, covering both new- and
+same-`kid` rotation. Provider and directory failures return one fail-closed
+error without exposing upstream bodies or identifiers.
+
+`Flow` generates independent 256-bit state, nonce, and verifier values and an
+S256 challenge. Its transaction store exposes only save and atomic consume.
+Development uses memory; non-development uses Redis TTL plus `GETDEL` for
+cross-replica callback safety. Return paths are restricted to same-origin
+absolute paths. The callback re-reads the internal user before issuing an
+`auth_method=federated` platform session.
+
+The Web BFF sets short-lived HttpOnly state and long-lived HttpOnly session
+cookies. It never exposes provider tokens, state, nonce, verifier, or the
+platform JWT to client JavaScript. OIDC configuration is default-off. Production
+with OIDC enabled rejects ordinary password login and local/test/legacy platform
+sessions. Keycloak is the first standards acceptance target; SCIM/JIT, groups,
+service identities, break-glass, deployment, and production provider selection
+remain outside this slice. Automated protocol coverage uses a real TLS OIDC
+test provider. The opt-in `TestKeycloakAuthorizationCodeAcceptance` gate also
+passed against Keycloak 26.3.3 over HTTPS; its environment variables keep realm
+credentials out of source control and ordinary CI.

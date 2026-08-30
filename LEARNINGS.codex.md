@@ -909,3 +909,32 @@ This file is an append-only record of completed PRAR cycles.
   Alertmanager, and Grafana checks passed. The deterministic full-stack eval
   could not start because the host filesystem had no free space; no provider
   adapter, federation enablement, or deployment occurred.
+
+## 2026-08-30 - P2.5-C OIDC authorization-code foundation
+
+- Perceive: external identity bindings existed, but no provider credential was
+  validated and the browser had only a password flow. A direct IdP-token
+  middleware would have mixed provider claims with internal authorization and
+  exposed rotation, callback, and multi-replica complexity to every caller.
+- Reason: keep one deep code-exchange module above the existing directory seam.
+  Treat issuer/subject as identity only; re-resolve tenant, role, active state,
+  and capabilities internally. Test the module and HTTP seams, not private JWKS
+  helpers.
+- Act: used red/green slices for a valid RS256 exchange, bounded key rotation,
+  PKCE/state/nonce single-use flow, production local-login shutdown, federated
+  platform sessions, cross-replica Redis transactions, and the Web BFF cookie
+  flow. Added strict configuration and default-off Compose wiring.
+- Refine: an in-memory transaction store is correct only for development; Redis
+  `GETDEL` gives staging/production atomic consumption across replicas. IdP
+  tokens never enter Redis or browser JavaScript, and return paths cannot become
+  open redirects. Keycloak remains an acceptance target rather than an implied
+  production-provider decision; SCIM, groups, service identity, break-glass,
+  and deployment stay gated.
+- Verification: full Go and race suites, PostgreSQL and cross-instance Redis
+  integration, 128 script tests, Parser 32, Reranker 1, Webhook 3, Web
+  audit/lint/build, Compose, Prometheus, Alertmanager, Grafana, Trivy, and the
+  47-case deterministic full-stack eval passed. The protocol tests use a real
+  TLS OIDC test provider. An explicit full Authorization Code + PKCE acceptance
+  flow also passed against Keycloak 26.3.3 over HTTPS. Review then caught and
+  closed redirect-based client-secret exposure, same-`kid` JWKS rotation,
+  browser/backend TTL drift, and insecure federated-cookie configuration.

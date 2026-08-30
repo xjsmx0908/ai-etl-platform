@@ -201,14 +201,25 @@ npm install
 npm run dev                        # http://localhost:3000
 ```
 
-认证：登录页（`/login`）调 `POST /v1/auth/login`，token 存 HttpOnly cookie；`app/api/*`
-route handler 从 cookie 读 token 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。
+认证：登录页（`/login`）支持本地密码或显式启用的企业 OIDC。两种方式最终都只把
+平台 session token 存入 HttpOnly cookie；`app/api/*` route handler 从 cookie 读
+token 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。OIDC 使用 Authorization
+Code + PKCE、state、nonce、严格 issuer/audience/RS256/JWKS 校验；IdP Token 不返回
+浏览器 JavaScript。
 首启 bootstrap admin 由后端 `BOOTSTRAP_ADMIN_*` 创建；admin 登录后在「用户管理」创建用户。
 
 认证后的授权上下文由 provider-neutral `Principal` 提供。`production` 会拒绝
 测试/旧格式 token、未知或停用的内部用户，并从内部用户记录重新计算租户、角色和
-capabilities；非生产环境保留显式评测 token 兼容。当前仍是本地登录基线，尚未接入
-OIDC、SCIM、服务身份或企业 MFA 策略，不应视为企业 SSO 已启用。
+capabilities；非生产环境保留显式评测 token 兼容。OIDC 默认关闭，启用后仅已由管理
+员绑定 `(issuer, subject)` 的活动内部用户可登录；production 启用 OIDC 时普通本地
+密码登录自动关闭。SCIM/JIT、组授权、服务身份、break-glass 和企业 MFA 策略尚未
+实现，因此本切片不等于生产 SSO 已上线。
+
+Keycloak 验收配置示例：创建 confidential OIDC client，将 Valid Redirect URI 精确
+设为 `https://<RAG 域名>/api/auth/oidc/callback`，把 realm issuer、client ID 和 secret
+分别配置为 `OIDC_ISSUER`、`OIDC_CLIENT_ID` 与
+`OIDC_CLIENT_SECRET_FILE_PATH`；先用管理员 API 建立 external identity binding，再在
+staging 设置 `OIDC_ENABLED=true`。不要从 realm role、group 或邮箱域名自动派生权限。
 
 部署（compose 服务）：
 

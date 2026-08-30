@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -17,6 +18,23 @@ import (
 	"ai-etl-pipeline/internal/migrations"
 	"ai-etl-pipeline/internal/userstore"
 )
+
+func passwordLoginEnabled(cfg config.Config) bool {
+	return !(cfg.OIDCEnabled && strings.EqualFold(strings.TrimSpace(cfg.Environment), "production"))
+}
+
+func handleAuthMethods(cfg config.Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{
+			"password_enabled": passwordLoginEnabled(cfg),
+			"oidc_enabled":     cfg.OIDCEnabled,
+		})
+	})
+}
 
 type loginRequest struct {
 	Username string `json:"username"`
@@ -37,11 +55,42 @@ type loginResponse struct {
 	User      loginUser `json:"user"`
 }
 
+func handleCurrentSession(users userstore.Store) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		principal := auth.GetPrincipal(r.Context())
+		if principal.SubjectID == "" || users == nil {
+			writeError(w, http.StatusUnauthorized, "session unavailable")
+			return
+		}
+		user, found, err := users.GetByID(r.Context(), principal.SubjectID)
+		if err != nil || !found || !user.Active || user.TenantID != principal.TenantID || user.Role != principal.Role {
+			writeError(w, http.StatusUnauthorized, "session unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"user": loginUser{
+			ID: user.ID, Username: user.Username, Role: user.Role,
+			TenantID: user.TenantID, Active: user.Active,
+		}})
+	})
+}
+
 func newPlatformAuthenticator(cfg config.Config, users userstore.Store) auth.Authenticator {
+	policy := auth.IdentityPolicyForEnvironment(cfg.Environment)
+	if cfg.OIDCEnabled {
+		if strings.EqualFold(strings.TrimSpace(cfg.Environment), "production") {
+			policy = auth.FederatedProductionIdentityPolicy()
+		} else {
+			policy = auth.FederatedMigrationIdentityPolicy()
+		}
+	}
 	return auth.NewVerifierWithPolicy(
 		cfg.JWTSecret,
 		users,
-		auth.IdentityPolicyForEnvironment(cfg.Environment),
+		policy,
 	)
 }
 
@@ -58,6 +107,10 @@ func openPostgres(ctx context.Context, cfg config.Config) (*db.Pool, error) {
 // enumeration. Every attempt (success or failure) is written to the audit log.
 func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !passwordLoginEnabled(cfg) {
+			writeError(w, http.StatusNotFound, "password login is unavailable")
+			return
+		}
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return

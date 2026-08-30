@@ -21,9 +21,32 @@ export default function LoginPage() {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [passwordEnabled, setPasswordEnabled] = useState(true);
+  const [oidcEnabled, setOIDCEnabled] = useState(false);
 
   useEffect(() => {
     if (getUser()) router.replace("/");
+  }, [router]);
+
+  useEffect(() => {
+    fetch("/api/auth/methods", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((methods: { password_enabled?: boolean; oidc_enabled?: boolean }) => {
+        setPasswordEnabled(methods.password_enabled !== false);
+        setOIDCEnabled(methods.oidc_enabled === true);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    if (searchParams.get("oidc") !== "success") return;
+    apiClient.currentSession()
+      .then(() => {
+        const returnTo = searchParams.get("return_to") || "/";
+        router.replace(returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/");
+      })
+      .catch(() => setError("企业身份登录会话无效，请重试"));
   }, [router]);
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -87,7 +110,20 @@ export default function LoginPage() {
               <h1 className="text-xl font-semibold text-slate-900">欢迎登录</h1>
               <p className="mt-1 text-sm text-slate-500">登录知境 · 企业知识库</p>
             </div>
-            <form onSubmit={onSubmit} className="mt-6 space-y-4">
+            {oidcEnabled && (
+              <a
+                href="/api/auth/oidc/start"
+                className="mt-6 flex h-11 w-full items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-medium text-white transition hover:bg-blue-700"
+              >
+                使用企业身份登录
+              </a>
+            )}
+            {oidcEnabled && passwordEnabled && (
+              <div className="my-5 flex items-center gap-3 text-xs text-slate-400">
+                <span className="h-px flex-1 bg-slate-200" />或使用本地账户<span className="h-px flex-1 bg-slate-200" />
+              </div>
+            )}
+            {passwordEnabled && <form onSubmit={onSubmit} className={oidcEnabled ? "space-y-4" : "mt-6 space-y-4"}>
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-slate-600">用户名</label>
                 <div className="relative">
@@ -129,7 +165,7 @@ export default function LoginPage() {
               <Button type="submit" className="w-full" size="lg" loading={loading} disabled={!username.trim() || !password}>
                 {loading ? "登录中…" : "登录"}
               </Button>
-            </form>
+            </form>}
           </div>
           <p className="mt-6 text-center text-xs text-slate-400">
             问题或账户需协助，请联系系统管理员

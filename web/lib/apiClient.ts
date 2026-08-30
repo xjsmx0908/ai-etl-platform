@@ -72,6 +72,12 @@ export async function login(username: string, password: string): Promise<User> {
   return resp.user;
 }
 
+export async function currentSession(): Promise<User> {
+  const resp = await request<{ user: User }>("/auth/session", { redirectOn401: false });
+  setUser(resp.user);
+  return resp.user;
+}
+
 export async function logout(): Promise<void> {
   await request<void>("/auth/logout", { method: "POST" });
   clearUser();
@@ -350,6 +356,7 @@ export async function querySSE(
 
 export const apiClient = {
   login,
+  currentSession,
   logout,
   listDocuments,
   getDocument,

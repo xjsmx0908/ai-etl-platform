@@ -40,6 +40,7 @@ import (
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/middleware"
 	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/oidcauth"
 	"ai-etl-pipeline/internal/prometheus"
 	"ai-etl-pipeline/internal/publicationrelease"
 	"ai-etl-pipeline/internal/publicationworkflow"
@@ -215,6 +216,7 @@ func main() {
 	admissionStore := ingestion.NewPostgresStore(pgPool)
 	auditStore := audit.New(pgPool)
 	externalIdentityManager := externalidentity.NewPostgresManager(pgPool)
+	externalIdentityDirectory := externalidentity.NewPostgresDirectory(pgPool)
 	knowledgeCatalog := knowledgecatalog.New(knowledgecatalog.NewPostgresStore(pgPool))
 	generationVisibility := indexmanifest.NewPostgresStore(pgPool)
 	releaseVisibility := publicationrelease.NewPostgresStore(pgPool)
@@ -224,6 +226,32 @@ func main() {
 	// Initialize auth. The verifier re-validates each token's token_version
 	// against the user store so password resets revoke outstanding tokens.
 	verifier := newPlatformAuthenticator(cfg, userStore)
+	var oidcFlow *oidcauth.Flow
+	if cfg.OIDCEnabled {
+		oidcAuthenticator, oidcErr := oidcauth.New(context.Background(), oidcauth.Config{
+			Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID,
+			ClientSecret: cfg.OIDCClientSecret, RedirectURI: cfg.OIDCRedirectURI,
+		}, externalIdentityDirectory)
+		if oidcErr != nil {
+			slog.Error("failed to initialize OIDC", "error", oidcErr)
+			os.Exit(1)
+		}
+		var transactionStore oidcauth.TransactionStore
+		if cfg.IsDev() {
+			transactionStore = oidcauth.NewMemoryTransactionStore()
+		} else {
+			redisTransactions, transactionErr := oidcauth.NewRedisTransactionStore(
+				cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, cfg.OIDCClientID,
+			)
+			if transactionErr != nil {
+				slog.Error("failed to initialize OIDC transaction store", "error", transactionErr)
+				os.Exit(1)
+			}
+			defer redisTransactions.Close()
+			transactionStore = redisTransactions
+		}
+		oidcFlow = oidcauth.NewFlow(oidcAuthenticator, transactionStore, cfg.OIDCTransactionTTL)
+	}
 
 	// Opt-in one-shot backfill of the registry from existing Qdrant vectors
 	// (legacy data present before PostgreSQL was introduced).
@@ -360,11 +388,19 @@ func main() {
 
 	// Login is unauthenticated. Registering on the outer mux (longest-prefix
 	// match beats "/") lets it bypass the JWT middleware chain.
+	mux.Handle("/v1/auth/methods", middleware.CORS(cfg.CORSAllowedOrigins)(handleAuthMethods(cfg)))
 	mux.Handle("/v1/auth/login", middleware.CORS(cfg.CORSAllowedOrigins)(
 		middleware.Timeout(60*time.Second)(http.HandlerFunc(handleLogin(cfg, userStore, auditStore)))))
+	if oidcFlow != nil {
+		mux.Handle("/v1/auth/oidc/start", middleware.CORS(cfg.CORSAllowedOrigins)(
+			middleware.Timeout(30*time.Second)(handleOIDCStart(oidcFlow))))
+		mux.Handle("/v1/auth/oidc/callback", middleware.CORS(cfg.CORSAllowedOrigins)(
+			middleware.Timeout(30*time.Second)(handleOIDCCallback(cfg, oidcFlow, userStore, auditStore))))
+	}
 
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
+	apiV1.Handle("/v1/auth/session", handleCurrentSession(userStore))
 	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUploadWithAdmission(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, auditStore, admissionStore))))
 	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
