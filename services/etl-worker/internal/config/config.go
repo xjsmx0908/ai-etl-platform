@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -206,6 +207,12 @@ type Config struct {
 	MaxUploadSize           int64 // bytes
 	MultipartMaxMemoryBytes int64 // bytes kept in memory before multipart spills to disk
 	JWTSecret               string
+	OIDCEnabled             bool
+	OIDCIssuer              string
+	OIDCClientID            string
+	OIDCClientSecret        string
+	OIDCRedirectURI         string
+	OIDCTransactionTTL      time.Duration
 	S3Endpoint              string
 	S3AccessKey             string
 	S3SecretKey             string
@@ -389,6 +396,12 @@ func Load() Config {
 		MaxUploadSize:           int64(EnvInt("MAX_UPLOAD_SIZE_MB", 512)) * 1024 * 1024,
 		MultipartMaxMemoryBytes: int64(EnvInt("MULTIPART_MAX_MEMORY_MB", 4)) * 1024 * 1024,
 		JWTSecret:               EnvSecret("JWT_SECRET", "change-me-in-production"),
+		OIDCEnabled:             EnvBool("OIDC_ENABLED", false),
+		OIDCIssuer:              strings.TrimSpace(EnvStr("OIDC_ISSUER", "")),
+		OIDCClientID:            strings.TrimSpace(EnvStr("OIDC_CLIENT_ID", "")),
+		OIDCClientSecret:        EnvSecret("OIDC_CLIENT_SECRET", ""),
+		OIDCRedirectURI:         strings.TrimSpace(EnvStr("OIDC_REDIRECT_URI", "")),
+		OIDCTransactionTTL:      EnvDuration("OIDC_TRANSACTION_TTL", 5*time.Minute),
 		S3Endpoint:              EnvStr("S3_ENDPOINT", "localhost:9000"),
 		S3AccessKey:             EnvSecret("S3_ACCESS_KEY", "minioadmin"),
 		S3SecretKey:             EnvSecret("S3_SECRET_KEY", "minioadmin"),
@@ -648,6 +661,20 @@ func (c Config) ValidateAPI() error {
 	if err := c.validateAgentConfig(); err != nil {
 		return err
 	}
+	if c.OIDCEnabled {
+		if strings.TrimSpace(c.OIDCIssuer) == "" || strings.TrimSpace(c.OIDCClientID) == "" || strings.TrimSpace(c.OIDCRedirectURI) == "" {
+			return fmt.Errorf("OIDC_ISSUER, OIDC_CLIENT_ID, and OIDC_REDIRECT_URI are required when OIDC_ENABLED=true")
+		}
+		if c.OIDCTransactionTTL <= 0 || c.OIDCTransactionTTL > 15*time.Minute {
+			return fmt.Errorf("OIDC_TRANSACTION_TTL must be greater than zero and at most 15m")
+		}
+		if !validOIDCHTTPSURL(c.OIDCIssuer) {
+			return fmt.Errorf("OIDC_ISSUER must be an absolute HTTPS URL without userinfo, query, or fragment")
+		}
+		if !validOIDCHTTPSURL(c.OIDCRedirectURI) {
+			return fmt.Errorf("OIDC_REDIRECT_URI must be an absolute HTTPS URL without userinfo, query, or fragment")
+		}
+	}
 	if c.Environment != "production" {
 		return nil
 	}
@@ -669,6 +696,12 @@ func (c Config) ValidateAPI() error {
 		}
 	}
 	return nil
+}
+
+func validOIDCHTTPSURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(parsed.Scheme, "https") && parsed.Host != "" &&
+		parsed.User == nil && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == ""
 }
 
 func weakSecret(secret string) bool {

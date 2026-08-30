@@ -38,6 +38,17 @@ func ScopesForRole(role string) []string {
 // users.token_version; the middleware re-validates it so password resets revoke
 // outstanding tokens.
 func IssueToken(secret, userID, username, role, tenantID string, tokenVersion int) (string, time.Time, error) {
+	return issuePlatformToken(secret, userID, username, role, tenantID, tokenVersion, AuthenticationMethodLocal)
+}
+
+// IssueFederatedToken creates the platform session only after OIDC validation
+// and internal identity resolution have completed. Provider tokens never leave
+// the OIDC adapter.
+func IssueFederatedToken(secret, userID, username, role, tenantID string, tokenVersion int) (string, time.Time, error) {
+	return issuePlatformToken(secret, userID, username, role, tenantID, tokenVersion, AuthenticationMethodFederated)
+}
+
+func issuePlatformToken(secret, userID, username, role, tenantID string, tokenVersion int, method AuthenticationMethod) (string, time.Time, error) {
 	expiresAt := time.Now().Add(tokenLifetime)
 	claims := Claims{
 		TenantID:             tenantID,
@@ -45,7 +56,7 @@ func IssueToken(secret, userID, username, role, tenantID string, tokenVersion in
 		Permission:           role,
 		Scopes:               ScopesForRole(role),
 		TokenVersion:         tokenVersion,
-		AuthenticationMethod: AuthenticationMethodLocal,
+		AuthenticationMethod: method,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

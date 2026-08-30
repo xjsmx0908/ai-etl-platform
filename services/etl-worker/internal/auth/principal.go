@@ -40,6 +40,22 @@ func ProductionIdentityPolicy() IdentityPolicy {
 	}}
 }
 
+// FederatedProductionIdentityPolicy rejects ordinary local and test sessions
+// once an enterprise OIDC provider is explicitly enabled.
+func FederatedProductionIdentityPolicy() IdentityPolicy {
+	return IdentityPolicy{RequireKnownSubject: true, AllowedMethods: map[AuthenticationMethod]bool{
+		AuthenticationMethodFederated: true,
+	}}
+}
+
+// FederatedMigrationIdentityPolicy adds federated sessions to the explicit
+// non-production migration profile without removing local/evaluator access.
+func FederatedMigrationIdentityPolicy() IdentityPolicy {
+	policy := NonProductionIdentityPolicy()
+	policy.AllowedMethods[AuthenticationMethodFederated] = true
+	return policy
+}
+
 // IdentityPolicyForEnvironment keeps explicit evaluator compatibility outside
 // production and makes production platform-token authentication fail closed.
 func IdentityPolicyForEnvironment(environment string) IdentityPolicy {

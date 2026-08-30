@@ -59,8 +59,9 @@ unknown subjects, inactive users, and token-version mismatches. Non-production
 profiles retain explicit evaluator compatibility.
 
 Knowledge-space membership remains authoritative in `knowledgecatalog`, not in
-the principal or browser token. OIDC/SCIM, provider group mapping, service
-identity, production local-login disablement, MFA/session policy, and
+the principal or browser token. The OIDC adapter and production local-login
+shutdown behavior are implemented below. SCIM, provider group mapping, service
+identity, production IdP selection and enablement, MFA/session policy, and
 break-glass controls remain gated by ADR 0009's open enterprise decisions.
 
 `internal/externalidentity` adds the provider-neutral mapping below the future
@@ -76,6 +77,21 @@ role and tenant ownership even after HTTP authorization. Creates and deletes
 commit with their audit event in one PostgreSQL transaction, and audit details
 omit the external subject. This mapping seam does not validate OIDC tokens or
 enable federation by itself.
+
+`internal/oidcauth` is the provider adapter above that mapping seam. It hides
+discovery, exact issuer/audience/RS256 validation, JWKS selection and bounded
+rotation refresh, authorization-code exchange, PKCE, nonce, and single-use
+browser transactions behind one code-exchange interface. Provider claims yield
+only `(issuer, subject)`; the directory still owns the transition to an
+internally authoritative `Principal`.
+
+The Web BFF owns browser redirects and HttpOnly cookies. It stores only an
+opaque state cookie in the browser and exchanges the callback server-to-server;
+provider tokens and the platform session are never exposed to browser
+JavaScript. Development may use an in-memory transaction adapter. Staging and
+production use Redis `GETDEL` so a callback can land on another replica while
+remaining single-use. OIDC is disabled by default, and enabling it in production
+disables ordinary password login. This is not a break-glass implementation.
 
 ## Version-bound Publication Module
 

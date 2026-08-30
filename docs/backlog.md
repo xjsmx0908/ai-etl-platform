@@ -392,6 +392,54 @@ P2.5-B outcome (completed 2026-08-30):
   SCIM/JIT, provider/group selection, production federation, and deployment
   remain gated by ADR 0009 decisions.
 
+P2.5-C implementation plan (approved 2026-08-30):
+
+1. Add a provider-neutral OIDC adapter whose small authentication interface
+   accepts a validated authorization-code result and returns the existing
+   policy-owned `Principal`. Use standards-based discovery and JWKS with
+   Keycloak as the first acceptance provider, while keeping provider-specific
+   claims out of tenant, role, and capability decisions.
+2. Test the authentication seam first. Require exact issuer and audience,
+   explicit asymmetric signing algorithms, expiry and nonce validation,
+   external `(issuer, subject)` binding resolution, bounded JWKS refresh for
+   key rotation, and fail-closed behavior when discovery, JWKS, token exchange,
+   or the internal directory is unavailable.
+3. Add an HTTP authorization-code flow with PKCE, cryptographically random
+   state and nonce, a short-lived single-use transaction, safe return paths,
+   and a federated platform session. The Web BFF remains the browser boundary;
+   credentials and provider tokens are never exposed to browser JavaScript or
+   persisted as authorization authority.
+4. Keep OIDC disabled by default. Development and staging retain local login;
+   a production profile with OIDC enabled rejects ordinary password login.
+   SCIM/JIT, group-derived authorization, service identities, break-glass,
+   production federation enablement, and deployment remain separate reviewed
+   slices.
+5. Update configuration, Web login affordances, ADR/architecture/operations
+   documentation, and the append-only learning log. Run focused red/green
+   cycles followed by full Go race/vet, PostgreSQL, Python, Web, Compose,
+   observability, deterministic evaluation, and security gates before review.
+
+P2.5-C outcome (completed 2026-08-30):
+
+- Added strict HTTPS discovery, Authorization Code + PKCE, RS256/JWKS token
+  validation, exact issuer/audience/nonce checks, and one bounded key-rotation
+  refresh behind the provider-neutral code-exchange seam.
+- Added single-use browser transactions using memory in development and Redis
+  `GETDEL` outside development, federated platform sessions, safe return paths,
+  and Web BFF redirects with HttpOnly state and session cookies.
+- Production with OIDC enabled now rejects password login and non-federated
+  platform sessions. Staging retains dual-auth migration; OIDC remains disabled
+  by default in every environment.
+- Full Go and race suites, real PostgreSQL and Redis integration tests, 128
+  script tests, Parser 32, Reranker 1, Webhook 3, Web audit/lint/build, Compose,
+  observability, Trivy, and the 47-case deterministic full-stack eval passed.
+- The ordinary suite uses a real TLS OIDC protocol test provider. The explicit
+  acceptance test also passed a complete HTTPS Authorization Code + PKCE flow
+  against Keycloak 26.3.3, including login, callback, code exchange, RS256/JWKS
+  validation, and policy-principal resolution. Production IdP selection and
+  enablement, SCIM/JIT, groups, service identities, MFA/session policy,
+  break-glass, and deployment remain later reviewed work.
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

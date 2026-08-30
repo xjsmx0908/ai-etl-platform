@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-27)
+Partially accepted (2026-08-30)
 
 ## Context
 
@@ -14,7 +14,10 @@ identity. Production middleware also retains compatibility for signed test
 tokens whose user ID is absent from PostgreSQL; that behavior must not exist in
 an enterprise production profile.
 
-The exact identity provider and provisioning policy have not been selected.
+The provider-neutral OIDC protocol and Keycloak as the first acceptance target
+are approved. The production provider, organization-to-tenant policy,
+provisioning ownership, MFA/session policy, and break-glass process remain
+unselected.
 
 ## Decision
 
@@ -23,11 +26,11 @@ the internal tenant ID, internal subject ID, global role, authentication method,
 and granted capabilities. Knowledge-space membership remains authoritative in
 the Knowledge Catalog rather than being copied into long-lived browser tokens.
 
-The first enterprise adapter will validate OIDC authorization-code flow tokens
+The first enterprise adapter validates OIDC authorization-code flow tokens
 against configured issuer, audience, algorithm, and JWKS. External issuer and
-subject pairs map to internal identities. IdP groups are translated through an
-explicit tenant-owned mapping; arbitrary role or tenant claims are never trusted
-directly.
+subject pairs map to internal identities. Arbitrary role, tenant, email-domain,
+or group claims are never trusted as authorization. Group mapping remains a
+separately reviewed future adapter.
 
 Provisioning will use SCIM when supported by the chosen provider. A constrained
 just-in-time adapter may be added only as a separately reviewed fallback. Service
@@ -47,10 +50,14 @@ explicit test/evaluation profiles.
   must be specified and tested.
 - A staged dual-auth migration is required for existing local users.
 - SCIM lifecycle and IdP integration add operational dependencies.
+- Browser transactions use PKCE, state, and nonce. Non-development replicas
+  share single-use transaction state through the durable Redis instance; IdP
+  tokens are not persisted there or returned to browser JavaScript.
 
 ## Open decisions
 
-- Identity provider and supported OIDC/SCIM features.
+- Production identity provider and supported SCIM features. Keycloak is only
+  the first standards-compatibility acceptance target.
 - External organization-to-tenant mapping and domain ownership proof.
 - Required MFA, session lifetime, reauthentication, and logout behavior.
 - SCIM-only versus approved just-in-time provisioning fallback.

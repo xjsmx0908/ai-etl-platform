@@ -154,3 +154,44 @@ func TestBootstrapAdmin_EmptyPasswordFailsOutsideDev(t *testing.T) {
 		t.Fatal("expected production bootstrap without password to fail")
 	}
 }
+
+func TestHandleLogin_ProductionOIDCDisablesOrdinaryPasswordLogin(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", "admin", "acme", true)
+	cfg := testAuthConfig()
+	cfg.Environment = "production"
+	cfg.OIDCEnabled = true
+
+	rec := doLogin(handleLogin(cfg, store, nil), "alice", "s3cret-pw")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected password endpoint to be unavailable, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleCurrentSessionReturnsCurrentInternalUser(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "unused", userstore.RoleAdmin, "acme", true)
+	user, found, err := store.GetByUsername(context.Background(), "alice")
+	if err != nil || !found {
+		t.Fatalf("load user: found=%v err=%v", found, err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.CtxPrincipal, auth.Principal{
+		TenantID: "acme", SubjectID: user.ID, Role: userstore.RoleAdmin,
+		AuthenticationMethod: auth.AuthenticationMethodFederated,
+	}))
+	rec := httptest.NewRecorder()
+	handleCurrentSession(store).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		User loginUser `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.User.ID != user.ID || response.User.Username != "alice" || response.User.TenantID != "acme" {
+		t.Fatalf("unexpected user: %+v", response.User)
+	}
+}

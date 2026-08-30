@@ -33,10 +33,20 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       INDEX_MANIFEST_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
       GOVERNANCE_RELEASE_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
       EXTERNAL_IDENTITY_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
+      OIDC_REDIS_TEST_ADDR: localhost:6379
     defaults:
       run:
         working-directory: services/etl-worker

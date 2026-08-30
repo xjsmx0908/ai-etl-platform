@@ -175,6 +175,31 @@ func TestNewPlatformAuthenticatorUsesProductionIdentityPolicy(t *testing.T) {
 	}
 }
 
+func TestNewPlatformAuthenticatorAllowsFederatedSessionWhenOIDCEnabledInStaging(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "unused", "admin", "acme", true)
+	user, found, err := store.GetByUsername(context.Background(), "alice")
+	if err != nil || !found {
+		t.Fatalf("load user: found=%v err=%v", found, err)
+	}
+	const secret = "test-secret-0123456789abcdef"
+	token, _, err := auth.IssueFederatedToken(secret, user.ID, user.Username, user.Role, user.TenantID, user.TokenVersion)
+	if err != nil {
+		t.Fatalf("issue federated token: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+	auth.Middleware(newPlatformAuthenticator(config.Config{
+		Environment: "staging", JWTSecret: secret, OIDCEnabled: true,
+	}, store))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("expected federated staging session to pass, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestBuildUploadRequestSignature(t *testing.T) {
 	a := buildUploadRequestSignature("tenant-a", "Report.PDF", 1024, "application/pdf", "internal", map[string]string{"contract_no": "CN-2026-0001"})
 	b := buildUploadRequestSignature("tenant-a", "report.pdf", 1024, "application/pdf", "internal", map[string]string{"contract_no": "CN-2026-0001"})

@@ -924,6 +924,24 @@ func TestValidateAPI_ProductionStrongSecretsPass(t *testing.T) {
 	}
 }
 
+func TestValidateAPI_OIDCRejectsUnsafeIssuerAndRedirect(t *testing.T) {
+	cfg := Load()
+	cfg.OIDCEnabled = true
+	cfg.OIDCClientID = "rag-web"
+	cfg.OIDCTransactionTTL = 5 * time.Minute
+	cfg.OIDCIssuer = "http://idp.example.com/realms/acme"
+	cfg.OIDCRedirectURI = "https://rag.example.com/api/auth/oidc/callback"
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected non-HTTPS issuer to be rejected")
+	}
+
+	cfg.OIDCIssuer = "https://idp.example.com/realms/acme"
+	cfg.OIDCRedirectURI = "https://rag.example.com/api/auth/oidc/callback?next=evil"
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected redirect URI with query to be rejected")
+	}
+}
+
 func TestValidateAPI_ProductionMissingPGDSN(t *testing.T) {
 	cfg := Load()
 	cfg.Environment = "production"
