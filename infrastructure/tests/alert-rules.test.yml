@@ -190,3 +190,51 @@ tests:
               condition: expired_lease
             exp_annotations:
               summary: Document deletion work is waiting for lease recovery
+
+  - name: SCIM sustained failures trigger an alert
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_scim_requests_total{connector="workforce",operation="patch",result="failure"}'
+        values: '0+1x36'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SCIMProvisioningFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              connector: workforce
+              operation: patch
+              result: failure
+            exp_annotations:
+              summary: SCIM lifecycle requests continue to fail
+  - name: SCIM synchronization older than 24 hours triggers an alert
+    interval: 5m
+    input_series:
+      - series: 'ai_etl_scim_last_success_unixtime{connector="workforce"}'
+        values: '1x301'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: SCIMSynchronizationStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              connector: workforce
+            exp_annotations:
+              summary: No successful SCIM lifecycle request has completed for 24 hours
+
+  - name: SCIM connector without a successful synchronization becomes stale
+    interval: 5m
+    input_series:
+      - series: 'ai_etl_scim_last_success_unixtime{connector="new-workforce"}'
+        values: '0x301'
+      - series: 'ai_etl_scim_enabled_since_unixtime{connector="new-workforce"}'
+        values: '1x301'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: SCIMSynchronizationStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              connector: new-workforce
+            exp_annotations:
+              summary: No successful SCIM lifecycle request has completed for 24 hours

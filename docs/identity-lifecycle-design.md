@@ -2,7 +2,8 @@
 
 ## Status and Scope
 
-Proposed for review (P2.5-D). This design adds provider-neutral account
+Implemented and locally verified (P2.5-D); production remains disabled pending
+selected-provider acceptance. This design adds provider-neutral account
 provisioning and deprovisioning after the OIDC foundation. It does not select a
 production IdP, enable federation, infer authorization from provider claims, or
 implement group mapping, service identities, MFA, or break-glass access.
@@ -56,7 +57,7 @@ not retained.
 
 ## SCIM Adapter
 
-The first adapter exposes the required subset of `/scim/v2/Users`: filtered
+The implemented adapter exposes the required subset of `/scim/v2/Users`: filtered
 lookup, create, replace, patch, deactivate, and delete. Unsupported filters,
 bulk operations, schemas, or mutable tenant/role attributes return SCIM errors
 rather than being partially applied. Authentication uses a hashed, rotatable,
@@ -85,7 +86,7 @@ selected production provider before enablement.
 
 ## Test Seams and Acceptance
 
-Implementation should use red/green slices at two reviewable seams:
+Implementation uses red/green slices at two reviewable seams:
 
 1. `Provisioner.Apply` with real PostgreSQL: create/replay, collision rollback,
    atomic audit, deactivate/session revocation, retained tombstone, constrained
@@ -93,7 +94,9 @@ Implementation should use red/green slices at two reviewable seams:
 2. SCIM HTTP behavior: authentication, supported filters and PATCH operations,
    schema/error responses, payload bounds, redaction, and concurrent replay.
 
-Acceptance also requires a real selected-provider create/update/deactivate/
+Local acceptance covers atomic PostgreSQL create/replay/update/deactivate/
+delete/reactivate behavior and the bounded SCIM HTTP contract. Production
+acceptance still requires a real selected-provider create/update/deactivate/
 reactivate run proving that OIDC login succeeds only while the internal user is
 active. Production remains blocked until the decisions below are approved.
 

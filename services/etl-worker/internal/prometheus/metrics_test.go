@@ -39,6 +39,35 @@ func TestHTTPMiddlewareRecordsStatusAndNormalizedPath(t *testing.T) {
 	}
 }
 
+func TestSCIMMiddlewareRecordsBoundedOutcomeAndDuration(t *testing.T) {
+	m := New("test_ai_etl_scim_duration")
+	handler := m.SCIMMiddleware("workforce", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPatch, "/scim/v2/Users/id", nil))
+
+	if got := counterValue(t, m.SCIMRequests.WithLabelValues("workforce", "patch", "success")); got != 1 {
+		t.Fatalf("SCIM requests=%v want 1", got)
+	}
+	if got := histogramCount(t, m.SCIMRequestDuration.WithLabelValues("workforce", "patch", "success").(prometheus.Metric)); got != 1 {
+		t.Fatalf("SCIM duration samples=%v want 1", got)
+	}
+}
+
+func TestSCIMReadDoesNotHideStaleProvisioning(t *testing.T) {
+	m := New("test_ai_etl_scim_stale")
+	handler := m.SCIMMiddleware("workforce", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/scim/v2/Users?filter=x", nil))
+	if got := gaugeValue(t, m.SCIMLastSuccess.WithLabelValues("workforce")); got != 0 {
+		t.Fatalf("successful read changed last provisioning success to %v", got)
+	}
+	if got := gaugeValue(t, m.SCIMEnabledSince.WithLabelValues("workforce")); got <= 0 {
+		t.Fatalf("SCIM enabled timestamp=%v want positive", got)
+	}
+}
+
 func TestSetCircuitStateRecordsGauge(t *testing.T) {
 	m := New("test_ai_etl_circuit")
 

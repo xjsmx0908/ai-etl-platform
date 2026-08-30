@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"ai-etl-pipeline/internal/auth"
+	"ai-etl-pipeline/internal/userstore"
 )
 
 func ctxWithTenant(tenant string) context.Context {
@@ -195,6 +196,32 @@ func TestHandleSetPassword_RejectsSamePassword(t *testing.T) {
 	}
 	if !auth.VerifyPassword(u.PasswordHash, "old-pw") {
 		t.Fatal("hash must be unchanged after rejected reset")
+	}
+}
+
+func TestHandleUserRejectsLifecycleChangesForSCIMUser(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "unused", "readonly", "acme", true)
+	user, found, _ := store.GetByUsername(context.Background(), "alice")
+	if !found {
+		t.Fatal("alice not seeded")
+	}
+	user.Origin = userstore.OriginSCIM
+	store.byID[user.ID], store.byName["alice"] = user, user
+	handler := handleUser(store)
+	for _, request := range []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{http.MethodPut, "/v1/users/" + user.ID, updateUserRequest{Active: boolPtr(false)}},
+		{http.MethodDelete, "/v1/users/" + user.ID, nil},
+		{http.MethodPost, "/v1/users/" + user.ID + "/password", setPasswordRequest{Password: "new-password"}},
+	} {
+		recorder := doRequest(handler, request.method, request.path, request.body, ctxWithTenant("acme"))
+		if recorder.Code != http.StatusConflict {
+			t.Fatalf("%s %s: expected 409, got %d: %s", request.method, request.path, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 

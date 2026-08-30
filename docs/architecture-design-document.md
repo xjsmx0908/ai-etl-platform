@@ -93,6 +93,20 @@ production use Redis `GETDEL` so a callback can land on another replica while
 remaining single-use. OIDC is disabled by default, and enabling it in production
 disables ordinary password login. This is not a break-glass implementation.
 
+`internal/identitylifecycle` is the provider-neutral write-side authority for
+provisioned people. Its PostgreSQL adapter owns the atomic transition across the
+internal user, exact external binding, retained provider-resource tombstone,
+session revocation, audit, and idempotent response. `internal/scim` is a narrow
+protocol adapter above that seam; it cannot choose tenant, role, or capability.
+Connector policy fixes one tenant, issuer, explicit subject attribute, and
+least-privilege default role before requests are accepted.
+
+SCIM and OIDC therefore meet only through the durable `(issuer, subject)`
+binding and current user state. Deactivation immediately makes directory
+resolution fail and invalidates existing platform sessions. The adapter and
+configuration remain default-off until a selected provider passes the real
+lifecycle-to-login acceptance gate.
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment

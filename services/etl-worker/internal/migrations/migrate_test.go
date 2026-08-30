@@ -267,6 +267,23 @@ func TestExternalIdentityBindingsMigrationCarriesAuthorityInvariants(t *testing.
 	}
 }
 
+func TestIdentityLifecycleMigrationCarriesProvisioningInvariants(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0020_identity_lifecycle.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"origin TEXT NOT NULL", "identity_provisioning_connectors", "default_role",
+		"identity_lifecycle_resources", "UNIQUE (connector_id, provider_resource_id)",
+		"identity_lifecycle_idempotency", "PRIMARY KEY (connector_id, idempotency_key)",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("identity lifecycle migration missing %q", required)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.

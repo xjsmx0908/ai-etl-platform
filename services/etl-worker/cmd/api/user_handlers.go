@@ -228,8 +228,13 @@ func handleUpdateUser(w http.ResponseWriter, r *http.Request, users userstore.St
 	// Tenant-scoped: an admin may only mutate users in their own tenant. Any
 	// tenant change in the request body is ignored.
 	callerTenant := auth.GetTenantID(r.Context())
-	if _, ok := requireTenantUser(r.Context(), users, id, callerTenant); !ok {
+	target, ok := requireTenantUser(r.Context(), users, id, callerTenant)
+	if !ok {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if target.Origin == userstore.OriginSCIM && (req.Active != nil || req.TenantID != nil) {
+		writeError(w, http.StatusConflict, "SCIM owns user lifecycle and tenant")
 		return
 	}
 	u, err := users.Update(r.Context(), id, userstore.UserPatch{
@@ -253,8 +258,13 @@ func handleDeleteUser(w http.ResponseWriter, r *http.Request, users userstore.St
 		writeError(w, http.StatusBadRequest, "cannot delete your own account")
 		return
 	}
-	if _, ok := requireTenantUser(r.Context(), users, id, auth.GetTenantID(r.Context())); !ok {
+	target, ok := requireTenantUser(r.Context(), users, id, auth.GetTenantID(r.Context()))
+	if !ok {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if target.Origin == userstore.OriginSCIM {
+		writeError(w, http.StatusConflict, "SCIM owns user lifecycle")
 		return
 	}
 	if err := users.Delete(r.Context(), id); err != nil {
@@ -277,6 +287,10 @@ func handleSetPassword(w http.ResponseWriter, r *http.Request, users userstore.S
 	user, ok := requireTenantUser(r.Context(), users, id, auth.GetTenantID(r.Context()))
 	if !ok {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if user.Origin == userstore.OriginSCIM {
+		writeError(w, http.StatusConflict, "SCIM users do not have local passwords")
 		return
 	}
 	// Reject resetting to the current password so a reset is always a real

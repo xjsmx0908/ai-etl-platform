@@ -29,6 +29,8 @@ const (
 	RoleAdmin    = "admin"
 	RoleUser     = "user"
 	RoleReadonly = "readonly"
+	OriginLocal  = "local"
+	OriginSCIM   = "scim"
 )
 
 // User is one row of the users table. PasswordHash is the bcrypt hash, never a
@@ -42,6 +44,9 @@ type User struct {
 	TenantID     string
 	Active       bool
 	TokenVersion int
+	Origin       string
+	DisplayName  string
+	Email        string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -90,7 +95,7 @@ func New(q db.Querier) *PgStore {
 
 var _ Store = (*PgStore)(nil)
 
-const userColumns = "id, username, password_hash, role, tenant_id, active, token_version, created_at, updated_at"
+const userColumns = "id, username, password_hash, role, tenant_id, active, token_version, origin, display_name, email, created_at, updated_at"
 
 // GetByUsername looks up a user by case-insensitive username.
 func (s *PgStore) GetByUsername(ctx context.Context, username string) (User, bool, error) {
@@ -114,7 +119,7 @@ func (s *PgStore) GetByID(ctx context.Context, id string) (User, bool, error) {
 func scanUser(row pgx.Row) (User, bool, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TenantID,
-		&u.Active, &u.TokenVersion, &u.CreatedAt, &u.UpdatedAt)
+		&u.Active, &u.TokenVersion, &u.Origin, &u.DisplayName, &u.Email, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -138,7 +143,7 @@ func (s *PgStore) List(ctx context.Context, tenantID string, limit, offset int) 
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TenantID,
-			&u.Active, &u.TokenVersion, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&u.Active, &u.TokenVersion, &u.Origin, &u.DisplayName, &u.Email, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, 0, fmt.Errorf("scan user row: %w", err)
 		}
 		users = append(users, u)
@@ -157,11 +162,14 @@ func (s *PgStore) List(ctx context.Context, tenantID string, limit, offset int) 
 
 // Create inserts a user and back-fills id/created_at/updated_at on the argument.
 func (s *PgStore) Create(ctx context.Context, u *User) error {
+	if u.Origin == "" {
+		u.Origin = OriginLocal
+	}
 	err := s.q.QueryRow(ctx,
-		`INSERT INTO users (username, password_hash, role, tenant_id, active)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO users (username, password_hash, role, tenant_id, active, origin, display_name, email)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING id, created_at, updated_at`,
-		u.Username, u.PasswordHash, u.Role, u.TenantID, u.Active,
+		u.Username, u.PasswordHash, u.Role, u.TenantID, u.Active, u.Origin, u.DisplayName, u.Email,
 	).Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {

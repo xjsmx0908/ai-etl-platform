@@ -46,6 +46,7 @@ jobs:
       INDEX_MANIFEST_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
       GOVERNANCE_RELEASE_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
       EXTERNAL_IDENTITY_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
+      IDENTITY_LIFECYCLE_TEST_DSN: postgres://test:test@localhost:5432/test?sslmode=disable
       OIDC_REDIS_TEST_ADDR: localhost:6379
     defaults:
       run:

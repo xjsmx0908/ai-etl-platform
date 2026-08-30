@@ -9,11 +9,11 @@ import (
 	"github.com/pashagolub/pgxmock/v5"
 )
 
-const userCols = "id, username, password_hash, role, tenant_id, active, token_version, created_at, updated_at"
+const userCols = "id, username, password_hash, role, tenant_id, active, token_version, origin, display_name, email, created_at, updated_at"
 
 func userRow() *pgxmock.Rows {
-	return pgxmock.NewRows([]string{"id", "username", "password_hash", "role", "tenant_id", "active", "token_version", "created_at", "updated_at"}).
-		AddRow("u-1", "alice", "hash", "admin", "default", true, 0, time.Now(), time.Now())
+	return pgxmock.NewRows([]string{"id", "username", "password_hash", "role", "tenant_id", "active", "token_version", "origin", "display_name", "email", "created_at", "updated_at"}).
+		AddRow("u-1", "alice", "hash", "admin", "default", true, 0, "local", "", "", time.Now(), time.Now())
 }
 
 func TestGetByUsername_Found(t *testing.T) {
@@ -47,7 +47,7 @@ func TestGetByUsername_NotFound(t *testing.T) {
 	defer mock.Close()
 	mock.ExpectQuery("SELECT " + userCols).
 		WithArgs("nobody").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "username", "password_hash", "role", "tenant_id", "active", "token_version", "created_at", "updated_at"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "username", "password_hash", "role", "tenant_id", "active", "token_version", "origin", "display_name", "email", "created_at", "updated_at"}))
 
 	s := New(mock)
 	_, found, err := s.GetByUsername(context.Background(), "nobody")
@@ -67,7 +67,7 @@ func TestCreate_BackfillsIDAndTimestamps(t *testing.T) {
 	defer mock.Close()
 	now := time.Now()
 	mock.ExpectQuery("INSERT INTO users").
-		WithArgs("bob", "hash", RoleUser, "acme", true).
+		WithArgs("bob", "hash", RoleUser, "acme", true, "local", "", "").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "created_at", "updated_at"}).
 			AddRow("u-2", now, now))
 
@@ -170,7 +170,7 @@ func TestList_ReturnsUsersAndTotal(t *testing.T) {
 	defer mock.Close()
 	mock.ExpectQuery("SELECT "+userCols).
 		WithArgs("default", 20, 0).
-		WillReturnRows(userRow().AddRow("u-2", "bob", "h", "user", "default", false, 1, time.Now(), time.Now()))
+		WillReturnRows(userRow().AddRow("u-2", "bob", "h", "user", "default", false, 1, "local", "", "", time.Now(), time.Now()))
 	mock.ExpectQuery("SELECT count").WithArgs("default").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 

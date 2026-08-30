@@ -212,14 +212,21 @@ Code + PKCE、state、nonce、严格 issuer/audience/RS256/JWKS 校验；IdP Tok
 测试/旧格式 token、未知或停用的内部用户，并从内部用户记录重新计算租户、角色和
 capabilities；非生产环境保留显式评测 token 兼容。OIDC 默认关闭，启用后仅已由管理
 员绑定 `(issuer, subject)` 的活动内部用户可登录；production 启用 OIDC 时普通本地
-密码登录自动关闭。SCIM/JIT、组授权、服务身份、break-glass 和企业 MFA 策略尚未
-实现，因此本切片不等于生产 SSO 已上线。
+密码登录自动关闭。默认关闭的 SCIM Users 子集现在可原子地配置和停用精确 OIDC
+身份，但 JIT、组授权、服务身份、break-glass 和企业 MFA 策略仍不在本切片内；生产
+SCIM/OIDC 还必须通过选定 IdP 的验收。
 
 Keycloak 验收配置示例：创建 confidential OIDC client，将 Valid Redirect URI 精确
 设为 `https://<RAG 域名>/api/auth/oidc/callback`，把 realm issuer、client ID 和 secret
 分别配置为 `OIDC_ISSUER`、`OIDC_CLIENT_ID` 与
 `OIDC_CLIENT_SECRET_FILE_PATH`；先用管理员 API 建立 external identity binding，再在
 staging 设置 `OIDC_ENABLED=true`。不要从 realm role、group 或邮箱域名自动派生权限。
+
+SCIM 配置固定 `SCIM_CONNECTOR_ID`、`SCIM_TENANT_ID`、`SCIM_ISSUER`、
+`SCIM_SUBJECT_ATTRIBUTE=externalId` 和最小权限 `SCIM_DEFAULT_ROLE`。将一个或多个逗号
+分隔的凭据写入 `SCIM_BEARER_TOKENS_FILE_PATH` 指向的文件；新旧凭据重叠可完成轮换。
+在选定 IdP 的稳定 subject 映射以及 create/update/deactivate/reactivate-to-OIDC 全流程
+通过 staging 验收前，保持 `SCIM_ENABLED=false`。
 
 部署（compose 服务）：
 

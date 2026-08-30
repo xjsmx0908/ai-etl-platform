@@ -955,3 +955,36 @@ This file is an append-only record of completed PRAR cycles.
   tenant, authorization, or OIDC subject across providers. Those mappings and a
   possible JIT fallback remain explicit enterprise decisions before code is
   implemented.
+
+## 2026-08-30 - P2.5-D identity lifecycle implementation
+
+- Perceive: the approved design required one atomic ownership boundary rather
+  than SCIM handlers coordinating users, bindings, revocation, audit, and replay
+  independently. Production provider selection and enablement remained outside
+  the authorized slice.
+- Reason: test through `Provisioner.Apply` with real PostgreSQL and through the
+  SCIM HTTP contract. Connector policy, not provider profile data, fixes tenant,
+  issuer, subject attribute, and least-privilege role.
+- Act: added migration `0020`, the lifecycle provisioner, a bounded default-off
+  Users adapter, federated-only login/admin safeguards, secret overlap,
+  configuration, metrics, and failure/staleness alerts. Create, mutation,
+  revocation, tombstone, audit, and idempotency commit atomically.
+- Refine: PUT needs explicit present-versus-empty profile fields; plain strings
+  silently prevented IdP-requested clearing. Pointer fields now preserve
+  replacement semantics. Resource paths, metadata, identity, and profile fields
+  are bounded before persistence; repeated deactivation revokes sessions only
+  on the active-to-inactive transition.
+- Verification: Go formatting, vet, ordinary and race suites passed with real
+  PostgreSQL integration. The 128 script tests, Parser 32, Reranker 1, Webhook
+  3, Web audit/lint/build, Compose overlays, Prometheus/Alertmanager/Grafana,
+  both Trivy CRITICAL gates, and the 47-case deterministic full-stack eval all
+  passed; the eval reported 100% pass, answer, retrieval, and negative rates.
+- Final review closed four spec gaps before handoff: raw bearer values are
+  discarded after hashing, SCIM mutation latency is measured without reads
+  masking stale synchronization, audit carries a bounded request correlation
+  ID, and explicit tenant-isolation/HTTP-concurrency tests supplement the
+  PostgreSQL replay proof. Origin constants also centralize lifecycle ownership.
+- Re-review tightened those guarantees: the constructor clears the caller's
+  credential slice, readiness and successful synchronization use distinct
+  timestamps so restarts cannot fake success, and the server generates a
+  correlation ID when the provider omits or overflows `X-Request-ID`.
