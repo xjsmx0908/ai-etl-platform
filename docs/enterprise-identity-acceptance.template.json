@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "decision": "pending",
+  "acceptance_id": "",
+  "provider": {
+    "product": "",
+    "version_or_sku": "",
+    "tenant_or_realm_alias": "",
+    "oidc_issuer": "",
+    "scim_profile_sha256": "",
+    "sanitized_configuration_sha256": ""
+  },
+  "platform": {
+    "commit": "",
+    "query_api_image_digest": "",
+    "web_image_digest": ""
+  },
+  "scores": {
+    "enterprise_ownership": null,
+    "oidc_interoperability": null,
+    "scim_profile_compatibility": null,
+    "stable_subject_equality": null,
+    "mfa_session_logout_policy": null,
+    "rotation_and_audit": null,
+    "availability_residency_cost": null
+  },
+  "approved_policy": {
+    "connector_id": "",
+    "internal_tenant_id": "",
+    "subject_attribute": "externalId",
+    "default_role": "readonly",
+    "stored_profile": [],
+    "provisioning_mode": "scim_only",
+    "deactivation_sla_seconds": null,
+    "reconciliation_interval_seconds": null,
+    "tombstone_retention_days": null,
+    "credential_rotation_days": null,
+    "credential_overlap_seconds": null
+  },
+  "acceptance_results": {
+    "oidc_protocol": "not_run",
+    "create_to_login_identity": "not_run",
+    "update_and_concurrent_replay": "not_run",
+    "deactivate_and_session_revocation": "not_run",
+    "constrained_reactivation": "not_run",
+    "delete_and_identifier_reuse": "not_run",
+    "credential_and_jwks_rotation": "not_run",
+    "dependency_outages": "not_run",
+    "redaction_audit_and_metrics": "not_run"
+  },
+  "evidence_bundle_sha256": "",
+  "rollback_rehearsed_at": "",
+  "approved_at": "",
+  "expires_at": "",
+  "approvals": {
+    "identity_owner": "",
+    "tenant_owner": "",
+    "security_owner": "",
+    "privacy_or_legal_owner": "",
+    "operations_owner": ""
+  }
+}

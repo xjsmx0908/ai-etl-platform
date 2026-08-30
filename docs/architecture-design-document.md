@@ -107,6 +107,14 @@ resolution fail and invalidates existing platform sessions. The adapter and
 configuration remain default-off until a selected provider passes the real
 lifecycle-to-login acceptance gate.
 
+Provider selection does not add provider-specific fields to these interfaces.
+Entra ID, Okta, Keycloak, or a separately operated SCIM bridge are true external
+dependencies represented only by their protocol adapters. The production
+acceptance seam is the composed observable lifecycle: SCIM command to durable
+internal identity to current OIDC login decision. Tests and promotion evidence
+cross that same seam, preserving provider replacement without duplicating
+tenant or authorization policy.
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment

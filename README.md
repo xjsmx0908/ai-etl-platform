@@ -227,6 +227,8 @@ SCIM 配置固定 `SCIM_CONNECTOR_ID`、`SCIM_TENANT_ID`、`SCIM_ISSUER`、
 分隔的凭据写入 `SCIM_BEARER_TOKENS_FILE_PATH` 指向的文件；新旧凭据重叠可完成轮换。
 在选定 IdP 的稳定 subject 映射以及 create/update/deactivate/reactivate-to-OIDC 全流程
 通过 staging 验收前，保持 `SCIM_ENABLED=false`。
+生产 IdP 比较、策略审批和证据要求见
+[Enterprise Identity Production Acceptance](docs/enterprise-identity-production-acceptance.md)。
 
 部署（compose 服务）：
 

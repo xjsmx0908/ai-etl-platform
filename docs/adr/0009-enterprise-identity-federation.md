@@ -38,6 +38,9 @@ workloads use distinct client credentials and audiences, not browser sessions.
 The proposed lifecycle module, authority rules, deprovisioning semantics, and
 remaining enterprise inputs are detailed in
 [Enterprise Identity Lifecycle Design](../identity-lifecycle-design.md).
+Provider selection, policy approval, and the real staging evidence contract are
+detailed in
+[Enterprise Identity Production Acceptance](../enterprise-identity-production-acceptance.md).
 
 The Web BFF retains an HttpOnly, Secure, SameSite session cookie. Local login is
 disabled in the production profile except for a separately controlled,
@@ -72,3 +75,8 @@ No production enablement occurs until the open decisions are approved. Tests
 must cover issuer/audience/algorithm confusion, key rotation, deprovisioning,
 tenant and group mapping, revoked users, IdP outage, service identity, local
 login disablement, and break-glass audit.
+
+P2.5-E does not resolve the open decisions. It defines the comparison evidence,
+named approvals, expiry rules, and staging lifecycle sequence required to close
+them. Keycloak's completed OIDC protocol run is baseline evidence only and does
+not select it as the production IdP or prove a production SCIM profile.

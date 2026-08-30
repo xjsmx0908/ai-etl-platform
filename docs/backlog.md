@@ -469,6 +469,27 @@ P2.5-D identity lifecycle provisioning (implemented 2026-08-30):
    stable subject mapping/default role/retention/SLA/rotation policy, then run a
    real SCIM create-update-deactivate-reactivate-to-OIDC acceptance exercise.
 
+P2.5-E enterprise identity production acceptance design (proposed 2026-08-30):
+
+1. Compare Entra ID, Okta, and Keycloak with an evidence-weighted matrix; reject
+   any candidate that cannot prove exact SCIM-to-OIDC subject equality, the
+   required bounded SCIM Users profile, or OIDC interoperability.
+2. Require named identity, tenant, security, privacy, legal, and operations
+   owners to approve connector tenancy, subject mapping, default role, stored
+   profile, provisioning mode, deactivation SLA, reconciliation, tombstone
+   retention, rotation, support, residency, and cost.
+3. Specify a public-interface staging sequence covering create, login, update,
+   concurrent replay, deactivate/session revocation, reactivation, delete,
+   identifier reuse, credential/key rotation, outages, redaction, and metrics.
+4. Retain a signed, secret-free acceptance bundle tied to provider configuration,
+   platform commit/images, owner, expiry, and rollback rehearsal. Expire it on
+   material provider, mapping, or platform identity changes.
+5. Keep MFA/session/logout, break-glass, group mapping, service identity,
+   selected-provider implementation, production enablement, and deployment in
+   separately approved P2.5-F through J slices.
+6. Review the proposal in
+   [enterprise-identity-production-acceptance.md](enterprise-identity-production-acceptance.md).
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
