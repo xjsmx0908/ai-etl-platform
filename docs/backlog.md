@@ -440,6 +440,27 @@ P2.5-C outcome (completed 2026-08-30):
   enablement, SCIM/JIT, groups, service identities, MFA/session policy,
   break-glass, and deployment remain later reviewed work.
 
+P2.5-D identity lifecycle design (proposed 2026-08-30):
+
+1. Put user creation, external binding, deactivation, session revocation,
+   tombstone retention, idempotency, and audit behind one provider-neutral
+   `Provisioner.Apply` seam with an atomic PostgreSQL adapter.
+2. Bind each connector to one internal tenant and a least-privilege default
+   role. Never derive tenant, role, or capabilities from SCIM organization,
+   email, role, group, or OIDC claims.
+3. Add a bounded SCIM 2.0 Users adapter that authenticates with a rotatable,
+   connector-scoped secret and translates protocol requests into lifecycle
+   commands without directly owning policy tables.
+4. Make deactivation immediately set `active=false` and increment
+   `token_version`; retain provider/resource and issuer/subject tombstones to
+   prevent identifier reuse from taking over historical access.
+5. Test through the lifecycle module and SCIM HTTP seams, then require a real
+   selected-provider lifecycle-to-OIDC acceptance run before production use.
+6. Keep JIT, group authorization, service identities, production enablement,
+   MFA/session policy, and break-glass outside this slice. Implementation waits
+   for approval of the decisions in
+   [identity-lifecycle-design.md](identity-lifecycle-design.md).
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
