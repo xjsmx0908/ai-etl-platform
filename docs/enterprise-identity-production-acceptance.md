@@ -171,7 +171,9 @@ one policy responsibility:
 1. P2.5-F：拟议的 MFA、会话寿命、重新认证、RP 发起退出和双认证迁移契约见
    [企业会话安全设计](enterprise-session-security-design.md)；企业责任人仍须
    批准每个 `Pending` 值。
-2. P2.5-G: audited, time-bounded break-glass custody and exercises.
+2. P2.5-G：拟议的可审计、限时紧急访问保管、事故租约和演练契约见
+   [企业紧急访问设计](enterprise-emergency-access-design.md)；企业责任人仍须
+   批准所有 `Pending` 值，且 P2.5-J 必须引用有效演练证据。
 3. P2.5-H: tenant-owned group-to-knowledge-space mapping; never global role or
    tenant inference from raw provider groups.
 4. P2.5-I: workload/service identity with distinct audiences, credentials,

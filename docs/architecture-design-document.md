@@ -127,6 +127,19 @@ tenant or authorization policy.
 映射和迁移批次仍是外部输入；当前无状态 24 小时 JWT 是已核实的现状，而不是
 目标企业会话架构。
 
+拟议的 P2.5-G `emergencyaccess` 模块与普通 OIDC、本地登录和 `admin` scope
+分离。外部保管适配器提供多方签署的单次激活证明，操作人再用独立恢复认证器证明
+持有权；模块原子创建短期事故租约、会话、不可变审计和通知 outbox。每个请求只
+获得租约中明确列出的租户级恢复动作，并重新校验操作者、租约、会话、动作、到期
+和撤销状态。恢复命令在副作用前持久化幂等意图和审计，再调用模块内部的受限恢复
+适配器并记录结果；外部操作的不确定结果由操作日志收敛。审计或租约状态不可用时
+失败关闭。
+
+恢复身份没有常驻平台角色或内容访问能力，不能复用 bootstrap admin、普通本地
+密码、手工 JWT 或 SCIM/OIDC 用户。主 IdP 故障由该模块处理；PostgreSQL、审计
+存储或控制面故障属于独立基础设施灾难恢复，不通过应用后门解决。人数、quorum、
+时限、认证器、动作白名单和保管位置保持企业输入 `Pending`。
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment

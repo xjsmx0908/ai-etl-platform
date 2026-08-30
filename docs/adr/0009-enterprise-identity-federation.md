@@ -43,6 +43,8 @@ detailed in
 [Enterprise Identity Production Acceptance](../enterprise-identity-production-acceptance.md).
 拟议的 MFA、会话、重新认证、退出和迁移契约详见
 [企业会话安全设计](../enterprise-session-security-design.md)。
+拟议的紧急访问保管、租约、最小权限和演练契约详见
+[企业紧急访问设计](../enterprise-emergency-access-design.md)。
 
 The Web BFF retains an HttpOnly, Secure, SameSite session cookie. Local login is
 disabled in the production profile except for a separately controlled,
@@ -70,7 +72,8 @@ explicit test/evaluation profiles.
 - 批准 P2.5-F 的 MFA 证据、会话寿命、重新认证、退出和双认证迁移值；所有
   数值仍为 `Pending`。
 - SCIM-only versus approved just-in-time provisioning fallback.
-- Break-glass custody, expiry, alerting, and review process.
+- 批准 P2.5-G 的独立保管、多方审批、租约到期、最小恢复动作、告警、演练和
+  复盘策略；所有人数与数值仍为 `Pending`。
 
 ## Acceptance gate
 
@@ -87,3 +90,7 @@ not select it as the production IdP or prove a production SCIM profile.
 P2.5-F 提议与提供方无关的会话策略接缝和持久会话注册表，但不批准策略值，
 也不实现生产身份。P2.5-G 单独负责紧急访问；P2.5-J 必须绑定选定提供方的
 精确认认证保证与退出行为，并保留 staging 证据。
+
+P2.5-G 提议独立 `emergencyaccess` 模块、无常驻权限的短期事故租约和失败关闭
+审计，但不创建账号、凭据或生产入口。基础设施灾难恢复不由应用紧急访问绕过；
+P2.5-J 必须引用仍有效的紧急访问演练证据。

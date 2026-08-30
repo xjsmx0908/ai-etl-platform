@@ -514,6 +514,25 @@ P2.5-F 企业会话安全设计（2026-08-30 提议）：
    选定提供方实现和证据。
 7. 评审 [企业会话安全设计](enterprise-session-security-design.md)。
 
+P2.5-G 企业紧急访问设计（2026-08-30 提议）：
+
+1. 明确当前 bootstrap admin、普通本地密码、`admin` scope 和手工 JWT 均不构成
+   企业紧急访问；生产联邦策略当前没有紧急路径，普通登录审计也是 best-effort。
+2. 新增独立 `emergencyaccess` 深层模块设计。外部保管适配器提交多方签署的单次
+   激活证明，操作人再用独立恢复认证器完成 challenge 持有证明；证明不是 bearer。
+3. 保管能力常备但平台权限不常驻。原子创建短期事故租约、会话、不可变审计和通知
+   outbox；逐请求 `Execute` 验证操作者、租约、租户、动作、会话、到期和撤销状态，
+   在副作用前持久化幂等操作意图，再由内部受限适配器执行并记录结果。
+4. 使用独立 `emergency` 认证方式和最小动作白名单，不继承普通 `admin` scope，
+   不允许内容查询/上传、发布、删除、Agent 执行或把临时能力变成常驻角色。
+5. 审计或租约存储故障时失败关闭；通知发送可从持久 outbox 重试。结束、绝对/空闲
+   到期、延期代次和材料轮换必须撤销所有关联凭据并形成独立复盘证据。
+6. 将 PostgreSQL、审计存储和控制面不可用划入独立基础设施灾难恢复，不通过应用
+   后门、数据库直改或 shell 绕过。P2.5-J 必须引用仍有效的 canary 演练结果。
+7. 所有人数、quorum、时限、认证器、动作、网络、告警和证据保留值保持 `Pending`，
+   直到安全、身份、连续性、SRE、SOC、合规、法务和租户责任人批准。
+8. 评审 [企业紧急访问设计](enterprise-emergency-access-design.md)。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

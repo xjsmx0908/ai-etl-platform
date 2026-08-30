@@ -147,6 +147,10 @@ Kafka、进程及存储依赖中断。结果写入 `artifacts/governance-accepta
 [`docs/enterprise-session-security-design.md`](docs/enterprise-session-security-design.md)。
 两份文档均不代表已选择或启用真实 IdP。
 
+紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
+[`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。
+该设计不创建紧急账号或密钥，也不提供数据库、shell 或基础设施后门。
+
 ### 6. 评测闭环
 
 ```bash
