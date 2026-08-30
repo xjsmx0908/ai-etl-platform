@@ -1051,3 +1051,7 @@ This file is an append-only record of completed PRAR cycles.
   合并、最高允许角色、下一请求撤权、修订绑定缓存、对账及 shadow/canary 迁移。
 - 改进：组 claim overage 或省略不是空成员集合；超过批准陈旧窗口时只让组派生
   授权失败关闭，不能误删仍有效的人工直接授权。
+- 审查修正：异步 outbox 不能单独保证下一请求撤权，缓存 allow 必须先通过同步修订
+  栅栏；跨页目录同步需要 snapshot token/watermark 或首尾版本变化即整轮重试；回滚
+  直接成员必须逐条 CAS 且冲突转人工对账；验收补充重新认证、审批分离、重放和即时
+  删除/降级测试。
