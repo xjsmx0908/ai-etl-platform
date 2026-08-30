@@ -494,6 +494,26 @@ P2.5-E enterprise identity production acceptance design (proposed 2026-08-30):
    Existing SCIM last-success age measures mutation activity only and cannot
    satisfy the reconciliation gate.
 
+P2.5-F 企业会话安全设计（2026-08-30 提议）：
+
+1. 精确记录当前限制：固定 24 小时平台 JWT 及匹配的 HttpOnly Cookie、用户级
+   `token_version` 撤销和仅清除 Cookie 的退出；尚无会话 ID、注册表、空闲到期、
+   认证保证状态、重新认证或逐设备撤销。
+2. 把会话建立、认证决策、新鲜度、轮换和撤销放在一个与提供方无关的深层模块后。
+   提供方适配器转换精确 `acr`/`amr`/`auth_time` 行为；处理器只看到内部操作及
+   allow、deny 或 reauthenticate。
+3. 要求持久生产会话注册表，包含唯一会话 ID、独立空闲/绝对/新鲜度时钟、逐会话
+   与全会话撤销、当前内部权限及失败关闭查询。
+4. 先撤销平台会话，再清除 Cookie 并执行可选且经验证的 RP 发起 IdP 退出。
+   IdP 故障不能阻止本地退出。
+5. 只有完成精确外部绑定并观察到 staging 证据后才迁移指定批次。生产切换关闭
+   密码并使本地会话失效；回滚恢复预先验证的联邦配置目标或获批非紧急恢复路径，
+   不得静默恢复密码或绕过 MFA。
+6. 认证保证映射、所有数值寿命/上限、批次和切换日期均保持 `Pending`，直到安全、
+   身份、产品、隐私、支持和运维责任人批准。P2.5-G 负责紧急访问；P2.5-J 负责
+   选定提供方实现和证据。
+7. 评审 [企业会话安全设计](enterprise-session-security-design.md)。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
