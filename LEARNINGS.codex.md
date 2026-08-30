@@ -1037,3 +1037,5 @@ This file is an append-only record of completed PRAR cycles.
   重试；PostgreSQL/控制面故障属于基础设施灾难恢复，不能用应用后门掩盖。
 - 接口复核：只返回紧急 principal 会把动作结果审计泄漏到处理器。改由 `Execute`
   在副作用前持久化幂等意图，再调用受限适配器并收敛外部不确定结果。
+- 审查：规范与规格双轴均通过；独立故障域、多人控制、认证器持有证明、短期租约、
+  最小动作、失败关闭、通知、复盘和 canary 演练没有遗留可行动缺口。
