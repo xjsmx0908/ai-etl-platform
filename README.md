@@ -159,7 +159,11 @@ P2.5-F1 已提供 provider-neutral 会话核心与 PostgreSQL 模型；P2.5-F2 �
 Cookie、OIDC、退出和 production 行为均未迁移到新会话。
 P2.5-F3a 已为身份/用户/租户变更、文档删除与发布、Agent 批准和 generation rollback
 登记高风险动作；`ps1_` 会话证据达到 10 分钟边界时返回结构化
-`401 reauthentication_required`。完整重新认证事务及凭据轮换仍未实现。
+`401 reauthentication_required`。P2.5-F3b 已在 `oidcauth` seam 实现 Keycloak demo
+`acr`/`amr`/`auth_time` 到 `demo-mfa` 的严格转换，以及绑定当前 credential、tenant、
+subject、action 的 state/nonce/PKCE 一次性事务；普通与重新认证事务不可混用，Redis
+支持跨实例单次消费。该核心尚未连接 HTTP callback，也未轮换凭据或修改 Cookie；当前
+运行登录行为保持不变。
 
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。

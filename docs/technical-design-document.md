@@ -373,3 +373,20 @@ logout、部署或 staging/production。
 
 F3a 只定义风险判断和 HTTP 响应契约；不解析 `acr`/`amr`/`auth_time`，不创建
 state/nonce/PKCE 重新认证事务，不轮换 credential，也不修改 Cookie 或 OIDC callback。
+
+P2.5-F3b 在现有 `oidcauth.Flow` seam 增加独立的重新认证开始/完成命令，不改变普通
+登录接口。开始命令创建新的 state、nonce 和 PKCE verifier，并将当前 opaque credential
+的 SHA-256 摘要、内部 tenant/subject、策略 action 与安全 return path 写入 TTL 有界的
+一次性事务；authorization request 固定要求 `prompt=login`、`max_age=0` 和 demo
+`acr_values=2`。内存与 Redis adapter 共用同一事务模型，Redis 通过原子 `GETDEL` 支持
+跨实例回调且阻止重放。
+
+OIDC adapter 只在 `AuthenticateWithEvidence` 中解释提供方声明。个人演示 profile 精确
+接受 `acr=2`、不多不少的 `pwd` + `otp` `amr` 和 10 分钟内的 `auth_time`，转换为
+`AuthenticationEvidence{Assurance: "demo-mfa"}`；原始声明不进入 Flow、session manager
+或业务处理器。完成命令在 token exchange 前校验 state 和当前 credential，在 exchange 后
+核对 tenant/subject 与证据新鲜度；事务类型混用、绑定变化、重放和依赖故障均失败关闭。
+
+F3b 仍是未装配的事务核心：不注册 HTTP 路由、不改 Web Cookie、不调用
+`session.Manager.Establish` 轮换 `ps1_` credential，也不启用 logout、Compose 或生产配置。
+后续 F3c 负责将成功结果与原会话的原子 credential rotation、callback 和 Cookie 更新编排。

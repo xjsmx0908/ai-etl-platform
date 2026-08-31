@@ -673,6 +673,22 @@ P2.5-F3a 风险判断与重新认证响应（2026-08-31 已实现并本地验证
 5. F3a 不解析 `acr`/`amr`/`auth_time`，不创建 state/nonce/PKCE 事务、不轮换 credential，
    不修改 Cookie、OIDC、logout、部署或 production；这些进入 F3b 及后续切片。
 
+P2.5-F3b 可信认证证据与单次重新认证事务核心（2026-08-31 已实现并本地验证，待 PR 评审）：
+
+1. `oidcauth.AuthenticateWithEvidence` 在提供方 adapter 内严格转换 Keycloak demo 声明：
+   仅接受 `acr=2`、精确 `amr=[pwd,otp]` 和 10 分钟内的可信 `auth_time`，只向下游返回
+   provider-neutral `demo-mfa` 证据；普通 OIDC 登录继续使用原 `Authenticate` 契约。
+2. `StartReauthentication` 生成新的 state/nonce/PKCE，向 IdP 请求 `prompt=login`、
+   `max_age=0`、`acr_values=2`，并把当前 credential 摘要、tenant、subject、策略 action
+   和安全 return path 绑定到 TTL 有界事务；Redis/内存中均不保存 credential 明文。
+3. `CompleteReauthentication` 一次性消费事务，恒定时间校验 state 与当前 credential，
+   再核对解析后的内部 tenant/subject 和认证证据。任一绑定变化、弱/陈旧/含糊证据、
+   普通/重认证事务混用、存储或 IdP 故障均失败关闭。
+4. public seam 测试覆盖成功、重放、state/credential/主体漂移、普通事务混用、证据边界、
+   Redis 跨实例消费以及存储/提供方不可用；原始 `acr`/`amr`/`auth_time` 不离开 adapter。
+5. F3b 尚不连接 HTTP callback，不签发或轮换 `ps1_` credential，也不修改 Cookie、logout、
+   Compose 或 production。F3c 再原子轮换会话并完成 Web/API 编排。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
