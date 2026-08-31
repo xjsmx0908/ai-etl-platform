@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parsePlatformLoginCredential } from "@/lib/platformSession";
 
 // Login is the ONLY unauthenticated endpoint. On success we set the HttpOnly
 // `ai_etl_token` cookie and hand the non-secret user object to the client for
@@ -41,21 +42,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: upstream.status });
   }
 
-  const token = (data as { token?: unknown }).token;
-  const expiresAtValue = (data as { expires_at?: unknown }).expires_at;
   const sessionCoreEnabled = process.env.SESSION_CORE_ENABLED === "true";
-  if (
-    typeof token !== "string" ||
-    !token ||
-    (sessionCoreEnabled && !token.startsWith("ps1_")) ||
-    typeof expiresAtValue !== "string"
-  ) {
+  const credential = parsePlatformLoginCredential(data, sessionCoreEnabled);
+  if (!credential) {
     return NextResponse.json({ error: "登录响应缺少 token" }, { status: 502 });
-  }
-  const expiresAt = Date.parse(expiresAtValue);
-  const remainingSeconds = Math.floor((expiresAt - Date.now()) / 1000);
-  if (!Number.isFinite(expiresAt) || remainingSeconds <= 0) {
-    return NextResponse.json({ error: "登录响应已过期" }, { status: 502 });
   }
 
   const res = NextResponse.json(
@@ -65,7 +55,7 @@ export async function POST(req: NextRequest) {
     },
     { status: 200 }
   );
-  res.cookies.set("ai_etl_token", token, {
+  res.cookies.set("ai_etl_token", credential.token, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
@@ -76,7 +66,7 @@ export async function POST(req: NextRequest) {
     secure: sessionCoreEnabled || process.env.COOKIE_SECURE === "true",
     // Match the token TTL so the cookie does not silently expire mid-session
     // while the (still valid) token lives on, and vice versa.
-    maxAge: sessionCoreEnabled ? Math.min(30 * 60, remainingSeconds) : 24 * 60 * 60,
+    maxAge: credential.cookieMaxAge,
   });
   return res;
 }

@@ -1192,3 +1192,7 @@ This file is an append-only record of completed PRAR cycles.
   将 Cookie 限制到 30 分钟/绝对剩余寿命。门禁关闭保留 JWT。
 - 改进：迁移开关必须贯穿 Query API 与 Web，否则后端 `ps1_` 和前端 24 小时 Cookie 会
   产生配置漂移。建立失败永不回退 JWT；真实 HTTP 测试验证 Cookie 和异常响应。
+- 审查修正：认证保证使用 `session.Assurance` 领域类型与集中常量，避免 handler、OIDC
+  adapter 和策略 map 的裸字符串漂移；password/OIDC 共享 Web 登录凭据解析与寿命计算。
+  验收矩阵补充 OIDC 凭据经过真实认证中间件、OIDC 完整 Cookie 属性，以及门禁关闭时
+  password/OIDC 的 24 小时 JWT Cookie 兼容路径。

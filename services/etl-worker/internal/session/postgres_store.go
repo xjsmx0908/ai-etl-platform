@@ -40,7 +40,7 @@ func (s *postgresStore) create(ctx context.Context, value record) error {
 		absolute_expires_at,generation,policy_revision,established_correlation_id
 	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		value.id, value.credentialDigest[:], value.subjectID, value.tenantID,
-		string(value.authenticationMethod), value.assurance, value.authenticatedAt,
+		string(value.authenticationMethod), string(value.assurance), value.authenticatedAt,
 		value.createdAt, value.lastActivityAt, value.absoluteExpiresAt,
 		value.generation, value.policyRevision, value.establishedCorrelationID,
 	)
@@ -55,13 +55,13 @@ func (s *postgresStore) load(ctx context.Context, digest [32]byte) (record, bool
 		return record{}, false, ErrUnavailable
 	}
 	var value record
-	var method string
+	var method, assurance string
 	err := s.q.QueryRow(ctx, `SELECT id,tenant_id,internal_user_id,authentication_method,
 		assurance_level,authenticated_at,created_at,last_activity_at,absolute_expires_at,
 		revoked_at,generation,policy_revision,established_correlation_id
 		FROM platform_sessions WHERE credential_digest=$1`, digest[:]).Scan(
 		&value.id, &value.tenantID, &value.subjectID, &method,
-		&value.assurance, &value.authenticatedAt, &value.createdAt,
+		&assurance, &value.authenticatedAt, &value.createdAt,
 		&value.lastActivityAt, &value.absoluteExpiresAt, &value.revokedAt,
 		&value.generation, &value.policyRevision, &value.establishedCorrelationID,
 	)
@@ -73,6 +73,7 @@ func (s *postgresStore) load(ctx context.Context, digest [32]byte) (record, bool
 	}
 	value.credentialDigest = digest
 	value.authenticationMethod = auth.AuthenticationMethod(method)
+	value.assurance = Assurance(assurance)
 	return value, true, nil
 }
 
@@ -112,7 +113,7 @@ func (s *postgresStore) rotate(ctx context.Context, oldDigest [32]byte, id strin
 		absolute_expires_at=$9,generation=$10,policy_revision=$11,established_correlation_id=$12,
 		revoked_at=NULL,revocation_reason='',revoked_correlation_id=''
 		WHERE credential_digest=$1 AND id=$2 AND generation=$3 AND revoked_at IS NULL`,
-		oldDigest[:], id, generation, replacement.credentialDigest[:], replacement.assurance,
+		oldDigest[:], id, generation, replacement.credentialDigest[:], string(replacement.assurance),
 		replacement.authenticatedAt, replacement.createdAt, replacement.lastActivityAt,
 		replacement.absoluteExpiresAt, replacement.generation, replacement.policyRevision,
 		replacement.establishedCorrelationID)

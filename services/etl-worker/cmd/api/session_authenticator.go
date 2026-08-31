@@ -89,10 +89,10 @@ func platformSessionPolicy() session.Policy {
 		IdleTimeout:       30 * time.Minute,
 		AbsoluteLifetime:  8 * time.Hour,
 		HighRiskFreshness: 10 * time.Minute,
-		HighRiskAssurance: "demo-mfa",
-		EstablishmentAssurances: map[auth.AuthenticationMethod]string{
-			auth.AuthenticationMethodFederated: "demo-mfa",
-			auth.AuthenticationMethodLocal:     "local-password",
+		HighRiskAssurance: session.AssuranceDemoMFA,
+		EstablishmentAssurances: map[auth.AuthenticationMethod]session.Assurance{
+			auth.AuthenticationMethodFederated: session.AssuranceDemoMFA,
+			auth.AuthenticationMethodLocal:     session.AssuranceLocalPassword,
 		},
 		ActionRisks: map[string]session.Risk{
 			platformSessionRequestAction:    session.RiskStandard,

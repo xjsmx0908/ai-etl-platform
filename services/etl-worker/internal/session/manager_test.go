@@ -320,7 +320,7 @@ func TestEstablishRejectsInvalidOrStaleAuthenticationEvidence(t *testing.T) {
 }
 
 func TestPolicyRejectsInvalidEstablishmentAssuranceConfiguration(t *testing.T) {
-	for _, assurances := range []map[auth.AuthenticationMethod]string{
+	for _, assurances := range []map[auth.AuthenticationMethod]session.Assurance{
 		{auth.AuthenticationMethodLocal: "local-password"},
 		{auth.AuthenticationMethodFederated: ""},
 		{auth.AuthenticationMethodService: "demo-mfa"},
@@ -376,7 +376,7 @@ func demoPolicy() session.Policy {
 		AbsoluteLifetime:  8 * time.Hour,
 		HighRiskFreshness: 10 * time.Minute,
 		HighRiskAssurance: "demo-mfa",
-		EstablishmentAssurances: map[auth.AuthenticationMethod]string{
+		EstablishmentAssurances: map[auth.AuthenticationMethod]session.Assurance{
 			auth.AuthenticationMethodFederated: "demo-mfa",
 			auth.AuthenticationMethodLocal:     "local-password",
 		},

@@ -179,7 +179,7 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store, s
 					AuthenticationMethod: auth.AuthenticationMethodLocal,
 				},
 				Evidence: session.AuthenticationEvidence{
-					Assurance: "local-password", AuthenticatedAt: time.Now().UTC(),
+					Assurance: session.AssuranceLocalPassword, AuthenticatedAt: time.Now().UTC(),
 				},
 				CorrelationID: "password-login:" + uuid.NewString(),
 			})

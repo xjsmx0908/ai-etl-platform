@@ -165,6 +165,15 @@ func TestHandleOIDCCallbackIssuesFederatedPlatformSessionFromApprovedEvidence(t 
 	if err != nil || result.Decision != session.DecisionAllow || result.Principal.AuthenticationMethod != auth.AuthenticationMethodFederated {
 		t.Fatalf("session result=%+v err=%v", result, err)
 	}
+	protectedRequest := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
+	protectedRequest.Header.Set("Authorization", "Bearer "+response.Token)
+	protected := httptest.NewRecorder()
+	auth.Middleware(newSessionCredentialAuthenticator(&countingAuthenticator{}, manager, users))(
+		handleCurrentSession(users),
+	).ServeHTTP(protected, protectedRequest)
+	if protected.Code != http.StatusOK || !strings.Contains(protected.Body.String(), `"username":"alice"`) {
+		t.Fatalf("issued OIDC credential cannot access current session: %d %s", protected.Code, protected.Body.String())
+	}
 }
 
 func TestHandleOIDCCallbackRejectsMissingApprovedEvidenceWhenSessionCoreEnabled(t *testing.T) {

@@ -45,18 +45,25 @@ const (
 	RiskHigh     Risk = "high"
 )
 
+type Assurance string
+
+const (
+	AssuranceDemoMFA       Assurance = "demo-mfa"
+	AssuranceLocalPassword Assurance = "local-password"
+)
+
 type Policy struct {
 	IdleTimeout             time.Duration
 	AbsoluteLifetime        time.Duration
 	HighRiskFreshness       time.Duration
-	HighRiskAssurance       string
-	EstablishmentAssurances map[auth.AuthenticationMethod]string
+	HighRiskAssurance       Assurance
+	EstablishmentAssurances map[auth.AuthenticationMethod]Assurance
 	ActionRisks             map[string]Risk
 	Revision                string
 }
 
 type AuthenticationEvidence struct {
-	Assurance       string
+	Assurance       Assurance
 	AuthenticatedAt time.Time
 }
 
@@ -89,7 +96,7 @@ type record struct {
 	tenantID                 string
 	subjectID                string
 	authenticationMethod     auth.AuthenticationMethod
-	assurance                string
+	assurance                Assurance
 	authenticatedAt          time.Time
 	createdAt                time.Time
 	lastActivityAt           time.Time
@@ -142,20 +149,20 @@ func WithClock(clock func() time.Time) Option {
 
 func New(store repository, policy Policy, options ...Option) (*Manager, error) {
 	if store == nil || policy.IdleTimeout <= 0 || policy.AbsoluteLifetime <= 0 ||
-		policy.HighRiskFreshness <= 0 || strings.TrimSpace(policy.HighRiskAssurance) == "" ||
+		policy.HighRiskFreshness <= 0 || strings.TrimSpace(string(policy.HighRiskAssurance)) == "" ||
 		strings.TrimSpace(policy.Revision) == "" || policy.IdleTimeout > policy.AbsoluteLifetime ||
 		len(policy.ActionRisks) == 0 {
 		return nil, ErrInvalid
 	}
 	if len(policy.EstablishmentAssurances) == 0 {
-		policy.EstablishmentAssurances = map[auth.AuthenticationMethod]string{
+		policy.EstablishmentAssurances = map[auth.AuthenticationMethod]Assurance{
 			auth.AuthenticationMethodFederated: policy.HighRiskAssurance,
 		}
 	}
 	highRiskMethodConfigured := false
 	for method, assurance := range policy.EstablishmentAssurances {
 		if (method != auth.AuthenticationMethodLocal && method != auth.AuthenticationMethodFederated) ||
-			strings.TrimSpace(assurance) == "" || assurance != strings.TrimSpace(assurance) {
+			strings.TrimSpace(string(assurance)) == "" || string(assurance) != strings.TrimSpace(string(assurance)) {
 			return nil, ErrInvalid
 		}
 		if assurance == policy.HighRiskAssurance {
@@ -240,8 +247,8 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 	return Credential{Token: token, ExpiresAt: expiresAt}, nil
 }
 
-func cloneAssurances(source map[auth.AuthenticationMethod]string) map[auth.AuthenticationMethod]string {
-	result := make(map[auth.AuthenticationMethod]string, len(source))
+func cloneAssurances(source map[auth.AuthenticationMethod]Assurance) map[auth.AuthenticationMethod]Assurance {
+	result := make(map[auth.AuthenticationMethod]Assurance, len(source))
 	for method, assurance := range source {
 		result[method] = assurance
 	}

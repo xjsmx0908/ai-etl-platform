@@ -337,9 +337,9 @@ func TestHandleReauthenticationStartRejectsIneligibleRequests(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			assurance := "demo-mfa"
+			assurance := session.AssuranceDemoMFA
 			if test.method == auth.AuthenticationMethodLocal {
-				assurance = "local-password"
+				assurance = session.AssuranceLocalPassword
 			}
 			credential, err := sessions.Establish(context.Background(), session.EstablishCommand{
 				Principal: auth.Principal{TenantID: user.TenantID, SubjectID: user.ID, AuthenticationMethod: test.method},
