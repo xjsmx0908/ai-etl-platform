@@ -10,6 +10,10 @@
 引用、适用环境、批准时间和到期时间前，不开始 F～I 运行代码实现，不连接真实 IdP，
 也不执行 staging 或 production 晋级。
 
+个人演示使用独立的 [Personal Demo Profile](personal-demo-identity-profile.md)：其中的
+`DemoApproved` 只允许编写默认关闭的本地实现和测试，不更新本表状态，也不满足任何
+企业 gate。运行时和验收证据必须区分两种 profile，禁止把 demo 结果提升为企业批准。
+
 ## 状态、证据与变更规则
 
 - `Pending`：尚无可审批方案；可转为 `Proposed`。`Proposed` 已有候选值和风险说明，

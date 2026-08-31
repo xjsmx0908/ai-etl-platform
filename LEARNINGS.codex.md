@@ -1096,3 +1096,14 @@ This file is an append-only record of completed PRAR cycles.
   README、架构、技术设计和 backlog，保持运行代码、真实接入与 production 不变。
 - 改进：只有全部所需责任人签署同一未过期 revision 才能解锁既定实现顺序；推荐基线、
   部分签署或合并本文档都不能被自动解释为 `Approved`。
+
+## 2026-08-31 - P2.5 个人演示身份策略
+
+- 感知：用户目标是个人演示；仓库已有 Keycloak 26.3.3 OIDC 接缝测试，但主 Compose
+  未内置 Keycloak，F～I 运行模块也尚未实现，不能把设计值描述为已运行能力。
+- 推理：个人所有者可以批准本地实现参数，却无法提供真实企业的职责分离、法务、SOC
+  或业务连续性签署。独立 `DemoApproved` namespace 可以继续实现而不污染企业证据。
+- 行动：为 E～I 的 51 项设定 Keycloak/虚构数据的具体 demo 值，建立 PD0～PD3 gate，
+  保持企业 D0～D7 blocked，并定义不接管登录流的 P2.5-F1 会话核心 TDD 切片。
+- 改进：demo/simulation 必须在配置、UI、报告和证据中显式标记；staging/production
+  拒绝 demo profile，真实 secret 仍只进入 ignored 文件或 secret mount。

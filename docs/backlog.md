@@ -616,6 +616,18 @@ P2.5 企业决策登记与实现准入（2026-08-31 已批准计划）：
 5. 后续独立实现登记 validator 和 CI 门禁；在此之前自动准入保持关闭，不声称文档
    状态已被机器强制。评审[企业身份决策登记与实现准入](enterprise-identity-decision-register.md)。
 
+P2.5 个人演示身份策略与实现准入（2026-08-31 已批准计划）：
+
+1. 建立 `personal-demo-v1`，由仓库所有者以 Demo Owner 身份批准 E～I 的 51 项本地
+   实现值；使用 Keycloak 26.3.3、虚构 tenant/用户/组/workload 和 ignored secrets。
+2. 状态使用独立 `DemoApproved`，不修改企业 51 项 `Pending` 或 D0～D7 `Blocked`；
+   demo 结果不能进入企业 2.0 manifest，也不能解锁 staging/production。
+3. PD0 只解锁 default-off 的本地代码和确定性测试；Keycloak realm、虚构资产、清理
+   可重复且 secret 安全配置完成前，PD2 本地运行继续 blocked。
+4. 将 P2.5-F1 定为首个 TDD 实现切片：会话数据模型与 provider-neutral 核心；先不
+   接管现有 JWT/Cookie、OIDC 登录、生产配置或部署。
+5. 评审[个人演示身份策略](personal-demo-identity-profile.md)，通过后另提 F1 代码 PR。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

@@ -333,3 +333,14 @@ canonical payload digest 及逐责任人 detached signatures。风险接受项�
 过期的不可变 policy revision。当前全部 gate 为 blocked；本文阶段不选择 IdP、不创建
 凭据、不连接外部 tenant，也不修改 F～J 运行代码。全部 Pending 输入完成企业签署后，
 首个实现切片按既定顺序从 P2.5-F 会话数据结构与 provider-neutral seam 开始。
+
+个人演示的 51 项实现参数另见
+[个人演示身份策略](personal-demo-identity-profile.md)。其 `personal-demo-v1` revision
+只适用于虚构资产和本机 `ENVIRONMENT=dev`，企业登记仍全部 Pending。`DemoApproved` profile
+只允许 default-off 的实现/测试，staging/production 必须拒绝该 profile，企业 manifest
+也不得接收 demo/simulation 结果。
+
+P2.5-F1 首个实现 PR 新增会话 migration 和 `internal/session` 核心，以注入 clock 的
+`Establish`、`Authenticate`、`Revoke` 隐藏到期、轮换、撤销和失败关闭。该切片不接管
+现有 JWT/Cookie 或 OIDC 登录；通过空闲/绝对到期、重放、并发、逐会话/全会话撤销及
+存储故障测试后，再分别接入凭据、认证保证/重新认证、退出和 demo 迁移。
