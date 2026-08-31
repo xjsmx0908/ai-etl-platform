@@ -344,3 +344,13 @@ P2.5-F1 首个实现 PR 新增会话 migration 和 `internal/session` 核心，�
 `Establish`、`Authenticate`、`Revoke` 隐藏到期、轮换、撤销和失败关闭。该切片不接管
 现有 JWT/Cookie 或 OIDC 登录；通过空闲/绝对到期、重放、并发、逐会话/全会话撤销及
 存储故障测试后，再分别接入凭据、认证保证/重新认证、退出和 demo 迁移。
+
+实现使用 `0021_platform_sessions` 保存 credential SHA-256，而非 bearer 明文；记录只含
+内部 user/tenant 定位和认证状态，不复制 role/capabilities。PostgreSQL adapter 对活动
+更新和 credential replacement 使用 generation CAS；并发撤销/轮换的 CAS miss 直接
+deny，数据库故障返回 unavailable。当前/主体撤销都要求非空 correlation ID，并与
+撤销状态在同一 PostgreSQL 操作中持久化；建立/轮换也要求 correlation ID。重新认证
+只轮换 credential 和认证时间，不重置最初创建时间或绝对到期。主体撤销、新建和轮换
+通过内部用户行锁串行，并由 `revoked_before` 水位拒绝撤销前的旧认证证据。模块尚未在
+Query API 构造，配置也保持默认关闭，
+且仅允许 `ENVIRONMENT=dev` + `personal-demo-v1`，因此本切片不改变任何现有请求路径。

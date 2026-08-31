@@ -628,6 +628,24 @@ P2.5 个人演示身份策略与实现准入（2026-08-31 已批准计划）：
    接管现有 JWT/Cookie、OIDC 登录、生产配置或部署。
 5. 评审[个人演示身份策略](personal-demo-identity-profile.md)，通过后另提 F1 代码 PR。
 
+P2.5-F1 会话核心（2026-08-31 已实现并验证，待 PR 评审）：
+
+1. 新增 `0021_platform_sessions` migration，只保存 credential SHA-256、内部 user/tenant、
+   认证方法/保证/时间、到期、generation、撤销、策略 revision 和最小 correlation；不
+   保存 provider token/subject、密码、role 或 capabilities。
+2. 通过 `session.Manager` 的 `Establish`、`Authenticate`、`Revoke` 深层 seam 实现
+   随机不透明 credential、空闲/绝对到期、风险动作重新认证、原子轮换和撤销。
+3. PostgreSQL adapter 使用 generation CAS 更新活动和轮换；读取/写入故障失败关闭，
+   读取后并发撤销导致 CAS miss 时返回 deny，旧 credential 不得重放。主体撤销、新建和
+   轮换串行锁定内部用户，并以 `revoked_before` 拒绝撤销前的旧认证证据，防止并发逃逸。
+4. `SESSION_CORE_ENABLED` 默认关闭；仅 `ENVIRONMENT=dev` 与
+   `IDENTITY_POLICY_PROFILE=personal-demo-v1` 可通过配置校验。本切片不在 main 构造
+   模块、不接管 JWT/Cookie/OIDC，也不改变部署或企业 gate。
+5. 以 public seam 的 red→green 测试覆盖建立/认证、到期边界、重新认证、逐会话/主体
+   撤销、轮换重放、存储故障、并发 CAS、migration 与配置门禁；真实 PostgreSQL
+   生命周期测试还验证摘要存储、轮换不延长绝对寿命、主体撤销、撤销 correlation
+   持久化，以及并发建立无法越过主体撤销水位。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

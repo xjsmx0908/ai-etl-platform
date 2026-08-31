@@ -284,6 +284,34 @@ func TestIdentityLifecycleMigrationCarriesProvisioningInvariants(t *testing.T) {
 	}
 }
 
+func TestPlatformSessionsMigrationCarriesSessionSecurityInvariants(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0021_platform_sessions.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"CREATE TABLE platform_session_subject_states", "revoked_before TIMESTAMPTZ NOT NULL",
+		"CREATE TABLE platform_sessions", "credential_digest BYTEA NOT NULL UNIQUE",
+		"octet_length(credential_digest) = 32", "internal_user_id UUID NOT NULL",
+		"FOREIGN KEY (internal_user_id, tenant_id)", "authentication_method",
+		"assurance_level", "authenticated_at", "last_activity_at",
+		"absolute_expires_at", "revoked_at", "revocation_reason",
+		"established_correlation_id TEXT NOT NULL", "established_correlation_id <> ''",
+		"revoked_correlation_id",
+		"generation BIGINT", "policy_revision", "platform_sessions_subject_active_idx",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("platform session migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"password", "access_token", "refresh_token", "external_subject", "capabilities", " role "} {
+		if strings.Contains(strings.ToLower(sql), forbidden) {
+			t.Fatalf("platform session migration contains forbidden permission or provider data %q", forbidden)
+		}
+	}
+}
+
 // TestApplyAll_Unapplied runs migrations against a mock connection that reports
 // every migration as unapplied, and asserts each one is applied in a transaction
 // and recorded in schema_migrations.
