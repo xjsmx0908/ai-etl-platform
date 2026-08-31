@@ -11,6 +11,18 @@ import (
 // but its authentication evidence is too old for the requested operation.
 var ErrReauthenticationRequired = errors.New("reauthentication required")
 
+type ReauthenticationRequiredError struct {
+	Action string
+}
+
+func (e ReauthenticationRequiredError) Error() string {
+	return ErrReauthenticationRequired.Error()
+}
+
+func (e ReauthenticationRequiredError) Unwrap() error {
+	return ErrReauthenticationRequired
+}
+
 // AuthenticationMethod identifies how an internal principal authenticated.
 // Authorization never derives tenant, role, or capabilities from this value.
 type AuthenticationMethod string

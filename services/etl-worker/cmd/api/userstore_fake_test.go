@@ -12,11 +12,12 @@ import (
 
 // fakeUserStore is an in-memory userstore.Store for handler-level tests.
 type fakeUserStore struct {
-	mu      sync.Mutex
-	byName  map[string]userstore.User // key: lower(username)
-	byID    map[string]userstore.User
-	tenants map[string]bool
-	nextID  int
+	mu         sync.Mutex
+	byName     map[string]userstore.User // key: lower(username)
+	byID       map[string]userstore.User
+	tenants    map[string]bool
+	nextID     int
+	getByIDErr error
 }
 
 func newFakeUserStore() *fakeUserStore {
@@ -40,6 +41,9 @@ func (f *fakeUserStore) GetByUsername(_ context.Context, username string) (users
 func (f *fakeUserStore) GetByID(_ context.Context, id string) (userstore.User, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.getByIDErr != nil {
+		return userstore.User{}, false, f.getByIDErr
+	}
 	u, ok := f.byID[id]
 	return u, ok, nil
 }

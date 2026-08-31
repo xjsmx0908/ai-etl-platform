@@ -139,6 +139,9 @@ func TestSessionCredentialAuthenticatorRequiresReauthenticationForStaleHighRiskR
 	if response["error"] != "reauthentication_required" {
 		t.Fatalf("unexpected response: %+v", response)
 	}
+	if response["action"] != identityBindingChangeAction {
+		t.Fatalf("response action=%q, want %q", response["action"], identityBindingChangeAction)
+	}
 }
 
 func TestSessionCredentialAuthenticatorClassifiesApprovedHighRiskOperations(t *testing.T) {

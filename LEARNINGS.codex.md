@@ -1162,3 +1162,21 @@ This file is an append-only record of completed PRAR cycles.
 - 审查修正：事务过期必须与 Memory/Redis adapter 使用同一真实时钟域，不能误用仅供 token
   测试的注入时钟；`auth_time` 的批准证据不接受任何未来值。公共 OIDC transaction builder
   和集中 demo evidence 常量同时消除了普通/重新认证流程及两层证据校验的策略漂移。
+
+## 2026-08-31 - P2.5-F3c HTTP 重新认证与原子会话轮换
+
+- 感知：F3a challenge、F3b transaction 和 session 原子 rotation 都已存在，但没有一条
+  HTTP/Cookie 路径把三者连接起来；另建浏览器 callback 会与 token exchange 的既有
+  redirect URI 不一致。
+- 推理：服务端风险分类应随结构化 challenge 返回，Web 不复制策略。普通登录与重新认证
+  复用唯一 OIDC callback URL，用路径受限的独立 state Cookie 分流，并保持后端 handler 独立。
+- 行动：以 Query API public HTTP seam 的 red→green 测试实现 eligible start、可信 callback、
+  实时用户校验、CAS rotation、重放/并发拒绝及脱敏审计；Web BFF 增加显式同源 POST、
+  Secure/HttpOnly state 与主 Cookie 编排，客户端只跳转而不自动重放写操作。
+- 改进：callback 在 middleware 的 standard action 下验证当前 credential，避免陈旧会话无法
+  到达恢复入口；真正的 high-risk action 仍在 handler/transaction 内核对。真实 Next server
+  与 mock backend 验证了跨站 403、成功 Cookie rotation，以及失败只清 state 不改旧 session。
+- 审查修正：callback 必须按回传 state 与 reauth-state Cookie 相等来分流，不能仅凭 Cookie
+  存在，否则遗留 Cookie 会劫持普通登录。将源码字符串断言升级为 production build 的真实
+  HTTP 测试，并补齐 state/credential 漂移、IdP/Redis/PostgreSQL 故障、安全 return path；
+  start/completion/failure 审计均只保存 state 的 SHA-256 correlation，不保存原始 state。

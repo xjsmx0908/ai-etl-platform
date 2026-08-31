@@ -47,10 +47,37 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   }
 
   if (!resp.ok) {
+    const errorCode =
+      data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
+        ? (data as { error: string }).error
+        : "";
+    const reauthenticationAction =
+      data && typeof data === "object" && typeof (data as { action?: unknown }).action === "string"
+        ? (data as { action: string }).action
+        : "";
     const message =
       data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
         ? ((data as { error: string }).error as string)
         : `请求失败: ${resp.status}`;
+    if (
+      resp.status === 401 &&
+      errorCode === "reauthentication_required" &&
+      reauthenticationAction &&
+      typeof window !== "undefined"
+    ) {
+      const returnTo = `${window.location.pathname}${window.location.search}`;
+      const start = await fetch("/api/auth/reauth/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: reauthenticationAction, return_to: returnTo }),
+      });
+      const startData = (await start.json().catch(() => null)) as { authorization_url?: unknown } | null;
+      if (start.ok && typeof startData?.authorization_url === "string") {
+        window.location.assign(startData.authorization_url);
+        throw new Error("reauthentication_required");
+      }
+      throw new Error("reauthentication_unavailable");
+    }
     if (resp.status === 401 && redirectOn401) {
       clearUser();
       if (typeof window !== "undefined") window.location.replace("/login");

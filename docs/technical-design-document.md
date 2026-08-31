@@ -390,3 +390,21 @@ OIDC adapter 只在 `AuthenticateWithEvidence` 中解释提供方声明。个人
 F3b 仍是未装配的事务核心：不注册 HTTP 路由、不改 Web Cookie、不调用
 `session.Manager.Establish` 轮换 `ps1_` credential，也不启用 logout、Compose 或生产配置。
 后续 F3c 负责将成功结果与原会话的原子 credential rotation、callback 和 Cookie 更新编排。
+
+P2.5-F3c 在 Query API 增加受 session middleware 保护的 reauthentication start/callback
+handler。中间件只把服务端分类的 high-risk action 加入 `401 reauthentication_required`；
+前端不复制 method/path 风险矩阵。start handler 只接受当前有效、联邦、达到 freshness
+边界的 `ps1_`，实时检查内部用户后调用 F3b Flow。JWT、本地、新鲜、撤销/到期 credential
+以及 standard/未知 action 都不能生成 transaction。
+
+callback 复用普通登录的 OIDC redirect URI，但只在 callback state 与独立 HttpOnly
+reauth-state Cookie 匹配时进入重新认证分支；遗留或不匹配的 Cookie 不得劫持普通登录。
+Query API 先完成 F3b transaction，再验证 action 仍为已登记 high-risk、用户仍 active 且
+tenant 未变，最后以 `session.Manager.Establish(ReplacesCredential)` 原子 CAS 轮换；成功
+只返回新的版本化 `ps1_`、绝对到期、action 和安全 return path。审计 correlation 使用
+state SHA-256，日志不保存 state、code、bearer 或 provider claims。
+
+Web BFF 只接受 Origin host/protocol 与请求一致且 `Sec-Fetch-Site=same-origin` 的 POST
+start。成功 callback 才覆盖 `ai_etl_token`，Cookie 为 Secure/HttpOnly/SameSite=Lax，寿命
+取 30 分钟与后端绝对剩余寿命的较小值；所有失败仅清 reauth state，不改原 credential。
+客户端跳转 IdP，但回调后不自动重放原有写操作，用户必须重新确认。

@@ -689,6 +689,21 @@ P2.5-F3b 可信认证证据与单次重新认证事务核心（2026-08-31 已实
 5. F3b 尚不连接 HTTP callback，不签发或轮换 `ps1_` credential，也不修改 Cookie、logout、
    Compose 或 production。F3c 再原子轮换会话并完成 Web/API 编排。
 
+P2.5-F3c HTTP 重新认证与会话轮换（2026-08-31 已实现并本地验证，待 PR 评审）：
+
+1. Query API 新增重新认证 start/callback seam；start 只接受当前有效、联邦、版本化 `ps1_`
+   会话，且 action 必须是已登记 high-risk 动作并由 session policy 判定需要重新认证。
+2. callback 使用 F3b 的单次 state/nonce/PKCE transaction，重新核对当前 credential、内部
+   tenant/subject、实时用户 authority 和可信 `demo-mfa` evidence，再通过
+   `session.Manager.Establish(ReplacesCredential=...)` 原子轮换 credential。
+3. Web BFF 只通过明确同源 POST 发起流程，使用独立 HttpOnly reauth-state Cookie；回调成功
+   后才替换 `ai_etl_token`，失败只清理 state，不能删除、刷新或泄露原 session credential。
+4. public HTTP/Cookie 测试覆盖 JWT/本地/新鲜会话、未知或 standard action、state/credential
+   漂移、用户撤权、IdP/Redis/PostgreSQL 故障、并发 callback、重放、安全 return path，
+   以及遗留 reauth Cookie 不劫持普通登录；Web 契约直接运行 production Next HTTP route。
+5. F3c 不自动重放原高风险写请求，不实现 logout，不迁移普通 OIDC/password 登录签发，
+   不修改 staging/production gate；这些能力继续拆为后续独立评审切片。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

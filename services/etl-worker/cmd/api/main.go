@@ -438,6 +438,10 @@ func main() {
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
 	apiV1.Handle("/v1/auth/session", handleCurrentSession(userStore))
+	if oidcFlow != nil && sessionManager != nil {
+		apiV1.Handle("/v1/auth/reauth/start", handleReauthenticationStart(oidcFlow, sessionManager, userStore, auditStore))
+		apiV1.Handle("/v1/auth/reauth/callback", handleReauthenticationCallback(oidcFlow, sessionManager, userStore, auditStore))
+	}
 	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUploadWithAdmission(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, auditStore, admissionStore))))
 	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
