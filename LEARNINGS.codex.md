@@ -1107,3 +1107,17 @@ This file is an append-only record of completed PRAR cycles.
   保持企业 D0～D7 blocked，并定义不接管登录流的 P2.5-F1 会话核心 TDD 切片。
 - 改进：demo/simulation 必须在配置、UI、报告和证据中显式标记；staging/production
   拒绝 demo profile，真实 secret 仍只进入 ignored 文件或 secret mount。
+
+## 2026-08-31 - P2.5-F1 会话核心
+
+- 感知：现有登录签发 24 小时自包含 JWT，没有 session ID、持久状态、空闲到期、
+  认证保证新鲜度、逐会话撤销或轮换；本切片明确不能提前接管登录。
+- 推理：会话模块只拥有认证状态；role/capabilities 仍需从用户与知识目录实时解析。
+  credential 明文只返回调用方，存储保存 SHA-256；generation CAS 关闭撤销竞争窗口。
+- 行动：以 `Establish`/`Authenticate`/`Revoke` public seam 完成 red→green 循环，新增
+  migration、内存/PostgreSQL adapters、到期/重新认证/撤销/轮换和 dev-only 配置门禁；
+  撤销 correlation 与撤销状态在同一存储操作中提交。
+- 改进：区分了有效 red、测试编译错误和意外 green；数据库错误返回 unavailable，而
+  并发安全状态变化返回 deny。审查还识别并修复了重新认证延长绝对寿命、主体撤销与
+  并发建立竞态、建立审计关联可空三项问题；主体锁和 `revoked_before` 水位在真实
+  PostgreSQL 中证明旧认证无法逃逸。模块仍 default-off 且未在 main 构造，不改变现有行为。

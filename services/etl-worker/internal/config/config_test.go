@@ -843,6 +843,37 @@ func TestIsDev(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsSessionCoreOnlyForPersonalDemoDevProfile(t *testing.T) {
+	t.Setenv("SESSION_CORE_ENABLED", "false")
+	t.Setenv("IDENTITY_POLICY_PROFILE", "")
+	cfg := Load()
+	if cfg.SessionCoreEnabled {
+		t.Fatal("session core must default off")
+	}
+
+	cfg.SessionCoreEnabled = true
+	cfg.IdentityPolicyProfile = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("enabled session core must require an explicit profile")
+	}
+	cfg.IdentityPolicyProfile = "personal-demo-v1"
+	cfg.Environment = "dev"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("personal demo dev profile should be accepted: %v", err)
+	}
+	for _, environment := range []string{"staging", "production"} {
+		cfg.Environment = environment
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("%s must reject the personal demo session profile", environment)
+		}
+		cfg.SessionCoreEnabled = false
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("%s must reject the demo profile even when the session core is disabled", environment)
+		}
+		cfg.SessionCoreEnabled = true
+	}
+}
+
 func TestEnvDuration(t *testing.T) {
 	os.Setenv("TEST_DURATION", "5s")
 	defer os.Unsetenv("TEST_DURATION")

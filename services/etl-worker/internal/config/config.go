@@ -221,6 +221,8 @@ type Config struct {
 	SCIMDefaultRole         string
 	SCIMBearerTokens        []string
 	SCIMMaxBodyBytes        int64
+	SessionCoreEnabled      bool
+	IdentityPolicyProfile   string
 	S3Endpoint              string
 	S3AccessKey             string
 	S3SecretKey             string
@@ -418,6 +420,8 @@ func Load() Config {
 		SCIMDefaultRole:         strings.TrimSpace(EnvStr("SCIM_DEFAULT_ROLE", "readonly")),
 		SCIMBearerTokens:        secretCSV("SCIM_BEARER_TOKENS"),
 		SCIMMaxBodyBytes:        int64(EnvInt("SCIM_MAX_BODY_KB", 64)) * 1024,
+		SessionCoreEnabled:      EnvBool("SESSION_CORE_ENABLED", false),
+		IdentityPolicyProfile:   strings.TrimSpace(EnvStr("IDENTITY_POLICY_PROFILE", "")),
 		S3Endpoint:              EnvStr("S3_ENDPOINT", "localhost:9000"),
 		S3AccessKey:             EnvSecret("S3_ACCESS_KEY", "minioadmin"),
 		S3SecretKey:             EnvSecret("S3_SECRET_KEY", "minioadmin"),
@@ -442,6 +446,12 @@ func Load() Config {
 
 // Validate checks required configuration for production environments.
 func (c Config) Validate() error {
+	if c.IdentityPolicyProfile == "personal-demo-v1" && c.Environment != "dev" {
+		return fmt.Errorf("IDENTITY_POLICY_PROFILE=personal-demo-v1 requires ENVIRONMENT=dev")
+	}
+	if c.SessionCoreEnabled && c.IdentityPolicyProfile != "personal-demo-v1" {
+		return fmt.Errorf("SESSION_CORE_ENABLED requires ENVIRONMENT=dev and IDENTITY_POLICY_PROFILE=personal-demo-v1")
+	}
 	if c.Environment == "production" {
 		if c.EmbedAPIKey == "" {
 			return fmt.Errorf("EMBED_API_KEY is required in production")
