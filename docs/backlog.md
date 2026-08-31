@@ -581,6 +581,26 @@ P2.5-I 企业服务与工作负载身份设计（2026-08-30 提议）：
    均为 `Pending`；P2.5-J 必须验证真实轮换、下一请求撤权、委托和最小资源权限。
 8. 评审 [企业服务与工作负载身份设计](enterprise-workload-identity-design.md)。
 
+P2.5-J 提供方适配、权威对账与 staging 验收设计（2026-08-31 提议）：
+
+1. 固定成熟度：A～D 已实现，E 为验收设计，F～I 只有已批准设计。Keycloak 26.3.3
+   仅证明 OIDC code flow 基线；当前不选择 IdP、不连接真实 tenant 或启用 production。
+2. provider 差异仅进入 OIDC、Users/Groups directory、assurance/logout 和 workload
+   credential adapters；tenant、role、session、知识空间和 grant 保持内部权威。
+3. 设计 `identityreconciliation.Run` 深层模块：完整有版本的 Users 快照、双向漂移、
+   dry-run/批准 apply、仅经 `Provisioner.Apply` 修复、lease/fencing、幂等审计及独立
+   last-completed/failed 证据；SCIM mutation 指标不能冒充对账完成。
+4. 对账分页需 snapshot token/watermark，或首尾版本变化即整轮重试；partial/overage/
+   限流失败不生成空集。撤权优先，tuple/tenant/tombstone 冲突隔离而不自动重绑。
+5. staging driver 只调用公开 seam，不能直改数据库；隔离测试 tenant/身份/组/workload
+   与生产分离，默认 dry-run，失败阻止晋级并记录清理结果，仓库不提交真实证据。
+6. 组合矩阵覆盖 OIDC/SCIM lifecycle、权威对账、session、groups、emergency、workload/
+   委托、故障/隐私/轮换/回滚；F～I 未实现项为 blocked，不能标 pass 或跳过。
+7. 升级空证据模板为 2.0，绑定 provider/profile/connector/policy/commit/images、A～J
+   结果、清理、失效触发器和同一 manifest digest 的多方签名。任何 mandatory 非 pass
+   或证据失效均阻止后续 production enablement PR。
+8. 评审 [企业身份提供方适配与 Staging 验收设计](enterprise-identity-provider-staging-design.md)。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

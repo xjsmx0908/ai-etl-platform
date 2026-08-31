@@ -161,6 +161,11 @@ raw IdP group claim 不直接授权，也不推导租户或平台角色。
 [`docs/enterprise-workload-identity-design.md`](docs/enterprise-workload-identity-design.md)。
 机器身份不能复用浏览器会话、伪装用户或继承平台 admin。
 
+选定身份提供方、权威 Users 对账、隔离 staging 组合验收、证据签名与后续生产晋级
+设计见
+[`docs/enterprise-identity-provider-staging-design.md`](docs/enterprise-identity-provider-staging-design.md)。
+当前 Keycloak 结果仅为 OIDC 协议基线，F～I 仍待实现；文档批准不等于生产启用。
+
 ### 6. 评测闭环
 
 ```bash

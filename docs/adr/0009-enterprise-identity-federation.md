@@ -49,6 +49,8 @@ detailed in
 [企业组到知识空间授权设计](../enterprise-group-authorization-design.md)。
 拟议的企业服务与工作负载身份契约详见
 [企业服务与工作负载身份设计](../enterprise-workload-identity-design.md)。
+拟议的选定提供方适配、权威对账与 staging 组合验收契约详见
+[企业身份提供方适配与 Staging 验收设计](../enterprise-identity-provider-staging-design.md)。
 
 The Web BFF retains an HttpOnly, Secure, SameSite session cookie. Local login is
 disabled in the production profile except for a separately controlled,
@@ -110,3 +112,7 @@ P2.5-H 提议权威组快照、租户拥有的稳定组映射和 `knowledgecatal
 P2.5-I 提议独立 workload 注册表、精确 issuer/subject/audience、内部 grant 交集及
 有界异步委托。机器不能伪装用户、复用浏览器 token 或继承 admin；本阶段不签发生产
 凭据，P2.5-J 必须验证真实轮换、撤权、委托和基础设施最小权限。
+
+P2.5-J 提议 provider adapters、`identityreconciliation.Run`、2.0 证据 manifest 和
+隔离 staging 组合验收。A～D 已实现，F～I 仍只有设计；Keycloak 仅为 OIDC 基线。
+所有 Pending 决策、实现和 mandatory 验收签名完成前，不选择或启用生产身份。

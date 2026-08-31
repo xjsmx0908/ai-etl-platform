@@ -300,3 +300,20 @@ grant，绑定发起人、执行 workload、租户、资源、动作和策略修
 实现拆为 Principal/注册表、协议适配器、细粒度 grant、知识空间授权、异步委托、
 内部 HTTP 迁移、基础设施 ACL/TLS 及真实轮换验收。信任域、协议、能力、TTL、审批、
 缓存和迁移值均为 `Pending`；本阶段不签发或启用生产机器凭据。
+
+## P2.5-J 提供方适配、权威对账与 Staging 验收设计
+
+[企业身份提供方适配与 Staging 验收设计](enterprise-identity-provider-staging-design.md)
+把 provider 差异限制在 OIDC、Users/Groups directory、assurance/logout 和 workload
+credential adapters。新增 `identityreconciliation.Run` 深层模块，内部获取一致的
+完整 provider 快照、比较 connector-owned 内部资源、生成/应用批准的 lifecycle 动作，
+并持久化 lease/fencing、幂等计划、审计及独立完成/失败证据。
+
+验收驱动器只调用 provider 管理面和平台公开 seam，不直接修表；2.0 manifest 绑定
+provider profile、connector、policy、commit/images、A～J feature 结果、清理/回滚和
+同一最终 digest 的多方签名。已有 Keycloak 只证明 OIDC 基线，A～D 已实现而 F～I
+仍为设计；blocked/skipped/failed mandatory 项均阻止 production enablement。
+
+实现顺序是先批准 Pending 输入并分别实现 F～I，再实现对账、driver/validator 并运行
+真实隔离 staging。生产启用必须是引用有效签名证据的后续独立 PR，本设计不选择 IdP、
+创建凭据、连接外部 tenant 或部署。

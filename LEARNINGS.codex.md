@@ -1069,3 +1069,14 @@ This file is an append-only record of completed PRAR cycles.
 - 审查修正：委托签发和每次副作用都必须受发起者当前权限与执行器 grant 的交集约束；
   `private_key_jwt` 只认证客户端，必须另用 mTLS/DPoP 绑定 access token，或按 bearer
   例外执行重放防护，不能把它误当成 sender-constrained 证明。
+
+## 2026-08-31 - P2.5-J 提供方适配、权威对账与 Staging 验收设计
+
+- 感知：A～D 已有实现，F～I 仍是设计；Keycloak 运行只证明 OIDC 协议兼容，SCIM
+  mutation success 也不能证明一次 IdP-authoritative 全量对账完成。
+- 推理：provider 差异分别留在协议 adapter，对账复杂性收进单一 `Run` 接口，验收
+  driver 只通过公开 seam 观察，避免 provider payload、修复 SQL 和证据逻辑扩散。
+- 行动：定义完整快照、双向漂移、dry-run/apply、lease/fencing、幂等修复、独立完成/
+  失败指标、隔离 staging 组合矩阵、2.0 manifest 和后续 production PR 门禁。
+- 改进：设计审批、实现完成、staging 验收和生产启用是四个不同状态；blocked/skipped
+  mandatory 项不能包装成 pass，缺少真实企业输入时也不能替用户选择 IdP。

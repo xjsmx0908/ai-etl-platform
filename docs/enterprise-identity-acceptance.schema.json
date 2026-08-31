@@ -1,0 +1,420 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-etl.example/schemas/enterprise-identity-acceptance-2.0.json",
+  "title": "Enterprise Identity Acceptance Manifest 2.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision",
+    "acceptance_id",
+    "environment",
+    "provider_profile_revision",
+    "policy_revision",
+    "feature_revisions",
+    "maturity",
+    "provider",
+    "platform",
+    "scores",
+    "approved_policy",
+    "acceptance_results",
+    "reconciliation",
+    "sla_summary",
+    "evidence",
+    "cleanup",
+    "risk_acceptances",
+    "invalidation_triggers",
+    "rollback_rehearsed_at",
+    "rollback_owner_role",
+    "approved_at",
+    "expires_at",
+    "approvals",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "decision": {"enum": ["pending", "approved", "rejected", "expired"]},
+    "acceptance_id": {"type": "string", "maxLength": 128},
+    "environment": {"const": "staging"},
+    "provider_profile_revision": {"type": "string", "maxLength": 256},
+    "policy_revision": {"type": "string", "maxLength": 256},
+    "feature_revisions": {"$ref": "#/$defs/featureRevisions"},
+    "maturity": {"$ref": "#/$defs/maturity"},
+    "provider": {"$ref": "#/$defs/provider"},
+    "platform": {"$ref": "#/$defs/platform"},
+    "scores": {"$ref": "#/$defs/scores"},
+    "approved_policy": {"$ref": "#/$defs/approvedPolicy"},
+    "acceptance_results": {"$ref": "#/$defs/results"},
+    "reconciliation": {"$ref": "#/$defs/reconciliation"},
+    "sla_summary": {"$ref": "#/$defs/sla"},
+    "evidence": {"$ref": "#/$defs/evidence"},
+    "cleanup": {"$ref": "#/$defs/cleanup"},
+    "risk_acceptances": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/riskAcceptance"},
+      "maxItems": 100
+    },
+    "invalidation_triggers": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "rollback_rehearsed_at": {"$ref": "#/$defs/optionalTimestamp"},
+    "rollback_owner_role": {"type": "string", "maxLength": 128},
+    "approved_at": {"$ref": "#/$defs/optionalTimestamp"},
+    "expires_at": {"$ref": "#/$defs/optionalTimestamp"},
+    "approvals": {"$ref": "#/$defs/approvals"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "approved"}}, "required": ["decision"]},
+      "then": {
+        "properties": {
+          "acceptance_id": {"type": "string", "minLength": 1},
+          "provider_profile_revision": {"type": "string", "minLength": 1},
+          "policy_revision": {"type": "string", "minLength": 1},
+          "acceptance_results": {"$ref": "#/$defs/passedResults"},
+          "cleanup": {"$ref": "#/$defs/passedCleanup"},
+          "rollback_rehearsed_at": {"type": "string", "format": "date-time"},
+          "rollback_owner_role": {"type": "string", "minLength": 1},
+          "approved_at": {"type": "string", "format": "date-time"},
+          "expires_at": {"type": "string", "format": "date-time"},
+          "approvals": {"$ref": "#/$defs/completedApprovals"},
+          "signature": {"$ref": "#/$defs/completedSignature"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "optionalTimestamp": {
+      "type": "string",
+      "anyOf": [{"const": ""}, {"format": "date-time"}]
+    },
+    "digest": {
+      "type": "string",
+      "anyOf": [{"const": ""}, {"pattern": "^[a-f0-9]{64}$"}]
+    },
+    "nullableNonnegative": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "revisionMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal", "external_binding", "oidc", "lifecycle", "session", "emergency_access", "group_authorization", "workload_identity", "reconciliation"],
+      "properties": {
+        "principal": {"type": "string"},
+        "external_binding": {"type": "string"},
+        "oidc": {"type": "string"},
+        "lifecycle": {"type": "string"},
+        "session": {"type": "string"},
+        "emergency_access": {"type": "string"},
+        "group_authorization": {"type": "string"},
+        "workload_identity": {"type": "string"},
+        "reconciliation": {"type": "string"}
+      }
+    },
+    "featureRevisions": {"$ref": "#/$defs/revisionMap"},
+    "maturity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p2_5_a_principal", "p2_5_b_external_binding", "p2_5_c_oidc", "p2_5_d_lifecycle", "p2_5_e_acceptance", "p2_5_f_session", "p2_5_g_emergency_access", "p2_5_h_group_authorization", "p2_5_i_workload_identity", "p2_5_j_reconciliation_and_staging"],
+      "properties": {
+        "p2_5_a_principal": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_b_external_binding": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_c_oidc": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_d_lifecycle": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_e_acceptance": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_f_session": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_g_emergency_access": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_h_group_authorization": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_i_workload_identity": {"$ref": "#/$defs/maturityValue"},
+        "p2_5_j_reconciliation_and_staging": {"$ref": "#/$defs/maturityValue"}
+      }
+    },
+    "maturityValue": {"enum": ["not_assessed", "design_approved", "implemented", "staging_passed", "production_enabled"]},
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "version_or_sku", "private_tenant_or_realm_evidence_id", "oidc_issuer", "oidc_profile_sha256", "scim_users_profile_sha256", "scim_groups_profile_sha256", "workload_profile_sha256", "sanitized_configuration_sha256"],
+      "properties": {
+        "product": {"type": "string"},
+        "version_or_sku": {"type": "string"},
+        "private_tenant_or_realm_evidence_id": {"type": "string"},
+        "oidc_issuer": {"type": "string"},
+        "oidc_profile_sha256": {"$ref": "#/$defs/digest"},
+        "scim_users_profile_sha256": {"$ref": "#/$defs/digest"},
+        "scim_groups_profile_sha256": {"$ref": "#/$defs/digest"},
+        "workload_profile_sha256": {"$ref": "#/$defs/digest"},
+        "sanitized_configuration_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "query_api_image_digest", "web_image_digest", "parser_image_digest", "reranker_image_digest", "worker_image_digest", "database_migration_revision"],
+      "properties": {
+        "commit": {"type": "string"},
+        "query_api_image_digest": {"type": "string"},
+        "web_image_digest": {"type": "string"},
+        "parser_image_digest": {"type": "string"},
+        "reranker_image_digest": {"type": "string"},
+        "worker_image_digest": {"type": "string"},
+        "database_migration_revision": {"type": "string"}
+      }
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enterprise_ownership", "oidc_interoperability", "scim_profile_compatibility", "stable_subject_equality", "mfa_session_logout_policy", "group_directory_compatibility", "workload_identity_compatibility", "rotation_and_audit", "availability_residency_cost"],
+      "properties": {
+        "enterprise_ownership": {"$ref": "#/$defs/score"},
+        "oidc_interoperability": {"$ref": "#/$defs/score"},
+        "scim_profile_compatibility": {"$ref": "#/$defs/score"},
+        "stable_subject_equality": {"$ref": "#/$defs/score"},
+        "mfa_session_logout_policy": {"$ref": "#/$defs/score"},
+        "group_directory_compatibility": {"$ref": "#/$defs/score"},
+        "workload_identity_compatibility": {"$ref": "#/$defs/score"},
+        "rotation_and_audit": {"$ref": "#/$defs/score"},
+        "availability_residency_cost": {"$ref": "#/$defs/score"}
+      }
+    },
+    "score": {"type": ["integer", "null"], "minimum": 0, "maximum": 5},
+    "approvedPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connector_id", "internal_tenant_id", "subject_attribute", "default_role", "stored_profile", "provisioning_mode", "group_authority", "group_semantics", "workload_trust_domain", "session_policy_revision", "emergency_policy_revision", "deactivation_sla_seconds", "reconciliation_interval_seconds", "reconciliation_max_staleness_seconds", "group_max_staleness_seconds", "tombstone_retention_days", "credential_rotation_days", "credential_overlap_seconds"],
+      "properties": {
+        "connector_id": {"type": "string"},
+        "internal_tenant_id": {"type": "string"},
+        "subject_attribute": {"type": "string"},
+        "default_role": {"enum": ["readonly", "user"]},
+        "stored_profile": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "provisioning_mode": {"enum": ["scim_only", "approved_jit_fallback"]},
+        "group_authority": {"type": "string"},
+        "group_semantics": {"type": "string"},
+        "workload_trust_domain": {"type": "string"},
+        "session_policy_revision": {"type": "string"},
+        "emergency_policy_revision": {"type": "string"},
+        "deactivation_sla_seconds": {"$ref": "#/$defs/nullableNonnegative"},
+        "reconciliation_interval_seconds": {"$ref": "#/$defs/nullableNonnegative"},
+        "reconciliation_max_staleness_seconds": {"$ref": "#/$defs/nullableNonnegative"},
+        "group_max_staleness_seconds": {"$ref": "#/$defs/nullableNonnegative"},
+        "tombstone_retention_days": {"$ref": "#/$defs/nullableNonnegative"},
+        "credential_rotation_days": {"$ref": "#/$defs/nullableNonnegative"},
+        "credential_overlap_seconds": {"$ref": "#/$defs/nullableNonnegative"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "mandatory", "evidence_id", "sha256", "started_at", "completed_at"],
+      "properties": {
+        "outcome": {"enum": ["not_run", "blocked", "pass", "fail", "skipped"]},
+        "mandatory": {"type": "boolean"},
+        "evidence_id": {"type": "string"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "started_at": {"$ref": "#/$defs/optionalTimestamp"},
+        "completed_at": {"$ref": "#/$defs/optionalTimestamp"}
+      }
+    },
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["oidc_protocol", "create_to_login_identity", "update_and_concurrent_replay", "deactivate_and_session_revocation", "constrained_reactivation", "delete_and_identifier_reuse", "credential_and_jwks_rotation", "authoritative_reconciliation", "session_assurance_and_logout", "group_sync_authorization_and_revocation", "emergency_access_rehearsal", "workload_identity_and_delegation", "dependency_outages", "redaction_audit_and_metrics", "cleanup_and_rollback"],
+      "properties": {
+        "oidc_protocol": {"$ref": "#/$defs/result"},
+        "create_to_login_identity": {"$ref": "#/$defs/result"},
+        "update_and_concurrent_replay": {"$ref": "#/$defs/result"},
+        "deactivate_and_session_revocation": {"$ref": "#/$defs/result"},
+        "constrained_reactivation": {"$ref": "#/$defs/result"},
+        "delete_and_identifier_reuse": {"$ref": "#/$defs/result"},
+        "credential_and_jwks_rotation": {"$ref": "#/$defs/result"},
+        "authoritative_reconciliation": {"$ref": "#/$defs/result"},
+        "session_assurance_and_logout": {"$ref": "#/$defs/result"},
+        "group_sync_authorization_and_revocation": {"$ref": "#/$defs/result"},
+        "emergency_access_rehearsal": {"$ref": "#/$defs/result"},
+        "workload_identity_and_delegation": {"$ref": "#/$defs/result"},
+        "dependency_outages": {"$ref": "#/$defs/result"},
+        "redaction_audit_and_metrics": {"$ref": "#/$defs/result"},
+        "cleanup_and_rollback": {"$ref": "#/$defs/result"}
+      }
+    },
+    "passedResult": {
+      "allOf": [
+        {"$ref": "#/$defs/result"},
+        {
+          "properties": {
+            "outcome": {"const": "pass"},
+            "mandatory": {"const": true},
+            "evidence_id": {"type": "string", "minLength": 1},
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "started_at": {"type": "string", "format": "date-time"},
+            "completed_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "passedResults": {
+      "allOf": [
+        {"$ref": "#/$defs/results"},
+        {
+          "properties": {
+            "oidc_protocol": {"$ref": "#/$defs/passedResult"},
+            "create_to_login_identity": {"$ref": "#/$defs/passedResult"},
+            "update_and_concurrent_replay": {"$ref": "#/$defs/passedResult"},
+            "deactivate_and_session_revocation": {"$ref": "#/$defs/passedResult"},
+            "constrained_reactivation": {"$ref": "#/$defs/passedResult"},
+            "delete_and_identifier_reuse": {"$ref": "#/$defs/passedResult"},
+            "credential_and_jwks_rotation": {"$ref": "#/$defs/passedResult"},
+            "authoritative_reconciliation": {"$ref": "#/$defs/passedResult"},
+            "session_assurance_and_logout": {"$ref": "#/$defs/passedResult"},
+            "group_sync_authorization_and_revocation": {"$ref": "#/$defs/passedResult"},
+            "emergency_access_rehearsal": {"$ref": "#/$defs/passedResult"},
+            "workload_identity_and_delegation": {"$ref": "#/$defs/passedResult"},
+            "dependency_outages": {"$ref": "#/$defs/passedResult"},
+            "redaction_audit_and_metrics": {"$ref": "#/$defs/passedResult"},
+            "cleanup_and_rollback": {"$ref": "#/$defs/passedResult"}
+          }
+        }
+      ]
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "source_watermark_sha256", "snapshot_digest_sha256", "plan_digest_sha256", "snapshot_count", "drift_count", "applied_count", "quarantined_count", "last_attempted_at", "last_completed_at", "last_failed_at"],
+      "properties": {
+        "run_id": {"type": "string"},
+        "source_watermark_sha256": {"$ref": "#/$defs/digest"},
+        "snapshot_digest_sha256": {"$ref": "#/$defs/digest"},
+        "plan_digest_sha256": {"$ref": "#/$defs/digest"},
+        "snapshot_count": {"$ref": "#/$defs/nullableNonnegative"},
+        "drift_count": {"$ref": "#/$defs/nullableNonnegative"},
+        "applied_count": {"$ref": "#/$defs/nullableNonnegative"},
+        "quarantined_count": {"$ref": "#/$defs/nullableNonnegative"},
+        "last_attempted_at": {"$ref": "#/$defs/optionalTimestamp"},
+        "last_completed_at": {"$ref": "#/$defs/optionalTimestamp"},
+        "last_failed_at": {"$ref": "#/$defs/optionalTimestamp"}
+      }
+    },
+    "sla": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deactivation_observed_seconds", "reconciliation_observed_seconds", "missed_run_alert_observed_seconds", "group_revocation_observed_seconds", "workload_revocation_observed_seconds"],
+      "properties": {
+        "deactivation_observed_seconds": {"$ref": "#/$defs/nullableNonnegative"},
+        "reconciliation_observed_seconds": {"$ref": "#/$defs/nullableNonnegative"},
+        "missed_run_alert_observed_seconds": {"$ref": "#/$defs/nullableNonnegative"},
+        "group_revocation_observed_seconds": {"$ref": "#/$defs/nullableNonnegative"},
+        "workload_revocation_observed_seconds": {"$ref": "#/$defs/nullableNonnegative"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_sha256", "decision_matrix_evidence_id", "decision_matrix_sha256", "correlation_index_evidence_id", "cleanup_evidence_id", "rollback_evidence_id"],
+      "properties": {
+        "bundle_sha256": {"$ref": "#/$defs/digest"},
+        "decision_matrix_evidence_id": {"type": "string"},
+        "decision_matrix_sha256": {"$ref": "#/$defs/digest"},
+        "correlation_index_evidence_id": {"type": "string"},
+        "cleanup_evidence_id": {"type": "string"},
+        "rollback_evidence_id": {"type": "string"}
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "test_identities_removed", "test_groups_removed", "test_workloads_revoked", "test_credentials_revoked", "completed_at"],
+      "properties": {
+        "outcome": {"enum": ["not_run", "pass", "fail"]},
+        "test_identities_removed": {"type": "boolean"},
+        "test_groups_removed": {"type": "boolean"},
+        "test_workloads_revoked": {"type": "boolean"},
+        "test_credentials_revoked": {"type": "boolean"},
+        "completed_at": {"$ref": "#/$defs/optionalTimestamp"}
+      }
+    },
+    "passedCleanup": {
+      "allOf": [
+        {"$ref": "#/$defs/cleanup"},
+        {
+          "properties": {
+            "outcome": {"const": "pass"},
+            "test_identities_removed": {"const": true},
+            "test_groups_removed": {"const": true},
+            "test_workloads_revoked": {"const": true},
+            "test_credentials_revoked": {"const": true},
+            "completed_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "riskAcceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["risk_id", "severity", "owner_role", "expires_at", "evidence_id"],
+      "properties": {
+        "risk_id": {"type": "string"},
+        "severity": {"enum": ["low", "medium"]},
+        "owner_role": {"type": "string"},
+        "expires_at": {"format": "date-time", "type": "string"},
+        "evidence_id": {"type": "string"}
+      }
+    },
+    "approvals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity_owner", "tenant_owner", "security_owner", "privacy_or_legal_owner", "operations_owner", "business_owner"],
+      "properties": {
+        "identity_owner": {"type": "string"},
+        "tenant_owner": {"type": "string"},
+        "security_owner": {"type": "string"},
+        "privacy_or_legal_owner": {"type": "string"},
+        "operations_owner": {"type": "string"},
+        "business_owner": {"type": "string"}
+      }
+    },
+    "completedApprovals": {
+      "allOf": [
+        {"$ref": "#/$defs/approvals"},
+        {
+          "properties": {
+            "identity_owner": {"type": "string", "minLength": 1},
+            "tenant_owner": {"type": "string", "minLength": 1},
+            "security_owner": {"type": "string", "minLength": 1},
+            "privacy_or_legal_owner": {"type": "string", "minLength": 1},
+            "operations_owner": {"type": "string", "minLength": 1},
+            "business_owner": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mechanism", "signed_manifest_sha256", "detached_signature_sha256", "signed_at"],
+      "properties": {
+        "mechanism": {"type": "string"},
+        "signed_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "detached_signature_sha256": {"$ref": "#/$defs/digest"},
+        "signed_at": {"$ref": "#/$defs/optionalTimestamp"}
+      }
+    },
+    "completedSignature": {
+      "allOf": [
+        {"$ref": "#/$defs/signature"},
+        {
+          "properties": {
+            "mechanism": {"type": "string", "minLength": 1},
+            "signed_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "detached_signature_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "signed_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    }
+  }
+}

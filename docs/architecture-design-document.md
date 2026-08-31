@@ -162,6 +162,17 @@ grant。`auth.Principal` 显式区分 human/workload；机器使用独立注册�
 initiator、executor workload 和有界 `DelegationGrant`，消息不携带浏览器 token。
 数据库/Kafka/存储及外部模型凭据仍是资源身份，不能转换为平台 Principal。
 
+拟议的 P2.5-J 不创建统一 provider 业务层。OIDC、Users/Groups directory、assurance/
+logout 和 workload credential 差异保留在各自 adapter；内部 tenant、role、session、
+知识空间和能力仍由现有/拟议模块拥有。新增 `identityreconciliation` 深层模块以单一
+`Run` 接口隐藏完整 provider 快照、双向漂移、受控生命周期修复、lease/fencing、
+幂等审计和完成证据。
+
+staging acceptance driver 只跨公开 seam 观察 A～I 组合行为并产出私有证据引用，不能
+直接修改 identity 表或自动启用 production。只有完整 run 才推进 reconciliation
+`last_completed_at`；SCIM mutation success、部分分页或失败尝试都不能伪装为完成。
+F～I 未实现的 mandatory 验收明确为 blocked。
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment
