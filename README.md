@@ -156,6 +156,11 @@ Kafka、进程及存储依赖中断。结果写入 `artifacts/governance-accepta
 [`docs/enterprise-group-authorization-design.md`](docs/enterprise-group-authorization-design.md)。
 raw IdP group claim 不直接授权，也不推导租户或平台角色。
 
+非人类业务客户端、平台内部工作负载、异步委托和基础设施凭据的待审批身份、能力、
+轮换与迁移设计见
+[`docs/enterprise-workload-identity-design.md`](docs/enterprise-workload-identity-design.md)。
+机器身份不能复用浏览器会话、伪装用户或继承平台 admin。
+
 ### 6. 评测闭环
 
 ```bash

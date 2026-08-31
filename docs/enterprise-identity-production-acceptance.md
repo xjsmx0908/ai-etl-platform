@@ -177,8 +177,9 @@ one policy responsibility:
 3. P2.5-H：拟议的租户企业组到知识空间授权、完整快照和撤权契约见
    [企业组到知识空间授权设计](enterprise-group-authorization-design.md)；raw
    provider group 永远不能推导租户或平台角色，P2.5-J 必须保留真实同步证据。
-4. P2.5-I: workload/service identity with distinct audiences, credentials,
-   capabilities, rotation, and no browser session reuse.
+4. P2.5-I：拟议的独立 workload 注册表、audience、凭据、能力、委托和轮换契约见
+   [企业服务与工作负载身份设计](enterprise-workload-identity-design.md)；机器不能
+   复用浏览器会话或继承平台 admin，P2.5-J 必须保留真实凭据与撤权证据。
 5. P2.5-J: selected-provider adapter/configuration, authoritative reconciliation
    with distinct completion evidence, and the staging acceptance run. Production
    enablement and deployment require a later explicit approval.

@@ -47,6 +47,8 @@ detailed in
 [企业紧急访问设计](../enterprise-emergency-access-design.md)。
 拟议的租户企业组到知识空间授权契约详见
 [企业组到知识空间授权设计](../enterprise-group-authorization-design.md)。
+拟议的企业服务与工作负载身份契约详见
+[企业服务与工作负载身份设计](../enterprise-workload-identity-design.md)。
 
 The Web BFF retains an HttpOnly, Secure, SameSite session cookie. Local login is
 disabled in the production profile except for a separately controlled,
@@ -78,6 +80,8 @@ explicit test/evaluation profiles.
   复盘策略；所有人数与数值仍为 `Pending`。
 - 批准 P2.5-H 的组权威来源、稳定 ID、嵌套语义、租户映射审批、同步/撤权
   SLA、缓存和对账策略；所有数值仍为 `Pending`。
+- 批准 P2.5-I 的 workload 信任域、凭据、audience、能力、委托、轮换和基础设施
+  身份迁移策略；所有数值仍为 `Pending`。
 
 ## Acceptance gate
 
@@ -102,3 +106,7 @@ P2.5-J 必须引用仍有效的紧急访问演练证据。
 P2.5-H 提议权威组快照、租户拥有的稳定组映射和 `knowledgecatalog` 当前有效权限
 计算。OIDC raw group claim 不直接授权，组不能选择租户或平台角色；本阶段不启用
 真实组同步，P2.5-J 必须用选定提供方验证分页、overage、撤权和回滚。
+
+P2.5-I 提议独立 workload 注册表、精确 issuer/subject/audience、内部 grant 交集及
+有界异步委托。机器不能伪装用户、复用浏览器 token 或继承 admin；本阶段不签发生产
+凭据，P2.5-J 必须验证真实轮换、撤权、委托和基础设施最小权限。

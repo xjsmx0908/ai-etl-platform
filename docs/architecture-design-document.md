@@ -152,6 +152,16 @@ provider_group_id)` 映射到同租户知识空间的 reader/contributor/manager
 解释。删除一个来源不会误删另一个来源；最后来源撤销、用户/组/空间/连接器停用或
 快照超过批准陈旧窗口后，下一次请求失败关闭。授权结果不进入长寿命平台会话。
 
+拟议的 P2.5-I `workloadidentity` 深层模块在现有 `auth.Authenticator` seam 后验证
+非人类调用方的精确 trust domain/issuer/subject、单一 audience、凭据证明和内部
+grant。`auth.Principal` 显式区分 human/workload；机器使用独立注册表和能力，不能
+创建虚假 user、复用浏览器会话、加入企业组或继承平台 admin。
+
+业务自动化绑定固定租户；平台工作负载绑定固定环境和 platform scope。知识空间使用
+独立 workload grant 且无默认空间。用户触发的 Kafka/Agent 执行同时保留 human
+initiator、executor workload 和有界 `DelegationGrant`，消息不携带浏览器 token。
+数据库/Kafka/存储及外部模型凭据仍是资源身份，不能转换为平台 Principal。
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment

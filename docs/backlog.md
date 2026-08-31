@@ -557,6 +557,30 @@ P2.5-H 企业组到知识空间授权设计（2026-08-30 提议）：
    均为 `Pending`；P2.5-J 必须验证真实分页、overage、撤权、对账和回滚。
 8. 评审 [企业组到知识空间授权设计](enterprise-group-authorization-design.md)。
 
+P2.5-I 企业服务与工作负载身份设计（2026-08-30 提议）：
+
+1. 记录当前事实：仅预留 `AuthenticationMethodService`，没有服务认证器/注册表；用户
+   JWT 无固定 audience，Parser/告警使用共享 token，Reranker 入站未验证，异步执行
+   没有统一的人类发起者、执行 workload 和委托模型。
+2. 设计 `workloadidentity` 深层模块和显式 human/workload Principal。精确 trust
+   domain/issuer/subject、单一 audience 和内部注册 grant 决定能力；provider/cloud
+   claim 只能缩小，机器不能伪装 user、选择租户、继承 admin、组或紧急访问。
+3. 业务 workload 固定租户，平台 workload 固定环境/platform scope；知识空间使用
+   独立 service grant 且必须显式指定空间。数据库/Kafka/存储和供应方凭据只访问对应
+   资源，不能转换为平台 Principal。
+4. 优先短期 sender-constrained mTLS/SPIFFE 或 mTLS/DPoP 绑定的 OAuth token；
+   `private_key_jwt` 不能单独约束 access token，静态/bearer secret 只作有期限迁移
+   例外。每次请求同步校验 workload/grant/credential 修订，泄露时立即撤权。
+5. Kafka/Agent 使用有期限 `DelegationGrant`，绑定 human initiator、executor
+   workload、租户、资源/空间、动作、策略修订和请求摘要；签发与每次副作用都要求
+   委托是发起者当前权限与执行器 grant 交集的子集，消息不携带浏览器 token，
+   workload 不能自审批。
+6. 先资产清单和 shadow，再迁移 Parser/Reranker/告警、业务自动化、异步委托及基础
+   设施 ACL/TLS。回滚不得恢复泄露/过期 secret，也不能放宽 audience/tenant/能力。
+7. 信任域、授权服务器、协议、能力词表、TTL、审批、重放防护、复验频率和证据保留
+   均为 `Pending`；P2.5-J 必须验证真实轮换、下一请求撤权、委托和最小资源权限。
+8. 评审 [企业服务与工作负载身份设计](enterprise-workload-identity-design.md)。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

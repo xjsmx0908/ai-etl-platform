@@ -1055,3 +1055,17 @@ This file is an append-only record of completed PRAR cycles.
   栅栏；跨页目录同步需要 snapshot token/watermark 或首尾版本变化即整轮重试；回滚
   直接成员必须逐条 CAS 且冲突转人工对账；验收补充重新认证、审批分离、重放和即时
   删除/降级测试。
+
+## 2026-08-30 - P2.5-I 企业服务与工作负载身份设计
+
+- 感知：代码只预留 service 认证方法，实际内部链路依赖共享 token 或资源 key；
+  Principal 的 subject 又被普遍当作 user ID，直接接入机器身份会造成身份混淆。
+- 推理：业务 workload、平台 workload、委托执行和资源凭据具有不同授权语义。通过
+  `workloadidentity` 深层模块隐藏协议差异，并让资源模块继续拥有最终授权。
+- 行动：定义 human/workload kind、精确 issuer/subject/audience、内部 grant 交集、
+  同步撤权栅栏、短期 sender-constrained 凭据、轮换及基础设施身份迁移。
+- 改进：异步任务必须同时记录人类发起者、执行 workload 和有界委托；浏览器 token
+  不进入队列，worker 自身身份也不能成为跨租户的永久代理权限。
+- 审查修正：委托签发和每次副作用都必须受发起者当前权限与执行器 grant 的交集约束；
+  `private_key_jwt` 只认证客户端，必须另用 mTLS/DPoP 绑定 access token，或按 bearer
+  例外执行重放防护，不能把它误当成 sender-constrained 证明。
