@@ -120,9 +120,23 @@ export async function GET(req: NextRequest) {
   }
   const data = (await upstream.json()) as {
     token?: unknown;
+    expires_at?: unknown;
     return_to?: unknown;
   };
-  if (typeof data.token !== "string" || !data.token) {
+  const sessionCoreEnabled = process.env.SESSION_CORE_ENABLED === "true";
+  if (
+    typeof data.token !== "string" ||
+    !data.token ||
+    (sessionCoreEnabled && !data.token.startsWith("ps1_")) ||
+    typeof data.expires_at !== "string"
+  ) {
+    const response = NextResponse.redirect(new URL("/login?error=oidc_failed", req.url));
+    clearState(response);
+    return response;
+  }
+  const expiresAt = Date.parse(data.expires_at);
+  const remainingSeconds = Math.floor((expiresAt - Date.now()) / 1000);
+  if (!Number.isFinite(expiresAt) || remainingSeconds <= 0) {
     const response = NextResponse.redirect(new URL("/login?error=oidc_failed", req.url));
     clearState(response);
     return response;
@@ -140,7 +154,7 @@ export async function GET(req: NextRequest) {
     sameSite: "lax",
     secure: true,
     path: "/",
-    maxAge: 24 * 60 * 60,
+    maxAge: sessionCoreEnabled ? Math.min(30 * 60, remainingSeconds) : 24 * 60 * 60,
   });
   clearState(response);
   return response;

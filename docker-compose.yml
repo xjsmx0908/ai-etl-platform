@@ -425,6 +425,8 @@ services:
       - OIDC_CLIENT_SECRET_FILE=/run/secrets/oidc_client_secret
       - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-}
       - OIDC_TRANSACTION_TTL=${OIDC_TRANSACTION_TTL:-5m}
+      - SESSION_CORE_ENABLED=${SESSION_CORE_ENABLED:-false}
+      - IDENTITY_POLICY_PROFILE=${IDENTITY_POLICY_PROFILE:-}
       - SCIM_ENABLED=${SCIM_ENABLED:-false}
       - SCIM_CONNECTOR_ID=${SCIM_CONNECTOR_ID:-}
       - SCIM_TENANT_ID=${SCIM_TENANT_ID:-}
@@ -562,6 +564,7 @@ services:
       # Set true only behind HTTPS; over plain HTTP the Secure flag makes the
       # browser drop the auth cookie and every request 401 back to /login.
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SESSION_CORE_ENABLED: ${SESSION_CORE_ENABLED:-false}
     ports:
       - "${WEB_HOST_PORT:-3100}:3000"
     volumes:

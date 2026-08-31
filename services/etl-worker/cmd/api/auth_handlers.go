@@ -16,7 +16,9 @@ import (
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/db"
 	"ai-etl-pipeline/internal/migrations"
+	"ai-etl-pipeline/internal/session"
 	"ai-etl-pipeline/internal/userstore"
+	"github.com/google/uuid"
 )
 
 func passwordLoginEnabled(cfg config.Config) bool {
@@ -101,11 +103,11 @@ func openPostgres(ctx context.Context, cfg config.Config) (*db.Pool, error) {
 	return migrations.Open(ctx, cfg.PGDSN)
 }
 
-// handleLogin authenticates username + bcrypt password and returns a JWT. It is
-// registered on the outer mux (before the JWT middleware chain) so it can be
-// reached without a token. Unknown usernames pay a dummy bcrypt compare to blunt
-// enumeration. Every attempt (success or failure) is written to the audit log.
-func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store) http.HandlerFunc {
+// handleLogin authenticates username + bcrypt password and returns the configured
+// platform credential. It is registered on the outer mux (before authentication
+// middleware) so it can be reached without a credential. Unknown usernames pay a
+// dummy bcrypt compare to blunt enumeration. Every attempt is written to the audit log.
+func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store, sessions *session.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !passwordLoginEnabled(cfg) {
 			writeError(w, http.StatusNotFound, "password login is unavailable")
@@ -168,11 +170,39 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store) h
 			return
 		}
 
-		token, expiresAt, err := auth.IssueToken(cfg.JWTSecret, user.ID, user.Username, user.Role, user.TenantID, user.TokenVersion)
-		if err != nil {
-			slog.Error("token issuance failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
+		var token string
+		var expiresAt time.Time
+		if sessions != nil {
+			credential, establishErr := sessions.Establish(r.Context(), session.EstablishCommand{
+				Principal: auth.Principal{
+					TenantID: user.TenantID, SubjectID: user.ID,
+					AuthenticationMethod: auth.AuthenticationMethodLocal,
+				},
+				Evidence: session.AuthenticationEvidence{
+					Assurance: "local-password", AuthenticatedAt: time.Now().UTC(),
+				},
+				CorrelationID: "password-login:" + uuid.NewString(),
+			})
+			if establishErr != nil {
+				slog.Error("platform session issuance failed", "error", establishErr)
+				recordAudit(r.Context(), audits, audit.Entry{
+					TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,
+					Action: "login", Result: audit.ResultFailure,
+					Detail: map[string]any{"username": user.Username, "reason": "session_unavailable"},
+				})
+				writeError(w, http.StatusServiceUnavailable, "login unavailable")
+				return
+			}
+			token = platformSessionCredentialPrefix + credential.Token
+			expiresAt = credential.ExpiresAt
+		} else {
+			var issueErr error
+			token, expiresAt, issueErr = auth.IssueToken(cfg.JWTSecret, user.ID, user.Username, user.Role, user.TenantID, user.TokenVersion)
+			if issueErr != nil {
+				slog.Error("token issuance failed", "error", issueErr)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
 		}
 		recordAudit(r.Context(), audits, audit.Entry{
 			TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,

@@ -114,6 +114,29 @@ func TestLegacyAuthenticateDoesNotRequireReauthenticationEvidence(t *testing.T) 
 	}
 }
 
+func TestCompleteLoginWithEvidenceReturnsApprovedEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 31, 19, 30, 0, 0, time.UTC)
+	var expectedNonce string
+	authenticator := reauthenticationAuthenticator(t, now, &expectedNonce, auth.Principal{
+		TenantID: "tenant-a", SubjectID: "user-42", AuthenticationMethod: auth.AuthenticationMethodFederated,
+	})
+	flow := oidcauth.NewFlow(authenticator, oidcauth.NewMemoryTransactionStore(), 5*time.Minute)
+	start, err := flow.Start(context.Background(), "/documents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(start.AuthorizationURL)
+	expectedNonce = parsed.Query().Get("nonce")
+	result, returnTo, err := flow.CompleteLoginWithEvidence(context.Background(), start.State, start.State, "code-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Principal.SubjectID != "user-42" || result.Evidence.Assurance != "demo-mfa" ||
+		!result.Evidence.AuthenticatedAt.Equal(now.Add(-time.Minute)) || returnTo != "/documents" {
+		t.Fatalf("unexpected result=%+v return_to=%q", result, returnTo)
+	}
+}
+
 func evidenceAuthenticator(t *testing.T, now time.Time, acr, amr, authTime any) *oidcauth.Authenticator {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

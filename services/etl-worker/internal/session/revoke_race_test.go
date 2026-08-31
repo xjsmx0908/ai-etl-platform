@@ -17,7 +17,7 @@ func TestSubjectRevokeRejectsCredentialRevokedAtAtomicStoreSeam(t *testing.T) {
 	}}
 	manager, err := New(store, Policy{
 		IdleTimeout: 30 * time.Minute, AbsoluteLifetime: 8 * time.Hour,
-		HighRiskFreshness: 10 * time.Minute, RequiredAssurance: "demo-mfa",
+		HighRiskFreshness: 10 * time.Minute, HighRiskAssurance: "demo-mfa",
 		ActionRisks: map[string]Risk{"knowledge.query": RiskStandard}, Revision: "personal-demo-v1",
 	}, WithClock(func() time.Time { return now }))
 	if err != nil {

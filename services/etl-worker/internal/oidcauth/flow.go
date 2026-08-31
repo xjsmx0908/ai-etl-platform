@@ -107,12 +107,22 @@ func NewFlow(authenticator *Authenticator, transactions TransactionStore, ttl ti
 }
 
 func (f *Flow) Start(ctx context.Context, returnTo string) (BrowserStart, error) {
+	return f.startLogin(ctx, returnTo, nil)
+}
+
+func (f *Flow) StartLoginWithAssurance(ctx context.Context, returnTo string) (BrowserStart, error) {
+	return f.startLogin(ctx, returnTo, url.Values{
+		"prompt": {"login"}, "max_age": {"0"}, "acr_values": {demoACR},
+	})
+}
+
+func (f *Flow) startLogin(ctx context.Context, returnTo string, extraQuery url.Values) (BrowserStart, error) {
 	if f == nil || f.authenticator == nil || f.transactions == nil || f.ttl <= 0 || f.ttl > 15*time.Minute {
 		return BrowserStart{}, ErrInvalidTransaction
 	}
 	return f.startBrowserTransaction(ctx, browserTransaction{
 		ReturnTo: safeReturnPath(returnTo), ExpiresAt: time.Now().Add(f.ttl),
-	}, nil)
+	}, extraQuery)
 }
 
 func (f *Flow) startBrowserTransaction(ctx context.Context, transaction browserTransaction, extraQuery url.Values) (BrowserStart, error) {
@@ -183,21 +193,36 @@ func (f *Flow) StartReauthentication(ctx context.Context, command Reauthenticati
 }
 
 func (f *Flow) Complete(ctx context.Context, cookieState, callbackState, code string) (auth.Principal, string, error) {
+	result, returnTo, err := f.completeLogin(ctx, cookieState, callbackState, code, false)
+	return result.Principal, returnTo, err
+}
+
+func (f *Flow) CompleteLoginWithEvidence(ctx context.Context, cookieState, callbackState, code string) (AuthenticationResult, string, error) {
+	return f.completeLogin(ctx, cookieState, callbackState, code, true)
+}
+
+func (f *Flow) completeLogin(ctx context.Context, cookieState, callbackState, code string, requireEvidence bool) (AuthenticationResult, string, error) {
 	if f == nil || f.authenticator == nil || f.transactions == nil || cookieState == "" || callbackState == "" || code == "" ||
 		len(cookieState) != len(callbackState) || subtle.ConstantTimeCompare([]byte(cookieState), []byte(callbackState)) != 1 {
-		return auth.Principal{}, "", ErrInvalidTransaction
+		return AuthenticationResult{}, "", ErrInvalidTransaction
 	}
 	transaction, err := f.transactions.Consume(ctx, cookieState)
 	if err != nil || transaction.Reauthentication {
-		return auth.Principal{}, "", ErrInvalidTransaction
+		return AuthenticationResult{}, "", ErrInvalidTransaction
 	}
-	principal, err := f.authenticator.Authenticate(ctx, CodeExchange{
+	exchange := CodeExchange{
 		Code: code, CodeVerifier: transaction.CodeVerifier, Nonce: transaction.Nonce,
-	})
-	if err != nil {
-		return auth.Principal{}, "", err
 	}
-	return principal, transaction.ReturnTo, nil
+	var result AuthenticationResult
+	if requireEvidence {
+		result, err = f.authenticator.AuthenticateWithEvidence(ctx, exchange)
+	} else {
+		result.Principal, err = f.authenticator.Authenticate(ctx, exchange)
+	}
+	if err != nil {
+		return AuthenticationResult{}, "", err
+	}
+	return result, transaction.ReturnTo, nil
 }
 
 func (f *Flow) CompleteReauthentication(ctx context.Context, command ReauthenticationCompleteCommand) (ReauthenticationResult, error) {

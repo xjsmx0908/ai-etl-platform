@@ -62,6 +62,8 @@ class ReauthenticationWebContractTests(unittest.TestCase):
                 "BACKEND_URL": f"http://127.0.0.1:{cls.backend.server_port}",
                 "HOSTNAME": "127.0.0.1",
                 "PORT": str(cls.web_port),
+                "SESSION_CORE_ENABLED": "true",
+                "COOKIE_SECURE": "true",
             }
         )
         cls.web = subprocess.Popen(
@@ -196,14 +198,43 @@ class ReauthenticationWebContractTests(unittest.TestCase):
                 self.assertFalse(any(value.startswith("ai_etl_token=") for value in cookies))
 
     def test_stale_reauth_cookie_does_not_hijack_ordinary_oidc_callback(self):
-        MockBackendHandler.responses.append((200, {"token": "login-token", "return_to": "/documents"}))
+        MockBackendHandler.responses.append(
+            (200, {"token": "ps1_login", "expires_at": "2099-01-01T00:00:00Z", "return_to": "/documents"})
+        )
         status, headers, _ = self.request(
             "GET", "/api/auth/oidc/callback?code=login-code&state=login-state",
             cookie="ai_etl_reauth_state=abandoned-state; ai_etl_oidc_state=login-state", same_origin=None,
         )
         self.assertEqual(307, status)
         self.assertEqual("/v1/auth/oidc/callback", MockBackendHandler.requests[0][0])
-        self.assertTrue(any(value.startswith("ai_etl_token=login-token") for value in self.cookies(headers)))
+        self.assertTrue(any(value.startswith("ai_etl_token=ps1_login") for value in self.cookies(headers)))
+
+    def test_password_login_sets_bounded_platform_session_cookie(self):
+        MockBackendHandler.responses.append(
+            (200, {"token": "ps1_password", "expires_at": "2099-01-01T00:00:00Z", "user": {"id": "user-1"}})
+        )
+        status, headers, payload = self.request(
+            "POST", "/api/auth/login", body={"username": "alice", "password": "secret"}, same_origin=None,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual({"id": "user-1"}, json.loads(payload)["user"])
+        cookies = self.cookies(headers)
+        self.assertEqual(1, len(cookies))
+        for attribute in ("ai_etl_token=ps1_password", "Path=/", "Max-Age=1800", "HttpOnly", "Secure", "SameSite=lax"):
+            self.assertIn(attribute, cookies[0])
+
+    def test_login_routes_reject_non_session_or_expired_response_without_cookie(self):
+        cases = (
+            ("POST", "/api/auth/login", {"token": "legacy-jwt", "expires_at": "2099-01-01T00:00:00Z"}, None),
+            ("GET", "/api/auth/oidc/callback?code=code-1&state=oidc-state", {"token": "ps1_expired", "expires_at": "2000-01-01T00:00:00Z"}, "ai_etl_oidc_state=oidc-state"),
+        )
+        for method, path, backend_payload, cookie in cases:
+            with self.subTest(path=path):
+                MockBackendHandler.responses.append((200, backend_payload))
+                body = {"username": "alice", "password": "secret"} if method == "POST" else None
+                status, headers, _ = self.request(method, path, body=body, cookie=cookie, same_origin=None)
+                self.assertIn(status, (307, 502))
+                self.assertFalse(any(value.startswith("ai_etl_token=") for value in self.cookies(headers)))
 
 
 if __name__ == "__main__":

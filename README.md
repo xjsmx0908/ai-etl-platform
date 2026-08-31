@@ -166,8 +166,9 @@ subject、action 的 state/nonce/PKCE 一次性事务；普通与重新认证事
 运行登录行为保持不变。P2.5-F3c 已接入受保护的 Query API start/callback 和 Web BFF：
 陈旧联邦 `ps1_` 在可信重新认证后原子轮换，跨站 start 被拒绝，成功才更新最长 30 分钟的
 Secure/HttpOnly Cookie，失败保留旧 credential；callback state 必须匹配独立 reauth Cookie，
-遗留 Cookie 不会劫持普通登录。普通登录仍不签发 `ps1_`，因此完整 demo
-迁移尚未启用。
+遗留 Cookie 不会劫持普通登录。P2.5-F4 在同一 dev/demo 门禁下把 password 和 OIDC
+初始登录迁移为 `ps1_`：password 只具备 `local-password` 普通操作保证，OIDC 必须验证
+Keycloak `demo-mfa`；Web Cookie 最长 30 分钟。门禁关闭仍保留现有 JWT 行为。
 
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。

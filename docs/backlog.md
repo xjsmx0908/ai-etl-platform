@@ -689,7 +689,7 @@ P2.5-F3b 可信认证证据与单次重新认证事务核心（2026-08-31 已实
 5. F3b 尚不连接 HTTP callback，不签发或轮换 `ps1_` credential，也不修改 Cookie、logout、
    Compose 或 production。F3c 再原子轮换会话并完成 Web/API 编排。
 
-P2.5-F3c HTTP 重新认证与会话轮换（2026-08-31 已实现并本地验证，待 PR 评审）：
+P2.5-F3c HTTP 重新认证与会话轮换（2026-08-31 已合并）：
 
 1. Query API 新增重新认证 start/callback seam；start 只接受当前有效、联邦、版本化 `ps1_`
    会话，且 action 必须是已登记 high-risk 动作并由 session policy 判定需要重新认证。
@@ -703,6 +703,23 @@ P2.5-F3c HTTP 重新认证与会话轮换（2026-08-31 已实现并本地验证�
    以及遗留 reauth Cookie 不劫持普通登录；Web 契约直接运行 production Next HTTP route。
 5. F3c 不自动重放原高风险写请求，不实现 logout，不迁移普通 OIDC/password 登录签发，
    不修改 staging/production gate；这些能力继续拆为后续独立评审切片。
+
+P2.5-F4 初始 `ps1_` 签发与个人演示登录迁移（2026-08-31 已实现并本地验证，待 PR 评审）：
+
+1. 仅在现有 `SESSION_CORE_ENABLED=true`、`ENVIRONMENT=dev`、
+   `IDENTITY_POLICY_PROFILE=personal-demo-v1` 三重门禁下，password 与 OIDC 成功登录改为
+   调用同一 `session.Manager.Establish` seam 并返回版本化 `ps1_`；默认关闭仍签发 JWT。
+2. session policy 区分“允许建立的认证保证”与“高风险所需保证”：password 只产生明确的
+   `local-password`，可访问 standard 动作但不能伪装 `demo-mfa`；OIDC 只有严格验证
+   `acr=2`、精确 `pwd+otp` `amr` 和新鲜 `auth_time` 后才能建立联邦 demo 会话。
+3. 建立失败必须失败关闭，不回退 JWT，不返回 credential；实时 user active/tenant/role
+   校验、一次性 OIDC transaction、审计脱敏与现有密码枚举防护继续保持。
+4. Web password/OIDC route 只接受 `ps1_` 迁移响应，并按后端绝对到期设置
+   Secure/HttpOnly/SameSite=Lax Cookie，`maxAge=min(30m, remaining absolute lifetime)`；
+   失败不得写主 Cookie。
+5. public HTTP/Cookie 测试覆盖两种成功登录、新凭据经过受保护 session route、默认关闭的
+   JWT 兼容、弱/缺失 OIDC 证据、session/PostgreSQL 故障、OIDC 重放与 Cookie 属性。
+   logout、最多 3 会话、会话列表/设备撤销及 staging/production 仍进入后续切片。
 
 P2.3 backend projection slice (2026-08-28):
 

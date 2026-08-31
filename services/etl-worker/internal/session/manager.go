@@ -46,12 +46,13 @@ const (
 )
 
 type Policy struct {
-	IdleTimeout       time.Duration
-	AbsoluteLifetime  time.Duration
-	HighRiskFreshness time.Duration
-	RequiredAssurance string
-	ActionRisks       map[string]Risk
-	Revision          string
+	IdleTimeout             time.Duration
+	AbsoluteLifetime        time.Duration
+	HighRiskFreshness       time.Duration
+	HighRiskAssurance       string
+	EstablishmentAssurances map[auth.AuthenticationMethod]string
+	ActionRisks             map[string]Risk
+	Revision                string
 }
 
 type AuthenticationEvidence struct {
@@ -141,11 +142,30 @@ func WithClock(clock func() time.Time) Option {
 
 func New(store repository, policy Policy, options ...Option) (*Manager, error) {
 	if store == nil || policy.IdleTimeout <= 0 || policy.AbsoluteLifetime <= 0 ||
-		policy.HighRiskFreshness <= 0 || strings.TrimSpace(policy.RequiredAssurance) == "" ||
+		policy.HighRiskFreshness <= 0 || strings.TrimSpace(policy.HighRiskAssurance) == "" ||
 		strings.TrimSpace(policy.Revision) == "" || policy.IdleTimeout > policy.AbsoluteLifetime ||
 		len(policy.ActionRisks) == 0 {
 		return nil, ErrInvalid
 	}
+	if len(policy.EstablishmentAssurances) == 0 {
+		policy.EstablishmentAssurances = map[auth.AuthenticationMethod]string{
+			auth.AuthenticationMethodFederated: policy.HighRiskAssurance,
+		}
+	}
+	highRiskMethodConfigured := false
+	for method, assurance := range policy.EstablishmentAssurances {
+		if (method != auth.AuthenticationMethodLocal && method != auth.AuthenticationMethodFederated) ||
+			strings.TrimSpace(assurance) == "" || assurance != strings.TrimSpace(assurance) {
+			return nil, ErrInvalid
+		}
+		if assurance == policy.HighRiskAssurance {
+			highRiskMethodConfigured = true
+		}
+	}
+	if !highRiskMethodConfigured {
+		return nil, ErrInvalid
+	}
+	policy.EstablishmentAssurances = cloneAssurances(policy.EstablishmentAssurances)
 	actionRisks := make(map[string]Risk, len(policy.ActionRisks))
 	for action, risk := range policy.ActionRisks {
 		if strings.TrimSpace(action) == "" || (risk != RiskStandard && risk != RiskHigh) {
@@ -169,7 +189,7 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 	if strings.TrimSpace(command.Principal.TenantID) == "" || strings.TrimSpace(command.Principal.SubjectID) == "" ||
 		(command.Principal.AuthenticationMethod != auth.AuthenticationMethodLocal &&
 			command.Principal.AuthenticationMethod != auth.AuthenticationMethodFederated) ||
-		command.Evidence.Assurance != m.policy.RequiredAssurance ||
+		m.policy.EstablishmentAssurances[command.Principal.AuthenticationMethod] != command.Evidence.Assurance ||
 		command.Evidence.AuthenticatedAt.IsZero() || command.Evidence.AuthenticatedAt.After(now) ||
 		now.Sub(command.Evidence.AuthenticatedAt) >= m.policy.HighRiskFreshness ||
 		correlationID == "" || correlationID != command.CorrelationID || len(correlationID) > 256 {
@@ -220,6 +240,14 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 	return Credential{Token: token, ExpiresAt: expiresAt}, nil
 }
 
+func cloneAssurances(source map[auth.AuthenticationMethod]string) map[auth.AuthenticationMethod]string {
+	result := make(map[auth.AuthenticationMethod]string, len(source))
+	for method, assurance := range source {
+		result[method] = assurance
+	}
+	return result
+}
+
 func (m *Manager) Authenticate(ctx context.Context, token, action string) (AuthenticateResult, error) {
 	if strings.TrimSpace(token) == "" || strings.TrimSpace(action) == "" {
 		return AuthenticateResult{Decision: DecisionDeny}, ErrInvalid
@@ -236,7 +264,8 @@ func (m *Manager) Authenticate(ctx context.Context, token, action string) (Authe
 	if !registered {
 		return AuthenticateResult{Decision: DecisionDeny}, nil
 	}
-	if risk == RiskHigh && now.Sub(record.authenticatedAt) >= m.policy.HighRiskFreshness {
+	if risk == RiskHigh && (record.assurance != m.policy.HighRiskAssurance ||
+		now.Sub(record.authenticatedAt) >= m.policy.HighRiskFreshness) {
 		return AuthenticateResult{Decision: DecisionReauthenticate, Principal: principalFromRecord(record)}, nil
 	}
 	if err := m.store.touch(ctx, record.id, record.generation, now); err != nil {

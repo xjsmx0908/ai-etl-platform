@@ -69,7 +69,7 @@ func TestSessionCredentialAuthenticatorResolvesLiveInternalAuthority(t *testing.
 			SubjectID:            user.ID,
 			AuthenticationMethod: auth.AuthenticationMethodLocal,
 		},
-		Evidence:      session.AuthenticationEvidence{Assurance: "demo-mfa", AuthenticatedAt: now},
+		Evidence:      session.AuthenticationEvidence{Assurance: "local-password", AuthenticatedAt: now},
 		CorrelationID: "login-1",
 	})
 	if err != nil {
@@ -412,7 +412,7 @@ func establishSessionCredential(t *testing.T, manager *session.Manager, subjectI
 	t.Helper()
 	credential, err := manager.Establish(context.Background(), session.EstablishCommand{
 		Principal: auth.Principal{
-			TenantID: tenantID, SubjectID: subjectID, AuthenticationMethod: auth.AuthenticationMethodLocal,
+			TenantID: tenantID, SubjectID: subjectID, AuthenticationMethod: auth.AuthenticationMethodFederated,
 		},
 		Evidence:      session.AuthenticationEvidence{Assurance: "demo-mfa", AuthenticatedAt: now},
 		CorrelationID: "login-test",
