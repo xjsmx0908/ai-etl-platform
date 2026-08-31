@@ -321,3 +321,15 @@ canonical payload digest 及逐责任人 detached signatures。风险接受项�
 实现顺序是先批准 Pending 输入并分别实现 F～I，再实现对账、driver/validator 并运行
 真实隔离 staging。生产启用必须是引用有效签名证据的后续独立 PR，本设计不选择 IdP、
 创建凭据、连接外部 tenant 或部署。
+
+## P2.5 企业决策登记与实现准入
+
+[企业身份决策登记与实现准入](enterprise-identity-decision-register.md)汇总 E～I 的
+51 项 `Pending` 决策，并以 `E-01`～`I-10` 稳定 ID 连接原设计、必需责任角色、建议
+基线、批准 revision 和私有证据。状态机区分 Pending、Proposed、Approved、Rejected
+与 Superseded；推荐值、文档合并和部分签署都不能产生运行授权。
+
+登记表本身不进入运行时。未来实现只接受由 validator 验证、绑定 provider/环境且未
+过期的不可变 policy revision。当前全部 gate 为 blocked；本文阶段不选择 IdP、不创建
+凭据、不连接外部 tenant，也不修改 F～J 运行代码。全部 Pending 输入完成企业签署后，
+首个实现切片按既定顺序从 P2.5-F 会话数据结构与 provider-neutral seam 开始。

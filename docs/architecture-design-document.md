@@ -173,6 +173,12 @@ staging acceptance driver 只跨公开 seam 观察 A～I 组合行为并产出�
 `last_completed_at`；SCIM mutation success、部分分页或失败尝试都不能伪装为完成。
 F～I 未实现的 mandatory 验收明确为 blocked。
 
+[企业身份决策登记与实现准入](enterprise-identity-decision-register.md)位于上述模块
+设计和实现之间，不是新的运行时服务。它为 E～I 的 51 项外部企业输入分配稳定 ID，
+记录责任角色、批准 revision、私有证据引用和失效关系。运行模块只读取后续经验证的
+配置/策略 revision，不解析 Markdown，也不能把建议基线或 GitHub 审批当作策略授权。
+所有决策批准前，F～J 的运行能力和真实 provider 接入保持 blocked/default-off。
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment
