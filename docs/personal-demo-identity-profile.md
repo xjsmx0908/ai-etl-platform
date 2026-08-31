@@ -121,4 +121,16 @@ PD0/PD1 只解锁代码实现和单机测试，永远不能改变企业 D0～D7�
 3. 覆盖空闲/绝对到期边界、轮换、重放、逐会话/全会话撤销、并发与存储失败关闭测试。
 4. 仅增加 default-off 配置与模块测试，不改变 JWT/Cookie、OIDC、生产行为或部署。
 
-F1 审核通过后，后续 PR 才依次接入凭据、认证保证/重新认证、退出和 demo 迁移。
+## 第二个实现切片：P2.5-F2 会话凭据验证
+
+F2 在既有 HTTP `Authenticator` seam 上接入预先建立的会话凭据：
+
+1. 仅 `Bearer ps1_<opaque-token>` 进入 session adapter；其他 bearer 继续走 JWT。
+2. `ps1_` 路径的无效、到期、撤销或存储失败均失败关闭，不得回退 JWT。
+3. session 只定位内部 user/tenant；active、tenant、role 与 scopes 每次从当前用户记录解析。
+4. 仅 dev/demo/profile 三重门禁显式启用；默认关闭。F2 不签发凭据，也不修改登录、
+   Cookie、OIDC、logout 或 production。
+5. 本切片统一使用 standard 动作 `platform.request`；路由风险分类、认证保证输入和
+   reauthentication 事务属于 F3。
+
+后续 PR 再依次接入认证保证/重新认证、凭据签发与 Cookie、退出和 demo 迁移。

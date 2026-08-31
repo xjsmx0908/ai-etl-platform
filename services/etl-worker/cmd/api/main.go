@@ -225,9 +225,18 @@ func main() {
 	deletionStore := deletionworkflow.NewPostgresStore(pgPool)
 	var generationRollbacker generationRollbacker
 
-	// Initialize auth. The verifier re-validates each token's token_version
-	// against the user store so password resets revoke outstanding tokens.
-	verifier := newPlatformAuthenticator(cfg, userStore)
+	// Initialize auth. JWT remains the compatibility path. The opt-in personal
+	// demo profile additionally validates versioned opaque session credentials;
+	// both paths resolve mutable authority from the user store.
+	var verifier auth.Authenticator = newPlatformAuthenticator(cfg, userStore)
+	sessionManager, err := newPlatformSessionManager(cfg, pgPool)
+	if err != nil {
+		slog.Error("failed to initialize platform sessions", "error", err)
+		os.Exit(1)
+	}
+	if sessionManager != nil {
+		verifier = newSessionCredentialAuthenticator(verifier, sessionManager, userStore)
+	}
 	var oidcFlow *oidcauth.Flow
 	if cfg.OIDCEnabled {
 		oidcAuthenticator, oidcErr := oidcauth.New(context.Background(), oidcauth.Config{

@@ -1121,3 +1121,15 @@ This file is an append-only record of completed PRAR cycles.
   并发安全状态变化返回 deny。审查还识别并修复了重新认证延长绝对寿命、主体撤销与
   并发建立竞态、建立审计关联可空三项问题；主体锁和 `revoked_before` 水位在真实
   PostgreSQL 中证明旧认证无法逃逸。模块仍 default-off 且未在 main 构造，不改变现有行为。
+
+## 2026-08-31 - P2.5-F2 会话凭据验证
+
+- 感知：F1 已有 session 状态机，但 HTTP 只识别 JWT；`session` 又依赖 `auth.Principal`，
+  若让 `auth` 反向依赖 `session` 会形成包循环。
+- 推理：保持 `auth.Authenticator` 为公共 seam，在 API 装配层组合两个 adapter。显式版本
+  前缀比“JWT 解析失败后再试 session”更安全，因为 credential 类型不会随错误路径降级。
+- 行动：以 HTTP seam 的 red→green 测试接入 `ps1_` 路由、失败关闭、JWT 兼容和实时
+  userstore 权限解析；仅 dev + `personal-demo-v1` + 显式开关时构造 PostgreSQL adapter。
+- 改进：session 只证明认证状态和内部定位，不保存或恢复权限快照。F2 对全部保护路由
+  使用 standard `platform.request`，明确不虚构高风险重新认证能力；签发、Cookie、OIDC、
+  logout 和 reauthentication 事务仍留给后续切片。

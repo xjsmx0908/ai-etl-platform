@@ -153,8 +153,10 @@ E～I 共 51 项企业决策、稳定审查 ID、责任角色和实现准入状�
 个人演示采用独立的
 [`docs/personal-demo-identity-profile.md`](docs/personal-demo-identity-profile.md)，其
 `DemoApproved` 值只解锁默认关闭的本地实现与测试，不能解锁企业 staging/production。
-P2.5-F1 已提供未接线的 provider-neutral 会话核心与 PostgreSQL 模型；
-`SESSION_CORE_ENABLED=false` 仍是默认值，现有 JWT/Cookie/OIDC 登录行为保持不变。
+P2.5-F1 已提供 provider-neutral 会话核心与 PostgreSQL 模型；P2.5-F2 在受保护 HTTP
+认证 seam 接受版本化 `Bearer ps1_<opaque-token>`，并从当前用户记录解析 role/scopes。
+`SESSION_CORE_ENABLED=false` 仍是默认值，现有 JWT 保持兼容；登录仍只签发原 JWT，
+Cookie、OIDC、退出和 production 行为均未迁移到新会话。
 
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。
