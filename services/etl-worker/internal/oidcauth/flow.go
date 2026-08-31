@@ -110,6 +110,12 @@ func (f *Flow) Start(ctx context.Context, returnTo string) (BrowserStart, error)
 	if f == nil || f.authenticator == nil || f.transactions == nil || f.ttl <= 0 || f.ttl > 15*time.Minute {
 		return BrowserStart{}, ErrInvalidTransaction
 	}
+	return f.startBrowserTransaction(ctx, browserTransaction{
+		ReturnTo: safeReturnPath(returnTo), ExpiresAt: time.Now().Add(f.ttl),
+	}, nil)
+}
+
+func (f *Flow) startBrowserTransaction(ctx context.Context, transaction browserTransaction, extraQuery url.Values) (BrowserStart, error) {
 	state, err := randomURLToken(32)
 	if err != nil {
 		return BrowserStart{}, fmt.Errorf("%w: generate state", ErrInvalidTransaction)
@@ -122,10 +128,9 @@ func (f *Flow) Start(ctx context.Context, returnTo string) (BrowserStart, error)
 	if err != nil {
 		return BrowserStart{}, fmt.Errorf("%w: generate PKCE verifier", ErrInvalidTransaction)
 	}
-	returnTo = safeReturnPath(returnTo)
-	if err := f.transactions.Save(ctx, state, browserTransaction{
-		Nonce: nonce, CodeVerifier: verifier, ReturnTo: returnTo, ExpiresAt: time.Now().Add(f.ttl),
-	}); err != nil {
+	transaction.Nonce = nonce
+	transaction.CodeVerifier = verifier
+	if err := f.transactions.Save(ctx, state, transaction); err != nil {
 		return BrowserStart{}, fmt.Errorf("%w: save transaction", ErrInvalidTransaction)
 	}
 	challenge := sha256.Sum256([]byte(verifier))
@@ -138,6 +143,9 @@ func (f *Flow) Start(ctx context.Context, returnTo string) (BrowserStart, error)
 		"nonce":                 {nonce},
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
 		"code_challenge_method": {"S256"},
+	}
+	for key, values := range extraQuery {
+		query[key] = values
 	}
 	authorizationURL, err := url.Parse(f.authenticator.discovery.AuthorizationEndpoint)
 	if err != nil {
@@ -162,46 +170,16 @@ func (f *Flow) StartReauthentication(ctx context.Context, command Reauthenticati
 		command.Principal.AuthenticationMethod != auth.AuthenticationMethodFederated {
 		return BrowserStart{}, ErrInvalidTransaction
 	}
-	state, err := randomURLToken(32)
-	if err != nil {
-		return BrowserStart{}, fmt.Errorf("%w: generate state", ErrInvalidTransaction)
-	}
-	nonce, err := randomURLToken(32)
-	if err != nil {
-		return BrowserStart{}, fmt.Errorf("%w: generate nonce", ErrInvalidTransaction)
-	}
-	verifier, err := randomURLToken(32)
-	if err != nil {
-		return BrowserStart{}, fmt.Errorf("%w: generate PKCE verifier", ErrInvalidTransaction)
-	}
 	digest := sha256.Sum256([]byte(command.Credential))
 	transaction := browserTransaction{
-		Nonce: nonce, CodeVerifier: verifier, ReturnTo: safeReturnPath(command.ReturnTo),
-		ExpiresAt: f.authenticator.now().Add(f.ttl), CredentialDigest: base64.RawURLEncoding.EncodeToString(digest[:]),
-		TenantID: command.Principal.TenantID, SubjectID: command.Principal.SubjectID,
+		ReturnTo: safeReturnPath(command.ReturnTo), ExpiresAt: time.Now().Add(f.ttl),
+		CredentialDigest: base64.RawURLEncoding.EncodeToString(digest[:]),
+		TenantID:         command.Principal.TenantID, SubjectID: command.Principal.SubjectID,
 		Action: command.Action, Reauthentication: true,
 	}
-	if err := f.transactions.Save(ctx, state, transaction); err != nil {
-		return BrowserStart{}, fmt.Errorf("%w: save transaction", ErrInvalidTransaction)
-	}
-	challenge := sha256.Sum256([]byte(verifier))
-	query := url.Values{
-		"response_type": {"code"}, "client_id": {f.authenticator.config.ClientID},
-		"redirect_uri": {f.authenticator.config.RedirectURI}, "scope": {"openid"},
-		"state": {state}, "nonce": {nonce},
-		"code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"},
-		"prompt": {"login"}, "max_age": {"0"}, "acr_values": {"2"},
-	}
-	authorizationURL, err := url.Parse(f.authenticator.discovery.AuthorizationEndpoint)
-	if err != nil {
-		return BrowserStart{}, fmt.Errorf("%w: invalid authorization endpoint", ErrInvalidTransaction)
-	}
-	mergedQuery := authorizationURL.Query()
-	for key, values := range query {
-		mergedQuery[key] = values
-	}
-	authorizationURL.RawQuery = mergedQuery.Encode()
-	return BrowserStart{AuthorizationURL: authorizationURL.String(), State: state, ExpiresIn: f.ttl}, nil
+	return f.startBrowserTransaction(ctx, transaction, url.Values{
+		"prompt": {"login"}, "max_age": {"0"}, "acr_values": {demoACR},
+	})
 }
 
 func (f *Flow) Complete(ctx context.Context, cookieState, callbackState, code string) (auth.Principal, string, error) {
@@ -249,8 +227,8 @@ func (f *Flow) CompleteReauthentication(ctx context.Context, command Reauthentic
 	}
 	now := f.authenticator.now()
 	if result.Principal.TenantID != transaction.TenantID || result.Principal.SubjectID != transaction.SubjectID ||
-		result.Evidence.Assurance != "demo-mfa" || result.Evidence.AuthenticatedAt.IsZero() ||
-		result.Evidence.AuthenticatedAt.After(now) || now.Sub(result.Evidence.AuthenticatedAt) >= 10*time.Minute {
+		result.Evidence.Assurance != demoAssurance || result.Evidence.AuthenticatedAt.IsZero() ||
+		result.Evidence.AuthenticatedAt.After(now) || now.Sub(result.Evidence.AuthenticatedAt) >= demoEvidenceFreshness {
 		return ReauthenticationResult{}, ErrAuthentication
 	}
 	return ReauthenticationResult{

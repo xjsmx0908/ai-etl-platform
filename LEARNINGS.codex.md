@@ -1159,3 +1159,6 @@ This file is an append-only record of completed PRAR cycles.
 - 改进：完成入口必须双向拒绝事务类型混用，并在 token exchange 后重新核对目录解析出的
   内部主体。凭据变化、主体漂移、含糊/陈旧证据、事务存储或 IdP 故障均不产生部分成功。
   本切片不装配 HTTP、不签发/轮换 `ps1_`、不改 Cookie，保持后续 F3c 的责任清晰。
+- 审查修正：事务过期必须与 Memory/Redis adapter 使用同一真实时钟域，不能误用仅供 token
+  测试的注入时钟；`auth_time` 的批准证据不接受任何未来值。公共 OIDC transaction builder
+  和集中 demo evidence 常量同时消除了普通/重新认证流程及两层证据校验的策略漂移。

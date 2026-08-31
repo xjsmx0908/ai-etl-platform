@@ -26,6 +26,12 @@ import (
 
 var ErrAuthentication = errors.New("oidc authentication failed")
 
+const (
+	demoACR               = "2"
+	demoAssurance         = "demo-mfa"
+	demoEvidenceFreshness = 10 * time.Minute
+)
+
 type Config struct {
 	Issuer       string
 	ClientID     string
@@ -170,11 +176,11 @@ func (a *Authenticator) authenticate(ctx context.Context, exchange CodeExchange,
 	}
 	var evidence session.AuthenticationEvidence
 	if requireEvidence {
-		if claims.ACR != "2" || !exactAMR(claims.AMR, "pwd", "otp") || claims.AuthenticationTime == nil ||
-			claims.AuthenticationTime.Time.After(a.now().Add(time.Minute)) || a.now().Sub(claims.AuthenticationTime.Time) >= 10*time.Minute {
+		if claims.ACR != demoACR || !exactAMR(claims.AMR, "pwd", "otp") || claims.AuthenticationTime == nil ||
+			claims.AuthenticationTime.Time.After(a.now()) || a.now().Sub(claims.AuthenticationTime.Time) >= demoEvidenceFreshness {
 			return AuthenticationResult{}, fmt.Errorf("%w: authentication evidence is not approved", ErrAuthentication)
 		}
-		evidence = session.AuthenticationEvidence{Assurance: "demo-mfa", AuthenticatedAt: claims.AuthenticationTime.Time.UTC()}
+		evidence = session.AuthenticationEvidence{Assurance: demoAssurance, AuthenticatedAt: claims.AuthenticationTime.Time.UTC()}
 	}
 	principal, err := a.directory.Resolve(ctx, externalidentity.ExternalIdentity{
 		Issuer: claims.Issuer, Subject: claims.Subject,

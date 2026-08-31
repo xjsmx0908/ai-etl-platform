@@ -89,7 +89,7 @@ func TestAuthenticateWithEvidenceRejectsUnapprovedOrAmbiguousClaims(t *testing.T
 		{name: "duplicate method", acr: "2", amr: []string{"pwd", "pwd"}, authTime: now.Unix()},
 		{name: "missing auth time", acr: "2", amr: []string{"pwd", "otp"}},
 		{name: "stale at boundary", acr: "2", amr: []string{"pwd", "otp"}, authTime: now.Add(-10 * time.Minute).Unix()},
-		{name: "future auth time", acr: "2", amr: []string{"pwd", "otp"}, authTime: now.Add(61 * time.Second).Unix()},
+		{name: "future auth time", acr: "2", amr: []string{"pwd", "otp"}, authTime: now.Add(time.Second).Unix()},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
