@@ -660,6 +660,19 @@ P2.5-F2 会话凭据验证（2026-08-31 已实现并本地验证，待 PR 评审
 5. 所有保护路由暂映射 standard `platform.request`；F2 不签发凭据，不改变登录、Cookie、
    OIDC、logout、部署或 production。风险动作和 reauthentication 事务进入 F3。
 
+P2.5-F3a 风险判断与重新认证响应（2026-08-31 已实现并本地验证，待 PR 评审）：
+
+1. 以 HTTP method + 路由模板把身份绑定、用户/角色/密码、tenant 创建、文档删除/发布、
+   Agent 批准和 generation rollback 映射为独立 high-risk action；其他请求保持 standard。
+2. `ps1_` 会话的 `demo-mfa` 认证时间达到 10 分钟边界时返回结构化
+   `401 reauthentication_required`，不误报 forbidden，也不执行静默重定向。
+3. reauthenticate 决策只携带内部 user/tenant/认证方法；adapter 在挑战前仍实时校验用户
+   存在、active 和 tenant，session 模块不返回 role/capabilities 权限快照。
+4. 无效、撤销、会话到期、用户撤权和存储故障仍返回普通 unauthorized；JWT 高风险请求
+   在迁移期保持兼容，但不宣称具有 MFA 或 freshness 保证。
+5. F3a 不解析 `acr`/`amr`/`auth_time`，不创建 state/nonce/PKCE 事务、不轮换 credential，
+   不修改 Cookie、OIDC、logout、部署或 production；这些进入 F3b 及后续切片。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

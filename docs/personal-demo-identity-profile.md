@@ -133,4 +133,14 @@ F2 在既有 HTTP `Authenticator` seam 上接入预先建立的会话凭据：
 5. 本切片统一使用 standard 动作 `platform.request`；路由风险分类、认证保证输入和
    reauthentication 事务属于 F3。
 
-后续 PR 再依次接入认证保证/重新认证、凭据签发与 Cookie、退出和 demo 迁移。
+## 第三个实现切片：P2.5-F3a 风险判断契约
+
+F3a 登记身份绑定、用户/角色/密码、tenant 创建、文档删除/发布、Agent 批准和
+generation rollback 为 high-risk action。有效 `ps1_` 会话在 `demo-mfa` 认证时间达到
+10 分钟时返回 `401 reauthentication_required`；普通请求不受 freshness 限制。返回挑战
+前仍校验当前用户 active 与 tenant，已撤权用户不得获得继续认证的提示。
+
+该切片不建立真正的重新认证事务，也不解析 Keycloak `acr`/`amr`/`auth_time` 或轮换
+credential；迁移期 JWT 继续兼容。F3b 再接入提供方证据、单次事务和安全返回路径。
+
+后续 PR 再依次接入凭据签发与 Cookie、退出和 demo 迁移。

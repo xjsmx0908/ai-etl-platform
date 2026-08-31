@@ -1133,3 +1133,16 @@ This file is an append-only record of completed PRAR cycles.
 - 改进：session 只证明认证状态和内部定位，不保存或恢复权限快照。F2 对全部保护路由
   使用 standard `platform.request`，明确不虚构高风险重新认证能力；签发、Cookie、OIDC、
   logout 和 reauthentication 事务仍留给后续切片。
+
+## 2026-08-31 - P2.5-F3a 风险判断与重新认证响应
+
+- 感知：F2 把所有路由视为 standard，无法让 session 的新鲜度状态机进入真实 HTTP
+  请求；同时完整 OIDC 重新认证还缺可信证据转换、事务绑定和 credential 签发。
+- 推理：先把 method/path 到策略 action 的分类和结构化响应稳定下来，使 F3b 只需实现
+  “如何获得新证据”，而不再重写业务路由或错误语义。未登记路由保留 standard，避免
+  把普通读取误升级为高风险；敏感动作必须显式列入策略 map。
+- 行动：以 HTTP seam 的 red→green 测试覆盖风险矩阵、新鲜/陈旧证据、JWT 兼容、普通
+  路由和错误区分；达到 10 分钟边界返回 `401 reauthentication_required`。
+- 改进：reauthenticate 不能早于实时撤权检查。session 决策因此只返回内部定位，adapter
+  先校验 active/tenant；停用用户、无效凭据和存储故障仍统一 unauthorized，不能收到
+  可继续流程的挑战。F3a 不声称已实现 MFA 或重新认证事务。

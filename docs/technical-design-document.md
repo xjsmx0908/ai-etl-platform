@@ -356,10 +356,20 @@ deny，数据库故障返回 unavailable。当前/主体撤销都要求非空 co
 P2.5-F2 在 Query API 认证 seam 中按显式 `ps1_` 前缀路由预先建立的 opaque
 credential；前缀命中后只调用 `session.Manager.Authenticate`，失败时不得回退 JWT。
 允许结果再按内部 user ID 查询当前用户，校验 active 与 tenant 一致，并仅从当前 role
-计算 scopes，session 记录不成为权限快照。所有受保护请求暂映射为已登记的 standard
-动作 `platform.request`；高风险动作分类和 reauthentication 响应语义留给 F3。
+计算 scopes，session 记录不成为权限快照。
+
+P2.5-F3a 通过 HTTP method + 路由模板把身份绑定、用户/角色/密码、tenant 创建、文档
+删除/发布、Agent 批准和 generation rollback 映射到已登记的 high-risk action；其他
+请求仍使用 standard `platform.request`。当有效 `ps1_` 会话的认证时间达到 10 分钟
+边界时，`session.Manager` 返回 reauthenticate 及不含权限快照的内部 user/tenant 定位。
+adapter 必须先重新检查当前用户 active 与 tenant，再返回结构化
+`401 reauthentication_required`；无效/撤销/到期/存储故障仍是普通 unauthorized。
+迁移期 JWT 保持兼容，不因此获得 MFA 声明。
 
 Query API 仅在 `SESSION_CORE_ENABLED=true`、`ENVIRONMENT=dev` 且 profile 为
 `personal-demo-v1` 时构造 PostgreSQL session adapter；默认关闭时仍直接使用现有 JWT
 verifier。F2 不签发 `ps1_` credential，登录仍返回 JWT，也不修改 Cookie、OIDC callback、
 logout、部署或 staging/production。
+
+F3a 只定义风险判断和 HTTP 响应契约；不解析 `acr`/`amr`/`auth_time`，不创建
+state/nonce/PKCE 重新认证事务，不轮换 credential，也不修改 Cookie 或 OIDC callback。

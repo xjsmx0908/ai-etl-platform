@@ -157,6 +157,9 @@ P2.5-F1 已提供 provider-neutral 会话核心与 PostgreSQL 模型；P2.5-F2 �
 认证 seam 接受版本化 `Bearer ps1_<opaque-token>`，并从当前用户记录解析 role/scopes。
 `SESSION_CORE_ENABLED=false` 仍是默认值，现有 JWT 保持兼容；登录仍只签发原 JWT，
 Cookie、OIDC、退出和 production 行为均未迁移到新会话。
+P2.5-F3a 已为身份/用户/租户变更、文档删除与发布、Agent 批准和 generation rollback
+登记高风险动作；`ps1_` 会话证据达到 10 分钟边界时返回结构化
+`401 reauthentication_required`。完整重新认证事务及凭据轮换仍未实现。
 
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。

@@ -1,10 +1,15 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 )
+
+// ErrReauthenticationRequired tells HTTP callers that the credential is valid
+// but its authentication evidence is too old for the requested operation.
+var ErrReauthenticationRequired = errors.New("reauthentication required")
 
 // AuthenticationMethod identifies how an internal principal authenticated.
 // Authorization never derives tenant, role, or capabilities from this value.
