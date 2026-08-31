@@ -237,7 +237,7 @@ func (m *Manager) Authenticate(ctx context.Context, token, action string) (Authe
 		return AuthenticateResult{Decision: DecisionDeny}, nil
 	}
 	if risk == RiskHigh && now.Sub(record.authenticatedAt) >= m.policy.HighRiskFreshness {
-		return AuthenticateResult{Decision: DecisionReauthenticate}, nil
+		return AuthenticateResult{Decision: DecisionReauthenticate, Principal: principalFromRecord(record)}, nil
 	}
 	if err := m.store.touch(ctx, record.id, record.generation, now); err != nil {
 		if errors.Is(err, errChanged) {
@@ -245,9 +245,13 @@ func (m *Manager) Authenticate(ctx context.Context, token, action string) (Authe
 		}
 		return AuthenticateResult{Decision: DecisionDeny}, fmt.Errorf("%w: update activity", ErrUnavailable)
 	}
-	return AuthenticateResult{Decision: DecisionAllow, Principal: auth.Principal{
+	return AuthenticateResult{Decision: DecisionAllow, Principal: principalFromRecord(record)}, nil
+}
+
+func principalFromRecord(record record) auth.Principal {
+	return auth.Principal{
 		TenantID: record.tenantID, SubjectID: record.subjectID, AuthenticationMethod: record.authenticationMethod,
-	}}, nil
+	}
 }
 
 func (m *Manager) Revoke(ctx context.Context, command RevokeCommand) error {

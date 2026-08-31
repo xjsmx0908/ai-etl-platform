@@ -79,6 +79,13 @@ func TestSessionEnforcesIdleAbsoluteAndReauthenticationBoundaries(t *testing.T) 
 		if authErr != nil || result.Decision != session.DecisionReauthenticate {
 			t.Fatalf("result=%+v err=%v", result, authErr)
 		}
+		if result.Principal.SubjectID != "user-42" || result.Principal.TenantID != "demo-tenant" ||
+			result.Principal.AuthenticationMethod != auth.AuthenticationMethodFederated {
+			t.Fatalf("reauthentication decision must retain internal identity: %+v", result.Principal)
+		}
+		if result.Principal.Role != "" || len(result.Principal.Capabilities) != 0 {
+			t.Fatalf("session must not return an authority snapshot: %+v", result.Principal)
+		}
 	})
 
 	t.Run("idle timeout expires at the exact boundary", func(t *testing.T) {

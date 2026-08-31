@@ -3,6 +3,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -115,6 +116,12 @@ func Middleware(authenticator Authenticator, requiredScopes ...string) func(http
 			}
 			principal, err := authenticator.Authenticate(r)
 			if err != nil {
+				if errors.Is(err, ErrReauthenticationRequired) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error":"reauthentication_required","message":"fresh authentication is required"}`))
+					return
+				}
 				http.Error(w, `{"error":"unauthorized","message":"`+err.Error()+`"}`, http.StatusUnauthorized)
 				return
 			}
