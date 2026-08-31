@@ -87,11 +87,11 @@ func handleReauthenticationStart(flow *oidcauth.Flow, sessions *session.Manager,
 			Principal: result.Principal,
 		})
 		if err != nil {
-			recordReauthenticationAudit(r, audits, user, request.Action, audit.ResultFailure, "transaction_unavailable")
+			recordReauthenticationAudit(r, audits, user, request.Action, audit.ResultFailure, "transaction_unavailable", "")
 			writeError(w, http.StatusServiceUnavailable, "reauthentication unavailable")
 			return
 		}
-		recordReauthenticationAudit(r, audits, user, request.Action, audit.ResultSuccess, "started")
+		recordReauthenticationAudit(r, audits, user, request.Action, audit.ResultSuccess, "started", reauthenticationCorrelationID(start.State))
 		writeJSON(w, http.StatusOK, reauthenticationStartResponse{
 			AuthorizationURL: start.AuthorizationURL, State: start.State,
 			ExpiresIn: int64(start.ExpiresIn.Seconds()),
@@ -126,10 +126,7 @@ func handleReauthenticationCallback(flow *oidcauth.Flow, sessions *session.Manag
 			Code: request.Code, CurrentCredential: credential,
 		})
 		if err != nil {
-			recordAudit(r.Context(), audits, audit.Entry{
-				Action: "session_reauthentication", Result: audit.ResultFailure,
-				Detail: map[string]any{"reason": "authentication_failed"},
-			})
+			recordReauthenticationAudit(r, audits, userstore.User{}, "", audit.ResultFailure, "authentication_failed", reauthenticationCorrelationID(request.State))
 			writeError(w, http.StatusUnauthorized, "reauthentication failed")
 			return
 		}
@@ -151,7 +148,7 @@ func handleReauthenticationCallback(flow *oidcauth.Flow, sessions *session.Manag
 			CorrelationID: reauthenticationCorrelationID(request.State),
 		})
 		if err != nil {
-			recordReauthenticationAudit(r, audits, user, result.Action, audit.ResultFailure, "session_rotation_failed")
+			recordReauthenticationAudit(r, audits, user, result.Action, audit.ResultFailure, "session_rotation_failed", reauthenticationCorrelationID(request.State))
 			if errors.Is(err, session.ErrUnavailable) {
 				writeError(w, http.StatusServiceUnavailable, "reauthentication unavailable")
 				return
@@ -159,7 +156,7 @@ func handleReauthenticationCallback(flow *oidcauth.Flow, sessions *session.Manag
 			writeError(w, http.StatusUnauthorized, "reauthentication failed")
 			return
 		}
-		recordReauthenticationAudit(r, audits, user, result.Action, audit.ResultSuccess, "completed")
+		recordReauthenticationAudit(r, audits, user, result.Action, audit.ResultSuccess, "completed", reauthenticationCorrelationID(request.State))
 		writeJSON(w, http.StatusOK, reauthenticationCallbackResponse{
 			Token: platformSessionCredentialPrefix + rotated.Token, ExpiresAt: rotated.ExpiresAt.UTC(),
 			Action: result.Action, ReturnTo: result.ReturnTo,
@@ -172,10 +169,10 @@ func reauthenticationCorrelationID(state string) string {
 	return "reauth:" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-func recordReauthenticationAudit(r *http.Request, audits audit.Store, user userstore.User, action, result, reason string) {
+func recordReauthenticationAudit(r *http.Request, audits audit.Store, user userstore.User, action, result, reason, correlationID string) {
 	recordAudit(r.Context(), audits, audit.Entry{
 		TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,
 		Action: "session_reauthentication", Result: result,
-		Detail: map[string]any{"policy_action": action, "reason": reason},
+		Detail: map[string]any{"policy_action": action, "reason": reason, "correlation_id": correlationID},
 	})
 }

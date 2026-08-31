@@ -172,6 +172,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Test reauthentication HTTP and cookie contract
+        run: npm run test:reauth
+
   compose:
     name: Compose Validation
     runs-on: ubuntu-latest

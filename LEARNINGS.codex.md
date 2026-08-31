@@ -1176,3 +1176,7 @@ This file is an append-only record of completed PRAR cycles.
 - 改进：callback 在 middleware 的 standard action 下验证当前 credential，避免陈旧会话无法
   到达恢复入口；真正的 high-risk action 仍在 handler/transaction 内核对。真实 Next server
   与 mock backend 验证了跨站 403、成功 Cookie rotation，以及失败只清 state 不改旧 session。
+- 审查修正：callback 必须按回传 state 与 reauth-state Cookie 相等来分流，不能仅凭 Cookie
+  存在，否则遗留 Cookie 会劫持普通登录。将源码字符串断言升级为 production build 的真实
+  HTTP 测试，并补齐 state/credential 漂移、IdP/Redis/PostgreSQL 故障、安全 return path；
+  start/completion/failure 审计均只保存 state 的 SHA-256 correlation，不保存原始 state。

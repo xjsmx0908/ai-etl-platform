@@ -85,7 +85,8 @@ function clearState(response: NextResponse) {
 
 export async function GET(req: NextRequest) {
   const reauthenticationState = req.cookies.get("ai_etl_reauth_state")?.value || "";
-  if (reauthenticationState) {
+  const callbackState = req.nextUrl.searchParams.get("state") || "";
+  if (reauthenticationState && callbackState === reauthenticationState) {
     return completeReauthentication(req, reauthenticationState);
   }
   const code = req.nextUrl.searchParams.get("code") || "";

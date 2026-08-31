@@ -397,7 +397,8 @@ handler。中间件只把服务端分类的 high-risk action 加入 `401 reauthe
 边界的 `ps1_`，实时检查内部用户后调用 F3b Flow。JWT、本地、新鲜、撤销/到期 credential
 以及 standard/未知 action 都不能生成 transaction。
 
-callback 复用普通登录的 OIDC redirect URI，但通过独立 HttpOnly state Cookie 分流。
+callback 复用普通登录的 OIDC redirect URI，但只在 callback state 与独立 HttpOnly
+reauth-state Cookie 匹配时进入重新认证分支；遗留或不匹配的 Cookie 不得劫持普通登录。
 Query API 先完成 F3b transaction，再验证 action 仍为已登记 high-risk、用户仍 active 且
 tenant 未变，最后以 `session.Manager.Establish(ReplacesCredential)` 原子 CAS 轮换；成功
 只返回新的版本化 `ps1_`、绝对到期、action 和安全 return path。审计 correlation 使用

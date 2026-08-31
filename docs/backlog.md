@@ -699,7 +699,8 @@ P2.5-F3c HTTP 重新认证与会话轮换（2026-08-31 已实现并本地验证�
 3. Web BFF 只通过明确同源 POST 发起流程，使用独立 HttpOnly reauth-state Cookie；回调成功
    后才替换 `ai_etl_token`，失败只清理 state，不能删除、刷新或泄露原 session credential。
 4. public HTTP/Cookie 测试覆盖 JWT/本地/新鲜会话、未知或 standard action、state/credential
-   漂移、用户撤权、IdP/Redis/PostgreSQL 故障、并发 callback、重放和安全 return path。
+   漂移、用户撤权、IdP/Redis/PostgreSQL 故障、并发 callback、重放、安全 return path，
+   以及遗留 reauth Cookie 不劫持普通登录；Web 契约直接运行 production Next HTTP route。
 5. F3c 不自动重放原高风险写请求，不实现 logout，不迁移普通 OIDC/password 登录签发，
    不修改 staging/production gate；这些能力继续拆为后续独立评审切片。
 

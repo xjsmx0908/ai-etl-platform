@@ -6,14 +6,17 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/pashagolub/pgxmock/v5"
 
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/oidcauth"
@@ -43,6 +46,7 @@ func TestHandleReauthenticationStartBindsStaleFederatedSessionAndHighRiskAction(
 		t.Fatalf("establish session: %v", err)
 	}
 	flow := reauthenticationStartFlow(t, user.ID)
+	audits := newFakeAuditStore()
 	clock = now.Add(10 * time.Minute)
 	body, _ := json.Marshal(map[string]string{
 		"action": identityBindingChangeAction, "return_to": "/users?step=confirm",
@@ -52,7 +56,7 @@ func TestHandleReauthenticationStartBindsStaleFederatedSessionAndHighRiskAction(
 	recorder := httptest.NewRecorder()
 
 	auth.Middleware(newSessionCredentialAuthenticator(&countingAuthenticator{}, sessions, users))(
-		handleReauthenticationStart(flow, sessions, users, nil),
+		handleReauthenticationStart(flow, sessions, users, audits),
 	).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -74,6 +78,12 @@ func TestHandleReauthenticationStartBindsStaleFederatedSessionAndHighRiskAction(
 	if response.State == "" || response.ExpiresIn != 300 || query.Get("state") != response.State ||
 		query.Get("prompt") != "login" || query.Get("max_age") != "0" || query.Get("acr_values") != "2" {
 		t.Fatalf("unexpected reauthentication response: %+v", response)
+	}
+	if len(audits.entries) != 1 || audits.entries[0].Detail["correlation_id"] != reauthenticationCorrelationID(response.State) {
+		t.Fatalf("missing state-digest audit correlation: %+v", audits.entries)
+	}
+	if strings.Contains(audits.entries[0].Detail["correlation_id"].(string), response.State) {
+		t.Fatal("audit correlation leaked raw state")
 	}
 }
 
@@ -110,7 +120,8 @@ func TestHandleReauthenticationCallbackAtomicallyRotatesCredentialAndRejectsRepl
 	request := httptest.NewRequest(http.MethodPost, "/v1/auth/reauth/callback", bytes.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+credential.Token)
 	recorder := httptest.NewRecorder()
-	handleReauthenticationCallback(flow, sessions, users, nil).ServeHTTP(recorder, request)
+	audits := newFakeAuditStore()
+	handleReauthenticationCallback(flow, sessions, users, audits).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -126,6 +137,9 @@ func TestHandleReauthenticationCallbackAtomicallyRotatesCredentialAndRejectsRepl
 	if !strings.HasPrefix(response.Token, platformSessionCredentialPrefix) || response.Action != identityBindingChangeAction || response.ReturnTo != "/users?step=confirm" {
 		t.Fatalf("unexpected response: %+v", response)
 	}
+	if len(audits.entries) != 1 || audits.entries[0].Detail["correlation_id"] != reauthenticationCorrelationID(start.State) {
+		t.Fatalf("missing completion audit correlation: %+v", audits.entries)
+	}
 	oldResult, _ := sessions.Authenticate(context.Background(), credential.Token, platformSessionRequestAction)
 	newResult, newErr := sessions.Authenticate(context.Background(), strings.TrimPrefix(response.Token, platformSessionCredentialPrefix), identityBindingChangeAction)
 	if oldResult.Decision != session.DecisionDeny || newErr != nil || newResult.Decision != session.DecisionAllow {
@@ -137,6 +151,164 @@ func TestHandleReauthenticationCallbackAtomicallyRotatesCredentialAndRejectsRepl
 	handleReauthenticationCallback(flow, sessions, users, nil).ServeHTTP(replayRecorder, replay)
 	if replayRecorder.Code == http.StatusOK {
 		t.Fatal("expected replay to fail")
+	}
+}
+
+func TestReauthenticationCallbackFailsClosedForStateCredentialAndProviderDrift(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		callbackState      string
+		callbackCredential string
+		code               string
+	}{
+		{name: "state drift", callbackState: "different-state", code: "code-1"},
+		{name: "credential drift", callbackCredential: "different-credential", code: "code-1"},
+		{name: "identity provider unavailable", code: "provider-unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			flow, sessions, users, credential, start := prepareReauthenticationCallback(t, "/users")
+			state := start.State
+			if test.callbackState != "" {
+				state = test.callbackState
+			}
+			callbackCredential := credential.Token
+			if test.callbackCredential != "" {
+				callbackCredential = test.callbackCredential
+			}
+			body, _ := json.Marshal(map[string]string{"code": test.code, "state": state, "cookie_state": start.State})
+			request := httptest.NewRequest(http.MethodPost, "/v1/auth/reauth/callback", bytes.NewReader(body))
+			request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+callbackCredential)
+			recorder := httptest.NewRecorder()
+			handleReauthenticationCallback(flow, sessions, users, nil).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusUnauthorized || strings.Contains(recorder.Body.String(), platformSessionCredentialPrefix) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			result, err := sessions.Authenticate(context.Background(), credential.Token, platformSessionRequestAction)
+			if err != nil || result.Decision != session.DecisionAllow {
+				t.Fatalf("failed callback changed current credential: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestReauthenticationCallbackNormalizesUnsafeReturnPath(t *testing.T) {
+	flow, sessions, users, credential, start := prepareReauthenticationCallback(t, "//attacker.example/steal")
+	body, _ := json.Marshal(map[string]string{"code": "code-1", "state": start.State, "cookie_state": start.State})
+	request := httptest.NewRequest(http.MethodPost, "/v1/auth/reauth/callback", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+credential.Token)
+	recorder := httptest.NewRecorder()
+	handleReauthenticationCallback(flow, sessions, users, nil).ServeHTTP(recorder, request)
+	var response reauthenticationCallbackResponse
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.ReturnTo != "/" {
+		t.Fatalf("unsafe return path escaped normalization: %+v err=%v", response, err)
+	}
+}
+
+func TestReauthenticationCallbackFailsClosedWhenUserOrSessionStoreIsUnavailable(t *testing.T) {
+	t.Run("user store", func(t *testing.T) {
+		flow, sessions, users, credential, start := prepareReauthenticationCallback(t, "/users")
+		users.getByIDErr = errors.New("postgres unavailable")
+		body, _ := json.Marshal(map[string]string{"code": "code-1", "state": start.State, "cookie_state": start.State})
+		request := httptest.NewRequest(http.MethodPost, "/v1/auth/reauth/callback", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+credential.Token)
+		recorder := httptest.NewRecorder()
+		handleReauthenticationCallback(flow, sessions, users, nil).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusServiceUnavailable || strings.Contains(recorder.Body.String(), platformSessionCredentialPrefix) {
+			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("session store rotation", func(t *testing.T) {
+		base := time.Now().UTC().Truncate(time.Second)
+		users := newFakeUserStore()
+		seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
+		user, _, _ := users.GetByUsername(context.Background(), "alice")
+		const credential = "opaque-current"
+		var nonce string
+		flow := reauthenticationCompletionFlow(t, user.ID, base, &nonce)
+		start, err := flow.StartReauthentication(context.Background(), oidcauth.ReauthenticationStartCommand{
+			Credential: credential, Action: identityBindingChangeAction, ReturnTo: "/users",
+			Principal: auth.Principal{TenantID: user.TenantID, SubjectID: user.ID, AuthenticationMethod: auth.AuthenticationMethodFederated},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, _ := url.Parse(start.AuthorizationURL)
+		nonce = parsed.Query().Get("nonce")
+		mock, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mock.Close()
+		mock.ExpectQuery("SELECT id,tenant_id").WithArgs(pgxmock.AnyArg()).WillReturnRows(
+			pgxmock.NewRows([]string{"id", "tenant_id", "internal_user_id", "authentication_method", "assurance_level", "authenticated_at", "created_at", "last_activity_at", "absolute_expires_at", "revoked_at", "generation", "policy_revision", "established_correlation_id"}).
+				AddRow("session-1", user.TenantID, user.ID, "federated", "demo-mfa", base.Add(-time.Minute), base.Add(-time.Hour), base, base.Add(time.Hour), nil, int64(1), platformSessionPolicy().Revision, "login-1"),
+		)
+		mock.ExpectBegin().WillReturnError(errors.New("postgres unavailable"))
+		sessions, err := session.New(session.NewPostgresStore(mock), platformSessionPolicy(), session.WithClock(func() time.Time { return base }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := json.Marshal(map[string]string{"code": "code-1", "state": start.State, "cookie_state": start.State})
+		request := httptest.NewRequest(http.MethodPost, "/v1/auth/reauth/callback", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+credential)
+		recorder := httptest.NewRecorder()
+		handleReauthenticationCallback(flow, sessions, users, nil).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusServiceUnavailable || strings.Contains(recorder.Body.String(), platformSessionCredentialPrefix) {
+			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestReauthenticationCallbackFailsClosedWhenRedisBecomesUnavailable(t *testing.T) {
+	redisAddress := os.Getenv("OIDC_REDIS_TEST_ADDR")
+	if redisAddress == "" {
+		t.Skip("OIDC_REDIS_TEST_ADDR is not set")
+	}
+	base := time.Now().UTC().Truncate(time.Second)
+	users := newFakeUserStore()
+	seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
+	user, _, _ := users.GetByUsername(context.Background(), "alice")
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return base }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := sessions.Establish(context.Background(), session.EstablishCommand{
+		Principal: auth.Principal{TenantID: user.TenantID, SubjectID: user.ID, AuthenticationMethod: auth.AuthenticationMethodFederated},
+		Evidence:  session.AuthenticationEvidence{Assurance: "demo-mfa", AuthenticatedAt: base.Add(-time.Minute)}, CorrelationID: "login-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := oidcauth.NewRedisTransactionStore(redisAddress, "", 0, "handler-unavailable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nonce string
+	flow := reauthenticationCompletionFlowWithStore(t, user.ID, base, &nonce, store)
+	start, err := flow.StartReauthentication(context.Background(), oidcauth.ReauthenticationStartCommand{
+		Credential: credential.Token, Action: identityBindingChangeAction, ReturnTo: "/users",
+		Principal: auth.Principal{TenantID: user.TenantID, SubjectID: user.ID, AuthenticationMethod: auth.AuthenticationMethodFederated},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"code": "code-1", "state": start.State, "cookie_state": start.State})
+	request := httptest.NewRequest(http.MethodPost, "/v1/auth/reauth/callback", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+credential.Token)
+	recorder := httptest.NewRecorder()
+	handleReauthenticationCallback(flow, sessions, users, nil).ServeHTTP(recorder, request)
+	if recorder.Code == http.StatusOK || strings.Contains(recorder.Body.String(), platformSessionCredentialPrefix) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -329,6 +501,10 @@ func reauthenticationStartFlow(t *testing.T, userID string) *oidcauth.Flow {
 }
 
 func reauthenticationCompletionFlow(t *testing.T, userID string, now time.Time, nonce *string) *oidcauth.Flow {
+	return reauthenticationCompletionFlowWithStore(t, userID, now, nonce, oidcauth.NewMemoryTransactionStore())
+}
+
+func reauthenticationCompletionFlowWithStore(t *testing.T, userID string, now time.Time, nonce *string, store oidcauth.TransactionStore) *oidcauth.Flow {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -342,6 +518,13 @@ func reauthenticationCompletionFlow(t *testing.T, userID string, now time.Time, 
 		case "/jwks":
 			writeOIDCTestJSON(t, w, map[string]any{"keys": []any{oidcRSAJWK("reauth-callback-key", &key.PublicKey)}})
 		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.Form.Get("code") == "provider-unavailable" {
+				http.Error(w, "provider unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
 				"iss": issuer, "sub": "external-alice", "aud": "rag-web", "exp": now.Add(5 * time.Minute).Unix(),
 				"iat": now.Unix(), "nonce": *nonce, "acr": "2", "amr": []string{"pwd", "otp"}, "auth_time": now.Add(-time.Minute).Unix(),
@@ -364,5 +547,38 @@ func reauthenticationCompletionFlow(t *testing.T, userID string, now time.Time, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return oidcauth.NewFlow(authenticator, oidcauth.NewMemoryTransactionStore(), 5*time.Minute)
+	return oidcauth.NewFlow(authenticator, store, 5*time.Minute)
+}
+
+func prepareReauthenticationCallback(t *testing.T, returnTo string) (*oidcauth.Flow, *session.Manager, *fakeUserStore, session.Credential, oidcauth.BrowserStart) {
+	t.Helper()
+	base := time.Now().UTC().Truncate(time.Second)
+	clock := base
+	users := newFakeUserStore()
+	seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
+	user, _, _ := users.GetByUsername(context.Background(), "alice")
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := sessions.Establish(context.Background(), session.EstablishCommand{
+		Principal: auth.Principal{TenantID: user.TenantID, SubjectID: user.ID, AuthenticationMethod: auth.AuthenticationMethodFederated},
+		Evidence:  session.AuthenticationEvidence{Assurance: "demo-mfa", AuthenticatedAt: base}, CorrelationID: "login-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = base.Add(10 * time.Minute)
+	var nonce string
+	flow := reauthenticationCompletionFlow(t, user.ID, clock, &nonce)
+	start, err := flow.StartReauthentication(context.Background(), oidcauth.ReauthenticationStartCommand{
+		Credential: credential.Token, Action: identityBindingChangeAction, ReturnTo: returnTo,
+		Principal: auth.Principal{TenantID: user.TenantID, SubjectID: user.ID, AuthenticationMethod: auth.AuthenticationMethodFederated},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(start.AuthorizationURL)
+	nonce = parsed.Query().Get("nonce")
+	return flow, sessions, users, credential, start
 }
