@@ -628,7 +628,7 @@ P2.5 个人演示身份策略与实现准入（2026-08-31 已批准计划）：
    接管现有 JWT/Cookie、OIDC 登录、生产配置或部署。
 5. 评审[个人演示身份策略](personal-demo-identity-profile.md)，通过后另提 F1 代码 PR。
 
-P2.5-F1 会话核心（2026-08-31 已实现并验证，待 PR 评审）：
+P2.5-F1 会话核心（2026-08-31 已合并）：
 
 1. 新增 `0021_platform_sessions` migration，只保存 credential SHA-256、内部 user/tenant、
    认证方法/保证/时间、到期、generation、撤销、策略 revision 和最小 correlation；不
@@ -645,6 +645,20 @@ P2.5-F1 会话核心（2026-08-31 已实现并验证，待 PR 评审）：
    撤销、轮换重放、存储故障、并发 CAS、migration 与配置门禁；真实 PostgreSQL
    生命周期测试还验证摘要存储、轮换不延长绝对寿命、主体撤销、撤销 correlation
    持久化，以及并发建立无法越过主体撤销水位。
+
+P2.5-F2 会话凭据验证（2026-08-31 已实现并本地验证，待 PR 评审）：
+
+1. 在现有 HTTP `auth.Authenticator` seam 组合 JWT 与 session adapter；只以版本化
+   `ps1_` 前缀选择 opaque 路径，不使用解析失败推断 credential 类型。
+2. session adapter 去除传输前缀后调用 `session.Manager.Authenticate`；无效、到期、
+   撤销、重新认证决策或存储故障全部拒绝，且永不回退 JWT。
+3. allow 结果只用于内部 user/tenant 定位；每次请求从 `userstore` 校验用户存在、active
+   和 tenant 一致，并按当前 role 重新计算 scopes，支持下一请求撤权。
+4. Query API 只在 `SESSION_CORE_ENABLED=true`、`ENVIRONMENT=dev`、
+   `IDENTITY_POLICY_PROFILE=personal-demo-v1` 同时满足时构造 PostgreSQL adapter；默认关闭
+   时保持现有 JWT 行为。
+5. 所有保护路由暂映射 standard `platform.request`；F2 不签发凭据，不改变登录、Cookie、
+   OIDC、logout、部署或 production。风险动作和 reauthentication 事务进入 F3。
 
 P2.3 backend projection slice (2026-08-28):
 

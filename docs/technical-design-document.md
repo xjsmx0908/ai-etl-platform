@@ -351,6 +351,15 @@ P2.5-F1 首个实现 PR 新增会话 migration 和 `internal/session` 核心，�
 deny，数据库故障返回 unavailable。当前/主体撤销都要求非空 correlation ID，并与
 撤销状态在同一 PostgreSQL 操作中持久化；建立/轮换也要求 correlation ID。重新认证
 只轮换 credential 和认证时间，不重置最初创建时间或绝对到期。主体撤销、新建和轮换
-通过内部用户行锁串行，并由 `revoked_before` 水位拒绝撤销前的旧认证证据。模块尚未在
-Query API 构造，配置也保持默认关闭，
-且仅允许 `ENVIRONMENT=dev` + `personal-demo-v1`，因此本切片不改变任何现有请求路径。
+通过内部用户行锁串行，并由 `revoked_before` 水位拒绝撤销前的旧认证证据。
+
+P2.5-F2 在 Query API 认证 seam 中按显式 `ps1_` 前缀路由预先建立的 opaque
+credential；前缀命中后只调用 `session.Manager.Authenticate`，失败时不得回退 JWT。
+允许结果再按内部 user ID 查询当前用户，校验 active 与 tenant 一致，并仅从当前 role
+计算 scopes，session 记录不成为权限快照。所有受保护请求暂映射为已登记的 standard
+动作 `platform.request`；高风险动作分类和 reauthentication 响应语义留给 F3。
+
+Query API 仅在 `SESSION_CORE_ENABLED=true`、`ENVIRONMENT=dev` 且 profile 为
+`personal-demo-v1` 时构造 PostgreSQL session adapter；默认关闭时仍直接使用现有 JWT
+verifier。F2 不签发 `ps1_` credential，登录仍返回 JWT，也不修改 Cookie、OIDC callback、
+logout、部署或 staging/production。
