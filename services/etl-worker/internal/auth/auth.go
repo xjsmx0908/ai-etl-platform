@@ -117,9 +117,14 @@ func Middleware(authenticator Authenticator, requiredScopes ...string) func(http
 			principal, err := authenticator.Authenticate(r)
 			if err != nil {
 				if errors.Is(err, ErrReauthenticationRequired) {
+					action := ""
+					var required ReauthenticationRequiredError
+					if errors.As(err, &required) {
+						action = required.Action
+					}
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnauthorized)
-					_, _ = w.Write([]byte(`{"error":"reauthentication_required","message":"fresh authentication is required"}`))
+					_, _ = fmt.Fprintf(w, `{"error":"reauthentication_required","message":"fresh authentication is required","action":%q}`, action)
 					return
 				}
 				http.Error(w, `{"error":"unauthorized","message":"`+err.Error()+`"}`, http.StatusUnauthorized)

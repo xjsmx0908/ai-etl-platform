@@ -61,7 +61,7 @@ func (a *sessionCredentialAuthenticator) Authenticate(request *http.Request) (au
 		return auth.Principal{}, fmt.Errorf("invalid session authority")
 	}
 	if result.Decision == session.DecisionReauthenticate {
-		return auth.Principal{}, auth.ErrReauthenticationRequired
+		return auth.Principal{}, auth.ReauthenticationRequiredError{Action: platformSessionAction(request)}
 	}
 	return auth.Principal{
 		TenantID:             user.TenantID,

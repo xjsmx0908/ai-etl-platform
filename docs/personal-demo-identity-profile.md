@@ -158,3 +158,17 @@ F3b 已在 `oidcauth` seam 实现但尚未装配 HTTP：
 
 后续 F3c 再接入 HTTP callback、`ps1_` 原子轮换和 HttpOnly Cookie；之后依次实现退出和
 demo 登录迁移。F3b 本身不改变当前运行行为。
+
+## 第五个实现切片：P2.5-F3c HTTP 与原子轮换
+
+F3c 已把 F3a challenge 和 F3b transaction 接入 Query API 与 Web BFF：
+
+1. 只有达到 10 分钟边界的联邦 `ps1_` 和已登记 high-risk action 可以启动；风险 action
+   由服务端响应提供，前端不自行推断。
+2. callback 复用已配置的 OIDC redirect URI，独立 reauth state Cookie 与普通登录 state
+   分流；可信证据、当前 credential、tenant/subject、实时用户状态全部通过后才原子轮换。
+3. Web start 要求明确同源 POST；成功才替换 Secure/HttpOnly/SameSite=Lax 主 Cookie，寿命
+   不超过 30 分钟或 session 剩余绝对寿命。失败仅清 state，不覆盖旧 Cookie。
+4. 原高风险写请求不会自动重放，用户回到安全 return path 后再次确认执行。
+
+下一切片实现 `ps1_` 初始签发和 demo 登录迁移；logout 继续独立实现。
