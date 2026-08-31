@@ -8,6 +8,7 @@ This repository contains an AI ETL/RAG platform with Go and Python services. `se
 - `docker compose ps` / `docker compose logs -f`: inspect running services.
 - `bash scripts/e2e-smoke.sh`: runs the end-to-end upload, parse, embed, store, and query smoke flow.
 - `python3 scripts/run-evals.py`: runs deterministic RAG regression checks.
+- `uv run --with-requirements scripts/requirements-test.txt python -m unittest discover -s scripts/tests -p 'test_*.py' -q`: runs evaluation, governance, and evidence-schema contracts in an isolated Python environment.
 - `cd services/etl-worker && make build`: builds both Go binaries.
 - `cd services/etl-worker && make test`: runs Go race tests with coverage for `internal/...`.
 - `cd services/doc-parser-service && pip install -r requirements.txt && pytest -q`: installs parser dependencies and runs Python tests.

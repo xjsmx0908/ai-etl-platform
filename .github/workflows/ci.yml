@@ -84,6 +84,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install script test dependencies
+        run: python3 -m pip install -r scripts/requirements-test.txt
+
       - name: Run eval unit tests
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 

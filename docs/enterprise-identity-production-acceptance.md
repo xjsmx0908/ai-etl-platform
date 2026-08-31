@@ -180,6 +180,7 @@ one policy responsibility:
 4. P2.5-I：拟议的独立 workload 注册表、audience、凭据、能力、委托和轮换契约见
    [企业服务与工作负载身份设计](enterprise-workload-identity-design.md)；机器不能
    复用浏览器会话或继承平台 admin，P2.5-J 必须保留真实凭据与撤权证据。
-5. P2.5-J: selected-provider adapter/configuration, authoritative reconciliation
-   with distinct completion evidence, and the staging acceptance run. Production
-   enablement and deployment require a later explicit approval.
+5. P2.5-J：拟议的 selected-provider adapters、权威对账、2.0 manifest 和隔离 staging
+   组合验收见
+   [企业身份提供方适配与 Staging 验收设计](enterprise-identity-provider-staging-design.md)。
+   A～D 已实现，F～I 仍待实现；production enablement/deployment 需要后续明确批准。

@@ -63,6 +63,8 @@ RERANKER_BACKEND=lexical RERANKER_LOAD_ON_STARTUP=false pytest -q   # 免下载�
 ### 评测（scripts/run-evals.py）——双模式，指标含义不同
 
 ```bash
+uv run --with-requirements scripts/requirements-test.txt \
+    python -m unittest discover -s scripts/tests -p 'test_*.py' -q
 python3 scripts/run-evals.py                 # mock：确定性 CI 门禁，仅验证链路接通
 python3 scripts/run-evals.py --real-models   # 真实 embedding+LLM，唯一能说明检索质量的方式
 ```

@@ -1,19 +1,52 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "decision": "pending",
   "acceptance_id": "",
+  "environment": "staging",
+  "provider_profile_revision": "",
+  "policy_revision": "",
+  "feature_revisions": {
+    "principal": "",
+    "external_binding": "",
+    "oidc": "",
+    "lifecycle": "",
+    "session": "",
+    "emergency_access": "",
+    "group_authorization": "",
+    "workload_identity": "",
+    "reconciliation": ""
+  },
+  "maturity": {
+    "p2_5_a_principal": "not_assessed",
+    "p2_5_b_external_binding": "not_assessed",
+    "p2_5_c_oidc": "not_assessed",
+    "p2_5_d_lifecycle": "not_assessed",
+    "p2_5_e_acceptance": "not_assessed",
+    "p2_5_f_session": "not_assessed",
+    "p2_5_g_emergency_access": "not_assessed",
+    "p2_5_h_group_authorization": "not_assessed",
+    "p2_5_i_workload_identity": "not_assessed",
+    "p2_5_j_reconciliation_and_staging": "not_assessed"
+  },
   "provider": {
     "product": "",
     "version_or_sku": "",
-    "tenant_or_realm_alias": "",
+    "private_tenant_or_realm_evidence_id": "",
     "oidc_issuer": "",
-    "scim_profile_sha256": "",
+    "oidc_profile_sha256": "",
+    "scim_users_profile_sha256": "",
+    "scim_groups_profile_sha256": "",
+    "workload_profile_sha256": "",
     "sanitized_configuration_sha256": ""
   },
   "platform": {
     "commit": "",
     "query_api_image_digest": "",
-    "web_image_digest": ""
+    "web_image_digest": "",
+    "parser_image_digest": "",
+    "reranker_image_digest": "",
+    "worker_image_digest": "",
+    "database_migration_revision": ""
   },
   "scores": {
     "enterprise_ownership": null,
@@ -21,6 +54,8 @@
     "scim_profile_compatibility": null,
     "stable_subject_equality": null,
     "mfa_session_logout_policy": null,
+    "group_directory_compatibility": null,
+    "workload_identity_compatibility": null,
     "rotation_and_audit": null,
     "availability_residency_cost": null
   },
@@ -31,33 +66,83 @@
     "default_role": "readonly",
     "stored_profile": [],
     "provisioning_mode": "scim_only",
+    "group_authority": "",
+    "group_semantics": "",
+    "workload_trust_domain": "",
+    "session_policy_revision": "",
+    "emergency_policy_revision": "",
     "deactivation_sla_seconds": null,
     "reconciliation_interval_seconds": null,
+    "reconciliation_max_staleness_seconds": null,
+    "group_max_staleness_seconds": null,
     "tombstone_retention_days": null,
     "credential_rotation_days": null,
     "credential_overlap_seconds": null
   },
   "acceptance_results": {
-    "oidc_protocol": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "create_to_login_identity": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "update_and_concurrent_replay": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "deactivate_and_session_revocation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "constrained_reactivation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "delete_and_identifier_reuse": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "credential_and_jwks_rotation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "dependency_outages": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "redaction_audit_and_metrics": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
-    "authoritative_reconciliation": {"outcome": "not_run", "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""}
+    "oidc_protocol": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "create_to_login_identity": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "update_and_concurrent_replay": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "deactivate_and_session_revocation": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "constrained_reactivation": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "delete_and_identifier_reuse": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "credential_and_jwks_rotation": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "authoritative_reconciliation": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "session_assurance_and_logout": {"outcome": "blocked", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "group_sync_authorization_and_revocation": {"outcome": "blocked", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "emergency_access_rehearsal": {"outcome": "blocked", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "workload_identity_and_delegation": {"outcome": "blocked", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "dependency_outages": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "redaction_audit_and_metrics": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""},
+    "cleanup_and_rollback": {"outcome": "not_run", "mandatory": true, "evidence_id": "", "sha256": "", "started_at": "", "completed_at": ""}
   },
-  "evidence_bundle_sha256": "",
-  "decision_matrix_evidence_id": "",
-  "decision_matrix_sha256": "",
+  "reconciliation": {
+    "run_id": "",
+    "source_watermark_sha256": "",
+    "snapshot_digest_sha256": "",
+    "plan_digest_sha256": "",
+    "snapshot_count": null,
+    "drift_count": null,
+    "applied_count": null,
+    "quarantined_count": null,
+    "last_attempted_at": "",
+    "last_completed_at": "",
+    "last_failed_at": ""
+  },
   "sla_summary": {
     "deactivation_observed_seconds": null,
     "reconciliation_observed_seconds": null,
-    "missed_run_alert_observed_seconds": null
+    "missed_run_alert_observed_seconds": null,
+    "group_revocation_observed_seconds": null,
+    "workload_revocation_observed_seconds": null
   },
-  "correlation_id_evidence_id": "",
+  "evidence": {
+    "bundle_sha256": "",
+    "decision_matrix_evidence_id": "",
+    "decision_matrix_sha256": "",
+    "correlation_index_evidence_id": "",
+    "cleanup_evidence_id": "",
+    "rollback_evidence_id": ""
+  },
+  "cleanup": {
+    "outcome": "not_run",
+    "test_identities_removed": false,
+    "test_groups_removed": false,
+    "test_workloads_revoked": false,
+    "test_credentials_revoked": false,
+    "completed_at": ""
+  },
+  "risk_acceptances": [],
+  "invalidation_triggers": [
+    "provider_or_sku_change",
+    "issuer_or_subject_mapping_change",
+    "scim_or_group_profile_change",
+    "identity_or_adapter_code_change",
+    "material_policy_change",
+    "evidence_schema_change",
+    "platform_image_change",
+    "approval_expiry"
+  ],
   "rollback_rehearsed_at": "",
   "rollback_owner_role": "",
   "approved_at": "",
@@ -67,12 +152,20 @@
     "tenant_owner": "",
     "security_owner": "",
     "privacy_or_legal_owner": "",
-    "operations_owner": ""
+    "operations_owner": "",
+    "business_owner": ""
   },
   "signature": {
-    "mechanism": "",
-    "signed_manifest_sha256": "",
-    "detached_signature_sha256": "",
-    "signed_at": ""
+    "canonicalization": "",
+    "excluded_json_pointer": "/signature",
+    "payload_sha256": "",
+    "signatures": {
+      "identity_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "tenant_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "security_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "privacy_or_legal_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "operations_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "business_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""}
+    }
   }
 }
