@@ -1085,3 +1085,14 @@ This file is an append-only record of completed PRAR cycles.
   排除 envelope 的 canonical payload 生成，并为各责任人保留独立 detached signature。
 - 复审修正：风险接受可以为空，但存在时必须有 risk ID、责任角色、到期时间和证据；
   approved manifest 精确列出八类失效触发器，并把签名 canonicalization 固定为 RFC 8785。
+
+## 2026-08-31 - P2.5 企业决策登记与实现准入
+
+- 感知：E～I 共有 51 项跨身份、租户、安全、产品、隐私、法务、运维、SRE、SOC、
+  合规和业务连续性的 `Pending` 输入；代码仓库没有权威企业责任人或真实 provider。
+- 推理：建议、文档审批和企业策略审批是不同事件。稳定决策 ID 与不可变私有证据引用
+  能让 PR 逐行评审，同时避免在仓库保存姓名、tenant、凭据或恢复材料。
+- 行动：建立 E-01～I-10 登记表、审批状态机、证据/失效规则和逐阶段准入矩阵；同步
+  README、架构、技术设计和 backlog，保持运行代码、真实接入与 production 不变。
+- 改进：只有全部所需责任人签署同一未过期 revision 才能解锁既定实现顺序；推荐基线、
+  部分签署或合并本文档都不能被自动解释为 `Approved`。

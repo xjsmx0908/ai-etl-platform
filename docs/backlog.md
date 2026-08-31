@@ -603,6 +603,19 @@ P2.5-J 提供方适配、权威对账与 staging 验收设计（2026-08-31 提�
    pass 或证据失效均阻止后续 production enablement PR。
 8. 评审 [企业身份提供方适配与 Staging 验收设计](enterprise-identity-provider-staging-design.md)。
 
+P2.5 企业决策登记与实现准入（2026-08-31 已批准计划）：
+
+1. 汇总 P2.5-E～I 的全部 `Pending` 企业决策，为每项分配稳定 ID、必需责任人、
+   建议基线、批准值/状态和私有证据引用；建议不得自动转为批准。
+2. 定义 `Pending → Proposed → Approved/Rejected → Superseded` 状态与职责分离，
+   provider、数值策略、真实责任人和凭据只能由有权企业责任人确认。
+3. 建立按模块计算的实现准入：只有该切片依赖的决策全部有效批准，才允许开始实现；
+   默认关闭、失败关闭和内部授权权威等安全不变量无需等待即可固化。
+4. 先用登记文档完成逐行评审；本切片不选择 IdP、不创建凭据、不连接外部 tenant、
+   不修改运行代码，也不声称真实 staging 或 production 已完成。
+5. 后续独立实现登记 validator 和 CI 门禁；在此之前自动准入保持关闭，不声称文档
+   状态已被机器强制。评审[企业身份决策登记与实现准入](enterprise-identity-decision-register.md)。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
