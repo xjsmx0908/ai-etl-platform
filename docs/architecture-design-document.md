@@ -179,6 +179,12 @@ F～I 未实现的 mandatory 验收明确为 blocked。
 配置/策略 revision，不解析 Markdown，也不能把建议基线或 GitHub 审批当作策略授权。
 所有决策批准前，F～J 的运行能力和真实 provider 接入保持 blocked/default-off。
 
+个人演示 profile 是独立 policy namespace。`DemoApproved` 只能在 `ENVIRONMENT=dev`
+且 profile 为 `personal-demo-v1` 时生效；`demo` 不新增环境枚举，
+且只解锁默认关闭的实现与确定性测试；它不能写回企业决策状态、生成企业 acceptance
+manifest，或在 staging/production 启动。首个实现从不接管登录流的 provider-neutral
+session core 开始，避免未完成的 demo 认证路径影响现有安全边界。
+
 ## Version-bound Publication Module
 
 `internal/publicationworkflow` owns governed publication behind the assessment
