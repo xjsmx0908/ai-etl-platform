@@ -1146,3 +1146,19 @@ This file is an append-only record of completed PRAR cycles.
 - 改进：reauthenticate 不能早于实时撤权检查。session 决策因此只返回内部定位，adapter
   先校验 active/tenant；停用用户、无效凭据和存储故障仍统一 unauthorized，不能收到
   可继续流程的挑战。F3a 不声称已实现 MFA 或重新认证事务。
+
+## 2026-08-31 - P2.5-F3b 可信认证证据与单次重新认证事务核心
+
+- 感知：F3a 已能识别高风险请求，却没有可信方式把 Keycloak 声明转换为内部认证证据，
+  也没有把新的认证尝试绑定到当前 session credential、内部主体和目标动作。
+- 推理：提供方语义应止于 OIDC adapter；Flow 只编排 provider-neutral evidence 和一次性
+  transaction。普通登录与重新认证使用独立完成入口，避免弱登录误入强认证路径或反向绕过。
+- 行动：以 public seam 的 red→green 测试实现严格 `acr`/`amr`/`auth_time` 转换、新的
+  state/nonce/PKCE、credential 摘要及 tenant/subject/action 绑定、恒定时间比较和单次消费；
+  Redis 测试证明不同实例可完成且重放失败。
+- 改进：完成入口必须双向拒绝事务类型混用，并在 token exchange 后重新核对目录解析出的
+  内部主体。凭据变化、主体漂移、含糊/陈旧证据、事务存储或 IdP 故障均不产生部分成功。
+  本切片不装配 HTTP、不签发/轮换 `ps1_`、不改 Cookie，保持后续 F3c 的责任清晰。
+- 审查修正：事务过期必须与 Memory/Redis adapter 使用同一真实时钟域，不能误用仅供 token
+  测试的注入时钟；`auth_time` 的批准证据不接受任何未来值。公共 OIDC transaction builder
+  和集中 demo evidence 常量同时消除了普通/重新认证流程及两层证据校验的策略漂移。

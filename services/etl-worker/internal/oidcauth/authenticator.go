@@ -21,9 +21,16 @@ import (
 
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/externalidentity"
+	"ai-etl-pipeline/internal/session"
 )
 
 var ErrAuthentication = errors.New("oidc authentication failed")
+
+const (
+	demoACR               = "2"
+	demoAssurance         = "demo-mfa"
+	demoEvidenceFreshness = 10 * time.Minute
+)
 
 type Config struct {
 	Issuer       string
@@ -31,6 +38,7 @@ type Config struct {
 	ClientSecret string
 	RedirectURI  string
 	HTTPClient   *http.Client
+	Clock        func() time.Time
 }
 
 type CodeExchange struct {
@@ -44,6 +52,7 @@ type Authenticator struct {
 	directory externalidentity.Directory
 	client    *http.Client
 	discovery discoveryDocument
+	now       func() time.Time
 
 	keysMu sync.RWMutex
 	keys   map[string]any
@@ -61,9 +70,17 @@ type tokenResponse struct {
 }
 
 type idTokenClaims struct {
-	Nonce           string `json:"nonce"`
-	AuthorizedParty string `json:"azp"`
+	Nonce              string           `json:"nonce"`
+	AuthorizedParty    string           `json:"azp"`
+	ACR                string           `json:"acr"`
+	AMR                []string         `json:"amr"`
+	AuthenticationTime *jwt.NumericDate `json:"auth_time"`
 	jwt.RegisteredClaims
+}
+
+type AuthenticationResult struct {
+	Principal auth.Principal
+	Evidence  session.AuthenticationEvidence
 }
 
 func New(ctx context.Context, cfg Config, directory externalidentity.Directory) (*Authenticator, error) {
@@ -84,7 +101,11 @@ func New(ctx context.Context, cfg Config, directory externalidentity.Directory) 
 		return http.ErrUseLastResponse
 	}
 	client = &clientCopy
-	a := &Authenticator{config: cfg, directory: directory, client: client}
+	now := cfg.Clock
+	if now == nil {
+		now = time.Now
+	}
+	a := &Authenticator{config: cfg, directory: directory, client: client, now: now}
 	if err := a.loadDiscovery(ctx); err != nil {
 		return nil, err
 	}
@@ -95,8 +116,17 @@ func New(ctx context.Context, cfg Config, directory externalidentity.Directory) 
 }
 
 func (a *Authenticator) Authenticate(ctx context.Context, exchange CodeExchange) (auth.Principal, error) {
+	result, err := a.authenticate(ctx, exchange, false)
+	return result.Principal, err
+}
+
+func (a *Authenticator) AuthenticateWithEvidence(ctx context.Context, exchange CodeExchange) (AuthenticationResult, error) {
+	return a.authenticate(ctx, exchange, true)
+}
+
+func (a *Authenticator) authenticate(ctx context.Context, exchange CodeExchange, requireEvidence bool) (AuthenticationResult, error) {
 	if strings.TrimSpace(exchange.Code) == "" || strings.TrimSpace(exchange.CodeVerifier) == "" || strings.TrimSpace(exchange.Nonce) == "" {
-		return auth.Principal{}, fmt.Errorf("%w: incomplete code exchange", ErrAuthentication)
+		return AuthenticationResult{}, fmt.Errorf("%w: incomplete code exchange", ErrAuthentication)
 	}
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
@@ -110,47 +140,72 @@ func (a *Authenticator) Authenticate(ctx context.Context, exchange CodeExchange)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.discovery.TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return auth.Principal{}, fmt.Errorf("%w: build token request", ErrAuthentication)
+		return AuthenticationResult{}, fmt.Errorf("%w: build token request", ErrAuthentication)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return auth.Principal{}, fmt.Errorf("%w: token endpoint unavailable", ErrAuthentication)
+		return AuthenticationResult{}, fmt.Errorf("%w: token endpoint unavailable", ErrAuthentication)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return auth.Principal{}, fmt.Errorf("%w: token endpoint rejected exchange", ErrAuthentication)
+		return AuthenticationResult{}, fmt.Errorf("%w: token endpoint rejected exchange", ErrAuthentication)
 	}
 	var tokenResult tokenResponse
 	if err := json.NewDecoder(http.MaxBytesReader(nil, resp.Body, 1<<20)).Decode(&tokenResult); err != nil || tokenResult.IDToken == "" {
-		return auth.Principal{}, fmt.Errorf("%w: invalid token response", ErrAuthentication)
+		return AuthenticationResult{}, fmt.Errorf("%w: invalid token response", ErrAuthentication)
 	}
 	refreshed, err := a.ensureSigningKey(ctx, tokenResult.IDToken)
 	if err != nil {
-		return auth.Principal{}, fmt.Errorf("%w: invalid ID token", ErrAuthentication)
+		return AuthenticationResult{}, fmt.Errorf("%w: invalid ID token", ErrAuthentication)
 	}
 
 	claims := &idTokenClaims{}
 	token, err := a.parseIDToken(tokenResult.IDToken, claims)
 	if err != nil && !refreshed && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
 		if refreshErr := a.refreshKeys(ctx); refreshErr != nil {
-			return auth.Principal{}, fmt.Errorf("%w: invalid ID token", ErrAuthentication)
+			return AuthenticationResult{}, fmt.Errorf("%w: invalid ID token", ErrAuthentication)
 		}
 		claims = &idTokenClaims{}
 		token, err = a.parseIDToken(tokenResult.IDToken, claims)
 	}
 	if err != nil || !token.Valid || claims.Subject == "" || claims.Nonce != exchange.Nonce ||
-		claims.IssuedAt == nil || claims.IssuedAt.Time.After(time.Now().Add(time.Minute)) ||
+		claims.IssuedAt == nil || claims.IssuedAt.Time.After(a.now().Add(time.Minute)) ||
 		(len(claims.Audience) > 1 && claims.AuthorizedParty != a.config.ClientID) {
-		return auth.Principal{}, fmt.Errorf("%w: invalid ID token", ErrAuthentication)
+		return AuthenticationResult{}, fmt.Errorf("%w: invalid ID token", ErrAuthentication)
+	}
+	var evidence session.AuthenticationEvidence
+	if requireEvidence {
+		if claims.ACR != demoACR || !exactAMR(claims.AMR, "pwd", "otp") || claims.AuthenticationTime == nil ||
+			claims.AuthenticationTime.Time.After(a.now()) || a.now().Sub(claims.AuthenticationTime.Time) >= demoEvidenceFreshness {
+			return AuthenticationResult{}, fmt.Errorf("%w: authentication evidence is not approved", ErrAuthentication)
+		}
+		evidence = session.AuthenticationEvidence{Assurance: demoAssurance, AuthenticatedAt: claims.AuthenticationTime.Time.UTC()}
 	}
 	principal, err := a.directory.Resolve(ctx, externalidentity.ExternalIdentity{
 		Issuer: claims.Issuer, Subject: claims.Subject,
 	})
 	if err != nil {
-		return auth.Principal{}, fmt.Errorf("%w: external identity is not authorized", ErrAuthentication)
+		return AuthenticationResult{}, fmt.Errorf("%w: external identity is not authorized", ErrAuthentication)
 	}
-	return principal, nil
+	return AuthenticationResult{Principal: principal, Evidence: evidence}, nil
+}
+
+func exactAMR(actual []string, required ...string) bool {
+	if len(actual) != len(required) {
+		return false
+	}
+	want := make(map[string]bool, len(required))
+	for _, value := range required {
+		want[value] = true
+	}
+	for _, value := range actual {
+		if !want[value] {
+			return false
+		}
+		delete(want, value)
+	}
+	return len(want) == 0
 }
 
 func (a *Authenticator) parseIDToken(rawToken string, claims *idTokenClaims) (*jwt.Token, error) {
@@ -158,6 +213,7 @@ func (a *Authenticator) parseIDToken(rawToken string, claims *idTokenClaims) (*j
 		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
 		jwt.WithIssuer(a.config.Issuer),
 		jwt.WithAudience(a.config.ClientID),
+		jwt.WithTimeFunc(a.now),
 		jwt.WithExpirationRequired(),
 	)
 }

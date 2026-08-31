@@ -143,4 +143,18 @@ generation rollback 为 high-risk action。有效 `ps1_` 会话在 `demo-mfa` �
 该切片不建立真正的重新认证事务，也不解析 Keycloak `acr`/`amr`/`auth_time` 或轮换
 credential；迁移期 JWT 继续兼容。F3b 再接入提供方证据、单次事务和安全返回路径。
 
-后续 PR 再依次接入凭据签发与 Cookie、退出和 demo 迁移。
+## 第四个实现切片：P2.5-F3b 可信证据与事务核心
+
+F3b 已在 `oidcauth` seam 实现但尚未装配 HTTP：
+
+1. Keycloak demo 只有同时提供 `acr=2`、精确 `pwd` + `otp` `amr` 和 10 分钟内的
+   `auth_time` 才转换为 provider-neutral `demo-mfa` 证据；缺失、额外、重复、弱、过期或
+   超前声明全部失败关闭，普通 OIDC 登录不被追溯要求该证据。
+2. 重新认证使用新的 state/nonce/PKCE，并请求 `prompt=login`、`max_age=0`、
+   `acr_values=2`。一次性事务只保存当前 credential 摘要、内部 tenant/subject、action、
+   安全 return path 和短 TTL，不保存 bearer 明文或 provider token。
+3. 完成时校验 state、当前 credential、内部主体和新鲜证据；内存及 Redis 跨实例均只允许
+   消费一次，普通登录事务与重新认证事务不能互换。
+
+后续 F3c 再接入 HTTP callback、`ps1_` 原子轮换和 HttpOnly Cookie；之后依次实现退出和
+demo 登录迁移。F3b 本身不改变当前运行行为。
