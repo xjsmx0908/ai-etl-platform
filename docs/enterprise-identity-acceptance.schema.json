@@ -75,8 +75,23 @@
           "acceptance_id": {"type": "string", "minLength": 1},
           "provider_profile_revision": {"type": "string", "minLength": 1},
           "policy_revision": {"type": "string", "minLength": 1},
+          "feature_revisions": {"$ref": "#/$defs/completedFeatureRevisions"},
+          "maturity": {"$ref": "#/$defs/stagingMaturity"},
+          "provider": {"$ref": "#/$defs/completedProvider"},
+          "platform": {"$ref": "#/$defs/completedPlatform"},
+          "scores": {"$ref": "#/$defs/completedScores"},
+          "approved_policy": {"$ref": "#/$defs/completedApprovedPolicy"},
           "acceptance_results": {"$ref": "#/$defs/passedResults"},
+          "reconciliation": {"$ref": "#/$defs/completedReconciliation"},
+          "sla_summary": {"$ref": "#/$defs/completedSla"},
+          "evidence": {"$ref": "#/$defs/completedEvidence"},
           "cleanup": {"$ref": "#/$defs/passedCleanup"},
+          "risk_acceptances": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/completedRiskAcceptance"},
+            "maxItems": 100
+          },
+          "invalidation_triggers": {"$ref": "#/$defs/completedInvalidationTriggers"},
           "rollback_rehearsed_at": {"type": "string", "format": "date-time"},
           "rollback_owner_role": {"type": "string", "minLength": 1},
           "approved_at": {"type": "string", "format": "date-time"},
@@ -117,6 +132,24 @@
       }
     },
     "featureRevisions": {"$ref": "#/$defs/revisionMap"},
+    "completedFeatureRevisions": {
+      "allOf": [
+        {"$ref": "#/$defs/revisionMap"},
+        {
+          "properties": {
+            "principal": {"type": "string", "minLength": 1},
+            "external_binding": {"type": "string", "minLength": 1},
+            "oidc": {"type": "string", "minLength": 1},
+            "lifecycle": {"type": "string", "minLength": 1},
+            "session": {"type": "string", "minLength": 1},
+            "emergency_access": {"type": "string", "minLength": 1},
+            "group_authorization": {"type": "string", "minLength": 1},
+            "workload_identity": {"type": "string", "minLength": 1},
+            "reconciliation": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
     "maturity": {
       "type": "object",
       "additionalProperties": false,
@@ -135,6 +168,25 @@
       }
     },
     "maturityValue": {"enum": ["not_assessed", "design_approved", "implemented", "staging_passed", "production_enabled"]},
+    "stagingMaturity": {
+      "allOf": [
+        {"$ref": "#/$defs/maturity"},
+        {
+          "properties": {
+            "p2_5_a_principal": {"const": "staging_passed"},
+            "p2_5_b_external_binding": {"const": "staging_passed"},
+            "p2_5_c_oidc": {"const": "staging_passed"},
+            "p2_5_d_lifecycle": {"const": "staging_passed"},
+            "p2_5_e_acceptance": {"const": "staging_passed"},
+            "p2_5_f_session": {"const": "staging_passed"},
+            "p2_5_g_emergency_access": {"const": "staging_passed"},
+            "p2_5_h_group_authorization": {"const": "staging_passed"},
+            "p2_5_i_workload_identity": {"const": "staging_passed"},
+            "p2_5_j_reconciliation_and_staging": {"const": "staging_passed"}
+          }
+        }
+      ]
+    },
     "provider": {
       "type": "object",
       "additionalProperties": false,
@@ -151,6 +203,24 @@
         "sanitized_configuration_sha256": {"$ref": "#/$defs/digest"}
       }
     },
+    "completedProvider": {
+      "allOf": [
+        {"$ref": "#/$defs/provider"},
+        {
+          "properties": {
+            "product": {"type": "string", "minLength": 1},
+            "version_or_sku": {"type": "string", "minLength": 1},
+            "private_tenant_or_realm_evidence_id": {"type": "string", "minLength": 1},
+            "oidc_issuer": {"type": "string", "format": "uri", "pattern": "^https://"},
+            "oidc_profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "scim_users_profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "scim_groups_profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "workload_profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "sanitized_configuration_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+          }
+        }
+      ]
+    },
     "platform": {
       "type": "object",
       "additionalProperties": false,
@@ -165,6 +235,23 @@
         "database_migration_revision": {"type": "string"}
       }
     },
+    "completedPlatform": {
+      "allOf": [
+        {"$ref": "#/$defs/platform"},
+        {
+          "properties": {
+            "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+            "query_api_image_digest": {"$ref": "#/$defs/imageDigest"},
+            "web_image_digest": {"$ref": "#/$defs/imageDigest"},
+            "parser_image_digest": {"$ref": "#/$defs/imageDigest"},
+            "reranker_image_digest": {"$ref": "#/$defs/imageDigest"},
+            "worker_image_digest": {"$ref": "#/$defs/imageDigest"},
+            "database_migration_revision": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "scores": {
       "type": "object",
       "additionalProperties": false,
@@ -182,6 +269,24 @@
       }
     },
     "score": {"type": ["integer", "null"], "minimum": 0, "maximum": 5},
+    "completedScores": {
+      "allOf": [
+        {"$ref": "#/$defs/scores"},
+        {
+          "properties": {
+            "enterprise_ownership": {"type": "integer", "minimum": 0, "maximum": 5},
+            "oidc_interoperability": {"type": "integer", "minimum": 4, "maximum": 5},
+            "scim_profile_compatibility": {"type": "integer", "minimum": 4, "maximum": 5},
+            "stable_subject_equality": {"type": "integer", "minimum": 4, "maximum": 5},
+            "mfa_session_logout_policy": {"type": "integer", "minimum": 0, "maximum": 5},
+            "group_directory_compatibility": {"type": "integer", "minimum": 0, "maximum": 5},
+            "workload_identity_compatibility": {"type": "integer", "minimum": 0, "maximum": 5},
+            "rotation_and_audit": {"type": "integer", "minimum": 0, "maximum": 5},
+            "availability_residency_cost": {"type": "integer", "minimum": 0, "maximum": 5}
+          }
+        }
+      ]
+    },
     "approvedPolicy": {
       "type": "object",
       "additionalProperties": false,
@@ -206,6 +311,31 @@
         "credential_rotation_days": {"$ref": "#/$defs/nullableNonnegative"},
         "credential_overlap_seconds": {"$ref": "#/$defs/nullableNonnegative"}
       }
+    },
+    "completedApprovedPolicy": {
+      "allOf": [
+        {"$ref": "#/$defs/approvedPolicy"},
+        {
+          "properties": {
+            "connector_id": {"type": "string", "minLength": 1},
+            "internal_tenant_id": {"type": "string", "minLength": 1},
+            "subject_attribute": {"type": "string", "minLength": 1},
+            "stored_profile": {"type": "array", "minItems": 1},
+            "group_authority": {"type": "string", "minLength": 1},
+            "group_semantics": {"type": "string", "minLength": 1},
+            "workload_trust_domain": {"type": "string", "minLength": 1},
+            "session_policy_revision": {"type": "string", "minLength": 1},
+            "emergency_policy_revision": {"type": "string", "minLength": 1},
+            "deactivation_sla_seconds": {"type": "integer", "minimum": 1},
+            "reconciliation_interval_seconds": {"type": "integer", "minimum": 1},
+            "reconciliation_max_staleness_seconds": {"type": "integer", "minimum": 1},
+            "group_max_staleness_seconds": {"type": "integer", "minimum": 1},
+            "tombstone_retention_days": {"type": "integer", "minimum": 1},
+            "credential_rotation_days": {"type": "integer", "minimum": 1},
+            "credential_overlap_seconds": {"type": "integer", "minimum": 1}
+          }
+        }
+      ]
     },
     "result": {
       "type": "object",
@@ -299,6 +429,25 @@
         "last_failed_at": {"$ref": "#/$defs/optionalTimestamp"}
       }
     },
+    "completedReconciliation": {
+      "allOf": [
+        {"$ref": "#/$defs/reconciliation"},
+        {
+          "properties": {
+            "run_id": {"type": "string", "minLength": 1},
+            "source_watermark_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "snapshot_digest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "plan_digest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "snapshot_count": {"type": "integer", "minimum": 0},
+            "drift_count": {"type": "integer", "minimum": 0},
+            "applied_count": {"type": "integer", "minimum": 0},
+            "quarantined_count": {"type": "integer", "minimum": 0},
+            "last_attempted_at": {"type": "string", "format": "date-time"},
+            "last_completed_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
     "sla": {
       "type": "object",
       "additionalProperties": false,
@@ -310,6 +459,20 @@
         "group_revocation_observed_seconds": {"$ref": "#/$defs/nullableNonnegative"},
         "workload_revocation_observed_seconds": {"$ref": "#/$defs/nullableNonnegative"}
       }
+    },
+    "completedSla": {
+      "allOf": [
+        {"$ref": "#/$defs/sla"},
+        {
+          "properties": {
+            "deactivation_observed_seconds": {"type": "integer", "minimum": 0},
+            "reconciliation_observed_seconds": {"type": "integer", "minimum": 0},
+            "missed_run_alert_observed_seconds": {"type": "integer", "minimum": 0},
+            "group_revocation_observed_seconds": {"type": "integer", "minimum": 0},
+            "workload_revocation_observed_seconds": {"type": "integer", "minimum": 0}
+          }
+        }
+      ]
     },
     "evidence": {
       "type": "object",
@@ -323,6 +486,21 @@
         "cleanup_evidence_id": {"type": "string"},
         "rollback_evidence_id": {"type": "string"}
       }
+    },
+    "completedEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/evidence"},
+        {
+          "properties": {
+            "bundle_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "decision_matrix_evidence_id": {"type": "string", "minLength": 1},
+            "decision_matrix_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "correlation_index_evidence_id": {"type": "string", "minLength": 1},
+            "cleanup_evidence_id": {"type": "string", "minLength": 1},
+            "rollback_evidence_id": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
     },
     "cleanup": {
       "type": "object",
@@ -364,6 +542,36 @@
         "evidence_id": {"type": "string"}
       }
     },
+    "completedRiskAcceptance": {
+      "allOf": [
+        {"$ref": "#/$defs/riskAcceptance"},
+        {
+          "properties": {
+            "risk_id": {"type": "string", "minLength": 1},
+            "owner_role": {"type": "string", "minLength": 1},
+            "evidence_id": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "completedInvalidationTriggers": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "provider_or_sku_change",
+          "issuer_or_subject_mapping_change",
+          "scim_or_group_profile_change",
+          "identity_or_adapter_code_change",
+          "material_policy_change",
+          "evidence_schema_change",
+          "platform_image_change",
+          "approval_expiry"
+        ]
+      }
+    },
     "approvals": {
       "type": "object",
       "additionalProperties": false,
@@ -395,23 +603,69 @@
     "signature": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mechanism", "signed_manifest_sha256", "detached_signature_sha256", "signed_at"],
+      "required": ["canonicalization", "excluded_json_pointer", "payload_sha256", "signatures"],
+      "properties": {
+        "canonicalization": {"type": "string"},
+        "excluded_json_pointer": {"const": "/signature"},
+        "payload_sha256": {"$ref": "#/$defs/digest"},
+        "signatures": {"$ref": "#/$defs/signatures"}
+      }
+    },
+    "signer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mechanism", "signer_evidence_id", "detached_signature_sha256", "signed_at"],
       "properties": {
         "mechanism": {"type": "string"},
-        "signed_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "signer_evidence_id": {"type": "string"},
         "detached_signature_sha256": {"$ref": "#/$defs/digest"},
         "signed_at": {"$ref": "#/$defs/optionalTimestamp"}
       }
+    },
+    "signatures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity_owner", "tenant_owner", "security_owner", "privacy_or_legal_owner", "operations_owner", "business_owner"],
+      "properties": {
+        "identity_owner": {"$ref": "#/$defs/signer"},
+        "tenant_owner": {"$ref": "#/$defs/signer"},
+        "security_owner": {"$ref": "#/$defs/signer"},
+        "privacy_or_legal_owner": {"$ref": "#/$defs/signer"},
+        "operations_owner": {"$ref": "#/$defs/signer"},
+        "business_owner": {"$ref": "#/$defs/signer"}
+      }
+    },
+    "completedSigner": {
+      "allOf": [
+        {"$ref": "#/$defs/signer"},
+        {
+          "properties": {
+            "mechanism": {"type": "string", "minLength": 1},
+            "signer_evidence_id": {"type": "string", "minLength": 1},
+            "detached_signature_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "signed_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
     },
     "completedSignature": {
       "allOf": [
         {"$ref": "#/$defs/signature"},
         {
           "properties": {
-            "mechanism": {"type": "string", "minLength": 1},
-            "signed_manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-            "detached_signature_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-            "signed_at": {"type": "string", "format": "date-time"}
+            "canonicalization": {"const": "RFC8785"},
+            "payload_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "signatures": {
+              "type": "object",
+              "properties": {
+                "identity_owner": {"$ref": "#/$defs/completedSigner"},
+                "tenant_owner": {"$ref": "#/$defs/completedSigner"},
+                "security_owner": {"$ref": "#/$defs/completedSigner"},
+                "privacy_or_legal_owner": {"$ref": "#/$defs/completedSigner"},
+                "operations_owner": {"$ref": "#/$defs/completedSigner"},
+                "business_owner": {"$ref": "#/$defs/completedSigner"}
+              }
+            }
           }
         }
       ]

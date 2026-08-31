@@ -156,9 +156,16 @@
     "business_owner": ""
   },
   "signature": {
-    "mechanism": "",
-    "signed_manifest_sha256": "",
-    "detached_signature_sha256": "",
-    "signed_at": ""
+    "canonicalization": "",
+    "excluded_json_pointer": "/signature",
+    "payload_sha256": "",
+    "signatures": {
+      "identity_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "tenant_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "security_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "privacy_or_legal_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "operations_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""},
+      "business_owner": {"mechanism": "", "signer_evidence_id": "", "detached_signature_sha256": "", "signed_at": ""}
+    }
   }
 }

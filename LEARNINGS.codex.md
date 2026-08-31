@@ -1080,3 +1080,8 @@ This file is an append-only record of completed PRAR cycles.
   失败指标、隔离 staging 组合矩阵、2.0 manifest 和后续 production PR 门禁。
 - 改进：设计审批、实现完成、staging 验收和生产启用是四个不同状态；blocked/skipped
   mandatory 项不能包装成 pass，缺少真实企业输入时也不能替用户选择 IdP。
+- 审查修正：approved Schema 必须强制非空 provider/platform/policy/对账/证据和成熟度；
+  每项修复事务内校验 fence/profile；无 provider revision 时用双遍资源 digest；签名对
+  排除 envelope 的 canonical payload 生成，并为各责任人保留独立 detached signature。
+- 复审修正：风险接受可以为空，但存在时必须有 risk ID、责任角色、到期时间和证据；
+  approved manifest 精确列出八类失效触发器，并把签名 canonicalization 固定为 RFC 8785。

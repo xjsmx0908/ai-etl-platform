@@ -307,11 +307,15 @@ grant，绑定发起人、执行 workload、租户、资源、动作和策略修
 把 provider 差异限制在 OIDC、Users/Groups directory、assurance/logout 和 workload
 credential adapters。新增 `identityreconciliation.Run` 深层模块，内部获取一致的
 完整 provider 快照、比较 connector-owned 内部资源、生成/应用批准的 lifecycle 动作，
-并持久化 lease/fencing、幂等计划、审计及独立完成/失败证据。
+并持久化 lease/fencing、幂等计划、审计及独立完成/失败证据。每项 lifecycle mutation
+在同一事务 CAS 校验 run fence、provider profile、policy 和 action digest；无 snapshot
+token 时要求两次完整稳定 ID+version canonical digest 相同，count 单独无效。
 
 验收驱动器只调用 provider 管理面和平台公开 seam，不直接修表；2.0 manifest 绑定
 provider profile、connector、policy、commit/images、A～J feature 结果、清理/回滚和
-同一最终 digest 的多方签名。已有 Keycloak 只证明 OIDC 基线，A～D 已实现而 F～I
+八类固定证据失效触发器；签名固定使用 RFC 8785，绑定排除 signature envelope 的同一
+canonical payload digest 及逐责任人 detached signatures。风险接受项必须绑定责任人与证据。
+已有 Keycloak 只证明 OIDC 基线，A～D 已实现而 F～I
 仍为设计；blocked/skipped/failed mandatory 项均阻止 production enablement。
 
 实现顺序是先批准 Pending 输入并分别实现 F～I，再实现对账、driver/validator 并运行

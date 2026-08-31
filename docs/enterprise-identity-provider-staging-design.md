@@ -72,21 +72,31 @@ commit、image digest 和启用 feature 集合，禁止同一个未版本化开�
 
 - `Run(ReconcileCommand) -> ReconcileResult`
 
-`ReconcileCommand` 只包含 connector、触发来源、幂等键、批准策略修订和 dry-run/apply
-模式；模块内部负责取完整 provider 快照、读取同 connector 的内部生命周期资源、计算
-双向漂移、应用批准动作、审计、完成证据和指标。调度器、管理路由和 staging 驱动器不
-直接读写 users/bindings/resources。
+`ReconcileCommand` 只包含 connector、触发来源、幂等键、不可变 provider profile/
+配置 digest、批准策略修订和 dry-run/apply 模式；模块内部负责取完整 provider 快照、
+读取同 connector 的内部生命周期资源、计算双向漂移、应用批准动作、审计、完成证据和
+指标。调度器、管理路由和 staging 驱动器不直接读写 users/bindings/resources。
 
 ### 完整快照和并发
 
-Directory adapter 必须使用 provider snapshot token/watermark；若不支持，则首尾读取
-源版本/计数摘要，变化时丢弃整轮并从第一页重试。分页缺页、overage、限流耗尽、版本
+Directory adapter 优先使用 provider snapshot token 或可信的全局单调 revision 固定
+遍历视图。若协议没有该能力，必须以确定顺序连续完成两次全量遍历，并对每个稳定 ID、
+资源 version 和授权相关字段计算 canonical digest；只有两次 digest/count 都相同才接受
+第二遍结果。单独比较 count 永远不构成完整性证明；provider 若没有稳定 ID、资源版本或
+确定分页语义，则该 adapter 只能诊断，不能 apply。分页缺页、overage、限流耗尽、版本
 倒退、重复/冲突 ID、超限或未知完整性均记录为失败尝试，不能产生权威空集或修复。
 
 每个 connector 只有一个有效 run。持久 lease 与单调 fencing token 防止旧 worker
-提交；续租失败立即停止副作用。候选 snapshot、plan 和 source watermark 先持久化，
-apply 前重新验证 fencing、connector/policy revision 和计划摘要。相同幂等键/摘要返回
+提交；续租失败立即停止副作用。候选 snapshot、plan、source watermark、provider
+profile/config digest 和 policy revision 先持久化并进入计划摘要。相同幂等键/摘要返回
 原结果；相同键不同摘要拒绝。
+
+不能只在 apply 循环开始前检查 fence。实现必须为对账来源的 `LifecycleCommand` 增加
+`ReconcileGuard`（run、fencing token、profile/config digest、policy revision、plan/
+action digest）。`Provisioner.Apply` 在执行每一项 mutation 的同一 PostgreSQL 事务中
+锁定当前 run 并 CAS 校验 guard，随后才修改 user/binding/resource、审计和幂等结果；
+失租、profile/policy 变化或旧 fence 使该项不产生任何副作用。普通 SCIM command 不得
+伪造 guard；guard 的构造与调用 seam 只对 `identityreconciliation` 开放。
 
 ### 漂移与修复策略
 
@@ -136,6 +146,8 @@ drift/action/quarantine 数量、lease/fencing 冲突和连续失败。现有
 
 驱动器本身需要单元测试：schema、redaction、resume、重复运行、partial artifact、digest
 篡改、错误环境和 cleanup 失败。仓库不提交真实运行输出。
+Schema 合同测试由 `scripts/requirements-test.txt` 固定校验器版本，并进入现有脚本测试
+门禁；依赖缺失必须失败，不能静默跳过批准校验。
 
 ## 组合验收矩阵
 
@@ -177,10 +189,16 @@ Schema 对 `decision=approved` 施加条件门禁：全部 mandatory 结果必�
 密码学有效性、时间顺序、证据未过期和所有结果来自同一 acceptance run。
 
 证据必须绑定同一个 provider profile、staging tenant reference、connector、平台 commit/
-image、数据库 migration、配置和策略 revision。identity、security、tenant、privacy/
-legal、operations owner 对同一个最终 manifest 签名；签名覆盖 manifest digest，而不是
-各自不同副本。任何 provider/SKU/issuer/subject mapping/SCIM profile、关键策略、adapter
-代码、平台身份代码、证据 schema 或 image 变化，以及批准期限届满，都会使相关证据失效。
+image、数据库 migration、配置和策略 revision。签名 payload 使用 RFC 8785 canonical
+JSON 生成，并排除整个 `/signature` envelope；payload digest 绑定 schema version 和
+acceptance ID。identity、security、tenant、privacy/legal、operations、business owner
+分别生成 detached signature，envelope 为每位责任人保存私有 signer evidence ID、机制、
+signature digest、同一 payload digest 和时间。driver 必须验证六个签名都针对重新计算的
+同一 payload，而不是各自不同副本或包含自身 digest 的递归对象。任何 provider/SKU/
+issuer/subject mapping/SCIM profile、关键策略、adapter
+代码、平台身份代码、证据 schema 或 image 变化，以及批准期限届满，都会使相关证据失效；
+approved manifest 必须精确声明这八类触发器。风险接受可以为空，但每条记录都必须绑定
+非空 risk ID、责任角色、到期时间和 evidence ID，且 severity 只能为 low/medium。
 
 production enablement 必须是新的 PR，引用仍有效的签名 manifest，并只启用其中通过的
 feature。它必须包含目标环境预检、渐进 canary、观察/回滚 owner、旧 local/shared
