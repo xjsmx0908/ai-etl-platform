@@ -23,6 +23,11 @@ TENANT_ID="${TENANT_ID:-tenant-e2e}"
 export BOOTSTRAP_ADMIN_TENANT="${TENANT_ID}"
 export BOOTSTRAP_ADMIN_USERNAME="${BOOTSTRAP_ADMIN_USERNAME:-admin}"
 export BOOTSTRAP_ADMIN_PASSWORD="${BOOTSTRAP_ADMIN_PASSWORD:-admin}"
+REVIEWER_USERNAME="${REVIEWER_USERNAME:-smoke-reviewer}"
+REVIEWER_PASSWORD="${REVIEWER_PASSWORD:-smoke-reviewer-password-2026}"
+KNOWLEDGE_SPACE_ID="${KNOWLEDGE_SPACE_ID:-smoke-managed}"
+EFFECTIVE_DATE="${EFFECTIVE_DATE:-2026-09-01}"
+DOCUMENT_OWNER="${DOCUMENT_OWNER:-Smoke Test Owner}"
 QUERY_TOP_K="${QUERY_TOP_K:-3}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-180}"
 JWT_SECRET="${JWT_SECRET:-change-me-in-production-please-use-32-plus-chars}"
@@ -140,6 +145,37 @@ TOKEN="$(curl -fsS -H 'Content-Type: application/json' \
   -d "{\"username\":\"${BOOTSTRAP_ADMIN_USERNAME}\",\"password\":\"${BOOTSTRAP_ADMIN_PASSWORD}\"}" \
   "http://127.0.0.1:${API_PORT}/v1/auth/login" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
 
+echo "[e2e] creating independent publication reviewer"
+REVIEWER_CREATE_STATUS="$(
+  curl -sS -o "${TMP_DIR}/reviewer-create.json" -w "%{http_code}" \
+    -X POST "http://127.0.0.1:${API_PORT}/v1/users" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"${REVIEWER_USERNAME}\",\"password\":\"${REVIEWER_PASSWORD}\",\"role\":\"admin\"}"
+)"
+if [[ "${REVIEWER_CREATE_STATUS}" != "201" ]]; then
+  echo "[e2e] reviewer creation failed, status=${REVIEWER_CREATE_STATUS}" >&2
+  cat "${TMP_DIR}/reviewer-create.json" >&2 || true
+  exit 1
+fi
+REVIEWER_TOKEN="$(curl -fsS -H 'Content-Type: application/json' \
+  -d "{\"username\":\"${REVIEWER_USERNAME}\",\"password\":\"${REVIEWER_PASSWORD}\"}" \
+  "http://127.0.0.1:${API_PORT}/v1/auth/login" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+
+echo "[e2e] creating managed knowledge space ${KNOWLEDGE_SPACE_ID}"
+SPACE_STATUS="$(
+  curl -sS -o "${TMP_DIR}/space.json" -w "%{http_code}" \
+    -X POST "http://127.0.0.1:${API_PORT}/v1/knowledge-spaces" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"id\":\"${KNOWLEDGE_SPACE_ID}\",\"name\":\"Smoke Managed Space\",\"kind\":\"production\"}"
+)"
+if [[ "${SPACE_STATUS}" != "201" ]]; then
+  echo "[e2e] knowledge-space creation failed, status=${SPACE_STATUS}" >&2
+  cat "${TMP_DIR}/space.json" >&2 || true
+  exit 1
+fi
+
 cat >"${DOC_FILE}" <<'EOF'
 AI ETL smoke test document.
 This file is used to verify upload, parsing, embedding, indexing and query pipeline.
@@ -151,7 +187,11 @@ curl -sS -o "${TMP_DIR}/upload.json" -w "%{http_code}" \
   -X POST "http://127.0.0.1:${API_PORT}/v1/upload" \
   -H "Authorization: Bearer ${TOKEN}" \
   -F "file=@${DOC_FILE};type=text/plain" \
-  -F "permission=${DOC_PERMISSION}"
+  -F "permission=${DOC_PERMISSION}" \
+  -F "knowledge_space_id=${KNOWLEDGE_SPACE_ID}" \
+  -F "doc_status=active" \
+  -F "effective_date=${EFFECTIVE_DATE}" \
+  -F "owner=${DOCUMENT_OWNER}"
 )"
 
 if [[ "${UPLOAD_STATUS}" != "202" ]]; then
@@ -170,9 +210,48 @@ while (( SECONDS < deadline )); do
   sleep 2
 done
 [[ "${task_state:-}" == "completed" ]] || { echo "[e2e] ingestion timed out" >&2; exit 1; }
-curl -fsS -X PATCH "http://127.0.0.1:${API_PORT}/v1/documents/${DOC_ID}" \
-  -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
-  -d '{"publication_status":"published"}' >/dev/null
+
+echo "[e2e] requesting governed publication"
+RUN_STATUS="$(
+  curl -sS -o "${TMP_DIR}/publication-run.json" -w "%{http_code}" \
+    -X POST "http://127.0.0.1:${API_PORT}/v1/agent/runs" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"workflow\":\"document_publication\",\"document_id\":\"${DOC_ID}\"}"
+)"
+if [[ "${RUN_STATUS}" != "201" ]]; then
+  echo "[e2e] publication run creation failed, status=${RUN_STATUS}" >&2
+  cat "${TMP_DIR}/publication-run.json" >&2 || true
+  exit 1
+fi
+RUN_ID="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); assert d.get("state")=="pending_approval", d; print(d["id"])' "${TMP_DIR}/publication-run.json")"
+
+APPROVALS_STATUS="$(
+  curl -sS -o "${TMP_DIR}/publication-approvals.json" -w "%{http_code}" \
+    "http://127.0.0.1:${API_PORT}/v1/agent/runs/${RUN_ID}/approvals" \
+    -H "Authorization: Bearer ${TOKEN}"
+)"
+if [[ "${APPROVALS_STATUS}" != "200" ]]; then
+  echo "[e2e] publication approval lookup failed, status=${APPROVALS_STATUS}" >&2
+  cat "${TMP_DIR}/publication-approvals.json" >&2 || true
+  exit 1
+fi
+APPROVAL_ID="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); assert len(d)==1 and d[0].get("status")=="pending" and d[0].get("requested_by"), d; print(d[0]["id"])' "${TMP_DIR}/publication-approvals.json")"
+
+echo "[e2e] approving exact publication candidate as independent reviewer"
+APPROVE_STATUS="$(
+  curl -sS -o "${TMP_DIR}/publication-approved.json" -w "%{http_code}" \
+    -X POST "http://127.0.0.1:${API_PORT}/v1/agent/runs/${RUN_ID}/approve" \
+    -H "Authorization: Bearer ${REVIEWER_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"approval_id\":\"${APPROVAL_ID}\",\"reason\":\"e2e smoke publication approval\"}"
+)"
+if [[ "${APPROVE_STATUS}" != "200" ]]; then
+  echo "[e2e] independent publication approval failed, status=${APPROVE_STATUS}" >&2
+  cat "${TMP_DIR}/publication-approved.json" >&2 || true
+  exit 1
+fi
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); assert d.get("state")=="completed", d' "${TMP_DIR}/publication-approved.json"
 
 echo "[e2e] polling /v1/query until indexed"
 deadline=$((SECONDS + MAX_WAIT_SECONDS))
@@ -183,7 +262,7 @@ while (( SECONDS < deadline )); do
       -X POST "http://127.0.0.1:${API_PORT}/v1/query" \
       -H "Authorization: Bearer ${TOKEN}" \
       -H "Content-Type: application/json" \
-      -d "{\"question\":\"What does the smoke test verify?\",\"top_k\":${QUERY_TOP_K}}"
+      -d "{\"question\":\"What does the smoke test verify?\",\"top_k\":${QUERY_TOP_K},\"knowledge_space_id\":\"${KNOWLEDGE_SPACE_ID}\"}"
   )"
 
   if [[ "${QUERY_STATUS}" == "200" ]]; then
@@ -262,8 +341,10 @@ SEARCH_HIT=0
 for attempt in $(seq 1 10); do
   SEARCH_STATUS="$(
     curl -sS -o "${TMP_DIR}/search.json" -w "%{http_code}" \
-      "http://127.0.0.1:${API_PORT}/v1/documents/search?q=pipeline" \
-      -H "Authorization: Bearer ${ADMIN_TOKEN}"
+      --get "http://127.0.0.1:${API_PORT}/v1/documents/search" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      --data-urlencode "q=pipeline" \
+      --data-urlencode "knowledge_space_id=${KNOWLEDGE_SPACE_ID}"
   )"
   if [[ "${SEARCH_STATUS}" == "200" ]]; then
     SEARCH_HIT="$(
@@ -287,6 +368,7 @@ WEB_SEARCH_STATUS="$(
     --get "http://127.0.0.1:${WEB_PORT}/api/documents/search" \
     --cookie "ai_etl_token=${ADMIN_TOKEN}" \
     --data-urlencode "q=pipeline" \
+    --data-urlencode "knowledge_space_id=${KNOWLEDGE_SPACE_ID}" \
     --data-urlencode "limit=100"
 )"
 if [[ "${WEB_SEARCH_STATUS}" != "200" ]]; then

@@ -1251,3 +1251,14 @@ This file is an append-only record of completed PRAR cycles.
   password 会话生命周期均通过。同步 backlog，并新增阶段报告作为 README 的稳定入口。
 - 改进：旧 `e2e-smoke.sh` 仍绕过受管发布审批并得到预期 HTTP 409。验收脚本也会随安全
   状态机演进而陈旧；应把它作为独立工具欠账修订，避免为让旧脚本通过而削弱治理约束。
+
+## 2026-09-01 - E2E smoke 受管发布治理迁移
+
+- 感知：产品已拒绝受管文档直接 PATCH 为 `published`，但旧 smoke 仍走该路径；其 Web 搜索
+  代理还会丢弃显式知识空间，因此简单替换发布请求仍不能验证同一受管证据边界。
+- 推理：验收工具必须作为普通外部调用方使用现有公共 seam。由上传管理员发起精确候选评估、
+  第二管理员审批，既保持四眼原则，也避免在脚本中复制 publication 状态机。
+- 行动：先增加可变红的静态契约，再让 smoke 创建隔离 reviewer/managed space、提交治理字段、
+  发起并审批 Agent run；Query、API 搜索和 Web BFF 搜索统一传递该 space。完整隔离运行通过。
+- 改进：跨层 E2E 改变资源作用域时，应逐一追踪 Query API 和 BFF 的参数转发，而不能只验证
+  后端直连。静态契约用于快速阻止绕过回归，真实 Compose 则证明身份分离和持久工作流有效。
