@@ -439,3 +439,19 @@ API。后端成功后才使用匹配属性和 `Max-Age=0` 清主 Cookie；网络
 可选 provider state 使用路径限定的 Secure/HttpOnly/SameSite=Lax Cookie，callback 无论
 成功失败都清除该 Cookie，并只跳转至经过双层校验的本地路径。F5 不实现 back-channel
 logout、最多三会话、会话/设备列表、指定设备撤销或 staging/production 启用。
+
+P2.5-F6 在同一 `session.Manager` seam 增加用户自助会话管理。`0022` migration 为每个
+逻辑会话回填并约束独立随机 `sm1_` 管理句柄；句柄不由 credential、内部 user/tenant 或
+数据库 ID 派生。管理列表仅返回认证方法、创建/最近活动/绝对到期时间及当前标志。
+
+新会话建立在现有用户行锁事务中计算活跃集合，按 `created_at,id` 稳定排序并在超过
+`MaxActiveSessions=3` 时撤销最旧项。淘汰、脱敏 `session_limit_eviction` 审计和新行插入
+一起提交；任一失败整体回滚。credential rotation 保留逻辑 ID、管理句柄、创建时间及绝对
+到期，因此不会消耗新槽位。列表查询在同一数据库 snapshot 重新验证当前 credential，避免
+撤销/轮换发生在 load 与 list 之间时泄露会话元数据。
+
+指定撤销通过 `RevokeManaged` 原子核对当前 credential、tenant/user、目标句柄所有权及
+目标不是当前会话。跨主体、未知和已撤销句柄统一幂等成功，不泄露存在性；真实撤销与
+`session_device_revoked` 审计在同一事务提交。Query API 暴露 `GET /v1/auth/sessions` 和
+`DELETE /v1/auth/sessions/{handle}`；Web BFF 只转发 HttpOnly Cookie，DELETE 额外执行同源
+校验。JWT 兼容路径返回不支持，不虚构有状态设备能力。

@@ -38,6 +38,26 @@ class MockBackendHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def do_GET(self):
+        type(self).requests.append((self.path, self.headers, None))
+        status, payload = type(self).responses.popleft()
+        encoded = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def do_DELETE(self):
+        type(self).requests.append((self.path, self.headers, None))
+        status, payload = type(self).responses.popleft()
+        encoded = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def log_message(self, _format, *_args):
         return
 
@@ -334,6 +354,45 @@ class ReauthenticationWebContractTests(unittest.TestCase):
                     value.startswith("ai_etl_logout_state=") and "Max-Age=0" in value
                     for value in self.cookies(headers)
                 ))
+
+    def test_session_management_lists_using_only_the_http_only_cookie(self):
+        backend_payload = {"sessions": [{
+            "handle": "sm1_11111111-1111-4111-8111-111111111111",
+            "authentication_method": "federated",
+            "created_at": "2026-09-01T12:00:00Z",
+            "last_activity_at": "2026-09-01T12:01:00Z",
+            "expires_at": "2026-09-01T20:00:00Z",
+            "current": True,
+        }]}
+        MockBackendHandler.responses.append((200, backend_payload))
+        status, headers, payload = self.request(
+            "GET", "/api/auth/sessions", cookie="ai_etl_token=ps1_current", same_origin=None,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(backend_payload, json.loads(payload))
+        self.assertEqual("/v1/auth/sessions", MockBackendHandler.requests[0][0])
+        self.assertEqual("Bearer ps1_current", MockBackendHandler.requests[0][1].get("authorization"))
+        self.assertFalse(any(value.startswith("ai_etl_token=") for value in self.cookies(headers)))
+
+    def test_session_management_revoke_requires_same_origin_and_forwards_encoded_handle(self):
+        path = "/api/auth/sessions/sm1_11111111-1111-4111-8111-111111111111"
+        status, _, _ = self.request(
+            "DELETE", path, cookie="ai_etl_token=ps1_current", same_origin=False,
+        )
+        self.assertEqual(403, status)
+        self.assertEqual([], MockBackendHandler.requests)
+
+        MockBackendHandler.responses.append((204, b""))
+        status, _, payload = self.request(
+            "DELETE", path, cookie="ai_etl_token=ps1_current",
+        )
+        self.assertEqual(204, status)
+        self.assertEqual(b"", payload)
+        self.assertEqual(
+            "/v1/auth/sessions/sm1_11111111-1111-4111-8111-111111111111",
+            MockBackendHandler.requests[0][0],
+        )
+        self.assertEqual("Bearer ps1_current", MockBackendHandler.requests[0][1].get("authorization"))
 
 
 if __name__ == "__main__":

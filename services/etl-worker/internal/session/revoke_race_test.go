@@ -69,6 +69,30 @@ func TestCurrentRevokeFollowsRotationBetweenAuthenticateLoadAndTouch(t *testing.
 	}
 }
 
+func TestListFailsClosedWhenCurrentCredentialChangesAtAtomicStoreSeam(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 30, 0, 0, time.UTC)
+	store := &listRaceStore{record: record{
+		id:               "11111111-1111-1111-1111-111111111111",
+		managementHandle: "sm1_22222222-2222-4222-8222-222222222222",
+		tenantID:         "demo-tenant", subjectID: "user-42",
+		authenticationMethod: auth.AuthenticationMethodFederated, assurance: AssuranceDemoMFA,
+		authenticatedAt: now, createdAt: now, lastActivityAt: now,
+		absoluteExpiresAt: now.Add(time.Hour), generation: 1, policyRevision: "personal-demo-v1",
+	}}
+	manager, err := New(store, Policy{
+		IdleTimeout: 30 * time.Minute, AbsoluteLifetime: 8 * time.Hour,
+		HighRiskFreshness: 10 * time.Minute, HighRiskAssurance: AssuranceDemoMFA,
+		ActionRisks: map[string]Risk{"knowledge.query": RiskStandard}, Revision: "personal-demo-v1",
+	}, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := manager.List(context.Background(), ListCommand{Credential: "credential-before-revoke"})
+	if !errors.Is(err, ErrInvalid) || len(items) != 0 {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+}
+
 type revocationRaceStore struct {
 	record         record
 	subjectRevoked bool
@@ -79,7 +103,29 @@ type rotationDuringAuthenticationStore struct {
 	rotatedCredentialRevoked bool
 }
 
-func (*rotationDuringAuthenticationStore) create(context.Context, record) error { return nil }
+type listRaceStore struct {
+	record record
+}
+
+func (*listRaceStore) create(context.Context, creation) error { return nil }
+func (s *listRaceStore) load(context.Context, [32]byte) (record, bool, error) {
+	return s.record, true, nil
+}
+func (*listRaceStore) listSubject(context.Context, subjectList) ([]record, error) {
+	return nil, errChanged
+}
+func (*listRaceStore) touch(context.Context, string, int64, time.Time) error { return nil }
+func (*listRaceStore) rotate(context.Context, [32]byte, string, int64, record) error {
+	return nil
+}
+func (*listRaceStore) revokeCurrent(context.Context, currentRevocation) error { return nil }
+func (*listRaceStore) revokeManaged(context.Context, managedRevocation) error { return nil }
+func (*listRaceStore) revokeSubject(context.Context, subjectRevocation) error { return nil }
+
+func (*rotationDuringAuthenticationStore) create(context.Context, creation) error { return nil }
+func (*rotationDuringAuthenticationStore) listSubject(context.Context, subjectList) ([]record, error) {
+	return nil, nil
+}
 func (s *rotationDuringAuthenticationStore) load(context.Context, [32]byte) (record, bool, error) {
 	return s.record, true, nil
 }
@@ -97,11 +143,17 @@ func (s *rotationDuringAuthenticationStore) revokeCurrent(_ context.Context, com
 	}
 	return nil
 }
+func (*rotationDuringAuthenticationStore) revokeManaged(context.Context, managedRevocation) error {
+	return nil
+}
 func (*rotationDuringAuthenticationStore) revokeSubject(context.Context, subjectRevocation) error {
 	return nil
 }
 
-func (*revocationRaceStore) create(context.Context, record) error { return nil }
+func (*revocationRaceStore) create(context.Context, creation) error { return nil }
+func (*revocationRaceStore) listSubject(context.Context, subjectList) ([]record, error) {
+	return nil, nil
+}
 func (s *revocationRaceStore) load(context.Context, [32]byte) (record, bool, error) {
 	return s.record, true, nil
 }
@@ -112,6 +164,7 @@ func (*revocationRaceStore) rotate(context.Context, [32]byte, string, int64, rec
 func (*revocationRaceStore) revokeCurrent(context.Context, currentRevocation) error {
 	return nil
 }
+func (*revocationRaceStore) revokeManaged(context.Context, managedRevocation) error { return nil }
 func (s *revocationRaceStore) revokeSubject(context.Context, subjectRevocation) error {
 	return errChanged
 }

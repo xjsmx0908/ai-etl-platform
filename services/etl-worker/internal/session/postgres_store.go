@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"time"
 
@@ -19,10 +20,11 @@ func NewPostgresStore(q db.Querier) *postgresStore {
 	return &postgresStore{q: q}
 }
 
-func (s *postgresStore) create(ctx context.Context, value record) error {
+func (s *postgresStore) create(ctx context.Context, command creation) error {
 	if s == nil || s.q == nil {
 		return ErrUnavailable
 	}
+	value := command.value
 	tx, err := s.q.Begin(ctx)
 	if err != nil {
 		return err
@@ -34,12 +36,53 @@ func (s *postgresStore) create(ctx context.Context, value record) error {
 	if err := rejectStaleEvidence(ctx, tx, value.tenantID, value.subjectID, value.authenticatedAt); err != nil {
 		return err
 	}
+	if command.maxActiveSessions > 0 {
+		rows, err := tx.Query(ctx, `SELECT id FROM platform_sessions
+			WHERE tenant_id=$1 AND internal_user_id=$2 AND revoked_at IS NULL
+			AND absolute_expires_at>$3 AND last_activity_at>$4 AND policy_revision=$5
+			ORDER BY created_at,id FOR UPDATE`, value.tenantID, value.subjectID,
+			command.at, command.idleCutoff, command.policyRevision)
+		if err != nil {
+			return err
+		}
+		activeIDs := make([]string, 0)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			activeIDs = append(activeIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for len(activeIDs) >= command.maxActiveSessions {
+			evictedID := activeIDs[0]
+			activeIDs = activeIDs[1:]
+			tag, err := tx.Exec(ctx, `UPDATE platform_sessions SET revoked_at=$2,
+				revocation_reason='session_limit',revoked_correlation_id=$3,generation=generation+1
+				WHERE id=$1 AND revoked_at IS NULL`, evictedID, command.at, value.establishedCorrelationID)
+			if err != nil || tag.RowsAffected() != 1 {
+				return ErrUnavailable
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO audit_logs (
+				tenant_id,actor_user_id,action,result,detail,created_at
+			) VALUES ($1,$2,'session_limit_eviction','success',jsonb_build_object(
+				'reason','active_session_limit','correlation_id',$3::text
+			),$4)`, value.tenantID, value.subjectID, value.establishedCorrelationID, command.at); err != nil {
+				return ErrUnavailable
+			}
+		}
+	}
 	tag, err := tx.Exec(ctx, `INSERT INTO platform_sessions (
-		id,credential_digest,internal_user_id,tenant_id,authentication_method,
+		id,management_handle,credential_digest,internal_user_id,tenant_id,authentication_method,
 		assurance_level,authenticated_at,created_at,last_activity_at,
 		absolute_expires_at,generation,policy_revision,established_correlation_id
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-		value.id, value.credentialDigest[:], value.subjectID, value.tenantID,
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		value.id, value.managementHandle, value.credentialDigest[:], value.subjectID, value.tenantID,
 		string(value.authenticationMethod), string(value.assurance), value.authenticatedAt,
 		value.createdAt, value.lastActivityAt, value.absoluteExpiresAt,
 		value.generation, value.policyRevision, value.establishedCorrelationID,
@@ -56,11 +99,11 @@ func (s *postgresStore) load(ctx context.Context, digest [32]byte) (record, bool
 	}
 	var value record
 	var method, assurance string
-	err := s.q.QueryRow(ctx, `SELECT id,tenant_id,internal_user_id,authentication_method,
+	err := s.q.QueryRow(ctx, `SELECT id,management_handle,tenant_id,internal_user_id,authentication_method,
 		assurance_level,authenticated_at,created_at,last_activity_at,absolute_expires_at,
 		revoked_at,generation,policy_revision,established_correlation_id
 		FROM platform_sessions WHERE credential_digest=$1`, digest[:]).Scan(
-		&value.id, &value.tenantID, &value.subjectID, &method,
+		&value.id, &value.managementHandle, &value.tenantID, &value.subjectID, &method,
 		&assurance, &value.authenticatedAt, &value.createdAt,
 		&value.lastActivityAt, &value.absoluteExpiresAt, &value.revokedAt,
 		&value.generation, &value.policyRevision, &value.establishedCorrelationID,
@@ -75,6 +118,54 @@ func (s *postgresStore) load(ctx context.Context, digest [32]byte) (record, bool
 	value.authenticationMethod = auth.AuthenticationMethod(method)
 	value.assurance = Assurance(assurance)
 	return value, true, nil
+}
+
+func (s *postgresStore) listSubject(ctx context.Context, command subjectList) ([]record, error) {
+	if s == nil || s.q == nil {
+		return nil, ErrUnavailable
+	}
+	rows, err := s.q.Query(ctx, `SELECT id,management_handle,credential_digest,authentication_method,
+		assurance_level,authenticated_at,created_at,last_activity_at,absolute_expires_at,
+		revoked_at,generation,policy_revision,established_correlation_id
+		FROM platform_sessions WHERE tenant_id=$1 AND internal_user_id=$2
+		AND revoked_at IS NULL AND absolute_expires_at>$5 AND last_activity_at>$6
+		AND policy_revision=$7
+		AND EXISTS (SELECT 1 FROM platform_sessions current_session
+			WHERE current_session.credential_digest=$3 AND current_session.id=$4
+			AND current_session.tenant_id=$1 AND current_session.internal_user_id=$2
+			AND current_session.revoked_at IS NULL AND current_session.absolute_expires_at>$5
+			AND current_session.last_activity_at>$6 AND current_session.policy_revision=$7)`,
+		command.tenantID, command.subjectID, command.credentialDigest[:], command.currentSessionID,
+		command.at, command.idleCutoff, command.policyRevision)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := make([]record, 0)
+	for rows.Next() {
+		var value record
+		var digest []byte
+		var method, assurance string
+		if err := rows.Scan(&value.id, &value.managementHandle, &digest, &method, &assurance,
+			&value.authenticatedAt, &value.createdAt, &value.lastActivityAt, &value.absoluteExpiresAt,
+			&value.revokedAt, &value.generation, &value.policyRevision, &value.establishedCorrelationID); err != nil {
+			return nil, err
+		}
+		if len(digest) != sha256.Size {
+			return nil, ErrUnavailable
+		}
+		copy(value.credentialDigest[:], digest)
+		value.tenantID, value.subjectID = command.tenantID, command.subjectID
+		value.authenticationMethod, value.assurance = auth.AuthenticationMethod(method), Assurance(assurance)
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return nil, errChanged
+	}
+	return values, nil
 }
 
 func (s *postgresStore) touch(ctx context.Context, id string, generation int64, at time.Time) error {
@@ -158,6 +249,60 @@ func (s *postgresStore) revokeCurrent(ctx context.Context, command currentRevoca
 	) VALUES ($1,$2,'session_logout','success',jsonb_build_object(
 		'reason','local_session_revoked','correlation_id',$3::text
 	),$4)`, tenantID, subjectID, command.correlationID, command.revokedAt)
+	if err != nil || tag.RowsAffected() != 1 {
+		return ErrUnavailable
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *postgresStore) revokeManaged(ctx context.Context, command managedRevocation) error {
+	if s == nil || s.q == nil {
+		return ErrUnavailable
+	}
+	tx, err := s.q.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var currentID string
+	err = tx.QueryRow(ctx, `SELECT id FROM platform_sessions
+		WHERE credential_digest=$1 AND id=$2 AND tenant_id=$3 AND internal_user_id=$4
+		AND revoked_at IS NULL AND absolute_expires_at>$5 AND last_activity_at>$6
+		AND policy_revision=$7 FOR UPDATE`, command.credentialDigest[:], command.currentSessionID,
+		command.tenantID, command.subjectID, command.revokedAt, command.idleCutoff, command.policyRevision).Scan(&currentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errChanged
+	}
+	if err != nil {
+		return err
+	}
+	var targetID string
+	err = tx.QueryRow(ctx, `SELECT id FROM platform_sessions
+		WHERE management_handle=$1 AND tenant_id=$2 AND internal_user_id=$3 FOR UPDATE`,
+		command.handle, command.tenantID, command.subjectID).Scan(&targetID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	if targetID == currentID {
+		return errChanged
+	}
+	tag, err := tx.Exec(ctx, `UPDATE platform_sessions SET revoked_at=$2,
+		revocation_reason='managed_session',revoked_correlation_id=$3,generation=generation+1
+		WHERE id=$1 AND revoked_at IS NULL`, targetID, command.revokedAt, command.correlationID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+	tag, err = tx.Exec(ctx, `INSERT INTO audit_logs (
+		tenant_id,actor_user_id,action,result,detail,created_at
+	) VALUES ($1,$2,'session_device_revoked','success',jsonb_build_object(
+		'reason','user_managed_session','correlation_id',$3::text
+	),$4)`, command.tenantID, command.subjectID, command.correlationID, command.revokedAt)
 	if err != nil || tag.RowsAffected() != 1 {
 		return ErrUnavailable
 	}

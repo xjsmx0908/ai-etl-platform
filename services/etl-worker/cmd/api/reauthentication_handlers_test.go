@@ -243,9 +243,9 @@ func TestReauthenticationCallbackFailsClosedWhenUserOrSessionStoreIsUnavailable(
 			t.Fatal(err)
 		}
 		defer mock.Close()
-		mock.ExpectQuery("SELECT id,tenant_id").WithArgs(pgxmock.AnyArg()).WillReturnRows(
-			pgxmock.NewRows([]string{"id", "tenant_id", "internal_user_id", "authentication_method", "assurance_level", "authenticated_at", "created_at", "last_activity_at", "absolute_expires_at", "revoked_at", "generation", "policy_revision", "established_correlation_id"}).
-				AddRow("session-1", user.TenantID, user.ID, "federated", "demo-mfa", base.Add(-time.Minute), base.Add(-time.Hour), base, base.Add(time.Hour), nil, int64(1), platformSessionPolicy().Revision, "login-1"),
+		mock.ExpectQuery("SELECT id,management_handle,tenant_id").WithArgs(pgxmock.AnyArg()).WillReturnRows(
+			pgxmock.NewRows([]string{"id", "management_handle", "tenant_id", "internal_user_id", "authentication_method", "assurance_level", "authenticated_at", "created_at", "last_activity_at", "absolute_expires_at", "revoked_at", "generation", "policy_revision", "established_correlation_id"}).
+				AddRow("session-1", "sm1_11111111-1111-4111-8111-111111111111", user.TenantID, user.ID, "federated", "demo-mfa", base.Add(-time.Minute), base.Add(-time.Hour), base, base.Add(time.Hour), nil, int64(1), platformSessionPolicy().Revision, "login-1"),
 		)
 		mock.ExpectBegin().WillReturnError(errors.New("postgres unavailable"))
 		sessions, err := session.New(session.NewPostgresStore(mock), platformSessionPolicy(), session.WithClock(func() time.Time { return base }))

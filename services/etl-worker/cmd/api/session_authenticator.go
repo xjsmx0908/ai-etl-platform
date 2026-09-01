@@ -104,7 +104,8 @@ func platformSessionPolicy() session.Policy {
 			agentExecutionApproveAction:     session.RiskHigh,
 			indexGenerationRollbackAction:   session.RiskHigh,
 		},
-		Revision: "personal-demo-v1",
+		MaxActiveSessions: 3,
+		Revision:          "personal-demo-v1",
 	}
 }
 

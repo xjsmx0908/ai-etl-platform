@@ -223,6 +223,171 @@ func TestPostgresCurrentSessionRevocationFollowsCredentialRotation(t *testing.T)
 	assertDecision(t, manager, rotated.Token, session.DecisionDeny)
 }
 
+func TestPostgresConcurrentLoginsKeepThreeActiveSessionsAndAuditEveryEviction(t *testing.T) {
+	pool, cleanup := sessionPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants(id,name) VALUES('demo-tenant','Demo')`); err != nil {
+		t.Fatal(err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(username,password_hash,role,tenant_id,active)
+		VALUES('session-cap-user','unused','readonly','demo-tenant',true) RETURNING id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 1, 10, 30, 0, 0, time.UTC)
+	policy := demoPolicy()
+	policy.MaxActiveSessions = 3
+	manager, err := session.New(
+		session.NewPostgresStore(&db.Pool{Pool: pool}), policy,
+		session.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := auth.Principal{
+		TenantID: "demo-tenant", SubjectID: userID,
+		AuthenticationMethod: auth.AuthenticationMethodFederated,
+	}
+	results := make(chan session.Credential, 8)
+	errorsCh := make(chan error, 8)
+	for index := range 8 {
+		go func(index int) {
+			credential, establishErr := manager.Establish(ctx, session.EstablishCommand{
+				Principal: principal,
+				Evidence: session.AuthenticationEvidence{
+					Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now,
+				},
+				CorrelationID: fmt.Sprintf("concurrent-cap-%d", index),
+			})
+			if establishErr != nil {
+				errorsCh <- establishErr
+				return
+			}
+			results <- credential
+		}(index)
+	}
+	credentials := make([]session.Credential, 0, 8)
+	for range 8 {
+		select {
+		case credential := <-results:
+			credentials = append(credentials, credential)
+		case establishErr := <-errorsCh:
+			t.Fatal(establishErr)
+		case <-time.After(10 * time.Second):
+			t.Fatal("concurrent login timed out")
+		}
+	}
+	active := 0
+	var current session.Credential
+	for _, credential := range credentials {
+		result, authErr := manager.Authenticate(ctx, credential.Token, "knowledge.query")
+		if authErr != nil {
+			t.Fatal(authErr)
+		}
+		if result.Decision == session.DecisionAllow {
+			active++
+			current = credential
+		}
+	}
+	if active != 3 {
+		t.Fatalf("active sessions=%d want=3", active)
+	}
+	items, err := manager.List(ctx, session.ListCommand{Credential: current.Token})
+	if err != nil || len(items) != 3 {
+		t.Fatalf("listed sessions=%+v err=%v", items, err)
+	}
+	var evictionAudits int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs
+		WHERE tenant_id=$1 AND actor_user_id=$2 AND action='session_limit_eviction'
+		AND result='success' AND detail->>'reason'='active_session_limit'`,
+		"demo-tenant", userID).Scan(&evictionAudits); err != nil {
+		t.Fatal(err)
+	}
+	if evictionAudits != 5 {
+		t.Fatalf("eviction audits=%d want=5", evictionAudits)
+	}
+}
+
+func TestPostgresManagedRevocationIsOwnedIdempotentAndAuditedOnce(t *testing.T) {
+	pool, cleanup := sessionPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants(id,name) VALUES('demo-tenant','Demo')`); err != nil {
+		t.Fatal(err)
+	}
+	var userID, otherID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(username,password_hash,role,tenant_id,active)
+		VALUES('managed-owner','unused','readonly','demo-tenant',true) RETURNING id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO users(username,password_hash,role,tenant_id,active)
+		VALUES('managed-other','unused','readonly','demo-tenant',true) RETURNING id`).Scan(&otherID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 1, 11, 0, 0, 0, time.UTC)
+	policy := demoPolicy()
+	policy.MaxActiveSessions = 3
+	manager, err := session.New(
+		session.NewPostgresStore(&db.Pool{Pool: pool}), policy,
+		session.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	establish := func(subject, correlation string) session.Credential {
+		t.Helper()
+		credential, establishErr := manager.Establish(ctx, session.EstablishCommand{
+			Principal: auth.Principal{
+				TenantID: "demo-tenant", SubjectID: subject,
+				AuthenticationMethod: auth.AuthenticationMethodFederated,
+			},
+			Evidence:      session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+			CorrelationID: correlation,
+		})
+		if establishErr != nil {
+			t.Fatal(establishErr)
+		}
+		return credential
+	}
+	current := establish(userID, "managed-current")
+	target := establish(userID, "managed-target")
+	other := establish(otherID, "managed-other")
+	items, err := manager.List(ctx, session.ListCommand{Credential: current.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handle string
+	for _, item := range items {
+		if !item.Current {
+			handle = item.Handle
+		}
+	}
+	otherItems, err := manager.List(ctx, session.ListCommand{Credential: other.Token})
+	if err != nil || len(otherItems) != 1 {
+		t.Fatalf("other items=%+v err=%v", otherItems, err)
+	}
+	for _, targetHandle := range []string{handle, handle, otherItems[0].Handle} {
+		if err := manager.RevokeManaged(ctx, session.RevokeManagedCommand{
+			Credential: current.Token, Handle: targetHandle, CorrelationID: "managed-revoke",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertDecision(t, manager, target.Token, session.DecisionDeny)
+	assertDecision(t, manager, other.Token, session.DecisionAllow)
+	var audits int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs
+		WHERE tenant_id=$1 AND actor_user_id=$2 AND action='session_device_revoked'
+		AND result='success' AND detail->>'reason'='user_managed_session'`,
+		"demo-tenant", userID).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 {
+		t.Fatalf("managed revoke audits=%d want=1", audits)
+	}
+}
+
 func TestPostgresSubjectRevocationFenceRejectsConcurrentStaleEstablish(t *testing.T) {
 	pool, cleanup := sessionPool(t)
 	defer cleanup()

@@ -200,3 +200,19 @@ F5 已在相同个人演示门禁内连接本地及可选 OIDC 退出：
    均失败，安全本地 return path 由 API 与 Web 双重限制。
 4. `OIDC_LOGOUT_REDIRECT_URI` 留空即禁用 provider logout，不影响本地撤销。F5 不实现
    back-channel logout、最多 3 个活跃会话、会话/设备列表或 staging/production 启用。
+
+## 第八个实现切片：P2.5-F6 会话与设备管理
+
+F6 已在相同个人演示门禁内实现 F-07/F-08：
+
+1. 新会话使用与 credential 和数据库 ID 独立的随机 `sm1_` 管理句柄。列表只显示认证
+   方法、创建/最近活动/绝对到期时间和当前会话标志，不采集或返回 IP、User-Agent、
+   provider subject/token 或 credential 摘要。
+2. 每个内部用户最多 3 个活跃会话；第 4 次建立在用户锁保护的同一事务中撤销最旧会话、
+   写入 `session_limit_eviction` 脱敏审计并建立新会话。重新认证轮换保留原管理句柄和槽位。
+3. `GET /v1/auth/sessions` 与 `DELETE /v1/auth/sessions/{handle}` 只接受当前有效 `ps1_`。
+   指定撤销再次原子校验 credential、tenant、user、目标所有权和非当前会话；伪造、跨主体
+   或已撤销句柄不泄露存在性，成功撤销与 `session_device_revoked` 审计一起提交。
+4. Web BFF 仅从 HttpOnly Cookie 转发 credential，DELETE 强制显式同源。遗留 JWT 明确
+   不支持状态化会话管理。F6 不实现管理员设备管理、设备指纹、back-channel logout 或
+   staging/production 启用。

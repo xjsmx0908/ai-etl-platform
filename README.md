@@ -174,6 +174,12 @@ discovery 验证的 OIDC RP-initiated logout，独立 state 在 Redis 中只能�
 `OIDC_LOGOUT_REDIRECT_URI` 或提供方退出不可用时，本地退出仍然完成。该能力仍受相同的
 dev/demo 门禁约束，不包含 back-channel logout、会话设备列表或企业生产启用。
 
+P2.5-F6 增加个人演示会话管理：每用户最多保留 3 个活跃会话，第 4 次登录原子撤销最旧
+会话并审计；`GET /api/auth/sessions` 返回脱敏的时间和认证方法，
+`DELETE /api/auth/sessions/{sm1_handle}` 允许用户撤销自己的非当前会话。管理句柄独立于
+credential/数据库 ID，跨用户句柄不泄露存在性，Web DELETE 强制同源。本能力仍由既有
+dev + `personal-demo-v1` + `SESSION_CORE_ENABLED` 门禁保护，不代表企业生产已启用。
+
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。
 该设计不创建紧急账号或密钥，也不提供数据库、shell 或基础设施后门。

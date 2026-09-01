@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 )
@@ -25,15 +26,45 @@ func NewMemoryStore() *memoryStore {
 	}
 }
 
-func (s *memoryStore) create(_ context.Context, value record) error {
+func (s *memoryStore) create(_ context.Context, command creation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	value := command.value
 	key := subjectKey{tenantID: value.tenantID, subjectID: value.subjectID}
 	if revokedBefore, found := s.subjectRevokedBefore[key]; found && !value.authenticatedAt.After(revokedBefore) {
 		return errChanged
 	}
 	if _, exists := s.records[value.credentialDigest]; exists {
 		return errors.New("credential collision")
+	}
+	if command.maxActiveSessions > 0 {
+		active := make([]record, 0)
+		for _, candidate := range s.records {
+			if candidate.tenantID == value.tenantID && candidate.subjectID == value.subjectID &&
+				candidate.revokedAt == nil && candidate.absoluteExpiresAt.After(command.at) &&
+				candidate.lastActivityAt.After(command.idleCutoff) && candidate.policyRevision == command.policyRevision {
+				active = append(active, candidate)
+			}
+		}
+		sort.Slice(active, func(i, j int) bool {
+			if active[i].createdAt.Equal(active[j].createdAt) {
+				return active[i].id < active[j].id
+			}
+			return active[i].createdAt.Before(active[j].createdAt)
+		})
+		for len(active) >= command.maxActiveSessions {
+			oldest := active[0]
+			for digest, candidate := range s.records {
+				if candidate.id == oldest.id {
+					candidate.revokedAt = &command.at
+					candidate.revokedCorrelationID = value.establishedCorrelationID
+					candidate.generation++
+					s.records[digest] = candidate
+					break
+				}
+			}
+			active = active[1:]
+		}
 	}
 	s.records[value.credentialDigest] = value
 	return nil
@@ -44,6 +75,25 @@ func (s *memoryStore) load(_ context.Context, digest [32]byte) (record, bool, er
 	defer s.mu.Unlock()
 	value, found := s.records[digest]
 	return value, found, nil
+}
+
+func (s *memoryStore) listSubject(_ context.Context, command subjectList) ([]record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, found := s.records[command.credentialDigest]
+	if !found || current.id != command.currentSessionID || current.tenantID != command.tenantID ||
+		current.subjectID != command.subjectID || current.revokedAt != nil ||
+		!current.absoluteExpiresAt.After(command.at) || !current.lastActivityAt.After(command.idleCutoff) ||
+		current.policyRevision != command.policyRevision {
+		return nil, errChanged
+	}
+	values := make([]record, 0)
+	for _, value := range s.records {
+		if value.tenantID == command.tenantID && value.subjectID == command.subjectID {
+			values = append(values, value)
+		}
+	}
+	return values, nil
 }
 
 func (s *memoryStore) touch(_ context.Context, id string, generation int64, at time.Time) error {
@@ -101,6 +151,34 @@ func (s *memoryStore) revokeCurrent(_ context.Context, command currentRevocation
 	value.revokedCorrelationID = command.correlationID
 	value.generation++
 	s.records[command.credentialDigest] = value
+	return nil
+}
+
+func (s *memoryStore) revokeManaged(_ context.Context, command managedRevocation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, found := s.records[command.credentialDigest]
+	if !found || current.id != command.currentSessionID ||
+		!current.activeAt(command.revokedAt, command.revokedAt.Sub(command.idleCutoff), command.policyRevision) ||
+		current.tenantID != command.tenantID || current.subjectID != command.subjectID {
+		return errChanged
+	}
+	for digest, candidate := range s.records {
+		if candidate.managementHandle != command.handle || candidate.tenantID != command.tenantID ||
+			candidate.subjectID != command.subjectID {
+			continue
+		}
+		if candidate.id == current.id {
+			return errChanged
+		}
+		if candidate.revokedAt == nil {
+			candidate.revokedAt = &command.revokedAt
+			candidate.revokedCorrelationID = command.correlationID
+			candidate.generation++
+			s.records[digest] = candidate
+		}
+		return nil
+	}
 	return nil
 }
 
