@@ -77,7 +77,7 @@ func TestHandleLogin_Success(t *testing.T) {
 func TestHandleLoginIssuesLocalPlatformSessionWhenSessionCoreEnabled(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "s3cret-pw", userstore.RoleAdmin, "acme", true)
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy())
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestHandleLoginIssuesLocalPlatformSessionWhenSessionCoreEnabled(t *testing.
 func TestHandleLoginDoesNotFallBackToJWTWhenSessionStoreIsUnavailable(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "s3cret-pw", userstore.RoleAdmin, "acme", true)
-	manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy())
+	manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy(3))
 	if err != nil {
 		t.Fatal(err)
 	}

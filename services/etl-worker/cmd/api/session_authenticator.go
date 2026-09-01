@@ -84,7 +84,7 @@ func sessionCredentialFromRequest(request *http.Request) (string, bool) {
 	return strings.TrimPrefix(credential, platformSessionCredentialPrefix), true
 }
 
-func platformSessionPolicy() session.Policy {
+func platformSessionPolicy(maxActiveSessions int) session.Policy {
 	return session.Policy{
 		IdleTimeout:       30 * time.Minute,
 		AbsoluteLifetime:  8 * time.Hour,
@@ -104,7 +104,8 @@ func platformSessionPolicy() session.Policy {
 			agentExecutionApproveAction:     session.RiskHigh,
 			indexGenerationRollbackAction:   session.RiskHigh,
 		},
-		Revision: "personal-demo-v1",
+		MaxActiveSessions: maxActiveSessions,
+		Revision:          "personal-demo-v1",
 	}
 }
 
@@ -159,7 +160,7 @@ func newPlatformSessionManager(cfg config.Config, database db.Querier) (*session
 	if !cfg.IsDev() || cfg.IdentityPolicyProfile != "personal-demo-v1" {
 		return nil, fmt.Errorf("session credential authentication requires the personal-demo-v1 dev profile")
 	}
-	manager, err := session.New(session.NewPostgresStore(database), platformSessionPolicy())
+	manager, err := session.New(session.NewPostgresStore(database), platformSessionPolicy(cfg.SessionMaxActiveSessions))
 	if err != nil {
 		return nil, fmt.Errorf("construct session manager: %w", err)
 	}

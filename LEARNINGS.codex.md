@@ -1219,3 +1219,24 @@ This file is an append-only record of completed PRAR cycles.
 - CI 修正：Trivy 在实现完成后识别既有 `golang.org/x/crypto v0.46.0` 的
   CVE-2026-56854；升级到修复版 v0.55.0，并接受 Go module solver 所需的配套 x/net、
   x/sync、x/sys、x/text 更新。相同 Trivy 命令和完整 Go 测试在本地均通过。
+
+## 2026-09-01 - P2.5-F6 会话与设备管理
+
+- 感知：F5 只能撤销当前会话；个人演示策略还要求三会话上限、脱敏列表和用户撤销其他
+  会话。直接暴露数据库 ID 或以 credential 摘要作句柄都会扩大敏感标识的攻击面。
+- 推理：管理能力仍应位于 `session.Manager` 深层 seam。独立随机句柄只用于选择目标，
+  tenant/user/当前 credential 所有权必须在数据库原子操作中重新证明；HTTP 不能自行授权。
+- 行动：按 Manager、Query HTTP、真实 Next HTTP 三个已确认 public seam 逐项 red→green，
+  实现 `sm1_` 句柄、最多三会话、脱敏列表、指定非当前会话撤销和同源 BFF。真实 PostgreSQL
+  证明 8 个并发登录严格保留 3 个活跃会话，5 次淘汰各有原子审计。
+- 改进：load 后再 list 会留下撤销/轮换竞态，因此列表 adapter 在同一 SQL snapshot 再次
+  验证当前 credential。会话淘汰、指定撤销及其成功审计都使用同一事务，审计失败整体回滚；
+  rotation 保留逻辑 ID/管理句柄/绝对寿命，不误占新槽位。JWT 兼容路径不伪造设备状态。
+- 审查修正：相同 `created_at` 不能用随机 UUID 决定“最旧”，因此 `0022` 增加序列分配、
+  轮换不变的 `creation_order`；真实 PostgreSQL 用例证明同一时钟下第一个会话稳定淘汰。
+  上限改由 `SESSION_MAX_ACTIVE_SESSIONS` 显式配置并限制为演示基线 1～3。管理句柄升级为
+  领域类型，当前会话围栏和 Web BFF 代理集中复用；跨租户及失效目标统一无披露幂等语义，
+  只有真实状态变更才写审计。Query DELETE 存储故障和真实 Next 上游断网均验证返回 503。
+- 最终复审进一步收紧领域边界：导出的 `ManagementHandle` 使用私有表示，外部只能通过
+  `ParseManagementHandle` 得到合法值，PostgreSQL 读写在字符串边界显式转换；Manager 用
+  单一 helper 构造当前会话围栏。Web mock 也统一响应写入并遵循 PEP 8 行宽。

@@ -846,9 +846,13 @@ func TestIsDev(t *testing.T) {
 func TestValidateAllowsSessionCoreOnlyForPersonalDemoDevProfile(t *testing.T) {
 	t.Setenv("SESSION_CORE_ENABLED", "false")
 	t.Setenv("IDENTITY_POLICY_PROFILE", "")
+	t.Setenv("SESSION_MAX_ACTIVE_SESSIONS", "3")
 	cfg := Load()
 	if cfg.SessionCoreEnabled {
 		t.Fatal("session core must default off")
+	}
+	if cfg.SessionMaxActiveSessions != 3 {
+		t.Fatalf("session max active sessions=%d want=3", cfg.SessionMaxActiveSessions)
 	}
 
 	cfg.SessionCoreEnabled = true
@@ -861,6 +865,13 @@ func TestValidateAllowsSessionCoreOnlyForPersonalDemoDevProfile(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("personal demo dev profile should be accepted: %v", err)
 	}
+	for _, invalid := range []int{0, 4} {
+		cfg.SessionMaxActiveSessions = invalid
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("personal demo must reject max active sessions=%d", invalid)
+		}
+	}
+	cfg.SessionMaxActiveSessions = 3
 	for _, environment := range []string{"staging", "production"} {
 		cfg.Environment = environment
 		if err := cfg.Validate(); err == nil {

@@ -445,6 +445,8 @@ func main() {
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
 	apiV1.Handle("/v1/auth/session", handleCurrentSession(userStore))
+	apiV1.Handle("/v1/auth/sessions", handleSessionManagement(sessionManager))
+	apiV1.Handle("/v1/auth/sessions/{handle}", handleSessionManagement(sessionManager))
 	if oidcFlow != nil && sessionManager != nil {
 		apiV1.Handle("/v1/auth/reauth/start", handleReauthenticationStart(oidcFlow, sessionManager, userStore, auditStore))
 		apiV1.Handle("/v1/auth/reauth/callback", handleReauthenticationCallback(oidcFlow, sessionManager, userStore, auditStore))

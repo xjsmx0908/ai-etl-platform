@@ -29,14 +29,33 @@ class MockBackendHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("content-length", "0"))
         body = self.rfile.read(length)
-        type(self).requests.append((self.path, self.headers, json.loads(body or b"{}")))
+        type(self).requests.append(
+            (self.path, self.headers, json.loads(body or b"{}"))
+        )
+        self.write_queued_response()
+
+    def write_queued_response(self):
         status, payload = type(self).responses.popleft()
-        encoded = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        encoded = (
+            payload
+            if isinstance(payload, bytes)
+            else json.dumps(payload).encode()
+        )
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def handle_bodyless_request(self):
+        type(self).requests.append((self.path, self.headers, None))
+        self.write_queued_response()
+
+    def do_GET(self):
+        self.handle_bodyless_request()
+
+    def do_DELETE(self):
+        self.handle_bodyless_request()
 
     def log_message(self, _format, *_args):
         return
@@ -55,15 +74,26 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         cls.backend = ThreadingHTTPServer(("127.0.0.1", 0), MockBackendHandler)
         cls.backend_thread = threading.Thread(target=cls.backend.serve_forever, daemon=True)
         cls.backend_thread.start()
-        cls.web_port, cls.web = cls.start_web(server_file, session_core_enabled=True)
-        cls.legacy_web_port, cls.legacy_web = cls.start_web(server_file, session_core_enabled=False)
+        cls.web_port, cls.web = cls.start_web(
+            server_file, session_core_enabled=True,
+        )
+        cls.legacy_web_port, cls.legacy_web = cls.start_web(
+            server_file, session_core_enabled=False,
+        )
+        cls.unavailable_web_port, cls.unavailable_web = cls.start_web(
+            server_file,
+            session_core_enabled=True,
+            backend_url=f"http://127.0.0.1:{unused_port()}",
+        )
 
     @classmethod
-    def start_web(cls, server_file, *, session_core_enabled):
+    def start_web(cls, server_file, *, session_core_enabled, backend_url=None):
         web_port = unused_port()
         environment = os.environ.copy()
         environment.update({
-            "BACKEND_URL": f"http://127.0.0.1:{cls.backend.server_port}",
+            "BACKEND_URL": backend_url or (
+                f"http://127.0.0.1:{cls.backend.server_port}"
+            ),
             "HOSTNAME": "127.0.0.1",
             "PORT": str(web_port),
             "SESSION_CORE_ENABLED": "true" if session_core_enabled else "false",
@@ -93,7 +123,7 @@ class ReauthenticationWebContractTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        for web in (cls.web, cls.legacy_web):
+        for web in (cls.web, cls.legacy_web, cls.unavailable_web):
             web.terminate()
             try:
                 web.wait(timeout=5)
@@ -106,7 +136,10 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         MockBackendHandler.responses.clear()
         MockBackendHandler.requests.clear()
 
-    def request(self, method, path, *, body=None, cookie=None, same_origin=True, legacy=False):
+    def request(
+        self, method, path, *, body=None, cookie=None, same_origin=True,
+        legacy=False, unavailable=False,
+    ):
         headers = {"Host": "rag.example.test", "X-Forwarded-Proto": "https"}
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -114,9 +147,15 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         if cookie:
             headers["Cookie"] = cookie
         if same_origin is not None:
-            headers["Origin"] = "https://rag.example.test" if same_origin else "https://attacker.example"
+            headers["Origin"] = (
+                "https://rag.example.test"
+                if same_origin else "https://attacker.example"
+            )
             headers["Sec-Fetch-Site"] = "same-origin" if same_origin else "cross-site"
-        port = self.legacy_web_port if legacy else self.web_port
+        if unavailable:
+            port = self.unavailable_web_port
+        else:
+            port = self.legacy_web_port if legacy else self.web_port
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
@@ -334,6 +373,85 @@ class ReauthenticationWebContractTests(unittest.TestCase):
                     value.startswith("ai_etl_logout_state=") and "Max-Age=0" in value
                     for value in self.cookies(headers)
                 ))
+
+    def test_session_management_lists_using_only_the_http_only_cookie(self):
+        backend_payload = {"sessions": [{
+            "handle": "sm1_11111111-1111-4111-8111-111111111111",
+            "authentication_method": "federated",
+            "created_at": "2026-09-01T12:00:00Z",
+            "last_activity_at": "2026-09-01T12:01:00Z",
+            "expires_at": "2026-09-01T20:00:00Z",
+            "current": True,
+        }]}
+        MockBackendHandler.responses.append((200, backend_payload))
+        status, headers, payload = self.request(
+            "GET",
+            "/api/auth/sessions",
+            cookie="ai_etl_token=ps1_current",
+            same_origin=None,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(backend_payload, json.loads(payload))
+        self.assertEqual(
+            "/v1/auth/sessions", MockBackendHandler.requests[0][0]
+        )
+        self.assertEqual(
+            "Bearer ps1_current",
+            MockBackendHandler.requests[0][1].get("authorization"),
+        )
+        self.assertFalse(any(
+            value.startswith("ai_etl_token=")
+            for value in self.cookies(headers)
+        ))
+
+    def test_session_management_revoke_requires_same_origin(self):
+        path = "/api/auth/sessions/sm1_11111111-1111-4111-8111-111111111111"
+        status, _, _ = self.request(
+            "DELETE",
+            path,
+            cookie="ai_etl_token=ps1_current",
+            same_origin=False,
+        )
+        self.assertEqual(403, status)
+        self.assertEqual([], MockBackendHandler.requests)
+
+        MockBackendHandler.responses.append((204, b""))
+        status, _, payload = self.request(
+            "DELETE", path, cookie="ai_etl_token=ps1_current",
+        )
+        self.assertEqual(204, status)
+        self.assertEqual(b"", payload)
+        self.assertEqual(
+            "/v1/auth/sessions/sm1_11111111-1111-4111-8111-111111111111",
+            MockBackendHandler.requests[0][0],
+        )
+        self.assertEqual(
+            "Bearer ps1_current",
+            MockBackendHandler.requests[0][1].get("authorization"),
+        )
+
+    def test_session_management_returns_503_when_backend_is_unreachable(self):
+        paths = (
+            ("GET", "/api/auth/sessions"),
+            (
+                "DELETE",
+                "/api/auth/sessions/"
+                "sm1_11111111-1111-4111-8111-111111111111",
+            ),
+        )
+        for method, path in paths:
+            with self.subTest(method=method):
+                status, _, payload = self.request(
+                    method,
+                    path,
+                    cookie="ai_etl_token=ps1_current",
+                    unavailable=True,
+                )
+                self.assertEqual(503, status)
+                self.assertEqual(
+                    {"error": "session management unavailable"},
+                    json.loads(payload),
+                )
 
 
 if __name__ == "__main__":

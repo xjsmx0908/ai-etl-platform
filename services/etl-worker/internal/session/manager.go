@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,6 +60,7 @@ type Policy struct {
 	HighRiskAssurance       Assurance
 	EstablishmentAssurances map[auth.AuthenticationMethod]Assurance
 	ActionRisks             map[string]Risk
+	MaxActiveSessions       int
 	Revision                string
 }
 
@@ -81,6 +83,45 @@ type RevokeCommand struct {
 	CorrelationID string
 }
 
+type ListCommand struct {
+	Credential string
+}
+
+type RevokeManagedCommand struct {
+	Credential    string
+	Handle        ManagementHandle
+	CorrelationID string
+}
+
+type ManagementHandle struct {
+	value string
+}
+
+func ParseManagementHandle(value string) (ManagementHandle, error) {
+	const prefix = "sm1_"
+	if !strings.HasPrefix(value, prefix) || uuid.Validate(strings.TrimPrefix(value, prefix)) != nil {
+		return ManagementHandle{}, ErrInvalid
+	}
+	return ManagementHandle{value: value}, nil
+}
+
+func (h ManagementHandle) String() string {
+	return h.value
+}
+
+func newManagementHandle() ManagementHandle {
+	return ManagementHandle{value: "sm1_" + uuid.NewString()}
+}
+
+type View struct {
+	Handle               ManagementHandle
+	AuthenticationMethod auth.AuthenticationMethod
+	CreatedAt            time.Time
+	LastActivityAt       time.Time
+	ExpiresAt            time.Time
+	Current              bool
+}
+
 // Reference identifies an authenticated logical session without exposing its
 // stable store identifier. Only Authenticate can create a non-zero reference.
 type Reference struct {
@@ -101,6 +142,8 @@ type AuthenticateResult struct {
 
 type record struct {
 	id                       string
+	managementHandle         ManagementHandle
+	creationOrder            int64
 	credentialDigest         [32]byte
 	tenantID                 string
 	subjectID                string
@@ -137,12 +180,42 @@ type currentRevocation struct {
 	correlationID    string
 }
 
+type creation struct {
+	value             record
+	maxActiveSessions int
+	at                time.Time
+	idleCutoff        time.Time
+	policyRevision    string
+}
+
+type managedRevocation struct {
+	fence         currentSessionFence
+	handle        ManagementHandle
+	correlationID string
+}
+
+type subjectList struct {
+	fence currentSessionFence
+}
+
+type currentSessionFence struct {
+	credentialDigest [32]byte
+	currentSessionID string
+	tenantID         string
+	subjectID        string
+	at               time.Time
+	idleCutoff       time.Time
+	policyRevision   string
+}
+
 type repository interface {
-	create(context.Context, record) error
+	create(context.Context, creation) error
 	load(context.Context, [32]byte) (record, bool, error)
+	listSubject(context.Context, subjectList) ([]record, error)
 	touch(context.Context, string, int64, time.Time) error
 	rotate(context.Context, [32]byte, string, int64, record) error
 	revokeCurrent(context.Context, currentRevocation) error
+	revokeManaged(context.Context, managedRevocation) error
 	revokeSubject(context.Context, subjectRevocation) error
 }
 
@@ -167,7 +240,7 @@ func New(store repository, policy Policy, options ...Option) (*Manager, error) {
 	if store == nil || policy.IdleTimeout <= 0 || policy.AbsoluteLifetime <= 0 ||
 		policy.HighRiskFreshness <= 0 || strings.TrimSpace(string(policy.HighRiskAssurance)) == "" ||
 		strings.TrimSpace(policy.Revision) == "" || policy.IdleTimeout > policy.AbsoluteLifetime ||
-		len(policy.ActionRisks) == 0 {
+		len(policy.ActionRisks) == 0 || policy.MaxActiveSessions < 0 {
 		return nil, ErrInvalid
 	}
 	if len(policy.EstablishmentAssurances) == 0 {
@@ -224,8 +297,9 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 	}
 	expiresAt := now.Add(m.policy.AbsoluteLifetime)
 	record := record{
-		id: uuid.NewString(), credentialDigest: sha256.Sum256([]byte(token)),
-		tenantID: command.Principal.TenantID, subjectID: command.Principal.SubjectID,
+		id: uuid.NewString(), managementHandle: newManagementHandle(),
+		credentialDigest: sha256.Sum256([]byte(token)),
+		tenantID:         command.Principal.TenantID, subjectID: command.Principal.SubjectID,
 		authenticationMethod: command.Principal.AuthenticationMethod,
 		assurance:            command.Evidence.Assurance, authenticatedAt: command.Evidence.AuthenticatedAt.UTC(),
 		createdAt: now, lastActivityAt: now, absoluteExpiresAt: expiresAt, generation: 1,
@@ -243,6 +317,8 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 			return Credential{}, ErrInvalid
 		}
 		record.id = current.id
+		record.managementHandle = current.managementHandle
+		record.creationOrder = current.creationOrder
 		record.generation = current.generation + 1
 		record.createdAt = current.createdAt
 		record.absoluteExpiresAt = current.absoluteExpiresAt
@@ -254,13 +330,104 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 		}
 		return Credential{Token: token, ExpiresAt: record.absoluteExpiresAt}, nil
 	}
-	if err := m.store.create(ctx, record); err != nil {
+	if err := m.store.create(ctx, creation{
+		value: record, maxActiveSessions: m.policy.MaxActiveSessions, at: now,
+		idleCutoff: now.Add(-m.policy.IdleTimeout), policyRevision: m.policy.Revision,
+	}); err != nil {
 		if errors.Is(err, errChanged) {
 			return Credential{}, ErrInvalid
 		}
 		return Credential{}, fmt.Errorf("%w: establish", ErrUnavailable)
 	}
 	return Credential{Token: token, ExpiresAt: expiresAt}, nil
+}
+
+func (m *Manager) List(ctx context.Context, command ListCommand) ([]View, error) {
+	if strings.TrimSpace(command.Credential) == "" {
+		return nil, ErrInvalid
+	}
+	now := m.now().UTC()
+	digest := sha256.Sum256([]byte(command.Credential))
+	current, found, err := m.store.load(ctx, digest)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load current session", ErrUnavailable)
+	}
+	if !found || !current.activeAt(now, m.policy.IdleTimeout, m.policy.Revision) {
+		return nil, ErrInvalid
+	}
+	records, err := m.store.listSubject(ctx, subjectList{
+		fence: m.currentSessionFence(digest, current, now),
+	})
+	if err != nil {
+		if errors.Is(err, errChanged) {
+			return nil, ErrInvalid
+		}
+		return nil, fmt.Errorf("%w: list sessions", ErrUnavailable)
+	}
+	views := make([]View, 0, len(records))
+	for _, candidate := range records {
+		if candidate.tenantID != current.tenantID || candidate.subjectID != current.subjectID ||
+			!candidate.activeAt(now, m.policy.IdleTimeout, m.policy.Revision) {
+			continue
+		}
+		views = append(views, View{
+			Handle: candidate.managementHandle, AuthenticationMethod: candidate.authenticationMethod,
+			CreatedAt: candidate.createdAt, LastActivityAt: candidate.lastActivityAt,
+			ExpiresAt: candidate.absoluteExpiresAt, Current: candidate.id == current.id,
+		})
+	}
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].CreatedAt.Equal(views[j].CreatedAt) {
+			return views[i].Handle.String() < views[j].Handle.String()
+		}
+		return views[i].CreatedAt.After(views[j].CreatedAt)
+	})
+	return views, nil
+}
+
+func (m *Manager) RevokeManaged(ctx context.Context, command RevokeManagedCommand) error {
+	credential := strings.TrimSpace(command.Credential)
+	handle := strings.TrimSpace(command.Handle.String())
+	correlationID := strings.TrimSpace(command.CorrelationID)
+	parsedHandle, handleErr := ParseManagementHandle(handle)
+	if credential == "" || handle != command.Handle.String() || handleErr != nil ||
+		correlationID == "" || correlationID != command.CorrelationID || len(correlationID) > 256 {
+		return ErrInvalid
+	}
+	now := m.now().UTC()
+	digest := sha256.Sum256([]byte(credential))
+	current, found, err := m.store.load(ctx, digest)
+	if err != nil {
+		return fmt.Errorf("%w: load current session", ErrUnavailable)
+	}
+	if !found || !current.activeAt(now, m.policy.IdleTimeout, m.policy.Revision) {
+		return ErrInvalid
+	}
+	err = m.store.revokeManaged(ctx, managedRevocation{
+		fence:  m.currentSessionFence(digest, current, now),
+		handle: parsedHandle, correlationID: correlationID,
+	})
+	if errors.Is(err, errChanged) {
+		return ErrInvalid
+	}
+	if err != nil {
+		return fmt.Errorf("%w: revoke managed session", ErrUnavailable)
+	}
+	return nil
+}
+
+func (m *Manager) currentSessionFence(
+	digest [32]byte, current record, at time.Time,
+) currentSessionFence {
+	return currentSessionFence{
+		credentialDigest: digest,
+		currentSessionID: current.id,
+		tenantID:         current.tenantID,
+		subjectID:        current.subjectID,
+		at:               at,
+		idleCutoff:       at.Add(-m.policy.IdleTimeout),
+		policyRevision:   m.policy.Revision,
+	}
 }
 
 func cloneAssurances(source map[auth.AuthenticationMethod]Assurance) map[auth.AuthenticationMethod]Assurance {

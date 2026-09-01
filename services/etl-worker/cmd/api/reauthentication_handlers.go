@@ -59,7 +59,7 @@ func handleReauthenticationStart(flow *oidcauth.Flow, sessions *session.Manager,
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&request); err != nil || strings.TrimSpace(request.Action) != request.Action ||
-			platformSessionPolicy().ActionRisks[request.Action] != session.RiskHigh {
+			platformSessionPolicy(3).ActionRisks[request.Action] != session.RiskHigh {
 			writeError(w, http.StatusBadRequest, "registered high-risk action required")
 			return
 		}
@@ -130,7 +130,7 @@ func handleReauthenticationCallback(flow *oidcauth.Flow, sessions *session.Manag
 			writeError(w, http.StatusUnauthorized, "reauthentication failed")
 			return
 		}
-		if platformSessionPolicy().ActionRisks[result.Action] != session.RiskHigh {
+		if platformSessionPolicy(3).ActionRisks[result.Action] != session.RiskHigh {
 			writeError(w, http.StatusUnauthorized, "reauthentication failed")
 			return
 		}

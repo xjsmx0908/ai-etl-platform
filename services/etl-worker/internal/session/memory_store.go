@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 )
@@ -11,6 +12,7 @@ type memoryStore struct {
 	mu                   sync.Mutex
 	records              map[[32]byte]record
 	subjectRevokedBefore map[subjectKey]time.Time
+	nextCreationOrder    int64
 }
 
 type subjectKey struct {
@@ -25,15 +27,42 @@ func NewMemoryStore() *memoryStore {
 	}
 }
 
-func (s *memoryStore) create(_ context.Context, value record) error {
+func (s *memoryStore) create(_ context.Context, command creation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	value := command.value
 	key := subjectKey{tenantID: value.tenantID, subjectID: value.subjectID}
 	if revokedBefore, found := s.subjectRevokedBefore[key]; found && !value.authenticatedAt.After(revokedBefore) {
 		return errChanged
 	}
 	if _, exists := s.records[value.credentialDigest]; exists {
 		return errors.New("credential collision")
+	}
+	s.nextCreationOrder++
+	value.creationOrder = s.nextCreationOrder
+	if command.maxActiveSessions > 0 {
+		active := make([]record, 0)
+		for _, candidate := range s.records {
+			if candidate.tenantID == value.tenantID && candidate.subjectID == value.subjectID &&
+				candidate.revokedAt == nil && candidate.absoluteExpiresAt.After(command.at) &&
+				candidate.lastActivityAt.After(command.idleCutoff) && candidate.policyRevision == command.policyRevision {
+				active = append(active, candidate)
+			}
+		}
+		sort.Slice(active, func(i, j int) bool { return active[i].creationOrder < active[j].creationOrder })
+		for len(active) >= command.maxActiveSessions {
+			oldest := active[0]
+			for digest, candidate := range s.records {
+				if candidate.id == oldest.id {
+					candidate.revokedAt = &command.at
+					candidate.revokedCorrelationID = value.establishedCorrelationID
+					candidate.generation++
+					s.records[digest] = candidate
+					break
+				}
+			}
+			active = active[1:]
+		}
 	}
 	s.records[value.credentialDigest] = value
 	return nil
@@ -44,6 +73,26 @@ func (s *memoryStore) load(_ context.Context, digest [32]byte) (record, bool, er
 	defer s.mu.Unlock()
 	value, found := s.records[digest]
 	return value, found, nil
+}
+
+func (s *memoryStore) listSubject(_ context.Context, command subjectList) ([]record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fence := command.fence
+	current, found := s.records[fence.credentialDigest]
+	if !found || current.id != fence.currentSessionID || current.tenantID != fence.tenantID ||
+		current.subjectID != fence.subjectID || current.revokedAt != nil ||
+		!current.absoluteExpiresAt.After(fence.at) || !current.lastActivityAt.After(fence.idleCutoff) ||
+		current.policyRevision != fence.policyRevision {
+		return nil, errChanged
+	}
+	values := make([]record, 0)
+	for _, value := range s.records {
+		if value.tenantID == fence.tenantID && value.subjectID == fence.subjectID {
+			values = append(values, value)
+		}
+	}
+	return values, nil
 }
 
 func (s *memoryStore) touch(_ context.Context, id string, generation int64, at time.Time) error {
@@ -101,6 +150,35 @@ func (s *memoryStore) revokeCurrent(_ context.Context, command currentRevocation
 	value.revokedCorrelationID = command.correlationID
 	value.generation++
 	s.records[command.credentialDigest] = value
+	return nil
+}
+
+func (s *memoryStore) revokeManaged(_ context.Context, command managedRevocation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fence := command.fence
+	current, found := s.records[fence.credentialDigest]
+	if !found || current.id != fence.currentSessionID ||
+		!current.activeAt(fence.at, fence.at.Sub(fence.idleCutoff), fence.policyRevision) ||
+		current.tenantID != fence.tenantID || current.subjectID != fence.subjectID {
+		return errChanged
+	}
+	for digest, candidate := range s.records {
+		if candidate.managementHandle != command.handle || candidate.tenantID != fence.tenantID ||
+			candidate.subjectID != fence.subjectID {
+			continue
+		}
+		if candidate.id == current.id {
+			return errChanged
+		}
+		if candidate.activeAt(fence.at, fence.at.Sub(fence.idleCutoff), fence.policyRevision) {
+			candidate.revokedAt = &fence.at
+			candidate.revokedCorrelationID = command.correlationID
+			candidate.generation++
+			s.records[digest] = candidate
+		}
+		return nil
+	}
 	return nil
 }
 

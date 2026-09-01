@@ -49,6 +49,270 @@ func TestEstablishedSessionAuthenticatesItsPrincipal(t *testing.T) {
 	}
 }
 
+func TestUserListsOnlyActiveSessionsWithOpaqueManagementHandles(t *testing.T) {
+	base := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	now := base
+	policy := demoPolicy()
+	policy.MaxActiveSessions = 3
+	manager, err := session.New(session.NewMemoryStore(), policy, session.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := auth.Principal{
+		TenantID: "demo-tenant", SubjectID: "user-42",
+		AuthenticationMethod: auth.AuthenticationMethodFederated,
+	}
+	first, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal:     principal,
+		Evidence:      session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+		CorrelationID: "login-list-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	second, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal:     principal,
+		Evidence:      session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+		CorrelationID: "login-list-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal: auth.Principal{
+			TenantID: "demo-tenant", SubjectID: "user-99",
+			AuthenticationMethod: auth.AuthenticationMethodFederated,
+		},
+		Evidence:      session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+		CorrelationID: "login-other",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Revoke(context.Background(), session.RevokeCommand{
+		Credential: first.Token, Scope: session.RevokeCurrent, CorrelationID: "logout-old",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := manager.List(context.Background(), session.ListCommand{Credential: second.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("active sessions=%d want=1: %+v", len(items), items)
+	}
+	item := items[0]
+	if item.Handle.String() == "" || item.Handle.String() == second.Token ||
+		item.Handle.String() == first.Token || item.Handle.String() == other.Token {
+		t.Fatalf("management handle is not independently opaque: %+v", item)
+	}
+	if !item.Current || item.AuthenticationMethod != auth.AuthenticationMethodFederated ||
+		!item.CreatedAt.Equal(base.Add(time.Minute)) || !item.LastActivityAt.Equal(base.Add(time.Minute)) ||
+		!item.ExpiresAt.Equal(base.Add(time.Minute).Add(8*time.Hour)) {
+		t.Fatalf("unexpected session view: %+v", item)
+	}
+}
+
+func TestFourthLoginEvictsOldestActiveSessionButRotationKeepsItsSlot(t *testing.T) {
+	base := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
+	now := base
+	policy := demoPolicy()
+	policy.MaxActiveSessions = 3
+	manager, err := session.New(session.NewMemoryStore(), policy, session.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := auth.Principal{
+		TenantID: "demo-tenant", SubjectID: "user-42",
+		AuthenticationMethod: auth.AuthenticationMethodFederated,
+	}
+	establish := func(correlation string) session.Credential {
+		t.Helper()
+		credential, establishErr := manager.Establish(context.Background(), session.EstablishCommand{
+			Principal:     principal,
+			Evidence:      session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+			CorrelationID: correlation,
+		})
+		if establishErr != nil {
+			t.Fatal(establishErr)
+		}
+		return credential
+	}
+	first := establish("cap-login-1")
+	now = now.Add(time.Minute)
+	second := establish("cap-login-2")
+	now = now.Add(time.Minute)
+	third := establish("cap-login-3")
+	now = now.Add(time.Minute)
+	fourth := establish("cap-login-4")
+
+	assertDecision(t, manager, first.Token, session.DecisionDeny)
+	for _, active := range []session.Credential{second, third, fourth} {
+		assertDecision(t, manager, active.Token, session.DecisionAllow)
+	}
+	items, err := manager.List(context.Background(), session.ListCommand{Credential: fourth.Token})
+	if err != nil || len(items) != 3 {
+		t.Fatalf("sessions=%+v err=%v", items, err)
+	}
+	var fourthHandle session.ManagementHandle
+	for _, item := range items {
+		if item.Current {
+			fourthHandle = item.Handle
+		}
+	}
+
+	now = now.Add(time.Minute)
+	rotated, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal:          principal,
+		Evidence:           session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+		ReplacesCredential: fourth.Token, CorrelationID: "cap-reauth-4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err = manager.List(context.Background(), session.ListCommand{Credential: rotated.Token})
+	if err != nil || len(items) != 3 {
+		t.Fatalf("rotation consumed a new slot: sessions=%+v err=%v", items, err)
+	}
+	current := 0
+	for _, item := range items {
+		if item.Current {
+			current++
+			if item.Handle != fourthHandle {
+				t.Fatalf("rotation changed management handle: before=%q after=%q", fourthHandle, item.Handle)
+			}
+		}
+	}
+	if current != 1 {
+		t.Fatalf("current sessions=%d: %+v", current, items)
+	}
+}
+
+func TestUserRevokesOwnedNonCurrentSessionByManagementHandle(t *testing.T) {
+	now := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	policy := demoPolicy()
+	policy.MaxActiveSessions = 3
+	manager, err := session.New(session.NewMemoryStore(), policy, session.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	establish := func(subject, correlation string) session.Credential {
+		t.Helper()
+		credential, establishErr := manager.Establish(context.Background(), session.EstablishCommand{
+			Principal: auth.Principal{
+				TenantID: "demo-tenant", SubjectID: subject,
+				AuthenticationMethod: auth.AuthenticationMethodFederated,
+			},
+			Evidence:      session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+			CorrelationID: correlation,
+		})
+		if establishErr != nil {
+			t.Fatal(establishErr)
+		}
+		return credential
+	}
+	current := establish("user-42", "manage-login-current")
+	target := establish("user-42", "manage-login-target")
+	other := establish("user-99", "manage-login-other")
+	targets, err := manager.List(context.Background(), session.ListCommand{Credential: current.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var targetHandle, currentHandle session.ManagementHandle
+	for _, item := range targets {
+		if item.Current {
+			currentHandle = item.Handle
+		} else {
+			targetHandle = item.Handle
+		}
+	}
+	otherItems, err := manager.List(context.Background(), session.ListCommand{Credential: other.Token})
+	if err != nil || len(otherItems) != 1 {
+		t.Fatalf("other sessions=%+v err=%v", otherItems, err)
+	}
+
+	if err := manager.RevokeManaged(context.Background(), session.RevokeManagedCommand{
+		Credential: current.Token, Handle: targetHandle, CorrelationID: "device-revoke-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, manager, target.Token, session.DecisionDeny)
+	assertDecision(t, manager, current.Token, session.DecisionAllow)
+
+	unknownHandle := mustManagementHandle(t, "sm1_00000000-0000-4000-8000-000000000000")
+	for _, handle := range []session.ManagementHandle{targetHandle, otherItems[0].Handle, unknownHandle} {
+		if err := manager.RevokeManaged(context.Background(), session.RevokeManagedCommand{
+			Credential: current.Token, Handle: handle, CorrelationID: "device-revoke-idempotent",
+		}); err != nil {
+			t.Fatalf("non-disclosing revoke handle=%q: %v", handle, err)
+		}
+	}
+	assertDecision(t, manager, other.Token, session.DecisionAllow)
+	if err := manager.RevokeManaged(context.Background(), session.RevokeManagedCommand{
+		Credential: current.Token, Handle: currentHandle, CorrelationID: "device-revoke-current",
+	}); !errors.Is(err, session.ErrInvalid) {
+		t.Fatalf("current-session managed revoke error=%v", err)
+	}
+}
+
+func TestManagedRevokeTreatsExpiredOwnedSessionAsAlreadyInactive(t *testing.T) {
+	base := time.Date(2026, 9, 1, 10, 30, 0, 0, time.UTC)
+	now := base
+	policy := demoPolicy()
+	policy.IdleTimeout = 15 * time.Minute
+	manager, err := session.New(session.NewMemoryStore(), policy, session.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := auth.Principal{
+		TenantID: "demo-tenant", SubjectID: "user-42",
+		AuthenticationMethod: auth.AuthenticationMethodFederated,
+	}
+	target, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal:     principal,
+		Evidence:      session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+		CorrelationID: "expired-target",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := manager.List(context.Background(), session.ListCommand{Credential: target.Token})
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("target sessions=%+v err=%v", targets, err)
+	}
+	targetHandle := targets[0].Handle
+	now = base.Add(14 * time.Minute)
+	current, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal:     principal,
+		Evidence:      session.AuthenticationEvidence{Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now},
+		CorrelationID: "active-current",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(16 * time.Minute)
+	if err := manager.RevokeManaged(context.Background(), session.RevokeManagedCommand{
+		Credential: current.Token, Handle: targetHandle, CorrelationID: "expired-target-revoke",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := manager.List(context.Background(), session.ListCommand{Credential: current.Token})
+	if err != nil || len(items) != 1 || !items[0].Current {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+}
+
+func mustManagementHandle(t *testing.T, value string) session.ManagementHandle {
+	t.Helper()
+	handle, err := session.ParseManagementHandle(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handle
+}
+
 func TestLocalPasswordSessionAllowsStandardActionsButRequiresStrongerEvidenceForHighRisk(t *testing.T) {
 	now := time.Date(2026, 8, 31, 19, 0, 0, 0, time.UTC)
 	manager, err := session.New(session.NewMemoryStore(), demoPolicy(), session.WithClock(func() time.Time { return now }))

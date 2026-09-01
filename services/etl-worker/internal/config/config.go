@@ -203,32 +203,33 @@ type Config struct {
 	TaskStatusTTL         time.Duration
 
 	// Gateway (file upload)
-	UploadDir               string
-	MaxUploadSize           int64 // bytes
-	MultipartMaxMemoryBytes int64 // bytes kept in memory before multipart spills to disk
-	JWTSecret               string
-	OIDCEnabled             bool
-	OIDCIssuer              string
-	OIDCClientID            string
-	OIDCClientSecret        string
-	OIDCRedirectURI         string
-	OIDCLogoutRedirectURI   string
-	OIDCTransactionTTL      time.Duration
-	SCIMEnabled             bool
-	SCIMConnectorID         string
-	SCIMTenantID            string
-	SCIMIssuer              string
-	SCIMSubjectAttribute    string
-	SCIMDefaultRole         string
-	SCIMBearerTokens        []string
-	SCIMMaxBodyBytes        int64
-	SessionCoreEnabled      bool
-	IdentityPolicyProfile   string
-	S3Endpoint              string
-	S3AccessKey             string
-	S3SecretKey             string
-	S3Bucket                string
-	S3UseSSL                bool
+	UploadDir                string
+	MaxUploadSize            int64 // bytes
+	MultipartMaxMemoryBytes  int64 // bytes kept in memory before multipart spills to disk
+	JWTSecret                string
+	OIDCEnabled              bool
+	OIDCIssuer               string
+	OIDCClientID             string
+	OIDCClientSecret         string
+	OIDCRedirectURI          string
+	OIDCLogoutRedirectURI    string
+	OIDCTransactionTTL       time.Duration
+	SCIMEnabled              bool
+	SCIMConnectorID          string
+	SCIMTenantID             string
+	SCIMIssuer               string
+	SCIMSubjectAttribute     string
+	SCIMDefaultRole          string
+	SCIMBearerTokens         []string
+	SCIMMaxBodyBytes         int64
+	SessionCoreEnabled       bool
+	SessionMaxActiveSessions int
+	IdentityPolicyProfile    string
+	S3Endpoint               string
+	S3AccessKey              string
+	S3SecretKey              string
+	S3Bucket                 string
+	S3UseSSL                 bool
 
 	// PostgreSQL (users, tenants, document registry)
 	// PGDSN is the connection string; supports PG_DSN_FILE via EnvSecret.
@@ -403,32 +404,33 @@ func Load() Config {
 		TaskStatusTTL:         EnvDuration("TASK_STATUS_TTL", 7*24*time.Hour),
 
 		// Gateway
-		UploadDir:               EnvStr("UPLOAD_DIR", "/data/uploads"),
-		MaxUploadSize:           int64(EnvInt("MAX_UPLOAD_SIZE_MB", 512)) * 1024 * 1024,
-		MultipartMaxMemoryBytes: int64(EnvInt("MULTIPART_MAX_MEMORY_MB", 4)) * 1024 * 1024,
-		JWTSecret:               EnvSecret("JWT_SECRET", "change-me-in-production"),
-		OIDCEnabled:             EnvBool("OIDC_ENABLED", false),
-		OIDCIssuer:              strings.TrimSpace(EnvStr("OIDC_ISSUER", "")),
-		OIDCClientID:            strings.TrimSpace(EnvStr("OIDC_CLIENT_ID", "")),
-		OIDCClientSecret:        EnvSecret("OIDC_CLIENT_SECRET", ""),
-		OIDCRedirectURI:         strings.TrimSpace(EnvStr("OIDC_REDIRECT_URI", "")),
-		OIDCLogoutRedirectURI:   strings.TrimSpace(EnvStr("OIDC_LOGOUT_REDIRECT_URI", "")),
-		OIDCTransactionTTL:      EnvDuration("OIDC_TRANSACTION_TTL", 5*time.Minute),
-		SCIMEnabled:             EnvBool("SCIM_ENABLED", false),
-		SCIMConnectorID:         strings.TrimSpace(EnvStr("SCIM_CONNECTOR_ID", "")),
-		SCIMTenantID:            strings.TrimSpace(EnvStr("SCIM_TENANT_ID", "")),
-		SCIMIssuer:              strings.TrimSpace(EnvStr("SCIM_ISSUER", "")),
-		SCIMSubjectAttribute:    strings.TrimSpace(EnvStr("SCIM_SUBJECT_ATTRIBUTE", "externalId")),
-		SCIMDefaultRole:         strings.TrimSpace(EnvStr("SCIM_DEFAULT_ROLE", "readonly")),
-		SCIMBearerTokens:        secretCSV("SCIM_BEARER_TOKENS"),
-		SCIMMaxBodyBytes:        int64(EnvInt("SCIM_MAX_BODY_KB", 64)) * 1024,
-		SessionCoreEnabled:      EnvBool("SESSION_CORE_ENABLED", false),
-		IdentityPolicyProfile:   strings.TrimSpace(EnvStr("IDENTITY_POLICY_PROFILE", "")),
-		S3Endpoint:              EnvStr("S3_ENDPOINT", "localhost:9000"),
-		S3AccessKey:             EnvSecret("S3_ACCESS_KEY", "minioadmin"),
-		S3SecretKey:             EnvSecret("S3_SECRET_KEY", "minioadmin"),
-		S3Bucket:                EnvStr("S3_BUCKET", "documents"),
-		S3UseSSL:                strings.EqualFold(EnvStr("S3_USE_SSL", "false"), "true"),
+		UploadDir:                EnvStr("UPLOAD_DIR", "/data/uploads"),
+		MaxUploadSize:            int64(EnvInt("MAX_UPLOAD_SIZE_MB", 512)) * 1024 * 1024,
+		MultipartMaxMemoryBytes:  int64(EnvInt("MULTIPART_MAX_MEMORY_MB", 4)) * 1024 * 1024,
+		JWTSecret:                EnvSecret("JWT_SECRET", "change-me-in-production"),
+		OIDCEnabled:              EnvBool("OIDC_ENABLED", false),
+		OIDCIssuer:               strings.TrimSpace(EnvStr("OIDC_ISSUER", "")),
+		OIDCClientID:             strings.TrimSpace(EnvStr("OIDC_CLIENT_ID", "")),
+		OIDCClientSecret:         EnvSecret("OIDC_CLIENT_SECRET", ""),
+		OIDCRedirectURI:          strings.TrimSpace(EnvStr("OIDC_REDIRECT_URI", "")),
+		OIDCLogoutRedirectURI:    strings.TrimSpace(EnvStr("OIDC_LOGOUT_REDIRECT_URI", "")),
+		OIDCTransactionTTL:       EnvDuration("OIDC_TRANSACTION_TTL", 5*time.Minute),
+		SCIMEnabled:              EnvBool("SCIM_ENABLED", false),
+		SCIMConnectorID:          strings.TrimSpace(EnvStr("SCIM_CONNECTOR_ID", "")),
+		SCIMTenantID:             strings.TrimSpace(EnvStr("SCIM_TENANT_ID", "")),
+		SCIMIssuer:               strings.TrimSpace(EnvStr("SCIM_ISSUER", "")),
+		SCIMSubjectAttribute:     strings.TrimSpace(EnvStr("SCIM_SUBJECT_ATTRIBUTE", "externalId")),
+		SCIMDefaultRole:          strings.TrimSpace(EnvStr("SCIM_DEFAULT_ROLE", "readonly")),
+		SCIMBearerTokens:         secretCSV("SCIM_BEARER_TOKENS"),
+		SCIMMaxBodyBytes:         int64(EnvInt("SCIM_MAX_BODY_KB", 64)) * 1024,
+		SessionCoreEnabled:       EnvBool("SESSION_CORE_ENABLED", false),
+		SessionMaxActiveSessions: EnvInt("SESSION_MAX_ACTIVE_SESSIONS", 3),
+		IdentityPolicyProfile:    strings.TrimSpace(EnvStr("IDENTITY_POLICY_PROFILE", "")),
+		S3Endpoint:               EnvStr("S3_ENDPOINT", "localhost:9000"),
+		S3AccessKey:              EnvSecret("S3_ACCESS_KEY", "minioadmin"),
+		S3SecretKey:              EnvSecret("S3_SECRET_KEY", "minioadmin"),
+		S3Bucket:                 EnvStr("S3_BUCKET", "documents"),
+		S3UseSSL:                 strings.EqualFold(EnvStr("S3_USE_SSL", "false"), "true"),
 
 		// PostgreSQL
 		PGDSN:                  EnvSecret("PG_DSN", ""),
@@ -453,6 +455,9 @@ func (c Config) Validate() error {
 	}
 	if c.SessionCoreEnabled && c.IdentityPolicyProfile != "personal-demo-v1" {
 		return fmt.Errorf("SESSION_CORE_ENABLED requires ENVIRONMENT=dev and IDENTITY_POLICY_PROFILE=personal-demo-v1")
+	}
+	if c.SessionCoreEnabled && (c.SessionMaxActiveSessions < 1 || c.SessionMaxActiveSessions > 3) {
+		return fmt.Errorf("SESSION_MAX_ACTIVE_SESSIONS must be between 1 and 3 for personal-demo-v1")
 	}
 	if c.Environment == "production" {
 		if c.EmbedAPIKey == "" {

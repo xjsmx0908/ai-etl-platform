@@ -49,6 +49,34 @@ func TestNewTenantMigrationCreatesDefaultKnowledgeSpace(t *testing.T) {
 	}
 }
 
+func TestPlatformSessionManagementMigrationUsesIndependentOpaqueHandles(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0022_platform_session_management.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(body)
+	for _, required := range []string{
+		"ADD COLUMN management_handle TEXT",
+		"SET management_handle = 'sm1_' || gen_random_uuid()::text",
+		"ALTER COLUMN management_handle SET NOT NULL",
+		"platform_sessions_management_handle_format",
+		"platform_sessions_management_handle_unique",
+		"CREATE SEQUENCE platform_sessions_creation_order_seq",
+		"row_number() OVER (ORDER BY created_at, id)",
+		"ALTER COLUMN creation_order SET NOT NULL",
+		"platform_sessions_creation_order_unique",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("session management migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"credential_digest::text", "internal_user_id::text", "tenant_id ||"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("session management handle derives from sensitive identity: %q", forbidden)
+		}
+	}
+}
+
 func TestIngestionOutboxMigrationCarriesDurabilityInvariants(t *testing.T) {
 	body, err := migrationFiles.ReadFile("0008_ingestion_outbox.up.sql")
 	if err != nil {

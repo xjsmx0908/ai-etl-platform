@@ -30,7 +30,7 @@ func TestHandleReauthenticationStartBindsStaleFederatedSessionAndHighRiskAction(
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatalf("create session manager: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestHandleReauthenticationCallbackAtomicallyRotatesCredentialAndRejectsRepl
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,12 +243,12 @@ func TestReauthenticationCallbackFailsClosedWhenUserOrSessionStoreIsUnavailable(
 			t.Fatal(err)
 		}
 		defer mock.Close()
-		mock.ExpectQuery("SELECT id,tenant_id").WithArgs(pgxmock.AnyArg()).WillReturnRows(
-			pgxmock.NewRows([]string{"id", "tenant_id", "internal_user_id", "authentication_method", "assurance_level", "authenticated_at", "created_at", "last_activity_at", "absolute_expires_at", "revoked_at", "generation", "policy_revision", "established_correlation_id"}).
-				AddRow("session-1", user.TenantID, user.ID, "federated", "demo-mfa", base.Add(-time.Minute), base.Add(-time.Hour), base, base.Add(time.Hour), nil, int64(1), platformSessionPolicy().Revision, "login-1"),
+		mock.ExpectQuery("SELECT id,management_handle,creation_order,tenant_id").WithArgs(pgxmock.AnyArg()).WillReturnRows(
+			pgxmock.NewRows([]string{"id", "management_handle", "creation_order", "tenant_id", "internal_user_id", "authentication_method", "assurance_level", "authenticated_at", "created_at", "last_activity_at", "absolute_expires_at", "revoked_at", "generation", "policy_revision", "established_correlation_id"}).
+				AddRow("session-1", "sm1_11111111-1111-4111-8111-111111111111", int64(1), user.TenantID, user.ID, "federated", "demo-mfa", base.Add(-time.Minute), base.Add(-time.Hour), base, base.Add(time.Hour), nil, int64(1), platformSessionPolicy(3).Revision, "login-1"),
 		)
 		mock.ExpectBegin().WillReturnError(errors.New("postgres unavailable"))
-		sessions, err := session.New(session.NewPostgresStore(mock), platformSessionPolicy(), session.WithClock(func() time.Time { return base }))
+		sessions, err := session.New(session.NewPostgresStore(mock), platformSessionPolicy(3), session.WithClock(func() time.Time { return base }))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -275,7 +275,7 @@ func TestReauthenticationCallbackFailsClosedWhenRedisBecomesUnavailable(t *testi
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return base }))
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return base }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestHandleReauthenticationStartRejectsIneligibleRequests(t *testing.T) {
 			users := newFakeUserStore()
 			seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", test.active)
 			user, _, _ := users.GetByUsername(context.Background(), "alice")
-			sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+			sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -376,7 +376,7 @@ func TestConcurrentReauthenticationCallbacksIssueExactlyOneReplacement(t *testin
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestReauthenticationCallbackDoesNotRotateAfterUserDeactivation(t *testing.T
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func prepareReauthenticationCallback(t *testing.T, returnTo string) (*oidcauth.F
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", userstore.RoleAdmin, "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatal(err)
 	}
