@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { safeLocalReturnPath } from "@/lib/authSecurity";
 import { parsePlatformLoginCredential } from "@/lib/platformSession";
 
 function clearReauthenticationState(response: NextResponse) {
@@ -17,13 +18,6 @@ function reauthenticationFailure(req: NextRequest): NextResponse {
   const response = NextResponse.redirect(destination);
   clearReauthenticationState(response);
   return response;
-}
-
-function safeReturnPath(value: unknown): string {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
-    return "/";
-  }
-  return value;
 }
 
 async function completeReauthentication(req: NextRequest, cookieState: string): Promise<NextResponse> {
@@ -62,7 +56,7 @@ async function completeReauthentication(req: NextRequest, cookieState: string): 
   if (!Number.isFinite(expiresAt) || remainingSeconds <= 0) {
     return reauthenticationFailure(req);
   }
-  const response = NextResponse.redirect(new URL(safeReturnPath(data.return_to), req.url));
+  const response = NextResponse.redirect(new URL(safeLocalReturnPath(data.return_to), req.url));
   response.cookies.set("ai_etl_token", data.token, {
     httpOnly: true,
     sameSite: "lax",

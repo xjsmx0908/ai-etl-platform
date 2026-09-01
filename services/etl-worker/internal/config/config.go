@@ -212,6 +212,7 @@ type Config struct {
 	OIDCClientID            string
 	OIDCClientSecret        string
 	OIDCRedirectURI         string
+	OIDCLogoutRedirectURI   string
 	OIDCTransactionTTL      time.Duration
 	SCIMEnabled             bool
 	SCIMConnectorID         string
@@ -411,6 +412,7 @@ func Load() Config {
 		OIDCClientID:            strings.TrimSpace(EnvStr("OIDC_CLIENT_ID", "")),
 		OIDCClientSecret:        EnvSecret("OIDC_CLIENT_SECRET", ""),
 		OIDCRedirectURI:         strings.TrimSpace(EnvStr("OIDC_REDIRECT_URI", "")),
+		OIDCLogoutRedirectURI:   strings.TrimSpace(EnvStr("OIDC_LOGOUT_REDIRECT_URI", "")),
 		OIDCTransactionTTL:      EnvDuration("OIDC_TRANSACTION_TTL", 5*time.Minute),
 		SCIMEnabled:             EnvBool("SCIM_ENABLED", false),
 		SCIMConnectorID:         strings.TrimSpace(EnvStr("SCIM_CONNECTOR_ID", "")),
@@ -700,6 +702,10 @@ func (c Config) ValidateAPI() error {
 		if !validOIDCHTTPSURL(c.OIDCRedirectURI) {
 			return fmt.Errorf("OIDC_REDIRECT_URI must be an absolute HTTPS URL without userinfo, query, or fragment")
 		}
+		if c.OIDCLogoutRedirectURI != "" && (!validOIDCHTTPSURL(c.OIDCLogoutRedirectURI) ||
+			!sameURLOrigin(c.OIDCLogoutRedirectURI, c.OIDCRedirectURI)) {
+			return fmt.Errorf("OIDC_LOGOUT_REDIRECT_URI must be an absolute HTTPS URL on the OIDC redirect origin")
+		}
 	}
 	if c.SCIMEnabled {
 		if c.SCIMConnectorID == "" || c.SCIMTenantID == "" || c.SCIMIssuer == "" || len(c.SCIMBearerTokens) == 0 {
@@ -745,6 +751,13 @@ func validOIDCHTTPSURL(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	return err == nil && strings.EqualFold(parsed.Scheme, "https") && parsed.Host != "" &&
 		parsed.User == nil && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == ""
+}
+
+func sameURLOrigin(first, second string) bool {
+	firstURL, firstErr := url.Parse(first)
+	secondURL, secondErr := url.Parse(second)
+	return firstErr == nil && secondErr == nil && strings.EqualFold(firstURL.Scheme, secondURL.Scheme) &&
+		strings.EqualFold(firstURL.Host, secondURL.Host)
 }
 
 func weakSecret(secret string) bool {

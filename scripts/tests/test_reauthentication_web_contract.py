@@ -258,6 +258,83 @@ class ReauthenticationWebContractTests(unittest.TestCase):
                 for attribute in ("Path=/", "Max-Age=86400", "HttpOnly", "Secure", "SameSite=lax"):
                     self.assertIn(attribute, session_cookie)
 
+    def test_logout_rejects_cross_site_and_preserves_cookie_on_backend_failure(self):
+        status, headers, _ = self.request(
+            "POST", "/api/auth/logout", cookie="ai_etl_token=ps1_old", same_origin=False,
+        )
+        self.assertEqual(403, status)
+        self.assertEqual([], MockBackendHandler.requests)
+        self.assertFalse(any(value.startswith("ai_etl_token=") for value in self.cookies(headers)))
+
+        MockBackendHandler.responses.append((503, {"error": "logout unavailable"}))
+        status, headers, _ = self.request(
+            "POST", "/api/auth/logout", cookie="ai_etl_token=ps1_old",
+        )
+        self.assertEqual(503, status)
+        self.assertEqual("Bearer ps1_old", MockBackendHandler.requests[0][1].get("authorization"))
+        self.assertFalse(any(value.startswith("ai_etl_token=") for value in self.cookies(headers)))
+
+    def test_local_logout_clears_cookie_only_after_backend_success(self):
+        MockBackendHandler.responses.append((204, b""))
+        status, headers, _ = self.request(
+            "POST", "/api/auth/logout", cookie="ai_etl_token=ps1_old",
+        )
+        self.assertEqual(204, status)
+        cookie = next(value for value in self.cookies(headers) if value.startswith("ai_etl_token="))
+        for attribute in ("Path=/", "Max-Age=0", "HttpOnly", "Secure", "SameSite=lax"):
+            self.assertIn(attribute, cookie)
+
+    def test_federated_logout_clears_session_and_sets_scoped_state_cookie(self):
+        MockBackendHandler.responses.append((200, {
+            "authorization_url": "https://idp.example/logout?state=logout-state",
+            "state": "logout-state", "expires_in": 300,
+        }))
+        status, headers, payload = self.request(
+            "POST", "/api/auth/logout?return_to=/documents", cookie="ai_etl_token=ps1_old",
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("https://idp.example/logout?state=logout-state", json.loads(payload)["authorization_url"])
+        cookies = self.cookies(headers)
+        self.assertTrue(any(value.startswith("ai_etl_token=") and "Max-Age=0" in value for value in cookies))
+        state_cookie = next(value for value in cookies if value.startswith("ai_etl_logout_state="))
+        for attribute in (
+            "Path=/api/auth/logout/callback", "Max-Age=300", "HttpOnly", "Secure", "SameSite=lax",
+        ):
+            self.assertIn(attribute, state_cookie)
+
+    def test_malformed_optional_provider_logout_still_completes_local_logout(self):
+        MockBackendHandler.responses.append((200, {
+            "authorization_url": "http://unsafe.example/logout",
+            "state": "logout-state", "expires_in": 300,
+        }))
+        status, headers, _ = self.request(
+            "POST", "/api/auth/logout", cookie="ai_etl_token=ps1_old",
+        )
+        self.assertEqual(204, status)
+        cookies = self.cookies(headers)
+        self.assertTrue(any(value.startswith("ai_etl_token=") and "Max-Age=0" in value for value in cookies))
+        self.assertFalse(any(value.startswith("ai_etl_logout_state=") for value in cookies))
+
+    def test_logout_callback_uses_state_and_clears_it_on_success_or_failure(self):
+        for backend_response, expected_location in (
+            ((200, {"return_to": "/documents"}), "/documents"),
+            ((401, {"error": "logout callback failed"}), "/login?error=logout_callback_failed"),
+        ):
+            with self.subTest(backend_response=backend_response):
+                MockBackendHandler.responses.append(backend_response)
+                status, headers, _ = self.request(
+                    "GET", "/api/auth/logout/callback?state=logout-state",
+                    cookie="ai_etl_logout_state=logout-state", same_origin=None,
+                )
+                self.assertEqual(307, status)
+                self.assertEqual(expected_location, urlsplit(dict(headers)["location"]).path + (
+                    "?" + urlsplit(dict(headers)["location"]).query if urlsplit(dict(headers)["location"]).query else ""
+                ))
+                self.assertTrue(any(
+                    value.startswith("ai_etl_logout_state=") and "Max-Age=0" in value
+                    for value in self.cookies(headers)
+                ))
+
 
 if __name__ == "__main__":
     unittest.main()

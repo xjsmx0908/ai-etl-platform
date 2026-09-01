@@ -125,9 +125,11 @@ func TestPostgresSessionStoreFailsClosedWhenWritesAreUnavailable(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer mock.Close()
-		mock.ExpectExec("UPDATE platform_sessions SET revoked_at").
+		mock.ExpectBegin()
+		mock.ExpectQuery("UPDATE platform_sessions SET revoked_at").
 			WithArgs(pgxmock.AnyArg(), now, "logout-1").
 			WillReturnError(errors.New("write unavailable"))
+		mock.ExpectRollback()
 		manager, err := session.New(
 			session.NewPostgresStore(mock), demoPolicy(), session.WithClock(func() time.Time { return now }),
 		)
@@ -143,6 +145,40 @@ func TestPostgresSessionStoreFailsClosedWhenWritesAreUnavailable(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestPostgresCurrentRevocationRollsBackWhenAtomicAuditWriteFails(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	now := time.Date(2026, 9, 1, 4, 30, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery("UPDATE platform_sessions SET revoked_at").
+		WithArgs(pgxmock.AnyArg(), now, "logout-audit-failure").
+		WillReturnRows(pgxmock.NewRows([]string{"tenant_id", "internal_user_id"}).
+			AddRow("demo-tenant", "22222222-2222-2222-2222-222222222222"))
+	mock.ExpectExec("INSERT INTO audit_logs").
+		WithArgs("demo-tenant", "22222222-2222-2222-2222-222222222222", "logout-audit-failure", now).
+		WillReturnError(errors.New("audit unavailable"))
+	mock.ExpectRollback()
+	manager, err := session.New(
+		session.NewPostgresStore(mock), demoPolicy(), session.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	revokeErr := manager.Revoke(context.Background(), session.RevokeCommand{
+		Credential: "opaque-token", Scope: session.RevokeCurrent, CorrelationID: "logout-audit-failure",
+	})
+	if !errors.Is(revokeErr, session.ErrUnavailable) {
+		t.Fatalf("revoke error=%v", revokeErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPostgresSubjectRevokeLocksCredentialBeforeBulkRevocation(t *testing.T) {

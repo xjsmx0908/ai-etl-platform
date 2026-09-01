@@ -971,6 +971,12 @@ func TestValidateAPI_OIDCRejectsUnsafeIssuerAndRedirect(t *testing.T) {
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Fatal("expected redirect URI with query to be rejected")
 	}
+
+	cfg.OIDCRedirectURI = "https://rag.example.com/api/auth/oidc/callback"
+	cfg.OIDCLogoutRedirectURI = "https://evil.example.com/api/auth/logout/callback"
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Fatal("expected cross-origin logout redirect URI to be rejected")
+	}
 }
 
 func TestValidateAPI_SCIMRequiresExplicitSafeConnectorPolicy(t *testing.T) {

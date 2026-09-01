@@ -45,12 +45,20 @@ export function useAuth() {
 
   const logout = useCallback(async () => {
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      if (!response.ok) return;
+      const data = response.status === 204
+        ? null
+        : await response.json().catch(() => null) as { authorization_url?: unknown } | null;
+      clearUser();
+      if (typeof data?.authorization_url === "string") {
+        window.location.assign(data.authorization_url);
+        return;
+      }
+      if (typeof window !== "undefined") window.location.replace("/login");
     } catch {
-      // network errors do not block clearing the local session
+      // Keep local UI state when server-side revocation cannot be confirmed.
     }
-    clearUser();
-    if (typeof window !== "undefined") window.location.replace("/login");
   }, []);
 
   return {

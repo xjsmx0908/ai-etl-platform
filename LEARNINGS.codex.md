@@ -1196,3 +1196,26 @@ This file is an append-only record of completed PRAR cycles.
   adapter 和策略 map 的裸字符串漂移；password/OIDC 共享 Web 登录凭据解析与寿命计算。
   验收矩阵补充 OIDC 凭据经过真实认证中间件、OIDC 完整 Cookie 属性，以及门禁关闭时
   password/OIDC 的 24 小时 JWT Cookie 兼容路径。
+
+## 2026-09-01 - P2.5-F5 安全退出与当前会话撤销
+
+- 感知：F4 已签发状态化 `ps1_`，但 Web 退出只删除 Cookie，服务端 credential 在到期前
+  仍可重放；联邦登录也没有安全、可选且不阻塞本地撤销的 RP logout 编排。
+- 推理：退出的权威结果必须来自既有 session module，而不是浏览器状态。Query API 只拥有
+  撤销与 provider adapter seam；Web 只拥有同源检查、HttpOnly Cookie 和浏览器跳转。
+- 行动：以 public HTTP/Flow seam 的 red→green 测试实现当前会话幂等撤销、失败关闭、
+  脱敏审计、可选 OIDC end-session、独立单次 state，以及成功后清 Cookie 的 Web 编排。
+  真实 PostgreSQL 验证并发撤销只影响当前会话，真实 Redis 验证跨实例消费与重放拒绝。
+- 改进：本地撤销必须先于且独立于 provider logout；可选能力响应损坏、事务不可用或未配置
+  都不能复活会话。callback URI 需拒绝 query/fragment 并与登录 callback 同源，provider
+  metadata 则固定在 issuer HTTPS origin。JWT 兼容仅清浏览器 Cookie，不虚构服务端撤销。
+- 审查修正：认证后按旧 credential 撤销会与并发 credential rotation 竞争；Manager 因此
+  返回不可构造的稳定 session reference，current revoke 按逻辑会话行完成，使轮换先提交时
+  新 credential 也被撤销，撤销先提交时 CAS 轮换失败。OIDC transaction 使用单一 kind，
+  Web 同源校验和安全 return path 集中到共享安全模块，避免敏感策略随路由复制而漂移。
+- 审查修正：成功 logout 的会话撤销、correlation 与脱敏审计行必须在同一 PostgreSQL
+  transaction 中提交；不能依赖 handler 在提交后 best-effort 补写。失败审计仍是非阻塞
+  投影，避免审计服务故障隐藏原始 session store 错误。
+- CI 修正：Trivy 在实现完成后识别既有 `golang.org/x/crypto v0.46.0` 的
+  CVE-2026-56854；升级到修复版 v0.55.0，并接受 Go module solver 所需的配套 x/net、
+  x/sync、x/sys、x/text 更新。相同 Trivy 命令和完整 Go 测试在本地均通过。

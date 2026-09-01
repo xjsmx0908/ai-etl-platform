@@ -143,7 +143,7 @@ Kafka、进程及存储依赖中断。结果写入 `artifacts/governance-accepta
 
 企业身份仍为默认关闭状态。生产 IdP 验收门槛见
 [`docs/enterprise-identity-production-acceptance.md`](docs/enterprise-identity-production-acceptance.md)，
-会话、MFA、重新认证、退出和双认证迁移的待审批设计见
+会话、MFA、重新认证、退出和双认证迁移的设计基线见
 [`docs/enterprise-session-security-design.md`](docs/enterprise-session-security-design.md)。
 两份文档均不代表已选择或启用真实 IdP。
 
@@ -155,8 +155,7 @@ E～I 共 51 项企业决策、稳定审查 ID、责任角色和实现准入状�
 `DemoApproved` 值只解锁默认关闭的本地实现与测试，不能解锁企业 staging/production。
 P2.5-F1 已提供 provider-neutral 会话核心与 PostgreSQL 模型；P2.5-F2 在受保护 HTTP
 认证 seam 接受版本化 `Bearer ps1_<opaque-token>`，并从当前用户记录解析 role/scopes。
-`SESSION_CORE_ENABLED=false` 仍是默认值，现有 JWT 保持兼容；登录仍只签发原 JWT，
-Cookie、OIDC、退出和 production 行为均未迁移到新会话。
+`SESSION_CORE_ENABLED=false` 仍是默认值，现有 JWT 保持兼容，staging/production 尚未迁移。
 P2.5-F3a 已为身份/用户/租户变更、文档删除与发布、Agent 批准和 generation rollback
 登记高风险动作；`ps1_` 会话证据达到 10 分钟边界时返回结构化
 `401 reauthentication_required`。P2.5-F3b 已在 `oidcauth` seam 实现 Keycloak demo
@@ -169,6 +168,11 @@ Secure/HttpOnly Cookie，失败保留旧 credential；callback state 必须匹�
 遗留 Cookie 不会劫持普通登录。P2.5-F4 在同一 dev/demo 门禁下把 password 和 OIDC
 初始登录迁移为 `ps1_`：password 只具备 `local-password` 普通操作保证，OIDC 必须验证
 Keycloak `demo-mfa`；Web Cookie 最长 30 分钟。门禁关闭仍保留现有 JWT 行为。
+P2.5-F5 增加同源 Web 退出和 Query API 当前会话撤销：`ps1_` 先在 PostgreSQL 中撤销，
+成功后才清主 Cookie；存储失败保留 Cookie 并返回错误。联邦会话可在本地撤销后使用经
+discovery 验证的 OIDC RP-initiated logout，独立 state 在 Redis 中只能消费一次；未配置
+`OIDC_LOGOUT_REDIRECT_URI` 或提供方退出不可用时，本地退出仍然完成。该能力仍受相同的
+dev/demo 门禁约束，不包含 back-channel logout、会话设备列表或企业生产启用。
 
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。

@@ -1,22 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sameOriginRequest(req: NextRequest): boolean {
-  const origin = req.headers.get("origin");
-  const fetchSite = req.headers.get("sec-fetch-site");
-  const host = req.headers.get("host");
-  if (!origin || !host || fetchSite !== "same-origin") return false;
-  try {
-    const originURL = new URL(origin);
-    const forwardedProtocol = req.headers.get("x-forwarded-proto");
-    const expectedProtocol = forwardedProtocol ? `${forwardedProtocol}:` : req.nextUrl.protocol;
-    return originURL.host === host && originURL.protocol === expectedProtocol;
-  } catch {
-    return false;
-  }
-}
+import { isSameOriginRequest } from "@/lib/authSecurity";
 
 export async function POST(req: NextRequest) {
-  if (!sameOriginRequest(req)) {
+  if (!isSameOriginRequest(req)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const token = req.cookies.get("ai_etl_token")?.value || "";

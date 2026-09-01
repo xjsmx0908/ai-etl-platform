@@ -242,6 +242,7 @@ func main() {
 		oidcAuthenticator, oidcErr := oidcauth.New(context.Background(), oidcauth.Config{
 			Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID,
 			ClientSecret: cfg.OIDCClientSecret, RedirectURI: cfg.OIDCRedirectURI,
+			LogoutRedirectURI: cfg.OIDCLogoutRedirectURI,
 		}, externalIdentityDirectory)
 		if oidcErr != nil {
 			slog.Error("failed to initialize OIDC", "error", oidcErr)
@@ -423,6 +424,12 @@ func main() {
 	mux.Handle("/v1/auth/methods", middleware.CORS(cfg.CORSAllowedOrigins)(handleAuthMethods(cfg)))
 	mux.Handle("/v1/auth/login", middleware.CORS(cfg.CORSAllowedOrigins)(
 		middleware.Timeout(60*time.Second)(http.HandlerFunc(handleLogin(cfg, userStore, auditStore, sessionManager)))))
+	mux.Handle("/v1/auth/logout", middleware.CORS(cfg.CORSAllowedOrigins)(
+		middleware.Timeout(30*time.Second)(handleLogout(sessionManager, oidcFlow, auditStore))))
+	if oidcFlow != nil {
+		mux.Handle("/v1/auth/logout/callback", middleware.CORS(cfg.CORSAllowedOrigins)(
+			middleware.Timeout(30*time.Second)(handleLogoutCallback(oidcFlow))))
+	}
 	if oidcFlow != nil {
 		mux.Handle("/v1/auth/oidc/start", middleware.CORS(cfg.CORSAllowedOrigins)(
 			middleware.Timeout(30*time.Second)(handleOIDCStart(oidcFlow, sessionManager != nil))))
