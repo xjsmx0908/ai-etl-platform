@@ -28,7 +28,7 @@ var ErrAuthentication = errors.New("oidc authentication failed")
 
 const (
 	demoACR               = "2"
-	demoAssurance         = "demo-mfa"
+	demoAssurance         = session.AssuranceDemoMFA
 	demoEvidenceFreshness = 10 * time.Minute
 )
 

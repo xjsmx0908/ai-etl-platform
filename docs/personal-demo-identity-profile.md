@@ -172,4 +172,17 @@ F3c 已把 F3a challenge 和 F3b transaction 接入 Query API 与 Web BFF：
    不超过 30 分钟或 session 剩余绝对寿命。失败仅清 state，不覆盖旧 Cookie。
 4. 原高风险写请求不会自动重放，用户回到安全 return path 后再次确认执行。
 
-下一切片实现 `ps1_` 初始签发和 demo 登录迁移；logout 继续独立实现。
+F4 已实现 `ps1_` 初始签发和 demo 登录迁移；logout 继续作为独立后续切片。
+
+## 第六个实现切片：P2.5-F4 初始签发与登录迁移
+
+F4 在既有三重门禁下接管个人演示登录，不改变默认或企业环境：
+
+1. password 成功后以 `local-password` 证据建立本地 `ps1_`；它允许普通操作，但所有
+   high-risk 动作都要求更强保证，不能把单因素密码描述为 `demo-mfa`。
+2. OIDC start 请求 `prompt=login`、`max_age=0`、`acr_values=2`；callback 只有在 adapter
+   验证精确 `pwd+otp` 和新鲜 `auth_time` 后才建立联邦 `ps1_`。
+3. Web 只在迁移门禁开启时接受 `ps1_` 登录响应，主 Cookie 强制 Secure/HttpOnly/
+   SameSite=Lax，寿命为 30 分钟与平台会话剩余绝对寿命的较小值。
+4. 门禁关闭时 password/OIDC 仍签发既有 JWT，保持本地评测与未迁移环境兼容；任何
+   session/IdP/数据库失败均不回退 JWT。logout 和最多 3 个活跃会话仍是后续切片。

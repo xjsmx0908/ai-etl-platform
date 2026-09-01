@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parsePlatformLoginCredential } from "@/lib/platformSession";
 
 // Login is the ONLY unauthenticated endpoint. On success we set the HttpOnly
 // `ai_etl_token` cookie and hand the non-secret user object to the client for
@@ -41,8 +42,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: upstream.status });
   }
 
-  const token = (data as { token?: unknown }).token;
-  if (typeof token !== "string" || !token) {
+  const sessionCoreEnabled = process.env.SESSION_CORE_ENABLED === "true";
+  const credential = parsePlatformLoginCredential(data, sessionCoreEnabled);
+  if (!credential) {
     return NextResponse.json({ error: "登录响应缺少 token" }, { status: 502 });
   }
 
@@ -53,7 +55,7 @@ export async function POST(req: NextRequest) {
     },
     { status: 200 }
   );
-  res.cookies.set("ai_etl_token", token, {
+  res.cookies.set("ai_etl_token", credential.token, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
@@ -61,10 +63,10 @@ export async function POST(req: NextRequest) {
     // HTTP (e.g. http://host:3100) must NOT set Secure, or the browser drops the
     // cookie and every authenticated request 401s back to /login. HTTPS
     // deployments set COOKIE_SECURE=true.
-    secure: process.env.COOKIE_SECURE === "true",
+    secure: sessionCoreEnabled || process.env.COOKIE_SECURE === "true",
     // Match the token TTL so the cookie does not silently expire mid-session
     // while the (still valid) token lives on, and vice versa.
-    maxAge: 24 * 60 * 60,
+    maxAge: credential.cookieMaxAge,
   });
   return res;
 }

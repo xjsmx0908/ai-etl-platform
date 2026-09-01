@@ -1180,3 +1180,19 @@ This file is an append-only record of completed PRAR cycles.
   存在，否则遗留 Cookie 会劫持普通登录。将源码字符串断言升级为 production build 的真实
   HTTP 测试，并补齐 state/credential 漂移、IdP/Redis/PostgreSQL 故障、安全 return path；
   start/completion/failure 审计均只保存 state 的 SHA-256 correlation，不保存原始 state。
+
+## 2026-08-31 - P2.5-F4 初始会话签发与个人演示登录迁移
+
+- 感知：F3c 已能轮换预先存在的 `ps1_`，但 password/OIDC 仍只签发 JWT，用户无法从正常
+  登录进入状态化会话；普通 OIDC 完成接口又不会输出 F4 建立所需的可信证据。
+- 推理：认证方法和保证必须正交。本地 password 是合法初始会话，却不能伪装 Keycloak
+  TOTP；因此 session policy 分离可建立保证与 high-risk 所需保证，OIDC 才要求 demo-mfa。
+- 行动：在相同 handler seam 注入既有 manager，门禁开启时 password 以 `local-password`、
+  OIDC 以严格证据建立 `ps1_`；OIDC start 请求 fresh strong login，Web 只接受版本化会话并
+  将 Cookie 限制到 30 分钟/绝对剩余寿命。门禁关闭保留 JWT。
+- 改进：迁移开关必须贯穿 Query API 与 Web，否则后端 `ps1_` 和前端 24 小时 Cookie 会
+  产生配置漂移。建立失败永不回退 JWT；真实 HTTP 测试验证 Cookie 和异常响应。
+- 审查修正：认证保证使用 `session.Assurance` 领域类型与集中常量，避免 handler、OIDC
+  adapter 和策略 map 的裸字符串漂移；password/OIDC 共享 Web 登录凭据解析与寿命计算。
+  验收矩阵补充 OIDC 凭据经过真实认证中间件、OIDC 完整 Cookie 属性，以及门禁关闭时
+  password/OIDC 的 24 小时 JWT Cookie 兼容路径。

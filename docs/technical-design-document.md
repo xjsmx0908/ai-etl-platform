@@ -408,3 +408,14 @@ Web BFF 只接受 Origin host/protocol 与请求一致且 `Sec-Fetch-Site=same-o
 start。成功 callback 才覆盖 `ai_etl_token`，Cookie 为 Secure/HttpOnly/SameSite=Lax，寿命
 取 30 分钟与后端绝对剩余寿命的较小值；所有失败仅清 reauth state，不改原 credential。
 客户端跳转 IdP，但回调后不自动重放原有写操作，用户必须重新确认。
+
+P2.5-F4 在相同 session adapter seam 上接管初始登录签发。只有 Query API 实际构造
+`session.Manager` 时，password/OIDC handler 才调用 `Establish` 并返回 `ps1_`；nil adapter
+继续签发 JWT。password 证据固定为 `local-password`，session policy 允许它建立普通会话，
+但 high-risk action 只有 `demo-mfa` 才满足保证，因此本地密码不能虚构 MFA 或完成联邦
+重新认证。OIDC 迁移登录使用 `CompleteLoginWithEvidence`，start 同时请求 fresh login 与
+`acr_values=2`，缺失、弱、含糊或陈旧证据失败关闭。
+
+Compose 将同一个 `SESSION_CORE_ENABLED` 传给 Query API 和 Web。Web 在开启时拒绝非
+`ps1_` 或过期登录响应，主 Cookie 强制 Secure/HttpOnly/SameSite=Lax，`maxAge` 取 30 分钟
+与后端绝对剩余寿命的较小值；关闭时保留 JWT 兼容。任何建立失败不签发 JWT、不写 Cookie。

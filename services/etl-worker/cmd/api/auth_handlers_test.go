@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/session"
 	"ai-etl-pipeline/internal/userstore"
 )
 
@@ -41,7 +44,7 @@ func doLogin(handler http.HandlerFunc, username, password string) *httptest.Resp
 func TestHandleLogin_Success(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "s3cret-pw", "admin", "acme", true)
-	handler := handleLogin(testAuthConfig(), store, nil)
+	handler := handleLogin(testAuthConfig(), store, nil, nil)
 
 	rec := doLogin(handler, "alice", "s3cret-pw")
 	if rec.Code != http.StatusOK {
@@ -71,10 +74,60 @@ func TestHandleLogin_Success(t *testing.T) {
 	}
 }
 
+func TestHandleLoginIssuesLocalPlatformSessionWhenSessionCoreEnabled(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", userstore.RoleAdmin, "acme", true)
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := doLogin(handleLogin(testAuthConfig(), store, nil, manager), "alice", "s3cret-pw")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response loginResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(response.Token, platformSessionCredentialPrefix) ||
+		response.ExpiresAt.Before(time.Now().Add(7*time.Hour+59*time.Minute)) {
+		t.Fatalf("unexpected platform session response: %+v", response)
+	}
+	result, err := manager.Authenticate(
+		context.Background(), strings.TrimPrefix(response.Token, platformSessionCredentialPrefix), platformSessionRequestAction,
+	)
+	if err != nil || result.Decision != session.DecisionAllow ||
+		result.Principal.AuthenticationMethod != auth.AuthenticationMethodLocal {
+		t.Fatalf("session result=%+v err=%v", result, err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil)
+	request.Header.Set("Authorization", "Bearer "+response.Token)
+	protected := httptest.NewRecorder()
+	auth.Middleware(newSessionCredentialAuthenticator(&countingAuthenticator{}, manager, store))(
+		handleCurrentSession(store),
+	).ServeHTTP(protected, request)
+	if protected.Code != http.StatusOK || !strings.Contains(protected.Body.String(), `"username":"alice"`) {
+		t.Fatalf("issued credential cannot access current session: %d %s", protected.Code, protected.Body.String())
+	}
+}
+
+func TestHandleLoginDoesNotFallBackToJWTWhenSessionStoreIsUnavailable(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", userstore.RoleAdmin, "acme", true)
+	manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := doLogin(handleLogin(testAuthConfig(), store, nil, manager), "alice", "s3cret-pw")
+	if recorder.Code != http.StatusServiceUnavailable || strings.Contains(recorder.Body.String(), "token") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestHandleLogin_BadPassword(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "s3cret-pw", "user", "acme", true)
-	rec := doLogin(handleLogin(testAuthConfig(), store, nil), "alice", "wrong-pw")
+	rec := doLogin(handleLogin(testAuthConfig(), store, nil, nil), "alice", "wrong-pw")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -82,7 +135,7 @@ func TestHandleLogin_BadPassword(t *testing.T) {
 
 func TestHandleLogin_UnknownUser(t *testing.T) {
 	store := newFakeUserStore()
-	rec := doLogin(handleLogin(testAuthConfig(), store, nil), "nobody", "whatever")
+	rec := doLogin(handleLogin(testAuthConfig(), store, nil, nil), "nobody", "whatever")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for unknown user, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -91,7 +144,7 @@ func TestHandleLogin_UnknownUser(t *testing.T) {
 func TestHandleLogin_InactiveUser(t *testing.T) {
 	store := newFakeUserStore()
 	seedUser(t, store, "alice", "s3cret-pw", "user", "acme", false)
-	rec := doLogin(handleLogin(testAuthConfig(), store, nil), "alice", "s3cret-pw")
+	rec := doLogin(handleLogin(testAuthConfig(), store, nil, nil), "alice", "s3cret-pw")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for inactive user, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -99,7 +152,7 @@ func TestHandleLogin_InactiveUser(t *testing.T) {
 
 func TestHandleLogin_MissingFields(t *testing.T) {
 	store := newFakeUserStore()
-	handler := handleLogin(testAuthConfig(), store, nil)
+	handler := handleLogin(testAuthConfig(), store, nil, nil)
 
 	rec := doLogin(handler, "", "")
 	if rec.Code != http.StatusBadRequest {
@@ -162,7 +215,7 @@ func TestHandleLogin_ProductionOIDCDisablesOrdinaryPasswordLogin(t *testing.T) {
 	cfg.Environment = "production"
 	cfg.OIDCEnabled = true
 
-	rec := doLogin(handleLogin(cfg, store, nil), "alice", "s3cret-pw")
+	rec := doLogin(handleLogin(cfg, store, nil, nil), "alice", "s3cret-pw")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected password endpoint to be unavailable, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -178,7 +231,7 @@ func TestHandleLoginRejectsFederatedOnlyUser(t *testing.T) {
 	user.Origin = userstore.OriginSCIM
 	store.byID[user.ID] = user
 	store.byName["alice"] = user
-	recorder := doLogin(handleLogin(testAuthConfig(), store, nil), "alice", "s3cret-pw")
+	recorder := doLogin(handleLogin(testAuthConfig(), store, nil, nil), "alice", "s3cret-pw")
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected federated-only password rejection, got %d: %s", recorder.Code, recorder.Body.String())
 	}

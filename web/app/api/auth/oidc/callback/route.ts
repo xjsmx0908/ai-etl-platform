@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parsePlatformLoginCredential } from "@/lib/platformSession";
 
 function clearReauthenticationState(response: NextResponse) {
   response.cookies.set("ai_etl_reauth_state", "", {
@@ -120,9 +121,11 @@ export async function GET(req: NextRequest) {
   }
   const data = (await upstream.json()) as {
     token?: unknown;
+    expires_at?: unknown;
     return_to?: unknown;
   };
-  if (typeof data.token !== "string" || !data.token) {
+  const credential = parsePlatformLoginCredential(data, process.env.SESSION_CORE_ENABLED === "true");
+  if (!credential) {
     const response = NextResponse.redirect(new URL("/login?error=oidc_failed", req.url));
     clearState(response);
     return response;
@@ -135,12 +138,12 @@ export async function GET(req: NextRequest) {
   loginURL.searchParams.set("oidc", "success");
   loginURL.searchParams.set("return_to", returnTo);
   const response = NextResponse.redirect(loginURL);
-  response.cookies.set("ai_etl_token", data.token, {
+  response.cookies.set("ai_etl_token", credential.token, {
     httpOnly: true,
     sameSite: "lax",
     secure: true,
     path: "/",
-    maxAge: 24 * 60 * 60,
+    maxAge: credential.cookieMaxAge,
   });
   clearState(response);
   return response;

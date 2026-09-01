@@ -3,12 +3,15 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"ai-etl-pipeline/internal/audit"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/oidcauth"
+	"ai-etl-pipeline/internal/session"
 	"ai-etl-pipeline/internal/userstore"
+	"github.com/google/uuid"
 )
 
 type oidcCallbackRequest struct {
@@ -28,7 +31,7 @@ type oidcCallbackResponse struct {
 	ReturnTo string `json:"return_to"`
 }
 
-func handleOIDCStart(flow *oidcauth.Flow) http.Handler {
+func handleOIDCStart(flow *oidcauth.Flow, requireAssurance bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -38,7 +41,13 @@ func handleOIDCStart(flow *oidcauth.Flow) http.Handler {
 			writeError(w, http.StatusNotFound, "OIDC authentication unavailable")
 			return
 		}
-		start, err := flow.Start(r.Context(), r.URL.Query().Get("return_to"))
+		var start oidcauth.BrowserStart
+		var err error
+		if requireAssurance {
+			start, err = flow.StartLoginWithAssurance(r.Context(), r.URL.Query().Get("return_to"))
+		} else {
+			start, err = flow.Start(r.Context(), r.URL.Query().Get("return_to"))
+		}
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "OIDC authentication unavailable")
 			return
@@ -50,7 +59,7 @@ func handleOIDCStart(flow *oidcauth.Flow) http.Handler {
 	})
 }
 
-func handleOIDCCallback(cfg config.Config, flow *oidcauth.Flow, users userstore.Store, audits audit.Store) http.Handler {
+func handleOIDCCallback(cfg config.Config, flow *oidcauth.Flow, users userstore.Store, audits audit.Store, sessions *session.Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -67,7 +76,18 @@ func handleOIDCCallback(cfg config.Config, flow *oidcauth.Flow, users userstore.
 			writeError(w, http.StatusBadRequest, "invalid OIDC callback")
 			return
 		}
-		principal, returnTo, err := flow.Complete(r.Context(), request.CookieState, request.State, request.Code)
+		var principal auth.Principal
+		var evidence session.AuthenticationEvidence
+		var returnTo string
+		var err error
+		if sessions != nil {
+			result, destination, completeErr := flow.CompleteLoginWithEvidence(
+				r.Context(), request.CookieState, request.State, request.Code,
+			)
+			principal, evidence, returnTo, err = result.Principal, result.Evidence, destination, completeErr
+		} else {
+			principal, returnTo, err = flow.Complete(r.Context(), request.CookieState, request.State, request.Code)
+		}
 		if err != nil {
 			recordAudit(r.Context(), audits, audit.Entry{
 				Action: "oidc_login", Result: audit.ResultFailure,
@@ -86,12 +106,34 @@ func handleOIDCCallback(cfg config.Config, flow *oidcauth.Flow, users userstore.
 			writeError(w, http.StatusUnauthorized, "OIDC identity is not authorized")
 			return
 		}
-		token, expiresAt, err := auth.IssueFederatedToken(
-			cfg.JWTSecret, user.ID, user.Username, user.Role, user.TenantID, user.TokenVersion,
-		)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
+		var token string
+		var expiresAt time.Time
+		if sessions != nil {
+			credential, establishErr := sessions.Establish(r.Context(), session.EstablishCommand{
+				Principal: auth.Principal{
+					TenantID: user.TenantID, SubjectID: user.ID,
+					AuthenticationMethod: auth.AuthenticationMethodFederated,
+				},
+				Evidence: evidence, CorrelationID: "oidc-login:" + uuid.NewString(),
+			})
+			if establishErr != nil {
+				recordAudit(r.Context(), audits, audit.Entry{
+					TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,
+					Action: "oidc_login", Result: audit.ResultFailure,
+					Detail: map[string]any{"reason": "session_unavailable"},
+				})
+				writeError(w, http.StatusServiceUnavailable, "OIDC authentication unavailable")
+				return
+			}
+			token, expiresAt = platformSessionCredentialPrefix+credential.Token, credential.ExpiresAt
+		} else {
+			token, expiresAt, err = auth.IssueFederatedToken(
+				cfg.JWTSecret, user.ID, user.Username, user.Role, user.TenantID, user.TokenVersion,
+			)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
 		}
 		recordAudit(r.Context(), audits, audit.Entry{
 			TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,

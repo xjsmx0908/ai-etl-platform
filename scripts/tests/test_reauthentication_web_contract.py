@@ -55,30 +55,31 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         cls.backend = ThreadingHTTPServer(("127.0.0.1", 0), MockBackendHandler)
         cls.backend_thread = threading.Thread(target=cls.backend.serve_forever, daemon=True)
         cls.backend_thread.start()
-        cls.web_port = unused_port()
+        cls.web_port, cls.web = cls.start_web(server_file, session_core_enabled=True)
+        cls.legacy_web_port, cls.legacy_web = cls.start_web(server_file, session_core_enabled=False)
+
+    @classmethod
+    def start_web(cls, server_file, *, session_core_enabled):
+        web_port = unused_port()
         environment = os.environ.copy()
-        environment.update(
-            {
-                "BACKEND_URL": f"http://127.0.0.1:{cls.backend.server_port}",
-                "HOSTNAME": "127.0.0.1",
-                "PORT": str(cls.web_port),
-            }
-        )
-        cls.web = subprocess.Popen(
-            ["node", str(server_file)],
-            cwd=WEB,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+        environment.update({
+            "BACKEND_URL": f"http://127.0.0.1:{cls.backend.server_port}",
+            "HOSTNAME": "127.0.0.1",
+            "PORT": str(web_port),
+            "SESSION_CORE_ENABLED": "true" if session_core_enabled else "false",
+            "COOKIE_SECURE": "true",
+        })
+        web = subprocess.Popen(
+            ["node", str(server_file)], cwd=WEB, env=environment,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if cls.web.poll() is not None:
-                output = cls.web.stdout.read() if cls.web.stdout else ""
+            if web.poll() is not None:
+                output = web.stdout.read() if web.stdout else ""
                 raise RuntimeError(f"Next server exited before readiness:\n{output}")
             try:
-                connection = http.client.HTTPConnection("127.0.0.1", cls.web_port, timeout=1)
+                connection = http.client.HTTPConnection("127.0.0.1", web_port, timeout=1)
                 connection.request("GET", "/login")
                 response = connection.getresponse()
                 response.read()
@@ -88,14 +89,16 @@ class ReauthenticationWebContractTests(unittest.TestCase):
                 time.sleep(0.1)
         else:
             raise RuntimeError("Next server did not become ready")
+        return web_port, web
 
     @classmethod
     def tearDownClass(cls):
-        cls.web.terminate()
-        try:
-            cls.web.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            cls.web.kill()
+        for web in (cls.web, cls.legacy_web):
+            web.terminate()
+            try:
+                web.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                web.kill()
         cls.backend.shutdown()
         cls.backend.server_close()
 
@@ -103,7 +106,7 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         MockBackendHandler.responses.clear()
         MockBackendHandler.requests.clear()
 
-    def request(self, method, path, *, body=None, cookie=None, same_origin=True):
+    def request(self, method, path, *, body=None, cookie=None, same_origin=True, legacy=False):
         headers = {"Host": "rag.example.test", "X-Forwarded-Proto": "https"}
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -113,7 +116,8 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         if same_origin is not None:
             headers["Origin"] = "https://rag.example.test" if same_origin else "https://attacker.example"
             headers["Sec-Fetch-Site"] = "same-origin" if same_origin else "cross-site"
-        connection = http.client.HTTPConnection("127.0.0.1", self.web_port, timeout=5)
+        port = self.legacy_web_port if legacy else self.web_port
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         payload = response.read()
@@ -196,14 +200,63 @@ class ReauthenticationWebContractTests(unittest.TestCase):
                 self.assertFalse(any(value.startswith("ai_etl_token=") for value in cookies))
 
     def test_stale_reauth_cookie_does_not_hijack_ordinary_oidc_callback(self):
-        MockBackendHandler.responses.append((200, {"token": "login-token", "return_to": "/documents"}))
+        MockBackendHandler.responses.append(
+            (200, {"token": "ps1_login", "expires_at": "2099-01-01T00:00:00Z", "return_to": "/documents"})
+        )
         status, headers, _ = self.request(
             "GET", "/api/auth/oidc/callback?code=login-code&state=login-state",
             cookie="ai_etl_reauth_state=abandoned-state; ai_etl_oidc_state=login-state", same_origin=None,
         )
         self.assertEqual(307, status)
         self.assertEqual("/v1/auth/oidc/callback", MockBackendHandler.requests[0][0])
-        self.assertTrue(any(value.startswith("ai_etl_token=login-token") for value in self.cookies(headers)))
+        cookies = self.cookies(headers)
+        session_cookie = next(value for value in cookies if value.startswith("ai_etl_token=ps1_login"))
+        for attribute in ("Path=/", "Max-Age=1800", "HttpOnly", "Secure", "SameSite=lax"):
+            self.assertIn(attribute, session_cookie)
+
+    def test_password_login_sets_bounded_platform_session_cookie(self):
+        MockBackendHandler.responses.append(
+            (200, {"token": "ps1_password", "expires_at": "2099-01-01T00:00:00Z", "user": {"id": "user-1"}})
+        )
+        status, headers, payload = self.request(
+            "POST", "/api/auth/login", body={"username": "alice", "password": "secret"}, same_origin=None,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual({"id": "user-1"}, json.loads(payload)["user"])
+        cookies = self.cookies(headers)
+        self.assertEqual(1, len(cookies))
+        for attribute in ("ai_etl_token=ps1_password", "Path=/", "Max-Age=1800", "HttpOnly", "Secure", "SameSite=lax"):
+            self.assertIn(attribute, cookies[0])
+
+    def test_login_routes_reject_non_session_or_expired_response_without_cookie(self):
+        cases = (
+            ("POST", "/api/auth/login", {"token": "legacy-jwt", "expires_at": "2099-01-01T00:00:00Z"}, None),
+            ("GET", "/api/auth/oidc/callback?code=code-1&state=oidc-state", {"token": "ps1_expired", "expires_at": "2000-01-01T00:00:00Z"}, "ai_etl_oidc_state=oidc-state"),
+        )
+        for method, path, backend_payload, cookie in cases:
+            with self.subTest(path=path):
+                MockBackendHandler.responses.append((200, backend_payload))
+                body = {"username": "alice", "password": "secret"} if method == "POST" else None
+                status, headers, _ = self.request(method, path, body=body, cookie=cookie, same_origin=None)
+                self.assertIn(status, (307, 502))
+                self.assertFalse(any(value.startswith("ai_etl_token=") for value in self.cookies(headers)))
+
+    def test_default_disabled_keeps_password_and_oidc_jwt_cookies(self):
+        cases = (
+            ("POST", "/api/auth/login", {"token": "legacy-password-jwt", "expires_at": "2099-01-01T00:00:00Z", "user": {"id": "user-1"}}, None),
+            ("GET", "/api/auth/oidc/callback?code=code-1&state=oidc-state", {"token": "legacy-oidc-jwt", "expires_at": "2099-01-01T00:00:00Z", "return_to": "/"}, "ai_etl_oidc_state=oidc-state"),
+        )
+        for method, path, backend_payload, cookie in cases:
+            with self.subTest(path=path):
+                MockBackendHandler.responses.append((200, backend_payload))
+                body = {"username": "alice", "password": "secret"} if method == "POST" else None
+                status, headers, _ = self.request(
+                    method, path, body=body, cookie=cookie, same_origin=None, legacy=True,
+                )
+                self.assertIn(status, (200, 307))
+                session_cookie = next(value for value in self.cookies(headers) if value.startswith("ai_etl_token="))
+                for attribute in ("Path=/", "Max-Age=86400", "HttpOnly", "Secure", "SameSite=lax"):
+                    self.assertIn(attribute, session_cookie)
 
 
 if __name__ == "__main__":

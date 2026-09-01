@@ -422,12 +422,12 @@ func main() {
 	// match beats "/") lets it bypass the JWT middleware chain.
 	mux.Handle("/v1/auth/methods", middleware.CORS(cfg.CORSAllowedOrigins)(handleAuthMethods(cfg)))
 	mux.Handle("/v1/auth/login", middleware.CORS(cfg.CORSAllowedOrigins)(
-		middleware.Timeout(60*time.Second)(http.HandlerFunc(handleLogin(cfg, userStore, auditStore)))))
+		middleware.Timeout(60*time.Second)(http.HandlerFunc(handleLogin(cfg, userStore, auditStore, sessionManager)))))
 	if oidcFlow != nil {
 		mux.Handle("/v1/auth/oidc/start", middleware.CORS(cfg.CORSAllowedOrigins)(
-			middleware.Timeout(30*time.Second)(handleOIDCStart(oidcFlow))))
+			middleware.Timeout(30*time.Second)(handleOIDCStart(oidcFlow, sessionManager != nil))))
 		mux.Handle("/v1/auth/oidc/callback", middleware.CORS(cfg.CORSAllowedOrigins)(
-			middleware.Timeout(30*time.Second)(handleOIDCCallback(cfg, oidcFlow, userStore, auditStore))))
+			middleware.Timeout(30*time.Second)(handleOIDCCallback(cfg, oidcFlow, userStore, auditStore, sessionManager))))
 	}
 	if scimHandler != nil {
 		wrappedSCIM := prom.SCIMMiddleware(cfg.SCIMConnectorID, middleware.Timeout(30*time.Second)(scimHandler))
