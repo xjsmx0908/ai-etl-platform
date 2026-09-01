@@ -23,7 +23,7 @@ import (
 func TestLogoutRevokesCurrentPlatformSessionBeforeCompleting(t *testing.T) {
 	now := time.Date(2026, 9, 1, 2, 0, 0, 0, time.UTC)
 	manager, err := session.New(
-		session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }),
+		session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestLogoutRevokesCurrentPlatformSessionBeforeCompleting(t *testing.T) {
 }
 
 func TestLogoutFailsClosedAndAuditsWhenSessionStoreIsUnavailable(t *testing.T) {
-	manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy())
+	manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy(3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestLogoutFailsClosedAndAuditsWhenSessionStoreIsUnavailable(t *testing.T) {
 func TestLogoutDoesNotDependOnTheFailureAuditProjection(t *testing.T) {
 	now := time.Date(2026, 9, 1, 2, 10, 0, 0, time.UTC)
 	manager, err := session.New(
-		session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }),
+		session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func (failingLogoutAuditStore) List(context.Context, audit.ListQuery) ([]audit.E
 func TestLogoutIsIdempotentAndKeepsLegacyJWTCookieCompatibility(t *testing.T) {
 	now := time.Date(2026, 9, 1, 2, 15, 0, 0, time.UTC)
 	manager, err := session.New(
-		session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }),
+		session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestLogoutIsIdempotentAndKeepsLegacyJWTCookieCompatibility(t *testing.T) {
 func TestFederatedLogoutReturnsProviderRedirectOnlyAfterLocalRevocation(t *testing.T) {
 	now := time.Date(2026, 9, 1, 2, 30, 0, 0, time.UTC)
 	manager, err := session.New(
-		session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }),
+		session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +226,7 @@ func TestFederatedLogoutCompletesLocallyWhenProviderTransactionStoreFails(t *tes
 	}
 	now := time.Date(2026, 9, 1, 2, 45, 0, 0, time.UTC)
 	manager, err := session.New(
-		session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }),
+		session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }),
 	)
 	if err != nil {
 		t.Fatal(err)

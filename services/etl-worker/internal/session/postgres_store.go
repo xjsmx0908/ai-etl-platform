@@ -40,7 +40,7 @@ func (s *postgresStore) create(ctx context.Context, command creation) error {
 		rows, err := tx.Query(ctx, `SELECT id FROM platform_sessions
 			WHERE tenant_id=$1 AND internal_user_id=$2 AND revoked_at IS NULL
 			AND absolute_expires_at>$3 AND last_activity_at>$4 AND policy_revision=$5
-			ORDER BY created_at,id FOR UPDATE`, value.tenantID, value.subjectID,
+			ORDER BY creation_order FOR UPDATE`, value.tenantID, value.subjectID,
 			command.at, command.idleCutoff, command.policyRevision)
 		if err != nil {
 			return err
@@ -99,11 +99,11 @@ func (s *postgresStore) load(ctx context.Context, digest [32]byte) (record, bool
 	}
 	var value record
 	var method, assurance string
-	err := s.q.QueryRow(ctx, `SELECT id,management_handle,tenant_id,internal_user_id,authentication_method,
+	err := s.q.QueryRow(ctx, `SELECT id,management_handle,creation_order,tenant_id,internal_user_id,authentication_method,
 		assurance_level,authenticated_at,created_at,last_activity_at,absolute_expires_at,
 		revoked_at,generation,policy_revision,established_correlation_id
 		FROM platform_sessions WHERE credential_digest=$1`, digest[:]).Scan(
-		&value.id, &value.managementHandle, &value.tenantID, &value.subjectID, &method,
+		&value.id, &value.managementHandle, &value.creationOrder, &value.tenantID, &value.subjectID, &method,
 		&assurance, &value.authenticatedAt, &value.createdAt,
 		&value.lastActivityAt, &value.absoluteExpiresAt, &value.revokedAt,
 		&value.generation, &value.policyRevision, &value.establishedCorrelationID,
@@ -124,7 +124,8 @@ func (s *postgresStore) listSubject(ctx context.Context, command subjectList) ([
 	if s == nil || s.q == nil {
 		return nil, ErrUnavailable
 	}
-	rows, err := s.q.Query(ctx, `SELECT id,management_handle,credential_digest,authentication_method,
+	fence := command.fence
+	rows, err := s.q.Query(ctx, `SELECT id,management_handle,creation_order,credential_digest,authentication_method,
 		assurance_level,authenticated_at,created_at,last_activity_at,absolute_expires_at,
 		revoked_at,generation,policy_revision,established_correlation_id
 		FROM platform_sessions WHERE tenant_id=$1 AND internal_user_id=$2
@@ -135,8 +136,8 @@ func (s *postgresStore) listSubject(ctx context.Context, command subjectList) ([
 			AND current_session.tenant_id=$1 AND current_session.internal_user_id=$2
 			AND current_session.revoked_at IS NULL AND current_session.absolute_expires_at>$5
 			AND current_session.last_activity_at>$6 AND current_session.policy_revision=$7)`,
-		command.tenantID, command.subjectID, command.credentialDigest[:], command.currentSessionID,
-		command.at, command.idleCutoff, command.policyRevision)
+		fence.tenantID, fence.subjectID, fence.credentialDigest[:], fence.currentSessionID,
+		fence.at, fence.idleCutoff, fence.policyRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +147,7 @@ func (s *postgresStore) listSubject(ctx context.Context, command subjectList) ([
 		var value record
 		var digest []byte
 		var method, assurance string
-		if err := rows.Scan(&value.id, &value.managementHandle, &digest, &method, &assurance,
+		if err := rows.Scan(&value.id, &value.managementHandle, &value.creationOrder, &digest, &method, &assurance,
 			&value.authenticatedAt, &value.createdAt, &value.lastActivityAt, &value.absoluteExpiresAt,
 			&value.revokedAt, &value.generation, &value.policyRevision, &value.establishedCorrelationID); err != nil {
 			return nil, err
@@ -155,7 +156,7 @@ func (s *postgresStore) listSubject(ctx context.Context, command subjectList) ([
 			return nil, ErrUnavailable
 		}
 		copy(value.credentialDigest[:], digest)
-		value.tenantID, value.subjectID = command.tenantID, command.subjectID
+		value.tenantID, value.subjectID = fence.tenantID, fence.subjectID
 		value.authenticationMethod, value.assurance = auth.AuthenticationMethod(method), Assurance(assurance)
 		values = append(values, value)
 	}
@@ -264,12 +265,13 @@ func (s *postgresStore) revokeManaged(ctx context.Context, command managedRevoca
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	fence := command.fence
 	var currentID string
 	err = tx.QueryRow(ctx, `SELECT id FROM platform_sessions
 		WHERE credential_digest=$1 AND id=$2 AND tenant_id=$3 AND internal_user_id=$4
 		AND revoked_at IS NULL AND absolute_expires_at>$5 AND last_activity_at>$6
-		AND policy_revision=$7 FOR UPDATE`, command.credentialDigest[:], command.currentSessionID,
-		command.tenantID, command.subjectID, command.revokedAt, command.idleCutoff, command.policyRevision).Scan(&currentID)
+		AND policy_revision=$7 FOR UPDATE`, fence.credentialDigest[:], fence.currentSessionID,
+		fence.tenantID, fence.subjectID, fence.at, fence.idleCutoff, fence.policyRevision).Scan(&currentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errChanged
 	}
@@ -278,8 +280,10 @@ func (s *postgresStore) revokeManaged(ctx context.Context, command managedRevoca
 	}
 	var targetID string
 	err = tx.QueryRow(ctx, `SELECT id FROM platform_sessions
-		WHERE management_handle=$1 AND tenant_id=$2 AND internal_user_id=$3 FOR UPDATE`,
-		command.handle, command.tenantID, command.subjectID).Scan(&targetID)
+		WHERE management_handle=$1 AND tenant_id=$2 AND internal_user_id=$3
+		AND revoked_at IS NULL AND absolute_expires_at>$4 AND last_activity_at>$5
+		AND policy_revision=$6 FOR UPDATE`,
+		command.handle, fence.tenantID, fence.subjectID, fence.at, fence.idleCutoff, fence.policyRevision).Scan(&targetID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
 	}
@@ -291,7 +295,7 @@ func (s *postgresStore) revokeManaged(ctx context.Context, command managedRevoca
 	}
 	tag, err := tx.Exec(ctx, `UPDATE platform_sessions SET revoked_at=$2,
 		revocation_reason='managed_session',revoked_correlation_id=$3,generation=generation+1
-		WHERE id=$1 AND revoked_at IS NULL`, targetID, command.revokedAt, command.correlationID)
+		WHERE id=$1 AND revoked_at IS NULL`, targetID, fence.at, command.correlationID)
 	if err != nil {
 		return err
 	}
@@ -302,7 +306,7 @@ func (s *postgresStore) revokeManaged(ctx context.Context, command managedRevoca
 		tenant_id,actor_user_id,action,result,detail,created_at
 	) VALUES ($1,$2,'session_device_revoked','success',jsonb_build_object(
 		'reason','user_managed_session','correlation_id',$3::text
-	),$4)`, command.tenantID, command.subjectID, command.correlationID, command.revokedAt)
+	),$4)`, fence.tenantID, fence.subjectID, command.correlationID, fence.at)
 	if err != nil || tag.RowsAffected() != 1 {
 		return ErrUnavailable
 	}

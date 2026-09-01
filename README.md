@@ -179,6 +179,7 @@ P2.5-F6 增加个人演示会话管理：每用户最多保留 3 个活跃会话
 `DELETE /api/auth/sessions/{sm1_handle}` 允许用户撤销自己的非当前会话。管理句柄独立于
 credential/数据库 ID，跨用户句柄不泄露存在性，Web DELETE 强制同源。本能力仍由既有
 dev + `personal-demo-v1` + `SESSION_CORE_ENABLED` 门禁保护，不代表企业生产已启用。
+`SESSION_MAX_ACTIVE_SESSIONS` 默认是批准基线 `3`；个人演示只接受 `1`～`3`。
 
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。

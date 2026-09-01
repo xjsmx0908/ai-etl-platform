@@ -104,7 +104,7 @@ func TestUserListsOnlyActiveSessionsWithOpaqueManagementHandles(t *testing.T) {
 		t.Fatalf("active sessions=%d want=1: %+v", len(items), items)
 	}
 	item := items[0]
-	if item.Handle == "" || item.Handle == second.Token || item.Handle == first.Token || item.Handle == other.Token {
+	if item.Handle == "" || string(item.Handle) == second.Token || string(item.Handle) == first.Token || string(item.Handle) == other.Token {
 		t.Fatalf("management handle is not independently opaque: %+v", item)
 	}
 	if !item.Current || item.AuthenticationMethod != auth.AuthenticationMethodFederated ||
@@ -155,7 +155,7 @@ func TestFourthLoginEvictsOldestActiveSessionButRotationKeepsItsSlot(t *testing.
 	if err != nil || len(items) != 3 {
 		t.Fatalf("sessions=%+v err=%v", items, err)
 	}
-	var fourthHandle string
+	var fourthHandle session.ManagementHandle
 	for _, item := range items {
 		if item.Current {
 			fourthHandle = item.Handle
@@ -219,7 +219,7 @@ func TestUserRevokesOwnedNonCurrentSessionByManagementHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var targetHandle, currentHandle string
+	var targetHandle, currentHandle session.ManagementHandle
 	for _, item := range targets {
 		if item.Current {
 			currentHandle = item.Handle
@@ -240,7 +240,7 @@ func TestUserRevokesOwnedNonCurrentSessionByManagementHandle(t *testing.T) {
 	assertDecision(t, manager, target.Token, session.DecisionDeny)
 	assertDecision(t, manager, current.Token, session.DecisionAllow)
 
-	for _, handle := range []string{targetHandle, otherItems[0].Handle, "sm1_00000000-0000-4000-8000-000000000000"} {
+	for _, handle := range []session.ManagementHandle{targetHandle, otherItems[0].Handle, "sm1_00000000-0000-4000-8000-000000000000"} {
 		if err := manager.RevokeManaged(context.Background(), session.RevokeManagedCommand{
 			Credential: current.Token, Handle: handle, CorrelationID: "device-revoke-idempotent",
 		}); err != nil {
@@ -292,7 +292,7 @@ func TestManagedRevokeTreatsExpiredOwnedSessionAsAlreadyInactive(t *testing.T) {
 	}
 	now = base.Add(16 * time.Minute)
 	if err := manager.RevokeManaged(context.Background(), session.RevokeManagedCommand{
-		Credential: current.Token, Handle: targetHandle, CorrelationID: "expired-target-revoke",
+		Credential: current.Token, Handle: session.ManagementHandle(targetHandle), CorrelationID: "expired-target-revoke",
 	}); err != nil {
 		t.Fatal(err)
 	}

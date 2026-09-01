@@ -61,6 +61,10 @@ func TestPlatformSessionManagementMigrationUsesIndependentOpaqueHandles(t *testi
 		"ALTER COLUMN management_handle SET NOT NULL",
 		"platform_sessions_management_handle_format",
 		"platform_sessions_management_handle_unique",
+		"CREATE SEQUENCE platform_sessions_creation_order_seq",
+		"row_number() OVER (ORDER BY created_at, id)",
+		"ALTER COLUMN creation_order SET NOT NULL",
+		"platform_sessions_creation_order_unique",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Fatalf("session management migration missing %q", required)

@@ -49,19 +49,19 @@ func handleSessionManagement(sessions *session.Manager) http.Handler {
 			views := make([]managedSessionView, 0, len(items))
 			for _, item := range items {
 				views = append(views, managedSessionView{
-					Handle: item.Handle, AuthenticationMethod: string(item.AuthenticationMethod),
+					Handle: string(item.Handle), AuthenticationMethod: string(item.AuthenticationMethod),
 					CreatedAt: item.CreatedAt, LastActivityAt: item.LastActivityAt,
 					ExpiresAt: item.ExpiresAt, Current: item.Current,
 				})
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"sessions": views})
 		case http.MethodDelete:
-			handle := r.PathValue("handle")
-			if handle == "" {
+			handle, err := session.ParseManagementHandle(r.PathValue("handle"))
+			if err != nil {
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 				return
 			}
-			err := sessions.RevokeManaged(r.Context(), session.RevokeManagedCommand{
+			err = sessions.RevokeManaged(r.Context(), session.RevokeManagedCommand{
 				Credential: credential, Handle: handle,
 				CorrelationID: "session-device-revoke:" + uuid.NewString(),
 			})

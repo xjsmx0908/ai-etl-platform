@@ -27,7 +27,7 @@ func TestSessionCredentialAuthenticatorPreservesLegacyJWTAuthentication(t *testi
 	if err != nil {
 		t.Fatalf("issue token: %v", err)
 	}
-	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time {
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time {
 		return time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	}))
 	if err != nil {
@@ -59,7 +59,7 @@ func TestSessionCredentialAuthenticatorResolvesLiveInternalAuthority(t *testing.
 		t.Fatalf("load user: found=%v err=%v", found, err)
 	}
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
-	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }))
+	sessions, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatalf("new session manager: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestSessionCredentialAuthenticatorRequiresReauthenticationForStaleHighRiskR
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", "admin", "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatalf("new session manager: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestSessionCredentialAuthenticatorAllowsFreshHighRiskAndStaleStandardReques
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", "admin", "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatalf("new session manager: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestSessionCredentialAuthenticatorKeepsLegacyJWTCompatibleOnHighRiskRoutes(
 
 func TestSessionCredentialMiddlewareDoesNotMislabelInvalidCredentialAsReauthentication(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }))
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatalf("new session manager: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestSessionCredentialMiddlewareChecksLiveAuthorityBeforeRequestingReauthent
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", "admin", "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatalf("new session manager: %v", err)
 	}
@@ -295,7 +295,7 @@ func staleSessionAuthenticator(t *testing.T) (auth.Authenticator, string) {
 	users := newFakeUserStore()
 	seedUser(t, users, "alice", "unused", "admin", "acme", true)
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatalf("new session manager: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestSessionCredentialAuthenticatorFailsClosedWithoutJWTFallback(t *testing.
 	user, _, _ := users.GetByUsername(context.Background(), "alice")
 
 	t.Run("revoked credential", func(t *testing.T) {
-		manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }))
+		manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }))
 		if err != nil {
 			t.Fatalf("new session manager: %v", err)
 		}
@@ -326,7 +326,7 @@ func TestSessionCredentialAuthenticatorFailsClosedWithoutJWTFallback(t *testing.
 
 	t.Run("expired credential", func(t *testing.T) {
 		clock := now
-		manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return clock }))
+		manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return clock }))
 		if err != nil {
 			t.Fatalf("new session manager: %v", err)
 		}
@@ -336,7 +336,7 @@ func TestSessionCredentialAuthenticatorFailsClosedWithoutJWTFallback(t *testing.
 	})
 
 	t.Run("storage failure", func(t *testing.T) {
-		manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy(), session.WithClock(func() time.Time { return now }))
+		manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }))
 		if err != nil {
 			t.Fatalf("new session manager: %v", err)
 		}
@@ -344,7 +344,7 @@ func TestSessionCredentialAuthenticatorFailsClosedWithoutJWTFallback(t *testing.
 	})
 
 	t.Run("JWT-shaped opaque credential", func(t *testing.T) {
-		manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }))
+		manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }))
 		if err != nil {
 			t.Fatalf("new session manager: %v", err)
 		}
@@ -372,7 +372,7 @@ func TestSessionCredentialAuthenticatorRejectsInvalidLiveAuthority(t *testing.T)
 				users.byName[test.user.Username] = test.user
 				subjectID = test.user.ID
 			}
-			manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }))
+			manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }))
 			if err != nil {
 				t.Fatalf("new session manager: %v", err)
 			}

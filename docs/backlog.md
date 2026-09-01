@@ -743,12 +743,14 @@ P2.5-F6 会话与设备管理（2026-09-01 已批准实施）：
 1. 扩展 `session.Manager` 的 provider-neutral seam：每个会话分配独立随机管理句柄，列表
    只返回脱敏时间、认证方法和当前会话标志；浏览器不能看到数据库 ID、credential 摘要、
    provider subject/token、IP 或 User-Agent。
-2. `personal-demo-v1` 每个用户最多 3 个活跃会话。建立第 4 个会话时，在同一 PostgreSQL
+2. `personal-demo-v1` 通过 `SESSION_MAX_ACTIVE_SESSIONS` 配置每用户 1～3 个活跃会话，
+   默认 3。超限建立时，在同一 PostgreSQL
    事务和用户锁内撤销最旧活跃会话、建立新会话并写入脱敏 `session_limit_eviction` 审计；
-   会话轮换不占用新槽位，排序并列使用稳定创建顺序。
+   会话轮换不占用新槽位，淘汰使用序列分配且轮换不改变的持久化 `creation_order`。
 3. Query API 提供当前 `ps1_` 用户的 `GET /v1/auth/sessions` 与
    `DELETE /v1/auth/sessions/{handle}`。指定撤销必须再次校验当前 credential、tenant、user
-   和目标所有权，原子写入 `session_device_revoked` 审计；跨用户/租户和伪造句柄不泄露存在性。
+   和目标所有权，原子写入 `session_device_revoked` 审计；跨用户/租户、伪造或已失效句柄
+   统一幂等且不写审计，不泄露存在性。
 4. Web BFF 只从 HttpOnly Cookie 转发 credential；DELETE 强制同源，响应和日志不得暴露
    credential。JWT 兼容模式明确返回不支持，不伪造设备列表或撤销能力。
 5. 按 `session.Manager`、Query HTTP 和真实 Next HTTP/Cookie 三个公开 seam 逐个执行

@@ -14,7 +14,7 @@ import (
 
 func TestSessionManagementHTTPListsAndRevokesOwnedSession(t *testing.T) {
 	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }))
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,9 +107,24 @@ func TestSessionManagementHTTPRejectsLegacyAndUnavailableSessions(t *testing.T) 
 	}
 }
 
+func TestSessionManagementHTTPDeleteFailsClosedWhenStoreIsUnavailable(t *testing.T) {
+	request := httptest.NewRequest(
+		http.MethodDelete,
+		"/v1/auth/sessions/sm1_11111111-1111-4111-8111-111111111111",
+		nil,
+	)
+	request.SetPathValue("handle", "sm1_11111111-1111-4111-8111-111111111111")
+	request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+"opaque")
+	recorder := httptest.NewRecorder()
+	handleSessionManagement(mustUnavailableSessionManager(t)).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want=%d body=%s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+	}
+}
+
 func mustUnavailableSessionManager(t *testing.T) *session.Manager {
 	t.Helper()
-	manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy())
+	manager, err := session.New(session.NewPostgresStore(nil), platformSessionPolicy(3))
 	if err != nil {
 		t.Fatal(err)
 	}

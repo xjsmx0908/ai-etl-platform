@@ -46,11 +46,12 @@ func TestPostgresSessionStoreDeniesConcurrentRevocation(t *testing.T) {
 	mock.ExpectQuery("SELECT .+ FROM platform_sessions").
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "management_handle", "tenant_id", "internal_user_id", "authentication_method", "assurance_level",
+			"id", "management_handle", "creation_order", "tenant_id", "internal_user_id", "authentication_method", "assurance_level",
 			"authenticated_at", "created_at", "last_activity_at", "absolute_expires_at",
 			"revoked_at", "generation", "policy_revision", "established_correlation_id",
 		}).AddRow(
 			"11111111-1111-1111-1111-111111111111", "sm1_33333333-3333-4333-8333-333333333333",
+			int64(1),
 			"demo-tenant", "22222222-2222-2222-2222-222222222222",
 			"federated", "demo-mfa", now.Add(-time.Minute), now.Add(-time.Minute), now.Add(-time.Minute),
 			now.Add(time.Hour), nil, int64(1), "personal-demo-v1", "login-42",
@@ -193,11 +194,12 @@ func TestPostgresManagedRevocationRollsBackWhenAtomicAuditWriteFails(t *testing.
 	mock.ExpectQuery("SELECT .+ FROM platform_sessions").
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "management_handle", "tenant_id", "internal_user_id", "authentication_method", "assurance_level",
+			"id", "management_handle", "creation_order", "tenant_id", "internal_user_id", "authentication_method", "assurance_level",
 			"authenticated_at", "created_at", "last_activity_at", "absolute_expires_at",
 			"revoked_at", "generation", "policy_revision", "established_correlation_id",
 		}).AddRow(
 			"11111111-1111-4111-8111-111111111111", "sm1_22222222-2222-4222-8222-222222222222",
+			int64(1),
 			"demo-tenant", "33333333-3333-4333-8333-333333333333", "federated", "demo-mfa",
 			now, now, now, now.Add(time.Hour), nil, int64(1), "personal-demo-v1", "managed-current",
 		))
@@ -207,7 +209,8 @@ func TestPostgresManagedRevocationRollsBackWhenAtomicAuditWriteFails(t *testing.
 			"33333333-3333-4333-8333-333333333333", now, now.Add(-30*time.Minute), "personal-demo-v1").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("11111111-1111-4111-8111-111111111111"))
 	mock.ExpectQuery("SELECT id FROM platform_sessions").
-		WithArgs("sm1_44444444-4444-4444-8444-444444444444", "demo-tenant", "33333333-3333-4333-8333-333333333333").
+		WithArgs(session.ManagementHandle("sm1_44444444-4444-4444-8444-444444444444"), "demo-tenant", "33333333-3333-4333-8333-333333333333",
+			now, now.Add(-30*time.Minute), "personal-demo-v1").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("55555555-5555-4555-8555-555555555555"))
 	mock.ExpectExec("UPDATE platform_sessions SET revoked_at").
 		WithArgs("55555555-5555-4555-8555-555555555555", now, "managed-audit-failure").
@@ -223,7 +226,7 @@ func TestPostgresManagedRevocationRollsBackWhenAtomicAuditWriteFails(t *testing.
 		t.Fatal(err)
 	}
 	err = manager.RevokeManaged(context.Background(), session.RevokeManagedCommand{
-		Credential: credential, Handle: "sm1_44444444-4444-4444-8444-444444444444",
+		Credential: credential, Handle: session.ManagementHandle("sm1_44444444-4444-4444-8444-444444444444"),
 		CorrelationID: "managed-audit-failure",
 	})
 	if !errors.Is(err, session.ErrUnavailable) {

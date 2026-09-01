@@ -38,7 +38,7 @@ class MockBackendHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def do_GET(self):
+    def respond_without_body(self):
         type(self).requests.append((self.path, self.headers, None))
         status, payload = type(self).responses.popleft()
         encoded = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
@@ -48,15 +48,11 @@ class MockBackendHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def do_GET(self):
+        self.respond_without_body()
+
     def do_DELETE(self):
-        type(self).requests.append((self.path, self.headers, None))
-        status, payload = type(self).responses.popleft()
-        encoded = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
+        self.respond_without_body()
 
     def log_message(self, _format, *_args):
         return
@@ -77,13 +73,16 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         cls.backend_thread.start()
         cls.web_port, cls.web = cls.start_web(server_file, session_core_enabled=True)
         cls.legacy_web_port, cls.legacy_web = cls.start_web(server_file, session_core_enabled=False)
+        cls.unavailable_web_port, cls.unavailable_web = cls.start_web(
+            server_file, session_core_enabled=True, backend_url=f"http://127.0.0.1:{unused_port()}",
+        )
 
     @classmethod
-    def start_web(cls, server_file, *, session_core_enabled):
+    def start_web(cls, server_file, *, session_core_enabled, backend_url=None):
         web_port = unused_port()
         environment = os.environ.copy()
         environment.update({
-            "BACKEND_URL": f"http://127.0.0.1:{cls.backend.server_port}",
+            "BACKEND_URL": backend_url or f"http://127.0.0.1:{cls.backend.server_port}",
             "HOSTNAME": "127.0.0.1",
             "PORT": str(web_port),
             "SESSION_CORE_ENABLED": "true" if session_core_enabled else "false",
@@ -113,7 +112,7 @@ class ReauthenticationWebContractTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        for web in (cls.web, cls.legacy_web):
+        for web in (cls.web, cls.legacy_web, cls.unavailable_web):
             web.terminate()
             try:
                 web.wait(timeout=5)
@@ -126,7 +125,7 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         MockBackendHandler.responses.clear()
         MockBackendHandler.requests.clear()
 
-    def request(self, method, path, *, body=None, cookie=None, same_origin=True, legacy=False):
+    def request(self, method, path, *, body=None, cookie=None, same_origin=True, legacy=False, unavailable=False):
         headers = {"Host": "rag.example.test", "X-Forwarded-Proto": "https"}
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -136,7 +135,7 @@ class ReauthenticationWebContractTests(unittest.TestCase):
         if same_origin is not None:
             headers["Origin"] = "https://rag.example.test" if same_origin else "https://attacker.example"
             headers["Sec-Fetch-Site"] = "same-origin" if same_origin else "cross-site"
-        port = self.legacy_web_port if legacy else self.web_port
+        port = self.unavailable_web_port if unavailable else (self.legacy_web_port if legacy else self.web_port)
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
@@ -393,6 +392,19 @@ class ReauthenticationWebContractTests(unittest.TestCase):
             MockBackendHandler.requests[0][0],
         )
         self.assertEqual("Bearer ps1_current", MockBackendHandler.requests[0][1].get("authorization"))
+
+    def test_session_management_returns_503_when_backend_is_unreachable(self):
+        paths = (
+            ("GET", "/api/auth/sessions"),
+            ("DELETE", "/api/auth/sessions/sm1_11111111-1111-4111-8111-111111111111"),
+        )
+        for method, path in paths:
+            with self.subTest(method=method):
+                status, _, payload = self.request(
+                    method, path, cookie="ai_etl_token=ps1_current", unavailable=True,
+                )
+                self.assertEqual(503, status)
+                self.assertEqual({"error": "session management unavailable"}, json.loads(payload))
 
 
 if __name__ == "__main__":

@@ -444,14 +444,15 @@ P2.5-F6 在同一 `session.Manager` seam 增加用户自助会话管理。`0022`
 逻辑会话回填并约束独立随机 `sm1_` 管理句柄；句柄不由 credential、内部 user/tenant 或
 数据库 ID 派生。管理列表仅返回认证方法、创建/最近活动/绝对到期时间及当前标志。
 
-新会话建立在现有用户行锁事务中计算活跃集合，按 `created_at,id` 稳定排序并在超过
-`MaxActiveSessions=3` 时撤销最旧项。淘汰、脱敏 `session_limit_eviction` 审计和新行插入
+新会话建立在现有用户行锁事务中计算活跃集合，按 PostgreSQL 序列分配且不可变的
+`creation_order` 稳定排序，并在超过配置项 `SESSION_MAX_ACTIVE_SESSIONS`（默认 3，演示
+基线只接受 1～3）时撤销最旧项。淘汰、脱敏 `session_limit_eviction` 审计和新行插入
 一起提交；任一失败整体回滚。credential rotation 保留逻辑 ID、管理句柄、创建时间及绝对
 到期，因此不会消耗新槽位。列表查询在同一数据库 snapshot 重新验证当前 credential，避免
 撤销/轮换发生在 load 与 list 之间时泄露会话元数据。
 
 指定撤销通过 `RevokeManaged` 原子核对当前 credential、tenant/user、目标句柄所有权及
-目标不是当前会话。跨主体、未知和已撤销句柄统一幂等成功，不泄露存在性；真实撤销与
+目标不是当前会话。跨主体、未知、已撤销和已过期句柄统一幂等成功且不写成功审计，不泄露存在性；真实撤销与
 `session_device_revoked` 审计在同一事务提交。Query API 暴露 `GET /v1/auth/sessions` 和
 `DELETE /v1/auth/sessions/{handle}`；Web BFF 只转发 HttpOnly Cookie，DELETE 额外执行同源
 校验。JWT 兼容路径返回不支持，不虚构有状态设备能力。

@@ -143,7 +143,7 @@ func TestHandleOIDCCallbackIssuesFederatedPlatformSessionFromApprovedEvidence(t 
 	}
 	parsed, _ := url.Parse(start.AuthorizationURL)
 	nonce = parsed.Query().Get("nonce")
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return base }))
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3), session.WithClock(func() time.Time { return base }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestHandleOIDCCallbackRejectsMissingApprovedEvidenceWhenSessionCoreEnabled(
 	}
 	parsed, _ := url.Parse(start.AuthorizationURL)
 	nonce = parsed.Query().Get("nonce")
-	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy())
+	manager, err := session.New(session.NewMemoryStore(), platformSessionPolicy(3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestHandleOIDCCallbackDoesNotFallBackToJWTWhenSessionStoreIsUnavailable(t *
 	parsed, _ := url.Parse(start.AuthorizationURL)
 	nonce = parsed.Query().Get("nonce")
 	manager, err := session.New(
-		session.NewPostgresStore(nil), platformSessionPolicy(), session.WithClock(func() time.Time { return base }),
+		session.NewPostgresStore(nil), platformSessionPolicy(3), session.WithClock(func() time.Time { return base }),
 	)
 	if err != nil {
 		t.Fatal(err)

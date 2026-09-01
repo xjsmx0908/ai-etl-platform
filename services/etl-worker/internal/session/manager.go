@@ -89,12 +89,22 @@ type ListCommand struct {
 
 type RevokeManagedCommand struct {
 	Credential    string
-	Handle        string
+	Handle        ManagementHandle
 	CorrelationID string
 }
 
+type ManagementHandle string
+
+func ParseManagementHandle(value string) (ManagementHandle, error) {
+	const prefix = "sm1_"
+	if !strings.HasPrefix(value, prefix) || uuid.Validate(strings.TrimPrefix(value, prefix)) != nil {
+		return "", ErrInvalid
+	}
+	return ManagementHandle(value), nil
+}
+
 type View struct {
-	Handle               string
+	Handle               ManagementHandle
 	AuthenticationMethod auth.AuthenticationMethod
 	CreatedAt            time.Time
 	LastActivityAt       time.Time
@@ -122,7 +132,8 @@ type AuthenticateResult struct {
 
 type record struct {
 	id                       string
-	managementHandle         string
+	managementHandle         ManagementHandle
+	creationOrder            int64
 	credentialDigest         [32]byte
 	tenantID                 string
 	subjectID                string
@@ -168,18 +179,16 @@ type creation struct {
 }
 
 type managedRevocation struct {
-	credentialDigest [32]byte
-	currentSessionID string
-	tenantID         string
-	subjectID        string
-	handle           string
-	revokedAt        time.Time
-	idleCutoff       time.Time
-	policyRevision   string
-	correlationID    string
+	fence         currentSessionFence
+	handle        ManagementHandle
+	correlationID string
 }
 
 type subjectList struct {
+	fence currentSessionFence
+}
+
+type currentSessionFence struct {
 	credentialDigest [32]byte
 	currentSessionID string
 	tenantID         string
@@ -278,7 +287,7 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 	}
 	expiresAt := now.Add(m.policy.AbsoluteLifetime)
 	record := record{
-		id: uuid.NewString(), managementHandle: "sm1_" + uuid.NewString(),
+		id: uuid.NewString(), managementHandle: ManagementHandle("sm1_" + uuid.NewString()),
 		credentialDigest: sha256.Sum256([]byte(token)),
 		tenantID:         command.Principal.TenantID, subjectID: command.Principal.SubjectID,
 		authenticationMethod: command.Principal.AuthenticationMethod,
@@ -299,6 +308,7 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 		}
 		record.id = current.id
 		record.managementHandle = current.managementHandle
+		record.creationOrder = current.creationOrder
 		record.generation = current.generation + 1
 		record.createdAt = current.createdAt
 		record.absoluteExpiresAt = current.absoluteExpiresAt
@@ -335,11 +345,11 @@ func (m *Manager) List(ctx context.Context, command ListCommand) ([]View, error)
 	if !found || !current.activeAt(now, m.policy.IdleTimeout, m.policy.Revision) {
 		return nil, ErrInvalid
 	}
-	records, err := m.store.listSubject(ctx, subjectList{
+	records, err := m.store.listSubject(ctx, subjectList{fence: currentSessionFence{
 		credentialDigest: digest, currentSessionID: current.id,
 		tenantID: current.tenantID, subjectID: current.subjectID,
 		at: now, idleCutoff: now.Add(-m.policy.IdleTimeout), policyRevision: m.policy.Revision,
-	})
+	}})
 	if err != nil {
 		if errors.Is(err, errChanged) {
 			return nil, ErrInvalid
@@ -369,9 +379,10 @@ func (m *Manager) List(ctx context.Context, command ListCommand) ([]View, error)
 
 func (m *Manager) RevokeManaged(ctx context.Context, command RevokeManagedCommand) error {
 	credential := strings.TrimSpace(command.Credential)
-	handle := strings.TrimSpace(command.Handle)
+	handle := strings.TrimSpace(string(command.Handle))
 	correlationID := strings.TrimSpace(command.CorrelationID)
-	if credential == "" || handle != command.Handle || !validManagementHandle(handle) ||
+	parsedHandle, handleErr := ParseManagementHandle(handle)
+	if credential == "" || handle != string(command.Handle) || handleErr != nil ||
 		correlationID == "" || correlationID != command.CorrelationID || len(correlationID) > 256 {
 		return ErrInvalid
 	}
@@ -385,10 +396,11 @@ func (m *Manager) RevokeManaged(ctx context.Context, command RevokeManagedComman
 		return ErrInvalid
 	}
 	err = m.store.revokeManaged(ctx, managedRevocation{
-		credentialDigest: digest, currentSessionID: current.id,
-		tenantID: current.tenantID, subjectID: current.subjectID, handle: handle,
-		revokedAt: now, idleCutoff: now.Add(-m.policy.IdleTimeout), policyRevision: m.policy.Revision,
-		correlationID: correlationID,
+		fence: currentSessionFence{
+			credentialDigest: digest, currentSessionID: current.id,
+			tenantID: current.tenantID, subjectID: current.subjectID,
+			at: now, idleCutoff: now.Add(-m.policy.IdleTimeout), policyRevision: m.policy.Revision,
+		}, handle: parsedHandle, correlationID: correlationID,
 	})
 	if errors.Is(err, errChanged) {
 		return ErrInvalid
@@ -397,11 +409,6 @@ func (m *Manager) RevokeManaged(ctx context.Context, command RevokeManagedComman
 		return fmt.Errorf("%w: revoke managed session", ErrUnavailable)
 	}
 	return nil
-}
-
-func validManagementHandle(value string) bool {
-	const prefix = "sm1_"
-	return strings.HasPrefix(value, prefix) && uuid.Validate(strings.TrimPrefix(value, prefix)) == nil
 }
 
 func cloneAssurances(source map[auth.AuthenticationMethod]Assurance) map[auth.AuthenticationMethod]Assurance {

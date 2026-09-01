@@ -12,6 +12,7 @@ type memoryStore struct {
 	mu                   sync.Mutex
 	records              map[[32]byte]record
 	subjectRevokedBefore map[subjectKey]time.Time
+	nextCreationOrder    int64
 }
 
 type subjectKey struct {
@@ -37,6 +38,8 @@ func (s *memoryStore) create(_ context.Context, command creation) error {
 	if _, exists := s.records[value.credentialDigest]; exists {
 		return errors.New("credential collision")
 	}
+	s.nextCreationOrder++
+	value.creationOrder = s.nextCreationOrder
 	if command.maxActiveSessions > 0 {
 		active := make([]record, 0)
 		for _, candidate := range s.records {
@@ -46,12 +49,7 @@ func (s *memoryStore) create(_ context.Context, command creation) error {
 				active = append(active, candidate)
 			}
 		}
-		sort.Slice(active, func(i, j int) bool {
-			if active[i].createdAt.Equal(active[j].createdAt) {
-				return active[i].id < active[j].id
-			}
-			return active[i].createdAt.Before(active[j].createdAt)
-		})
+		sort.Slice(active, func(i, j int) bool { return active[i].creationOrder < active[j].creationOrder })
 		for len(active) >= command.maxActiveSessions {
 			oldest := active[0]
 			for digest, candidate := range s.records {
@@ -80,16 +78,17 @@ func (s *memoryStore) load(_ context.Context, digest [32]byte) (record, bool, er
 func (s *memoryStore) listSubject(_ context.Context, command subjectList) ([]record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, found := s.records[command.credentialDigest]
-	if !found || current.id != command.currentSessionID || current.tenantID != command.tenantID ||
-		current.subjectID != command.subjectID || current.revokedAt != nil ||
-		!current.absoluteExpiresAt.After(command.at) || !current.lastActivityAt.After(command.idleCutoff) ||
-		current.policyRevision != command.policyRevision {
+	fence := command.fence
+	current, found := s.records[fence.credentialDigest]
+	if !found || current.id != fence.currentSessionID || current.tenantID != fence.tenantID ||
+		current.subjectID != fence.subjectID || current.revokedAt != nil ||
+		!current.absoluteExpiresAt.After(fence.at) || !current.lastActivityAt.After(fence.idleCutoff) ||
+		current.policyRevision != fence.policyRevision {
 		return nil, errChanged
 	}
 	values := make([]record, 0)
 	for _, value := range s.records {
-		if value.tenantID == command.tenantID && value.subjectID == command.subjectID {
+		if value.tenantID == fence.tenantID && value.subjectID == fence.subjectID {
 			values = append(values, value)
 		}
 	}
@@ -157,22 +156,23 @@ func (s *memoryStore) revokeCurrent(_ context.Context, command currentRevocation
 func (s *memoryStore) revokeManaged(_ context.Context, command managedRevocation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current, found := s.records[command.credentialDigest]
-	if !found || current.id != command.currentSessionID ||
-		!current.activeAt(command.revokedAt, command.revokedAt.Sub(command.idleCutoff), command.policyRevision) ||
-		current.tenantID != command.tenantID || current.subjectID != command.subjectID {
+	fence := command.fence
+	current, found := s.records[fence.credentialDigest]
+	if !found || current.id != fence.currentSessionID ||
+		!current.activeAt(fence.at, fence.at.Sub(fence.idleCutoff), fence.policyRevision) ||
+		current.tenantID != fence.tenantID || current.subjectID != fence.subjectID {
 		return errChanged
 	}
 	for digest, candidate := range s.records {
-		if candidate.managementHandle != command.handle || candidate.tenantID != command.tenantID ||
-			candidate.subjectID != command.subjectID {
+		if candidate.managementHandle != command.handle || candidate.tenantID != fence.tenantID ||
+			candidate.subjectID != fence.subjectID {
 			continue
 		}
 		if candidate.id == current.id {
 			return errChanged
 		}
-		if candidate.revokedAt == nil {
-			candidate.revokedAt = &command.revokedAt
+		if candidate.activeAt(fence.at, fence.at.Sub(fence.idleCutoff), fence.policyRevision) {
+			candidate.revokedAt = &fence.at
 			candidate.revokedCorrelationID = command.correlationID
 			candidate.generation++
 			s.records[digest] = candidate
