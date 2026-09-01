@@ -10,6 +10,10 @@ export async function GET(req: NextRequest) {
   }
   const upstreamURL = new URL("/v1/documents/search", backend);
   upstreamURL.searchParams.set("q", q);
+  const knowledgeSpaceID = req.nextUrl.searchParams.get("knowledge_space_id");
+  if (knowledgeSpaceID) {
+    upstreamURL.searchParams.set("knowledge_space_id", knowledgeSpaceID);
+  }
   const limit = req.nextUrl.searchParams.get("limit");
   if (limit) upstreamURL.searchParams.set("limit", limit);
 

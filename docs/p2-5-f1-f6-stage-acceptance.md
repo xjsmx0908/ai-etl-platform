@@ -28,13 +28,15 @@ provider-neutral 状态化会话、敏感操作重新认证、安全退出及用
 - 隔离 Compose 运行验收验证了四次 password 登录、最旧会话 401、三个 `sm1_` 脱敏
   句柄、指定撤销、退出清 Cookie，以及退出后凭据 401。验收栈和卷已清理，原演示栈未改动。
 
-## 适用边界与已知欠账
+## 适用边界与验收工具收尾
 
 能力默认关闭，仅允许 `ENVIRONMENT=dev`、`IDENTITY_POLICY_PROFILE=personal-demo-v1`
 和 `SESSION_CORE_ENABLED=true` 的个人演示配置。本次验证了本地 password 运行时；PD2
 demo realm 尚未配置，因此未执行真实 Keycloak 浏览器流程，也不构成 staging/production
 可用性声明。
 
-`bash scripts/e2e-smoke.sh` 当前在直接发布步骤返回 HTTP 409：脚本仍直接写入
-`publication_status=published`，与受管文档现在必须独立审批的治理流程不符。这是验收工具
-欠账，不是 F1–F6 产品回归；当前安全发布路径已由治理验收覆盖，应在独立任务中更新脚本。
+阶段总结时登记的 `bash scripts/e2e-smoke.sh` 直接发布欠账已于 2026-09-01 修复。脚本现在
+创建受管知识空间和第二管理员，通过 Agent publication workflow 评估精确版本候选并完成
+独立审批；查询和 API/Web 搜索显式绑定同一空间。完整隔离运行已通过上传、Kafka、解析、
+向量化、索引、审批、查询、chunks 和可恢复删除至 404，不再使用
+`publication_status=published` PATCH 绕过治理。

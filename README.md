@@ -126,7 +126,9 @@ curl -X POST http://localhost:8000/api/v1/parse \
 bash scripts/e2e-smoke.sh
 ```
 
-该脚本会启动本地 `docker compose` 全链路，并用 mock OpenAI 服务验证 `上传 -> Kafka -> 解析 -> 向量化 -> 入库 -> 查询`。
+该脚本会启动隔离的本地 `docker compose` 全链路，并用 mock OpenAI 服务验证
+`上传 -> Kafka -> 解析/向量化/索引 -> 双管理员独立发布审批 -> 查询/搜索 -> 可恢复删除`。
+受管发布只调用公共 Agent workflow，不直接修改文档发布状态。
 
 ### 企业治理验收
 

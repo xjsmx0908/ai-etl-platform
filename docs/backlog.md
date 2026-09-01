@@ -759,6 +759,17 @@ P2.5-F6 会话与设备管理（2026-09-01 已通过 PR #39 合并）：
 6. 本切片仍仅受既有 dev + `personal-demo-v1` + default-off 门禁保护；不实现管理员设备
    管理、IP/User-Agent 指纹、back-channel logout、staging 或 production enablement。
 
+P2.5 F1～F6 阶段验收工具收尾（2026-09-01 已实现并本地验证，待 PR 评审）：
+
+1. 修复 `scripts/e2e-smoke.sh` 在受管空间直接 PATCH 发布并返回 HTTP 409 的旧流程；测试
+   现在创建独立管理员和受管知识空间，上传必需治理字段，并通过现有 Agent workflow 将
+   精确版本候选交由第二管理员审批。
+2. 查询、Elasticsearch 文档搜索和 Web 搜索均显式绑定同一知识空间；Web BFF 继续只持有
+   HttpOnly credential，并转发经过 URL 编码的 `knowledge_space_id`。
+3. 静态契约测试禁止恢复直接发布绕过，并要求独立审批和 Web 参数转发。完整隔离
+   `bash scripts/e2e-smoke.sh` 已通过上传、Kafka、解析/向量化/索引、独立审批、查询、
+   API/Web 搜索、chunks 和可恢复删除至 404；隔离 stack/volumes 已自动清理。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

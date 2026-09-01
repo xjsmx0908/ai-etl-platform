@@ -161,6 +161,34 @@ class GovernanceAcceptanceContractTests(unittest.TestCase):
         self.assertIn('if [[ "${GET_STATUS}" == "404" ]]', smoke)
         self.assertNotIn('if [[ "${DELETE_STATUS}" != "204" ]]', smoke)
 
+    def test_existing_e2e_smoke_uses_independent_publication_governance(self):
+        smoke = (ROOT / "scripts" / "e2e-smoke.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('{"publication_status":"published"}', smoke)
+        self.assertIn("/v1/knowledge-spaces", smoke)
+        self.assertIn('-F "knowledge_space_id=${KNOWLEDGE_SPACE_ID}"', smoke)
+        self.assertIn('-F "effective_date=${EFFECTIVE_DATE}"', smoke)
+        self.assertIn('-F "owner=${DOCUMENT_OWNER}"', smoke)
+        self.assertIn("/v1/users", smoke)
+        self.assertIn("/v1/agent/runs", smoke)
+        self.assertIn("/v1/agent/runs/${RUN_ID}/approvals", smoke)
+        self.assertIn("/v1/agent/runs/${RUN_ID}/approve", smoke)
+        self.assertIn('Authorization: Bearer ${REVIEWER_TOKEN}', smoke)
+
+    def test_web_search_proxy_preserves_explicit_knowledge_space(self):
+        route = (
+            ROOT / "web" / "app" / "api" / "documents" / "search" / "route.ts"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'req.nextUrl.searchParams.get("knowledge_space_id")', route
+        )
+        self.assertIn(
+            'upstreamURL.searchParams.set("knowledge_space_id"', route
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
