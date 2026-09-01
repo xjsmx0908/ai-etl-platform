@@ -29,7 +29,7 @@ Thumbs.db
 # Docker volumes
 *.data/
 
-# Local secrets (do not commit real credentials)
+# Local secrets, including generated identity-demo CA/credentials (never commit)
 secrets/dev/*
 !secrets/dev/.gitkeep
 

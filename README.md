@@ -186,6 +186,12 @@ dev + `personal-demo-v1` + `SESSION_CORE_ENABLED` 门禁保护，不代表企业
 F1–F6 的 PR 映射、可运行验收证据、适用边界和已知工具欠账见
 [`docs/p2-5-f1-f6-stage-acceptance.md`](docs/p2-5-f1-f6-stage-acceptance.md)。
 
+PD2 已提供隔离的 Keycloak 26.3.3 个人演示运行时。执行
+`bash scripts/identity-demo-acceptance.sh` 会生成 ignored 本机凭据并验证公共 HTTPS
+SCIM、密码 + TOTP、`ps1_` 联邦会话、会话列表和退出全链路，随后自动清理。运行手册与
+明确的非企业边界见
+[`docs/personal-demo-identity-runtime.md`](docs/personal-demo-identity-runtime.md)。
+
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。
 该设计不创建紧急账号或密钥，也不提供数据库、shell 或基础设施后门。
