@@ -1,0 +1,225 @@
+{
+  "realm": "ai-etl-demo",
+  "enabled": true,
+  "displayName": "AI ETL Personal Demo",
+  "sslRequired": "all",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "defaultSignatureAlgorithm": "RS256",
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
+  "accessTokenLifespan": 300,
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "otpPolicyLookAheadWindow": 1,
+  "browserFlow": "demo-browser-mfa",
+  "authenticatorConfig": [
+    {
+      "alias": "demo-loa-2",
+      "config": {
+        "loa-condition-level": "2",
+        "loa-max-age": "0"
+      }
+    },
+    {
+      "alias": "demo-password-amr",
+      "config": {
+        "default.reference.value": "pwd",
+        "default.reference.maxAge": "600"
+      }
+    },
+    {
+      "alias": "demo-otp-amr",
+      "config": {
+        "default.reference.value": "otp",
+        "default.reference.maxAge": "600"
+      }
+    }
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "demo-browser-mfa",
+      "description": "Personal demo browser flow requiring password and TOTP",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "flowAlias": "demo-browser-mfa-authentication",
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "demo-browser-mfa-authentication",
+      "description": "Authentication branch containing the LoA 2 subflow",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "flowAlias": "demo-browser-mfa-level-2",
+          "requirement": "CONDITIONAL",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "demo-browser-mfa-level-2",
+      "description": "LoA 2 requires password and TOTP for the current request",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-level-of-authentication",
+          "authenticatorConfig": "demo-loa-2",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "authenticator": "auth-username-password-form",
+          "authenticatorConfig": "demo-password-amr",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "authenticatorConfig": "demo-otp-amr",
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "autheticatorFlow": false
+        }
+      ]
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "acr",
+      "description": "Achieved Keycloak Level of Authentication",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true"},
+      "protocolMappers": [
+        {
+          "name": "acr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-acr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "amr",
+      "description": "Authentication Methods References produced by Keycloak",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true"},
+      "protocolMappers": [
+        {
+          "name": "amr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-amr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth_time",
+      "description": "Server-recorded authentication time",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true"},
+      "protocolMappers": [
+        {
+          "name": "auth_time",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.session.note": "AUTH_TIME",
+            "claim.name": "auth_time",
+            "jsonType.label": "long",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": ["acr", "amr", "auth_time"],
+  "clients": [
+    {
+      "clientId": "rag-web",
+      "name": "AI ETL Web",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "__OIDC_CLIENT_SECRET__",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "frontchannelLogout": true,
+      "redirectUris": ["https://ai-etl.localhost:3443/api/auth/oidc/callback"],
+      "webOrigins": ["https://ai-etl.localhost:3443"],
+      "attributes": {
+        "post.logout.redirect.uris": "https://ai-etl.localhost:3443/api/auth/logout/callback",
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": ["acr", "amr", "auth_time"]
+    }
+  ],
+  "users": [
+    {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "username": "demo.reader",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "Reader",
+      "email": "demo.reader@example.invalid",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "__DEMO_PASSWORD__",
+          "temporary": false
+        },
+        {
+          "type": "otp",
+          "userLabel": "Personal demo TOTP",
+          "secretData": "{\"value\":\"__TOTP_SECRET__\"}",
+          "credentialData": "{\"subType\":\"totp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\",\"secretEncoding\":\"BASE32\"}"
+        }
+      ]
+    }
+  ]
+}

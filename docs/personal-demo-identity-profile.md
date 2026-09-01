@@ -101,13 +101,17 @@ UI、报告和证据必须显示 `SIMULATION`。
 | --- | --- | --- |
 | PD0 策略 | 本文经仓库所有者批准；51 项值完整 | DemoApproved |
 | PD1 实现 | 仅 `dev/demo`，默认关闭，有确定性测试且不依赖真实企业数据 | Ready |
-| PD2 本地运行 | Keycloak demo realm、虚构资产和 ignored secrets 已配置；清理可重复 | Blocked |
+| PD2 本地运行 | Keycloak demo realm、虚构资产和 ignored secrets 已配置；清理可重复 | LocalPassed |
 | PD3 演示验收 | F～J 实现测试通过，报告显式标记 demo/simulation | Blocked |
 
 PD0/PD1 只解锁代码实现和单机测试，永远不能改变企业 D0～D7。后续运行配置必须同时
 验证 `ENVIRONMENT=dev` 与 `IDENTITY_POLICY_PROFILE=personal-demo-v1`；现有环境枚举
 不新增 `demo`。`staging`/`production` 遇到 `DemoApproved` 必须拒绝启动。演示结果
 不得写入企业 acceptance manifest。
+
+PD2 的 `LocalPassed` 仅表示[个人演示身份运行时](personal-demo-identity-runtime.md)已在
+本机通过真实 Keycloak password + TOTP、SCIM provisioning、`ps1_` 联邦会话与退出验收。
+G～J 尚未全部实现，因此该结果不改变 PD3 或任何企业 gate。
 
 ## 首个实现切片：P2.5-F1 会话核心
 

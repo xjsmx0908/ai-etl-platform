@@ -1262,3 +1262,21 @@ This file is an append-only record of completed PRAR cycles.
   发起并审批 Agent run；Query、API 搜索和 Web BFF 搜索统一传递该 space。完整隔离运行通过。
 - 改进：跨层 E2E 改变资源作用域时，应逐一追踪 Query API 和 BFF 的参数转发，而不能只验证
   后端直连。静态契约用于快速阻止绕过回归，真实 Compose 则证明身份分离和持久工作流有效。
+
+## 2026-09-01 - PD2 Keycloak 个人演示运行时
+
+- 感知：F1～F6 已具备严格 OIDC 证据和状态化会话，但没有可重复的真实 IdP 运行时；静态
+  realm JSON 不能证明 Keycloak 26.3.3 会导入 OTP credential、LoA 或 mapper 配置。
+- 推理：以生成资产、合并 Compose、公共 HTTPS 浏览器流程和重复清理四个 seam 逐项
+  red→green。验收只调用 SCIM/OIDC/Web 公共接口，不通过数据库或 Admin API 制造成功。
+- 行动：实现本地 CA、loopback TLS gateway、isolated Compose、SCIM provisioning 和
+  Python stdlib 浏览器。真实运行验证 password + TOTP 产生 `acr=2`、精确 `pwd/otp` AMR、
+  新鲜 `auth_time`，随后建立 `ps1_`、列出 federated session 并完成两阶段 logout。
+- 改进：Keycloak OTP import 必须声明 `secretEncoding=BASE32`；AMR 需要为每个 authenticator
+  execution 配置 reference，`auth_time` 需要从 `AUTH_TIME` session note 映射。它们均应来自
+  实际认证状态，不能用 hardcoded token claim 让验收假绿。
+- 诊断：Docker bind-mounted `0600` secret 会被固定 UID 999 的镜像拒绝读取；demo 覆盖需以
+  资产 owner UID/GID 运行 Query API。Keycloak readiness 必须先于 OIDC client 启动；Next
+  standalone 绝对重定向还需在 TLS gateway 只重写内部 `:3000` origin，并保留 Keycloak。
+- 边界：PD2 结果只标 `LocalPassed`。所有凭据与证书均可清理且不进入 Git；未实现 G～J、
+  未连接企业 tenant，也不能据此声明 staging 或 production 身份能力。

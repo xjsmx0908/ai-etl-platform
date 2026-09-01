@@ -770,6 +770,22 @@ P2.5 F1～F6 阶段验收工具收尾（2026-09-01 已实现并本地验证，�
    `bash scripts/e2e-smoke.sh` 已通过上传、Kafka、解析/向量化/索引、独立审批、查询、
    API/Web 搜索、chunks 和可恢复删除至 404；隔离 stack/volumes 已自动清理。
 
+P2.5-PD2 Keycloak 个人演示运行时（2026-09-01 已实现并本地通过）：
+
+1. 新增隔离 Compose project `ai-etl-identity-demo`，固定 Keycloak 26.3.3、唯一 HTTPS
+   issuer `https://keycloak.localhost:8443/realms/ai-etl-demo` 和 Web TLS gateway；所有宿主
+   端口只绑定 loopback，Query API 使用生成 CA 验证 discovery/JWKS。
+2. setup 生成权限 `0600` 的本地 CA、叶证书、confidential client secret、SCIM token、
+   随机密码和 Base32 TOTP seed；只写入 ignored `secrets/dev/identity-demo/`，不提交 secret。
+3. Keycloak 官方 step-up flow 以 LoA 2 真实执行 password + OTP；ACR、AMR 与 `auth_time`
+   分别从 LoA、完成的 authenticator execution 和服务端 session note 映射，不硬编码声明。
+4. 公共 HTTPS 验收经 SCIM provision Keycloak UUID，再通过 Web OIDC code + PKCE 登录，验证
+   `ps1_` Secure Cookie、federated session 列表、本地原子撤销、RP logout 和旧会话拒绝。
+5. 清理固定到专用 project，并执行 `down -v --remove-orphans` 后只删除允许的生成目录；
+   契约覆盖重复清理与过宽目录拒绝。完整 clean → fresh runtime → acceptance 已通过。
+6. PD2 仅标记 `LocalPassed`；PD3 和企业 D0～D7 保持 blocked，不启动 G～J、不连接真实
+   enterprise tenant，也不生成企业 acceptance manifest。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll
