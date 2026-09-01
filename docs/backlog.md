@@ -628,7 +628,7 @@ P2.5 个人演示身份策略与实现准入（2026-08-31 已批准计划）：
    接管现有 JWT/Cookie、OIDC 登录、生产配置或部署。
 5. 评审[个人演示身份策略](personal-demo-identity-profile.md)，通过后另提 F1 代码 PR。
 
-P2.5-F1 会话核心（2026-08-31 已合并）：
+P2.5-F1 会话核心（2026-08-31 已通过 PR #32 合并）：
 
 1. 新增 `0021_platform_sessions` migration，只保存 credential SHA-256、内部 user/tenant、
    认证方法/保证/时间、到期、generation、撤销、策略 revision 和最小 correlation；不
@@ -646,7 +646,7 @@ P2.5-F1 会话核心（2026-08-31 已合并）：
    生命周期测试还验证摘要存储、轮换不延长绝对寿命、主体撤销、撤销 correlation
    持久化，以及并发建立无法越过主体撤销水位。
 
-P2.5-F2 会话凭据验证（2026-08-31 已实现并本地验证，待 PR 评审）：
+P2.5-F2 会话凭据验证（2026-08-31 已通过 PR #33 合并）：
 
 1. 在现有 HTTP `auth.Authenticator` seam 组合 JWT 与 session adapter；只以版本化
    `ps1_` 前缀选择 opaque 路径，不使用解析失败推断 credential 类型。
@@ -660,7 +660,7 @@ P2.5-F2 会话凭据验证（2026-08-31 已实现并本地验证，待 PR 评审
 5. 所有保护路由暂映射 standard `platform.request`；F2 不签发凭据，不改变登录、Cookie、
    OIDC、logout、部署或 production。风险动作和 reauthentication 事务进入 F3。
 
-P2.5-F3a 风险判断与重新认证响应（2026-08-31 已实现并本地验证，待 PR 评审）：
+P2.5-F3a 风险判断与重新认证响应（2026-08-31 已通过 PR #34 合并）：
 
 1. 以 HTTP method + 路由模板把身份绑定、用户/角色/密码、tenant 创建、文档删除/发布、
    Agent 批准和 generation rollback 映射为独立 high-risk action；其他请求保持 standard。
@@ -673,7 +673,7 @@ P2.5-F3a 风险判断与重新认证响应（2026-08-31 已实现并本地验证
 5. F3a 不解析 `acr`/`amr`/`auth_time`，不创建 state/nonce/PKCE 事务、不轮换 credential，
    不修改 Cookie、OIDC、logout、部署或 production；这些进入 F3b 及后续切片。
 
-P2.5-F3b 可信认证证据与单次重新认证事务核心（2026-08-31 已实现并本地验证，待 PR 评审）：
+P2.5-F3b 可信认证证据与单次重新认证事务核心（2026-08-31 已通过 PR #35 合并）：
 
 1. `oidcauth.AuthenticateWithEvidence` 在提供方 adapter 内严格转换 Keycloak demo 声明：
    仅接受 `acr=2`、精确 `amr=[pwd,otp]` 和 10 分钟内的可信 `auth_time`，只向下游返回
@@ -689,7 +689,7 @@ P2.5-F3b 可信认证证据与单次重新认证事务核心（2026-08-31 已实
 5. F3b 尚不连接 HTTP callback，不签发或轮换 `ps1_` credential，也不修改 Cookie、logout、
    Compose 或 production。F3c 再原子轮换会话并完成 Web/API 编排。
 
-P2.5-F3c HTTP 重新认证与会话轮换（2026-08-31 已合并）：
+P2.5-F3c HTTP 重新认证与会话轮换（2026-08-31 已通过 PR #36 合并）：
 
 1. Query API 新增重新认证 start/callback seam；start 只接受当前有效、联邦、版本化 `ps1_`
    会话，且 action 必须是已登记 high-risk 动作并由 session policy 判定需要重新认证。
@@ -704,7 +704,7 @@ P2.5-F3c HTTP 重新认证与会话轮换（2026-08-31 已合并）：
 5. F3c 不自动重放原高风险写请求，不实现 logout，不迁移普通 OIDC/password 登录签发，
    不修改 staging/production gate；这些能力继续拆为后续独立评审切片。
 
-P2.5-F4 初始 `ps1_` 签发与个人演示登录迁移（2026-08-31 已实现并本地验证，待 PR 评审）：
+P2.5-F4 初始 `ps1_` 签发与个人演示登录迁移（2026-09-01 已通过 PR #37 合并）：
 
 1. 仅在现有 `SESSION_CORE_ENABLED=true`、`ENVIRONMENT=dev`、
    `IDENTITY_POLICY_PROFILE=personal-demo-v1` 三重门禁下，password 与 OIDC 成功登录改为
@@ -721,7 +721,7 @@ P2.5-F4 初始 `ps1_` 签发与个人演示登录迁移（2026-08-31 已实现�
    JWT 兼容、弱/缺失 OIDC 证据、session/PostgreSQL 故障、OIDC 重放与 Cookie 属性。
    logout、最多 3 会话、会话列表/设备撤销及 staging/production 仍进入后续切片。
 
-P2.5-F5 安全退出与当前会话撤销（2026-09-01 已实现并本地验证，待 PR 评审）：
+P2.5-F5 安全退出与当前会话撤销（2026-09-01 已通过 PR #38 合并）：
 
 1. Query API 在认证中间件外提供 `POST /v1/auth/logout`，按显式 `ps1_` 前缀调用既有
    `session.Manager.Revoke(RevokeCurrent)`；停用用户仍可撤销，存储失败返回 503，未知或
@@ -738,7 +738,7 @@ P2.5-F5 安全退出与当前会话撤销（2026-09-01 已实现并本地验证�
    IdP 故障、CSRF、Cookie 成功/失败语义、安全 redirect 和旧 credential 重放。每用户最多
    3 会话、会话/设备列表、指定设备撤销及 staging/production 继续延期。
 
-P2.5-F6 会话与设备管理（2026-09-01 已批准实施）：
+P2.5-F6 会话与设备管理（2026-09-01 已通过 PR #39 合并）：
 
 1. 扩展 `session.Manager` 的 provider-neutral seam：每个会话分配独立随机管理句柄，列表
    只返回脱敏时间、认证方法和当前会话标志；浏览器不能看到数据库 ID、credential 摘要、
