@@ -1216,3 +1216,6 @@ This file is an append-only record of completed PRAR cycles.
 - 审查修正：成功 logout 的会话撤销、correlation 与脱敏审计行必须在同一 PostgreSQL
   transaction 中提交；不能依赖 handler 在提交后 best-effort 补写。失败审计仍是非阻塞
   投影，避免审计服务故障隐藏原始 session store 错误。
+- CI 修正：Trivy 在实现完成后识别既有 `golang.org/x/crypto v0.46.0` 的
+  CVE-2026-56854；升级到修复版 v0.55.0，并接受 Go module solver 所需的配套 x/net、
+  x/sync、x/sys、x/text 更新。相同 Trivy 命令和完整 Go 测试在本地均通过。
