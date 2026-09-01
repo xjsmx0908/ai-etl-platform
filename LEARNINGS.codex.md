@@ -1237,3 +1237,6 @@ This file is an append-only record of completed PRAR cycles.
   上限改由 `SESSION_MAX_ACTIVE_SESSIONS` 显式配置并限制为演示基线 1～3。管理句柄升级为
   领域类型，当前会话围栏和 Web BFF 代理集中复用；跨租户及失效目标统一无披露幂等语义，
   只有真实状态变更才写审计。Query DELETE 存储故障和真实 Next 上游断网均验证返回 503。
+- 最终复审进一步收紧领域边界：导出的 `ManagementHandle` 使用私有表示，外部只能通过
+  `ParseManagementHandle` 得到合法值，PostgreSQL 读写在字符串边界显式转换；Manager 用
+  单一 helper 构造当前会话围栏。Web mock 也统一响应写入并遵循 PEP 8 行宽。

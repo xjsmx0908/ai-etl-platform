@@ -93,14 +93,24 @@ type RevokeManagedCommand struct {
 	CorrelationID string
 }
 
-type ManagementHandle string
+type ManagementHandle struct {
+	value string
+}
 
 func ParseManagementHandle(value string) (ManagementHandle, error) {
 	const prefix = "sm1_"
 	if !strings.HasPrefix(value, prefix) || uuid.Validate(strings.TrimPrefix(value, prefix)) != nil {
-		return "", ErrInvalid
+		return ManagementHandle{}, ErrInvalid
 	}
-	return ManagementHandle(value), nil
+	return ManagementHandle{value: value}, nil
+}
+
+func (h ManagementHandle) String() string {
+	return h.value
+}
+
+func newManagementHandle() ManagementHandle {
+	return ManagementHandle{value: "sm1_" + uuid.NewString()}
 }
 
 type View struct {
@@ -287,7 +297,7 @@ func (m *Manager) Establish(ctx context.Context, command EstablishCommand) (Cred
 	}
 	expiresAt := now.Add(m.policy.AbsoluteLifetime)
 	record := record{
-		id: uuid.NewString(), managementHandle: ManagementHandle("sm1_" + uuid.NewString()),
+		id: uuid.NewString(), managementHandle: newManagementHandle(),
 		credentialDigest: sha256.Sum256([]byte(token)),
 		tenantID:         command.Principal.TenantID, subjectID: command.Principal.SubjectID,
 		authenticationMethod: command.Principal.AuthenticationMethod,
@@ -345,11 +355,9 @@ func (m *Manager) List(ctx context.Context, command ListCommand) ([]View, error)
 	if !found || !current.activeAt(now, m.policy.IdleTimeout, m.policy.Revision) {
 		return nil, ErrInvalid
 	}
-	records, err := m.store.listSubject(ctx, subjectList{fence: currentSessionFence{
-		credentialDigest: digest, currentSessionID: current.id,
-		tenantID: current.tenantID, subjectID: current.subjectID,
-		at: now, idleCutoff: now.Add(-m.policy.IdleTimeout), policyRevision: m.policy.Revision,
-	}})
+	records, err := m.store.listSubject(ctx, subjectList{
+		fence: m.currentSessionFence(digest, current, now),
+	})
 	if err != nil {
 		if errors.Is(err, errChanged) {
 			return nil, ErrInvalid
@@ -370,7 +378,7 @@ func (m *Manager) List(ctx context.Context, command ListCommand) ([]View, error)
 	}
 	sort.Slice(views, func(i, j int) bool {
 		if views[i].CreatedAt.Equal(views[j].CreatedAt) {
-			return views[i].Handle < views[j].Handle
+			return views[i].Handle.String() < views[j].Handle.String()
 		}
 		return views[i].CreatedAt.After(views[j].CreatedAt)
 	})
@@ -379,10 +387,10 @@ func (m *Manager) List(ctx context.Context, command ListCommand) ([]View, error)
 
 func (m *Manager) RevokeManaged(ctx context.Context, command RevokeManagedCommand) error {
 	credential := strings.TrimSpace(command.Credential)
-	handle := strings.TrimSpace(string(command.Handle))
+	handle := strings.TrimSpace(command.Handle.String())
 	correlationID := strings.TrimSpace(command.CorrelationID)
 	parsedHandle, handleErr := ParseManagementHandle(handle)
-	if credential == "" || handle != string(command.Handle) || handleErr != nil ||
+	if credential == "" || handle != command.Handle.String() || handleErr != nil ||
 		correlationID == "" || correlationID != command.CorrelationID || len(correlationID) > 256 {
 		return ErrInvalid
 	}
@@ -396,11 +404,8 @@ func (m *Manager) RevokeManaged(ctx context.Context, command RevokeManagedComman
 		return ErrInvalid
 	}
 	err = m.store.revokeManaged(ctx, managedRevocation{
-		fence: currentSessionFence{
-			credentialDigest: digest, currentSessionID: current.id,
-			tenantID: current.tenantID, subjectID: current.subjectID,
-			at: now, idleCutoff: now.Add(-m.policy.IdleTimeout), policyRevision: m.policy.Revision,
-		}, handle: parsedHandle, correlationID: correlationID,
+		fence:  m.currentSessionFence(digest, current, now),
+		handle: parsedHandle, correlationID: correlationID,
 	})
 	if errors.Is(err, errChanged) {
 		return ErrInvalid
@@ -409,6 +414,20 @@ func (m *Manager) RevokeManaged(ctx context.Context, command RevokeManagedComman
 		return fmt.Errorf("%w: revoke managed session", ErrUnavailable)
 	}
 	return nil
+}
+
+func (m *Manager) currentSessionFence(
+	digest [32]byte, current record, at time.Time,
+) currentSessionFence {
+	return currentSessionFence{
+		credentialDigest: digest,
+		currentSessionID: current.id,
+		tenantID:         current.tenantID,
+		subjectID:        current.subjectID,
+		at:               at,
+		idleCutoff:       at.Add(-m.policy.IdleTimeout),
+		policyRevision:   m.policy.Revision,
+	}
 }
 
 func cloneAssurances(source map[auth.AuthenticationMethod]Assurance) map[auth.AuthenticationMethod]Assurance {

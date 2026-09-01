@@ -82,7 +82,7 @@ func (s *postgresStore) create(ctx context.Context, command creation) error {
 		assurance_level,authenticated_at,created_at,last_activity_at,
 		absolute_expires_at,generation,policy_revision,established_correlation_id
 	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		value.id, value.managementHandle, value.credentialDigest[:], value.subjectID, value.tenantID,
+		value.id, value.managementHandle.String(), value.credentialDigest[:], value.subjectID, value.tenantID,
 		string(value.authenticationMethod), string(value.assurance), value.authenticatedAt,
 		value.createdAt, value.lastActivityAt, value.absoluteExpiresAt,
 		value.generation, value.policyRevision, value.establishedCorrelationID,
@@ -98,12 +98,12 @@ func (s *postgresStore) load(ctx context.Context, digest [32]byte) (record, bool
 		return record{}, false, ErrUnavailable
 	}
 	var value record
-	var method, assurance string
+	var managementHandle, method, assurance string
 	err := s.q.QueryRow(ctx, `SELECT id,management_handle,creation_order,tenant_id,internal_user_id,authentication_method,
 		assurance_level,authenticated_at,created_at,last_activity_at,absolute_expires_at,
 		revoked_at,generation,policy_revision,established_correlation_id
 		FROM platform_sessions WHERE credential_digest=$1`, digest[:]).Scan(
-		&value.id, &value.managementHandle, &value.creationOrder, &value.tenantID, &value.subjectID, &method,
+		&value.id, &managementHandle, &value.creationOrder, &value.tenantID, &value.subjectID, &method,
 		&assurance, &value.authenticatedAt, &value.createdAt,
 		&value.lastActivityAt, &value.absoluteExpiresAt, &value.revokedAt,
 		&value.generation, &value.policyRevision, &value.establishedCorrelationID,
@@ -113,6 +113,10 @@ func (s *postgresStore) load(ctx context.Context, digest [32]byte) (record, bool
 	}
 	if err != nil {
 		return record{}, false, err
+	}
+	value.managementHandle, err = ParseManagementHandle(managementHandle)
+	if err != nil {
+		return record{}, false, ErrUnavailable
 	}
 	value.credentialDigest = digest
 	value.authenticationMethod = auth.AuthenticationMethod(method)
@@ -146,13 +150,17 @@ func (s *postgresStore) listSubject(ctx context.Context, command subjectList) ([
 	for rows.Next() {
 		var value record
 		var digest []byte
-		var method, assurance string
-		if err := rows.Scan(&value.id, &value.managementHandle, &value.creationOrder, &digest, &method, &assurance,
+		var managementHandle, method, assurance string
+		if err := rows.Scan(&value.id, &managementHandle, &value.creationOrder, &digest, &method, &assurance,
 			&value.authenticatedAt, &value.createdAt, &value.lastActivityAt, &value.absoluteExpiresAt,
 			&value.revokedAt, &value.generation, &value.policyRevision, &value.establishedCorrelationID); err != nil {
 			return nil, err
 		}
 		if len(digest) != sha256.Size {
+			return nil, ErrUnavailable
+		}
+		value.managementHandle, err = ParseManagementHandle(managementHandle)
+		if err != nil {
 			return nil, ErrUnavailable
 		}
 		copy(value.credentialDigest[:], digest)
@@ -283,7 +291,7 @@ func (s *postgresStore) revokeManaged(ctx context.Context, command managedRevoca
 		WHERE management_handle=$1 AND tenant_id=$2 AND internal_user_id=$3
 		AND revoked_at IS NULL AND absolute_expires_at>$4 AND last_activity_at>$5
 		AND policy_revision=$6 FOR UPDATE`,
-		command.handle, fence.tenantID, fence.subjectID, fence.at, fence.idleCutoff, fence.policyRevision).Scan(&targetID)
+		command.handle.String(), fence.tenantID, fence.subjectID, fence.at, fence.idleCutoff, fence.policyRevision).Scan(&targetID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
 	}

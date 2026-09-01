@@ -49,7 +49,7 @@ func handleSessionManagement(sessions *session.Manager) http.Handler {
 			views := make([]managedSessionView, 0, len(items))
 			for _, item := range items {
 				views = append(views, managedSessionView{
-					Handle: string(item.Handle), AuthenticationMethod: string(item.AuthenticationMethod),
+					Handle: item.Handle.String(), AuthenticationMethod: string(item.AuthenticationMethod),
 					CreatedAt: item.CreatedAt, LastActivityAt: item.LastActivityAt,
 					ExpiresAt: item.ExpiresAt, Current: item.Current,
 				})

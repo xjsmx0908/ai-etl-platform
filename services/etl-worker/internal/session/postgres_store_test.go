@@ -208,8 +208,9 @@ func TestPostgresManagedRevocationRollsBackWhenAtomicAuditWriteFails(t *testing.
 		WithArgs(pgxmock.AnyArg(), "11111111-1111-4111-8111-111111111111", "demo-tenant",
 			"33333333-3333-4333-8333-333333333333", now, now.Add(-30*time.Minute), "personal-demo-v1").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("11111111-1111-4111-8111-111111111111"))
+	handle := mustManagementHandle(t, "sm1_44444444-4444-4444-8444-444444444444")
 	mock.ExpectQuery("SELECT id FROM platform_sessions").
-		WithArgs(session.ManagementHandle("sm1_44444444-4444-4444-8444-444444444444"), "demo-tenant", "33333333-3333-4333-8333-333333333333",
+		WithArgs(handle.String(), "demo-tenant", "33333333-3333-4333-8333-333333333333",
 			now, now.Add(-30*time.Minute), "personal-demo-v1").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("55555555-5555-4555-8555-555555555555"))
 	mock.ExpectExec("UPDATE platform_sessions SET revoked_at").
@@ -226,7 +227,7 @@ func TestPostgresManagedRevocationRollsBackWhenAtomicAuditWriteFails(t *testing.
 		t.Fatal(err)
 	}
 	err = manager.RevokeManaged(context.Background(), session.RevokeManagedCommand{
-		Credential: credential, Handle: session.ManagementHandle("sm1_44444444-4444-4444-8444-444444444444"),
+		Credential: credential, Handle: handle,
 		CorrelationID: "managed-audit-failure",
 	})
 	if !errors.Is(err, session.ErrUnavailable) {

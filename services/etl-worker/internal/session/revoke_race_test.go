@@ -71,9 +71,13 @@ func TestCurrentRevokeFollowsRotationBetweenAuthenticateLoadAndTouch(t *testing.
 
 func TestListFailsClosedWhenCurrentCredentialChangesAtAtomicStoreSeam(t *testing.T) {
 	now := time.Date(2026, 9, 1, 12, 30, 0, 0, time.UTC)
+	handle, err := ParseManagementHandle("sm1_22222222-2222-4222-8222-222222222222")
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := &listRaceStore{record: record{
 		id:               "11111111-1111-1111-1111-111111111111",
-		managementHandle: "sm1_22222222-2222-4222-8222-222222222222",
+		managementHandle: handle,
 		tenantID:         "demo-tenant", subjectID: "user-42",
 		authenticationMethod: auth.AuthenticationMethodFederated, assurance: AssuranceDemoMFA,
 		authenticatedAt: now, createdAt: now, lastActivityAt: now,
