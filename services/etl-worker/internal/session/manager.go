@@ -130,12 +130,19 @@ type subjectRevocation struct {
 	correlationID    string
 }
 
+type currentRevocation struct {
+	credentialDigest [32]byte
+	sessionID        string
+	revokedAt        time.Time
+	correlationID    string
+}
+
 type repository interface {
 	create(context.Context, record) error
 	load(context.Context, [32]byte) (record, bool, error)
 	touch(context.Context, string, int64, time.Time) error
 	rotate(context.Context, [32]byte, string, int64, record) error
-	revokeCurrent(context.Context, [32]byte, string, time.Time, string) error
+	revokeCurrent(context.Context, currentRevocation) error
 	revokeSubject(context.Context, subjectRevocation) error
 }
 
@@ -290,7 +297,9 @@ func (m *Manager) Authenticate(ctx context.Context, token, action string) (Authe
 	}
 	if err := m.store.touch(ctx, record.id, record.generation, now); err != nil {
 		if errors.Is(err, errChanged) {
-			return AuthenticateResult{Decision: DecisionDeny}, nil
+			return AuthenticateResult{
+				Decision: DecisionDeny, Reference: Reference{id: record.id, credentialDigest: digest},
+			}, nil
 		}
 		return AuthenticateResult{Decision: DecisionDeny}, fmt.Errorf("%w: update activity", ErrUnavailable)
 	}
@@ -321,7 +330,10 @@ func (m *Manager) Revoke(ctx context.Context, command RevokeCommand) error {
 	}
 	now := m.now().UTC()
 	if command.Scope == RevokeCurrent {
-		if err := m.store.revokeCurrent(ctx, digest, command.Reference.id, now, correlationID); err != nil {
+		if err := m.store.revokeCurrent(ctx, currentRevocation{
+			credentialDigest: digest, sessionID: command.Reference.id,
+			revokedAt: now, correlationID: correlationID,
+		}); err != nil {
 			return fmt.Errorf("%w: revoke current", ErrUnavailable)
 		}
 		return nil

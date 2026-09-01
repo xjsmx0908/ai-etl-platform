@@ -126,7 +126,7 @@ func (s *postgresStore) rotate(ctx context.Context, oldDigest [32]byte, id strin
 	return tx.Commit(ctx)
 }
 
-func (s *postgresStore) revokeCurrent(ctx context.Context, digest [32]byte, sessionID string, at time.Time, correlationID string) error {
+func (s *postgresStore) revokeCurrent(ctx context.Context, command currentRevocation) error {
 	if s == nil || s.q == nil {
 		return ErrUnavailable
 	}
@@ -136,16 +136,16 @@ func (s *postgresStore) revokeCurrent(ctx context.Context, digest [32]byte, sess
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	var tenantID, subjectID string
-	if sessionID != "" {
+	if command.sessionID != "" {
 		err = tx.QueryRow(ctx, `UPDATE platform_sessions SET revoked_at=$2,
 			revocation_reason='current_session',revoked_correlation_id=$3,generation=generation+1
 			WHERE id=$1 AND revoked_at IS NULL
-			RETURNING tenant_id,internal_user_id`, sessionID, at, correlationID).Scan(&tenantID, &subjectID)
+			RETURNING tenant_id,internal_user_id`, command.sessionID, command.revokedAt, command.correlationID).Scan(&tenantID, &subjectID)
 	} else {
 		err = tx.QueryRow(ctx, `UPDATE platform_sessions SET revoked_at=$2,
 			revocation_reason='current_session',revoked_correlation_id=$3,generation=generation+1
 			WHERE credential_digest=$1 AND revoked_at IS NULL
-			RETURNING tenant_id,internal_user_id`, digest[:], at, correlationID).Scan(&tenantID, &subjectID)
+			RETURNING tenant_id,internal_user_id`, command.credentialDigest[:], command.revokedAt, command.correlationID).Scan(&tenantID, &subjectID)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
@@ -157,7 +157,7 @@ func (s *postgresStore) revokeCurrent(ctx context.Context, digest [32]byte, sess
 		tenant_id,actor_user_id,action,result,detail,created_at
 	) VALUES ($1,$2,'session_logout','success',jsonb_build_object(
 		'reason','local_session_revoked','correlation_id',$3::text
-	),$4)`, tenantID, subjectID, correlationID, at)
+	),$4)`, tenantID, subjectID, command.correlationID, command.revokedAt)
 	if err != nil || tag.RowsAffected() != 1 {
 		return ErrUnavailable
 	}

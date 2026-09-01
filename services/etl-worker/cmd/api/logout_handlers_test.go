@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -218,6 +219,53 @@ func TestFederatedLogoutReturnsProviderRedirectOnlyAfterLocalRevocation(t *testi
 	}
 }
 
+func TestFederatedLogoutCompletesLocallyWhenProviderTransactionStoreFails(t *testing.T) {
+	redisAddress := os.Getenv("OIDC_REDIS_TEST_ADDR")
+	if redisAddress == "" {
+		t.Skip("OIDC_REDIS_TEST_ADDR is not set")
+	}
+	now := time.Date(2026, 9, 1, 2, 45, 0, 0, time.UTC)
+	manager, err := session.New(
+		session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal: auth.Principal{
+			TenantID: "acme", SubjectID: "deactivated-user", AuthenticationMethod: auth.AuthenticationMethodFederated,
+		}, Evidence: session.AuthenticationEvidence{
+			Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now,
+		}, CorrelationID: "oidc-login-before-deactivation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := oidcauth.NewRedisTransactionStore(
+		redisAddress, "", 0, "handler-logout-unavailable-"+time.Now().Format("20060102150405.000000000"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow := logoutTestFlowWithStore(t, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/auth/logout", nil)
+	request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+credential.Token)
+	recorder := httptest.NewRecorder()
+
+	handleLogout(manager, flow, nil).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	result, authenticateErr := manager.Authenticate(context.Background(), credential.Token, platformSessionRequestAction)
+	if authenticateErr != nil || result.Decision != session.DecisionDeny {
+		t.Fatalf("local session survived provider failure: result=%+v err=%v", result, authenticateErr)
+	}
+}
+
 func TestLogoutCallbackConsumesStateOnceAndReturnsSafePath(t *testing.T) {
 	flow := logoutTestFlow(t)
 	start, err := flow.StartLogout(context.Background(), `//evil.example/steal`)
@@ -240,6 +288,10 @@ func TestLogoutCallbackConsumesStateOnceAndReturnsSafePath(t *testing.T) {
 }
 
 func logoutTestFlow(t *testing.T) *oidcauth.Flow {
+	return logoutTestFlowWithStore(t, oidcauth.NewMemoryTransactionStore())
+}
+
+func logoutTestFlowWithStore(t *testing.T, store oidcauth.TransactionStore) *oidcauth.Flow {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -269,5 +321,5 @@ func logoutTestFlow(t *testing.T) *oidcauth.Flow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return oidcauth.NewFlow(authenticator, oidcauth.NewMemoryTransactionStore(), 5*time.Minute)
+	return oidcauth.NewFlow(authenticator, store, 5*time.Minute)
 }
