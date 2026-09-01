@@ -95,6 +95,72 @@ func TestPostgresSessionLifecycleThroughManager(t *testing.T) {
 	}
 }
 
+func TestPostgresCurrentSessionRevocationIsConcurrentAndIdempotent(t *testing.T) {
+	pool, cleanup := sessionPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenants(id,name) VALUES('demo-tenant','Demo')`); err != nil {
+		t.Fatal(err)
+	}
+	var userID string
+	if err := pool.QueryRow(ctx, `INSERT INTO users(username,password_hash,role,tenant_id,active)
+		VALUES('logout-user','unused','readonly','demo-tenant',true) RETURNING id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 1, 3, 0, 0, 0, time.UTC)
+	manager, err := session.New(
+		session.NewPostgresStore(&db.Pool{Pool: pool}), demoPolicy(),
+		session.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := auth.Principal{
+		TenantID: "demo-tenant", SubjectID: userID,
+		AuthenticationMethod: auth.AuthenticationMethodLocal,
+	}
+	first, err := manager.Establish(ctx, session.EstablishCommand{
+		Principal: principal, Evidence: session.AuthenticationEvidence{
+			Assurance: session.AssuranceLocalPassword, AuthenticatedAt: now,
+		}, CorrelationID: "logout-login-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Establish(ctx, session.EstablishCommand{
+		Principal: principal, Evidence: session.AuthenticationEvidence{
+			Assurance: session.AssuranceLocalPassword, AuthenticatedAt: now,
+		}, CorrelationID: "logout-login-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan error, 2)
+	for _, correlationID := range []string{"logout-current-1", "logout-current-2"} {
+		go func(correlationID string) {
+			results <- manager.Revoke(ctx, session.RevokeCommand{
+				Credential: first.Token, Scope: session.RevokeCurrent, CorrelationID: correlationID,
+			})
+		}(correlationID)
+	}
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent current-session revoke: %v", err)
+		}
+	}
+	assertDecision(t, manager, first.Token, session.DecisionDeny)
+	assertDecision(t, manager, second.Token, session.DecisionAllow)
+	var revokedRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM platform_sessions
+		WHERE internal_user_id=$1 AND revoked_at IS NOT NULL AND revocation_reason='current_session'`, userID).Scan(&revokedRows); err != nil {
+		t.Fatal(err)
+	}
+	if revokedRows != 1 {
+		t.Fatalf("revoked current-session rows=%d", revokedRows)
+	}
+}
+
 func TestPostgresSubjectRevocationFenceRejectsConcurrentStaleEstablish(t *testing.T) {
 	pool, cleanup := sessionPool(t)
 	defer cleanup()

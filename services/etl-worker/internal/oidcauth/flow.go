@@ -35,6 +35,7 @@ type browserTransaction struct {
 	SubjectID        string `json:",omitempty"`
 	Action           string `json:",omitempty"`
 	Reauthentication bool   `json:",omitempty"`
+	Logout           bool   `json:",omitempty"`
 }
 
 type ReauthenticationStartCommand struct {
@@ -114,6 +115,46 @@ func (f *Flow) StartLoginWithAssurance(ctx context.Context, returnTo string) (Br
 	return f.startLogin(ctx, returnTo, url.Values{
 		"prompt": {"login"}, "max_age": {"0"}, "acr_values": {demoACR},
 	})
+}
+
+func (f *Flow) StartLogout(ctx context.Context, returnTo string) (BrowserStart, error) {
+	if f == nil || f.authenticator == nil || f.transactions == nil || f.ttl <= 0 || f.ttl > 15*time.Minute ||
+		f.authenticator.discovery.EndSessionEndpoint == "" || f.authenticator.config.LogoutRedirectURI == "" {
+		return BrowserStart{}, ErrInvalidTransaction
+	}
+	state, err := randomURLToken(32)
+	if err != nil {
+		return BrowserStart{}, fmt.Errorf("%w: generate logout state", ErrInvalidTransaction)
+	}
+	transaction := browserTransaction{
+		ReturnTo: safeReturnPath(returnTo), ExpiresAt: time.Now().Add(f.ttl), Logout: true,
+	}
+	if err := f.transactions.Save(ctx, state, transaction); err != nil {
+		return BrowserStart{}, fmt.Errorf("%w: save logout transaction", ErrInvalidTransaction)
+	}
+	endpoint, err := url.Parse(f.authenticator.discovery.EndSessionEndpoint)
+	if err != nil {
+		return BrowserStart{}, ErrInvalidTransaction
+	}
+	query := endpoint.Query()
+	query.Set("client_id", f.authenticator.config.ClientID)
+	query.Set("post_logout_redirect_uri", f.authenticator.config.LogoutRedirectURI)
+	query.Set("state", state)
+	endpoint.RawQuery = query.Encode()
+	return BrowserStart{AuthorizationURL: endpoint.String(), State: state, ExpiresIn: f.ttl}, nil
+}
+
+func (f *Flow) CompleteLogout(ctx context.Context, cookieState, callbackState string) (string, error) {
+	if f == nil || f.transactions == nil || cookieState == "" || callbackState == "" ||
+		len(cookieState) != len(callbackState) ||
+		subtle.ConstantTimeCompare([]byte(cookieState), []byte(callbackState)) != 1 {
+		return "", ErrInvalidTransaction
+	}
+	transaction, err := f.transactions.Consume(ctx, cookieState)
+	if err != nil || !transaction.Logout || transaction.Reauthentication {
+		return "", ErrInvalidTransaction
+	}
+	return safeReturnPath(transaction.ReturnTo), nil
 }
 
 func (f *Flow) startLogin(ctx context.Context, returnTo string, extraQuery url.Values) (BrowserStart, error) {
@@ -207,7 +248,7 @@ func (f *Flow) completeLogin(ctx context.Context, cookieState, callbackState, co
 		return AuthenticationResult{}, "", ErrInvalidTransaction
 	}
 	transaction, err := f.transactions.Consume(ctx, cookieState)
-	if err != nil || transaction.Reauthentication {
+	if err != nil || transaction.Reauthentication || transaction.Logout {
 		return AuthenticationResult{}, "", ErrInvalidTransaction
 	}
 	exchange := CodeExchange{
@@ -234,7 +275,7 @@ func (f *Flow) CompleteReauthentication(ctx context.Context, command Reauthentic
 		return ReauthenticationResult{}, ErrInvalidTransaction
 	}
 	transaction, err := f.transactions.Consume(ctx, command.CookieState)
-	if err != nil || !transaction.Reauthentication || transaction.CredentialDigest == "" ||
+	if err != nil || !transaction.Reauthentication || transaction.Logout || transaction.CredentialDigest == "" ||
 		transaction.TenantID == "" || transaction.SubjectID == "" || transaction.Action == "" {
 		return ReauthenticationResult{}, ErrInvalidTransaction
 	}

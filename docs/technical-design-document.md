@@ -419,3 +419,21 @@ P2.5-F4 在相同 session adapter seam 上接管初始登录签发。只有 Quer
 Compose 将同一个 `SESSION_CORE_ENABLED` 传给 Query API 和 Web。Web 在开启时拒绝非
 `ps1_` 或过期登录响应，主 Cookie 强制 Secure/HttpOnly/SameSite=Lax，`maxAge` 取 30 分钟
 与后端绝对剩余寿命的较小值；关闭时保留 JWT 兼容。任何建立失败不签发 JWT、不写 Cookie。
+
+P2.5-F5 复用 `session.Manager.Revoke(RevokeCurrent)` 作为唯一会话状态变更 seam。
+`POST /v1/auth/logout` 位于认证中间件外，因此用户被停用后仍能退出；它只按显式 `ps1_`
+前缀路由，未知或已撤销 credential 幂等成功，session store 故障返回 503 且不泄露凭据。
+服务端生成 logout correlation，撤销状态与 correlation 由 PostgreSQL adapter 在同一更新中
+持久化。遗留 JWT 不伪装成状态化会话，仅保留由 Web 清 Cookie 的兼容行为。
+
+联邦会话始终先完成本地撤销，再可选调用 OIDC Flow。adapter 只接受与 issuer 同 HTTPS
+origin 的 discovery `end_session_endpoint`，logout callback 必须与登录 callback 同 HTTPS
+origin；不发送或保存 `id_token_hint`。Flow 使用独立、TTL 不超过 15 分钟的 logout
+transaction，内存或 Redis `GETDEL` 单次消费 state，并拒绝与登录/重新认证事务混用。
+provider metadata、事务或退出能力缺失不恢复本地会话。
+
+Web BFF 的 logout 只接受显式同源 POST，把 HttpOnly Cookie 内的 credential 转给 Query
+API。后端成功后才使用匹配属性和 `Max-Age=0` 清主 Cookie；网络或存储失败保留 Cookie。
+可选 provider state 使用路径限定的 Secure/HttpOnly/SameSite=Lax Cookie，callback 无论
+成功失败都清除该 Cookie，并只跳转至经过双层校验的本地路径。F5 不实现 back-channel
+logout、最多三会话、会话/设备列表、指定设备撤销或 staging/production 启用。

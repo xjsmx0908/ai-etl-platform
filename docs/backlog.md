@@ -721,6 +721,23 @@ P2.5-F4 初始 `ps1_` 签发与个人演示登录迁移（2026-08-31 已实现�
    JWT 兼容、弱/缺失 OIDC 证据、session/PostgreSQL 故障、OIDC 重放与 Cookie 属性。
    logout、最多 3 会话、会话列表/设备撤销及 staging/production 仍进入后续切片。
 
+P2.5-F5 安全退出与当前会话撤销（2026-09-01 已实现并本地验证，待 PR 评审）：
+
+1. Query API 在认证中间件外提供 `POST /v1/auth/logout`，按显式 `ps1_` 前缀调用既有
+   `session.Manager.Revoke(RevokeCurrent)`；停用用户仍可撤销，存储失败返回 503，未知或
+   已撤销 credential 幂等完成，绝不回退 JWT 认证。遗留 JWT 保留 Cookie-only 兼容退出。
+2. logout correlation 由服务端生成且不含 credential；会话撤销和 correlation 在 session
+   store 原子提交。安全审计不保存 bearer、provider token、原始 subject 或 logout state。
+3. 联邦会话先完成本地撤销，再通过 OIDC adapter 可选生成经 discovery 验证的
+   RP-initiated logout URL；独立 state 事务只允许消费一次。元数据、事务存储或 IdP
+   不可用不能恢复本地会话，也不能阻止本地完成；不实现 back-channel logout。
+4. Web `POST /api/auth/logout` 强制同源，把 HttpOnly credential 传给 Query API；后端失败
+   保留主 Cookie，后端成功才以匹配属性和 `Max-Age=0` 清除。可选 provider state 使用
+   独立 Secure/HttpOnly Cookie，callback 验证并消费后只回到安全本地路径。
+5. public seam 测试覆盖 local/federated/JWT、停用用户、幂等/并发撤销、PostgreSQL/Redis/
+   IdP 故障、CSRF、Cookie 成功/失败语义、安全 redirect 和旧 credential 重放。每用户最多
+   3 会话、会话/设备列表、指定设备撤销及 staging/production 继续延期。
+
 P2.3 backend projection slice (2026-08-28):
 
 - Added generation-scoped Qdrant upsert/scroll and Elasticsearch upsert/scroll

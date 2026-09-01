@@ -185,4 +185,18 @@ F4 在既有三重门禁下接管个人演示登录，不改变默认或企业�
 3. Web 只在迁移门禁开启时接受 `ps1_` 登录响应，主 Cookie 强制 Secure/HttpOnly/
    SameSite=Lax，寿命为 30 分钟与平台会话剩余绝对寿命的较小值。
 4. 门禁关闭时 password/OIDC 仍签发既有 JWT，保持本地评测与未迁移环境兼容；任何
-   session/IdP/数据库失败均不回退 JWT。logout 和最多 3 个活跃会话仍是后续切片。
+   session/IdP/数据库失败均不回退 JWT。最多 3 个活跃会话仍是后续切片。
+
+## 第七个实现切片：P2.5-F5 安全退出与当前会话撤销
+
+F5 已在相同个人演示门禁内连接本地及可选 OIDC 退出：
+
+1. Query API 只把显式 `ps1_` 交给 `session.Manager.Revoke(RevokeCurrent)`；未知或已撤销
+   credential 幂等完成，停用用户仍可退出，PostgreSQL 故障失败关闭且不回退 JWT。
+2. Web 仅接受同源 POST。Query API 确认撤销后才清 Secure/HttpOnly/SameSite=Lax 主
+   Cookie；网络或后端失败保留 Cookie，使用户能重试并避免把未撤销会话显示为已退出。
+3. 联邦会话先完成本地撤销，再可选进入经 discovery 验证的 RP-initiated logout。
+   logout state 使用独立、路径限定的 Cookie 和 Redis 单次事务；callback 重放或类型混用
+   均失败，安全本地 return path 由 API 与 Web 双重限制。
+4. `OIDC_LOGOUT_REDIRECT_URI` 留空即禁用 provider logout，不影响本地撤销。F5 不实现
+   back-channel logout、最多 3 个活跃会话、会话/设备列表或 staging/production 启用。

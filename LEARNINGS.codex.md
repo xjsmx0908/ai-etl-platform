@@ -1196,3 +1196,16 @@ This file is an append-only record of completed PRAR cycles.
   adapter 和策略 map 的裸字符串漂移；password/OIDC 共享 Web 登录凭据解析与寿命计算。
   验收矩阵补充 OIDC 凭据经过真实认证中间件、OIDC 完整 Cookie 属性，以及门禁关闭时
   password/OIDC 的 24 小时 JWT Cookie 兼容路径。
+
+## 2026-09-01 - P2.5-F5 安全退出与当前会话撤销
+
+- 感知：F4 已签发状态化 `ps1_`，但 Web 退出只删除 Cookie，服务端 credential 在到期前
+  仍可重放；联邦登录也没有安全、可选且不阻塞本地撤销的 RP logout 编排。
+- 推理：退出的权威结果必须来自既有 session module，而不是浏览器状态。Query API 只拥有
+  撤销与 provider adapter seam；Web 只拥有同源检查、HttpOnly Cookie 和浏览器跳转。
+- 行动：以 public HTTP/Flow seam 的 red→green 测试实现当前会话幂等撤销、失败关闭、
+  脱敏审计、可选 OIDC end-session、独立单次 state，以及成功后清 Cookie 的 Web 编排。
+  真实 PostgreSQL 验证并发撤销只影响当前会话，真实 Redis 验证跨实例消费与重放拒绝。
+- 改进：本地撤销必须先于且独立于 provider logout；可选能力响应损坏、事务不可用或未配置
+  都不能复活会话。callback URI 需拒绝 query/fragment 并与登录 callback 同源，provider
+  metadata 则固定在 issuer HTTPS origin。JWT 兼容仅清浏览器 Cookie，不虚构服务端撤销。

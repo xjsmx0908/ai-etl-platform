@@ -33,12 +33,13 @@ const (
 )
 
 type Config struct {
-	Issuer       string
-	ClientID     string
-	ClientSecret string
-	RedirectURI  string
-	HTTPClient   *http.Client
-	Clock        func() time.Time
+	Issuer            string
+	ClientID          string
+	ClientSecret      string
+	RedirectURI       string
+	LogoutRedirectURI string
+	HTTPClient        *http.Client
+	Clock             func() time.Time
 }
 
 type CodeExchange struct {
@@ -63,6 +64,7 @@ type discoveryDocument struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 	JWKSURI               string `json:"jwks_uri"`
+	EndSessionEndpoint    string `json:"end_session_endpoint"`
 }
 
 type tokenResponse struct {
@@ -91,6 +93,10 @@ func New(ctx context.Context, cfg Config, directory externalidentity.Directory) 
 	issuerURL, err := url.Parse(cfg.Issuer)
 	if err != nil || issuerURL.Scheme != "https" || issuerURL.Host == "" || issuerURL.User != nil || issuerURL.RawQuery != "" || issuerURL.Fragment != "" {
 		return nil, fmt.Errorf("%w: issuer must be an absolute HTTPS URL", ErrAuthentication)
+	}
+	if cfg.LogoutRedirectURI != "" && (!absoluteHTTPSURL(cfg.LogoutRedirectURI) ||
+		!sameHTTPSOrigin(cfg.LogoutRedirectURI, cfg.RedirectURI)) {
+		return nil, fmt.Errorf("%w: logout redirect URI must share the login redirect HTTPS origin", ErrAuthentication)
 	}
 	client := cfg.HTTPClient
 	if client == nil {
@@ -265,8 +271,17 @@ func (a *Authenticator) loadDiscovery(ctx context.Context) error {
 		!sameHTTPSOrigin(doc.JWKSURI, a.config.Issuer) || !sameHTTPSOrigin(doc.AuthorizationEndpoint, a.config.Issuer) {
 		return fmt.Errorf("%w: invalid discovery metadata", ErrAuthentication)
 	}
+	if doc.EndSessionEndpoint != "" && !sameHTTPSOrigin(doc.EndSessionEndpoint, a.config.Issuer) {
+		return fmt.Errorf("%w: invalid discovery logout metadata", ErrAuthentication)
+	}
 	a.discovery = doc
 	return nil
+}
+
+func absoluteHTTPSURL(value string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil &&
+		parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == ""
 }
 
 func (a *Authenticator) refreshKeys(ctx context.Context) error {
