@@ -181,6 +181,9 @@ credential/数据库 ID，跨用户句柄不泄露存在性，Web DELETE 强制�
 dev + `personal-demo-v1` + `SESSION_CORE_ENABLED` 门禁保护，不代表企业生产已启用。
 `SESSION_MAX_ACTIVE_SESSIONS` 默认是批准基线 `3`；个人演示只接受 `1`～`3`。
 
+F1–F6 的 PR 映射、可运行验收证据、适用边界和已知工具欠账见
+[`docs/p2-5-f1-f6-stage-acceptance.md`](docs/p2-5-f1-f6-stage-acceptance.md)。
+
 紧急访问的待审批保管、短期租约、最小恢复权限和演练设计见
 [`docs/enterprise-emergency-access-design.md`](docs/enterprise-emergency-access-design.md)。
 该设计不创建紧急账号或密钥，也不提供数据库、shell 或基础设施后门。

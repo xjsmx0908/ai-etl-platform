@@ -1240,3 +1240,14 @@ This file is an append-only record of completed PRAR cycles.
 - 最终复审进一步收紧领域边界：导出的 `ManagementHandle` 使用私有表示，外部只能通过
   `ParseManagementHandle` 得到合法值，PostgreSQL 读写在字符串边界显式转换；Manager 用
   单一 helper 构造当前会话围栏。Web mock 也统一响应写入并遵循 PEP 8 行宽。
+
+## 2026-09-01 - P2.5 F1–F6 阶段收尾与可运行验收
+
+- 感知：PR #32～#39 已合并，但 backlog 仍把多个切片标为待评审，且需要把单元/竞态测试、
+  治理公共 HTTP 验收和真实 dev/demo 会话运行结果汇总为可审计的阶段结论。
+- 推理：阶段完成必须同时记录交付映射、可复现证据和适用边界，不能将个人演示验收扩大为
+  Keycloak、staging 或 production 声明，也不应自动启动后续 G～J。
+- 行动：核对八个 PR 的合并状态；真实 PostgreSQL race 测试、6/6 治理场景和隔离 Compose
+  password 会话生命周期均通过。同步 backlog，并新增阶段报告作为 README 的稳定入口。
+- 改进：旧 `e2e-smoke.sh` 仍绕过受管发布审批并得到预期 HTTP 409。验收脚本也会随安全
+  状态机演进而陈旧；应把它作为独立工具欠账修订，避免为让旧脚本通过而削弱治理约束。
