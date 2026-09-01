@@ -25,17 +25,24 @@ type BrowserStart struct {
 	ExpiresIn        time.Duration
 }
 
+type transactionKind string
+
+const (
+	transactionKindLogin            transactionKind = "login"
+	transactionKindReauthentication transactionKind = "reauthentication"
+	transactionKindLogout           transactionKind = "logout"
+)
+
 type browserTransaction struct {
 	Nonce            string
 	CodeVerifier     string
 	ReturnTo         string
 	ExpiresAt        time.Time
-	CredentialDigest string `json:",omitempty"`
-	TenantID         string `json:",omitempty"`
-	SubjectID        string `json:",omitempty"`
-	Action           string `json:",omitempty"`
-	Reauthentication bool   `json:",omitempty"`
-	Logout           bool   `json:",omitempty"`
+	CredentialDigest string          `json:",omitempty"`
+	TenantID         string          `json:",omitempty"`
+	SubjectID        string          `json:",omitempty"`
+	Action           string          `json:",omitempty"`
+	Kind             transactionKind `json:"kind"`
 }
 
 type ReauthenticationStartCommand struct {
@@ -127,7 +134,7 @@ func (f *Flow) StartLogout(ctx context.Context, returnTo string) (BrowserStart, 
 		return BrowserStart{}, fmt.Errorf("%w: generate logout state", ErrInvalidTransaction)
 	}
 	transaction := browserTransaction{
-		ReturnTo: safeReturnPath(returnTo), ExpiresAt: time.Now().Add(f.ttl), Logout: true,
+		ReturnTo: safeReturnPath(returnTo), ExpiresAt: time.Now().Add(f.ttl), Kind: transactionKindLogout,
 	}
 	if err := f.transactions.Save(ctx, state, transaction); err != nil {
 		return BrowserStart{}, fmt.Errorf("%w: save logout transaction", ErrInvalidTransaction)
@@ -151,7 +158,7 @@ func (f *Flow) CompleteLogout(ctx context.Context, cookieState, callbackState st
 		return "", ErrInvalidTransaction
 	}
 	transaction, err := f.transactions.Consume(ctx, cookieState)
-	if err != nil || !transaction.Logout || transaction.Reauthentication {
+	if err != nil || transaction.Kind != transactionKindLogout {
 		return "", ErrInvalidTransaction
 	}
 	return safeReturnPath(transaction.ReturnTo), nil
@@ -162,7 +169,7 @@ func (f *Flow) startLogin(ctx context.Context, returnTo string, extraQuery url.V
 		return BrowserStart{}, ErrInvalidTransaction
 	}
 	return f.startBrowserTransaction(ctx, browserTransaction{
-		ReturnTo: safeReturnPath(returnTo), ExpiresAt: time.Now().Add(f.ttl),
+		ReturnTo: safeReturnPath(returnTo), ExpiresAt: time.Now().Add(f.ttl), Kind: transactionKindLogin,
 	}, extraQuery)
 }
 
@@ -226,7 +233,7 @@ func (f *Flow) StartReauthentication(ctx context.Context, command Reauthenticati
 		ReturnTo: safeReturnPath(command.ReturnTo), ExpiresAt: time.Now().Add(f.ttl),
 		CredentialDigest: base64.RawURLEncoding.EncodeToString(digest[:]),
 		TenantID:         command.Principal.TenantID, SubjectID: command.Principal.SubjectID,
-		Action: command.Action, Reauthentication: true,
+		Action: command.Action, Kind: transactionKindReauthentication,
 	}
 	return f.startBrowserTransaction(ctx, transaction, url.Values{
 		"prompt": {"login"}, "max_age": {"0"}, "acr_values": {demoACR},
@@ -248,7 +255,7 @@ func (f *Flow) completeLogin(ctx context.Context, cookieState, callbackState, co
 		return AuthenticationResult{}, "", ErrInvalidTransaction
 	}
 	transaction, err := f.transactions.Consume(ctx, cookieState)
-	if err != nil || transaction.Reauthentication || transaction.Logout {
+	if err != nil || transaction.Kind != transactionKindLogin {
 		return AuthenticationResult{}, "", ErrInvalidTransaction
 	}
 	exchange := CodeExchange{
@@ -275,7 +282,7 @@ func (f *Flow) CompleteReauthentication(ctx context.Context, command Reauthentic
 		return ReauthenticationResult{}, ErrInvalidTransaction
 	}
 	transaction, err := f.transactions.Consume(ctx, command.CookieState)
-	if err != nil || !transaction.Reauthentication || transaction.Logout || transaction.CredentialDigest == "" ||
+	if err != nil || transaction.Kind != transactionKindReauthentication || transaction.CredentialDigest == "" ||
 		transaction.TenantID == "" || transaction.SubjectID == "" || transaction.Action == "" {
 		return ReauthenticationResult{}, ErrInvalidTransaction
 	}

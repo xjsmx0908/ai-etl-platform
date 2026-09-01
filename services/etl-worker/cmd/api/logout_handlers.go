@@ -52,7 +52,8 @@ func handleLogout(sessions *session.Manager, oidcFlow *oidcauth.Flow, audits aud
 			principal = result.Principal
 		}
 		if err := sessions.Revoke(r.Context(), session.RevokeCommand{
-			Credential: credential, Scope: session.RevokeCurrent, CorrelationID: correlationID,
+			Credential: credential, Reference: result.Reference,
+			Scope: session.RevokeCurrent, CorrelationID: correlationID,
 		}); err != nil {
 			recordLogoutAudit(r, audits, principal, audit.ResultFailure, "session_revocation_failed", correlationID)
 			if errors.Is(err, session.ErrUnavailable) {
@@ -62,7 +63,6 @@ func handleLogout(sessions *session.Manager, oidcFlow *oidcauth.Flow, audits aud
 			writeError(w, http.StatusUnauthorized, "logout failed")
 			return
 		}
-		recordLogoutAudit(r, audits, principal, audit.ResultSuccess, "local_session_revoked", correlationID)
 		if principal.AuthenticationMethod == auth.AuthenticationMethodFederated && oidcFlow != nil {
 			start, err := oidcFlow.StartLogout(r.Context(), r.URL.Query().Get("return_to"))
 			if err == nil {

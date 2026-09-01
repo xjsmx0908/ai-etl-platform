@@ -45,7 +45,7 @@ func (*revocationRaceStore) touch(context.Context, string, int64, time.Time) err
 func (*revocationRaceStore) rotate(context.Context, [32]byte, string, int64, record) error {
 	return nil
 }
-func (*revocationRaceStore) revokeCurrent(context.Context, [32]byte, time.Time, string) error {
+func (*revocationRaceStore) revokeCurrent(context.Context, [32]byte, string, time.Time, string) error {
 	return nil
 }
 func (s *revocationRaceStore) revokeSubject(context.Context, subjectRevocation) error {

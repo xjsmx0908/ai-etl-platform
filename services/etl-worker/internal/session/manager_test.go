@@ -186,6 +186,47 @@ func TestRevokeStopsCurrentOrAllSubjectSessions(t *testing.T) {
 	assertDecision(t, manager, other.Token, session.DecisionAllow)
 }
 
+func TestCurrentRevokeUsesStableReferenceAcrossCredentialRotation(t *testing.T) {
+	now := time.Date(2026, 9, 1, 3, 30, 0, 0, time.UTC)
+	manager, err := session.New(
+		session.NewMemoryStore(), demoPolicy(), session.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := auth.Principal{
+		TenantID: "demo-tenant", SubjectID: "user-42", Role: "readonly",
+		AuthenticationMethod: auth.AuthenticationMethodFederated,
+	}
+	first, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal: principal, Evidence: session.AuthenticationEvidence{
+			Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now,
+		}, CorrelationID: "login-before-logout",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated, err := manager.Authenticate(context.Background(), first.Token, "knowledge.query")
+	if err != nil || authenticated.Decision != session.DecisionAllow {
+		t.Fatalf("authenticate result=%+v err=%v", authenticated, err)
+	}
+	rotated, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal: principal, Evidence: session.AuthenticationEvidence{
+			Assurance: session.AssuranceDemoMFA, AuthenticatedAt: now,
+		}, ReplacesCredential: first.Token, CorrelationID: "rotation-raced-logout",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Revoke(context.Background(), session.RevokeCommand{
+		Credential: first.Token, Reference: authenticated.Reference,
+		Scope: session.RevokeCurrent, CorrelationID: "logout-after-rotation",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertDecision(t, manager, rotated.Token, session.DecisionDeny)
+}
+
 func TestRevokedCredentialCannotRevokeOtherSubjectSessions(t *testing.T) {
 	base := time.Date(2026, 8, 31, 4, 30, 0, 0, time.UTC)
 	manager, err := session.New(session.NewMemoryStore(), demoPolicy(), session.WithClock(func() time.Time { return base }))

@@ -1,19 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-function sameOriginRequest(req: NextRequest): boolean {
-  const origin = req.headers.get("origin");
-  const fetchSite = req.headers.get("sec-fetch-site");
-  const host = req.headers.get("host");
-  if (!origin || !host || fetchSite !== "same-origin") return false;
-  try {
-    const originURL = new URL(origin);
-    const forwardedProtocol = req.headers.get("x-forwarded-proto");
-    const expectedProtocol = forwardedProtocol ? `${forwardedProtocol}:` : req.nextUrl.protocol;
-    return originURL.host === host && originURL.protocol === expectedProtocol;
-  } catch {
-    return false;
-  }
-}
+import { isSameOriginRequest } from "@/lib/authSecurity";
 
 function clearSessionCookie(response: NextResponse) {
   response.cookies.set("ai_etl_token", "", {
@@ -25,8 +11,14 @@ function clearSessionCookie(response: NextResponse) {
   });
 }
 
+function completeLocalLogout(): NextResponse {
+  const response = new NextResponse(null, { status: 204 });
+  clearSessionCookie(response);
+  return response;
+}
+
 export async function POST(req: NextRequest) {
-  if (!sameOriginRequest(req)) {
+  if (!isSameOriginRequest(req)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const token = req.cookies.get("ai_etl_token")?.value || "";
@@ -47,9 +39,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "logout unavailable" }, { status: upstream.status });
   }
   if (upstream.status === 204) {
-    const response = new NextResponse(null, { status: 204 });
-    clearSessionCookie(response);
-    return response;
+    return completeLocalLogout();
   }
   const data = (await upstream.json().catch(() => null)) as {
     authorization_url?: unknown;
@@ -65,22 +55,16 @@ export async function POST(req: NextRequest) {
     data.expires_in <= 0 ||
     data.expires_in > 15 * 60
   ) {
-    const response = new NextResponse(null, { status: 204 });
-    clearSessionCookie(response);
-    return response;
+    return completeLocalLogout();
   }
   let authorizationURL: URL;
   try {
     authorizationURL = new URL(data.authorization_url);
   } catch {
-    const response = new NextResponse(null, { status: 204 });
-    clearSessionCookie(response);
-    return response;
+    return completeLocalLogout();
   }
   if (authorizationURL.protocol !== "https:" || authorizationURL.username || authorizationURL.password) {
-    const response = new NextResponse(null, { status: 204 });
-    clearSessionCookie(response);
-    return response;
+    return completeLocalLogout();
   }
   const response = NextResponse.json({ authorization_url: authorizationURL.toString() });
   clearSessionCookie(response);

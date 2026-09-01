@@ -76,8 +76,16 @@ type EstablishCommand struct {
 
 type RevokeCommand struct {
 	Credential    string
+	Reference     Reference
 	Scope         RevokeScope
 	CorrelationID string
+}
+
+// Reference identifies an authenticated logical session without exposing its
+// stable store identifier. Only Authenticate can create a non-zero reference.
+type Reference struct {
+	id               string
+	credentialDigest [32]byte
 }
 
 type Credential struct {
@@ -88,6 +96,7 @@ type Credential struct {
 type AuthenticateResult struct {
 	Decision  Decision
 	Principal auth.Principal
+	Reference Reference
 }
 
 type record struct {
@@ -126,7 +135,7 @@ type repository interface {
 	load(context.Context, [32]byte) (record, bool, error)
 	touch(context.Context, string, int64, time.Time) error
 	rotate(context.Context, [32]byte, string, int64, record) error
-	revokeCurrent(context.Context, [32]byte, time.Time, string) error
+	revokeCurrent(context.Context, [32]byte, string, time.Time, string) error
 	revokeSubject(context.Context, subjectRevocation) error
 }
 
@@ -260,7 +269,8 @@ func (m *Manager) Authenticate(ctx context.Context, token, action string) (Authe
 		return AuthenticateResult{Decision: DecisionDeny}, ErrInvalid
 	}
 	now := m.now().UTC()
-	record, found, err := m.store.load(ctx, sha256.Sum256([]byte(token)))
+	digest := sha256.Sum256([]byte(token))
+	record, found, err := m.store.load(ctx, digest)
 	if err != nil {
 		return AuthenticateResult{Decision: DecisionDeny}, fmt.Errorf("%w: authenticate", ErrUnavailable)
 	}
@@ -273,7 +283,10 @@ func (m *Manager) Authenticate(ctx context.Context, token, action string) (Authe
 	}
 	if risk == RiskHigh && (record.assurance != m.policy.HighRiskAssurance ||
 		now.Sub(record.authenticatedAt) >= m.policy.HighRiskFreshness) {
-		return AuthenticateResult{Decision: DecisionReauthenticate, Principal: principalFromRecord(record)}, nil
+		return AuthenticateResult{
+			Decision: DecisionReauthenticate, Principal: principalFromRecord(record),
+			Reference: Reference{id: record.id, credentialDigest: digest},
+		}, nil
 	}
 	if err := m.store.touch(ctx, record.id, record.generation, now); err != nil {
 		if errors.Is(err, errChanged) {
@@ -281,7 +294,10 @@ func (m *Manager) Authenticate(ctx context.Context, token, action string) (Authe
 		}
 		return AuthenticateResult{Decision: DecisionDeny}, fmt.Errorf("%w: update activity", ErrUnavailable)
 	}
-	return AuthenticateResult{Decision: DecisionAllow, Principal: principalFromRecord(record)}, nil
+	return AuthenticateResult{
+		Decision: DecisionAllow, Principal: principalFromRecord(record),
+		Reference: Reference{id: record.id, credentialDigest: digest},
+	}, nil
 }
 
 func principalFromRecord(record record) auth.Principal {
@@ -294,13 +310,18 @@ func (m *Manager) Revoke(ctx context.Context, command RevokeCommand) error {
 	correlationID := strings.TrimSpace(command.CorrelationID)
 	if strings.TrimSpace(command.Credential) == "" ||
 		(command.Scope != RevokeCurrent && command.Scope != RevokeSubject) ||
+		(command.Reference.id != "" && uuid.Validate(command.Reference.id) != nil) ||
+		(command.Scope == RevokeSubject && command.Reference.id != "") ||
 		correlationID == "" || correlationID != command.CorrelationID || len(correlationID) > 256 {
 		return ErrInvalid
 	}
 	digest := sha256.Sum256([]byte(command.Credential))
+	if command.Reference.id != "" && command.Reference.credentialDigest != digest {
+		return ErrInvalid
+	}
 	now := m.now().UTC()
 	if command.Scope == RevokeCurrent {
-		if err := m.store.revokeCurrent(ctx, digest, now, correlationID); err != nil {
+		if err := m.store.revokeCurrent(ctx, digest, command.Reference.id, now, correlationID); err != nil {
 			return fmt.Errorf("%w: revoke current", ErrUnavailable)
 		}
 		return nil

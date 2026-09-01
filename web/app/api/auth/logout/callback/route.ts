@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { safeLocalReturnPath } from "@/lib/authSecurity";
 
 function clearLogoutState(response: NextResponse) {
   response.cookies.set("ai_etl_logout_state", "", {
@@ -14,13 +15,6 @@ function failure(req: NextRequest): NextResponse {
   const response = NextResponse.redirect(new URL("/login?error=logout_callback_failed", req.url));
   clearLogoutState(response);
   return response;
-}
-
-function safeReturnPath(value: unknown): string {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
-    return "/";
-  }
-  return value;
 }
 
 export async function GET(req: NextRequest) {
@@ -44,7 +38,7 @@ export async function GET(req: NextRequest) {
   }
   if (!upstream.ok) return failure(req);
   const data = (await upstream.json().catch(() => null)) as { return_to?: unknown } | null;
-  const response = NextResponse.redirect(new URL(safeReturnPath(data?.return_to), req.url));
+  const response = NextResponse.redirect(new URL(safeLocalReturnPath(data?.return_to), req.url));
   clearLogoutState(response);
   return response;
 }

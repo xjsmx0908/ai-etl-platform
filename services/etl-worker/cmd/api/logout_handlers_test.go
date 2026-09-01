@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"ai-etl-pipeline/internal/audit"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/oidcauth"
 	"ai-etl-pipeline/internal/session"
@@ -51,14 +53,8 @@ func TestLogoutRevokesCurrentPlatformSessionBeforeCompleting(t *testing.T) {
 	if err != nil || result.Decision != session.DecisionDeny {
 		t.Fatalf("revoked credential result=%+v err=%v", result, err)
 	}
-	if len(audits.entries) != 1 || audits.entries[0].Action != "session_logout" ||
-		audits.entries[0].Result != "success" || audits.entries[0].TenantID != "acme" ||
-		audits.entries[0].ActorUserID != "user-1" {
-		t.Fatalf("unexpected audits: %+v", audits.entries)
-	}
-	encoded, _ := json.Marshal(audits.entries[0])
-	if strings.Contains(string(encoded), credential.Token) || strings.Contains(string(encoded), platformSessionCredentialPrefix) {
-		t.Fatalf("audit leaked credential: %s", encoded)
+	if len(audits.entries) != 0 {
+		t.Fatalf("success audit must be committed by the session store, got: %+v", audits.entries)
 	}
 }
 
@@ -85,6 +81,49 @@ func TestLogoutFailsClosedAndAuditsWhenSessionStoreIsUnavailable(t *testing.T) {
 	if strings.Contains(string(encoded), "opaque-token") {
 		t.Fatalf("audit leaked credential: %s", encoded)
 	}
+}
+
+func TestLogoutDoesNotDependOnTheFailureAuditProjection(t *testing.T) {
+	now := time.Date(2026, 9, 1, 2, 10, 0, 0, time.UTC)
+	manager, err := session.New(
+		session.NewMemoryStore(), platformSessionPolicy(), session.WithClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := manager.Establish(context.Background(), session.EstablishCommand{
+		Principal: auth.Principal{
+			TenantID: "acme", SubjectID: "user-1", AuthenticationMethod: auth.AuthenticationMethodLocal,
+		}, Evidence: session.AuthenticationEvidence{
+			Assurance: session.AssuranceLocalPassword, AuthenticatedAt: now,
+		}, CorrelationID: "password-login:audit-failure",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/auth/logout", nil)
+	request.Header.Set("Authorization", "Bearer "+platformSessionCredentialPrefix+credential.Token)
+	recorder := httptest.NewRecorder()
+
+	handleLogout(manager, nil, failingLogoutAuditStore{}).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	result, authenticateErr := manager.Authenticate(context.Background(), credential.Token, platformSessionRequestAction)
+	if authenticateErr != nil || result.Decision != session.DecisionDeny {
+		t.Fatalf("audit projection failure changed revocation: result=%+v err=%v", result, authenticateErr)
+	}
+}
+
+type failingLogoutAuditStore struct{}
+
+func (failingLogoutAuditStore) Record(context.Context, audit.Entry) error {
+	return errors.New("audit unavailable")
+}
+
+func (failingLogoutAuditStore) List(context.Context, audit.ListQuery) ([]audit.Entry, int, error) {
+	return nil, 0, errors.New("audit unavailable")
 }
 
 func TestLogoutIsIdempotentAndKeepsLegacyJWTCookieCompatibility(t *testing.T) {

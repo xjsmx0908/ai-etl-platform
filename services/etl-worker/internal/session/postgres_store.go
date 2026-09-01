@@ -126,14 +126,42 @@ func (s *postgresStore) rotate(ctx context.Context, oldDigest [32]byte, id strin
 	return tx.Commit(ctx)
 }
 
-func (s *postgresStore) revokeCurrent(ctx context.Context, digest [32]byte, at time.Time, correlationID string) error {
+func (s *postgresStore) revokeCurrent(ctx context.Context, digest [32]byte, sessionID string, at time.Time, correlationID string) error {
 	if s == nil || s.q == nil {
 		return ErrUnavailable
 	}
-	_, err := s.q.Exec(ctx, `UPDATE platform_sessions SET revoked_at=$2,
-		revocation_reason='current_session',revoked_correlation_id=$3,generation=generation+1
-		WHERE credential_digest=$1 AND revoked_at IS NULL`, digest[:], at, correlationID)
-	return err
+	tx, err := s.q.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var tenantID, subjectID string
+	if sessionID != "" {
+		err = tx.QueryRow(ctx, `UPDATE platform_sessions SET revoked_at=$2,
+			revocation_reason='current_session',revoked_correlation_id=$3,generation=generation+1
+			WHERE id=$1 AND revoked_at IS NULL
+			RETURNING tenant_id,internal_user_id`, sessionID, at, correlationID).Scan(&tenantID, &subjectID)
+	} else {
+		err = tx.QueryRow(ctx, `UPDATE platform_sessions SET revoked_at=$2,
+			revocation_reason='current_session',revoked_correlation_id=$3,generation=generation+1
+			WHERE credential_digest=$1 AND revoked_at IS NULL
+			RETURNING tenant_id,internal_user_id`, digest[:], at, correlationID).Scan(&tenantID, &subjectID)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return tx.Commit(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO audit_logs (
+		tenant_id,actor_user_id,action,result,detail,created_at
+	) VALUES ($1,$2,'session_logout','success',jsonb_build_object(
+		'reason','local_session_revoked','correlation_id',$3::text
+	),$4)`, tenantID, subjectID, correlationID, at)
+	if err != nil || tag.RowsAffected() != 1 {
+		return ErrUnavailable
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *postgresStore) revokeSubject(ctx context.Context, command subjectRevocation) error {

@@ -1209,3 +1209,10 @@ This file is an append-only record of completed PRAR cycles.
 - 改进：本地撤销必须先于且独立于 provider logout；可选能力响应损坏、事务不可用或未配置
   都不能复活会话。callback URI 需拒绝 query/fragment 并与登录 callback 同源，provider
   metadata 则固定在 issuer HTTPS origin。JWT 兼容仅清浏览器 Cookie，不虚构服务端撤销。
+- 审查修正：认证后按旧 credential 撤销会与并发 credential rotation 竞争；Manager 因此
+  返回不可构造的稳定 session reference，current revoke 按逻辑会话行完成，使轮换先提交时
+  新 credential 也被撤销，撤销先提交时 CAS 轮换失败。OIDC transaction 使用单一 kind，
+  Web 同源校验和安全 return path 集中到共享安全模块，避免敏感策略随路由复制而漂移。
+- 审查修正：成功 logout 的会话撤销、correlation 与脱敏审计行必须在同一 PostgreSQL
+  transaction 中提交；不能依赖 handler 在提交后 best-effort 补写。失败审计仍是非阻塞
+  投影，避免审计服务故障隐藏原始 session store 错误。

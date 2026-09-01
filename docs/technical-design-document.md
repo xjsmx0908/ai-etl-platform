@@ -424,7 +424,9 @@ P2.5-F5 复用 `session.Manager.Revoke(RevokeCurrent)` 作为唯一会话状态�
 `POST /v1/auth/logout` 位于认证中间件外，因此用户被停用后仍能退出；它只按显式 `ps1_`
 前缀路由，未知或已撤销 credential 幂等成功，session store 故障返回 503 且不泄露凭据。
 服务端生成 logout correlation，撤销状态与 correlation 由 PostgreSQL adapter 在同一更新中
-持久化。遗留 JWT 不伪装成状态化会话，仅保留由 Web 清 Cookie 的兼容行为。
+持久化；成功 `session_logout` 审计行在同一数据库事务写入，任一写入失败会整体回滚。
+HTTP 层对存储失败仅写 best-effort 失败投影。遗留 JWT 不伪装成状态化会话，仅保留由
+Web 清 Cookie 的兼容行为。
 
 联邦会话始终先完成本地撤销，再可选调用 OIDC Flow。adapter 只接受与 issuer 同 HTTPS
 origin 的 discovery `end_session_endpoint`，logout callback 必须与登录 callback 同 HTTPS

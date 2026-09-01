@@ -78,9 +78,21 @@ func (s *memoryStore) rotate(_ context.Context, oldDigest [32]byte, id string, g
 	return nil
 }
 
-func (s *memoryStore) revokeCurrent(_ context.Context, digest [32]byte, at time.Time, correlationID string) error {
+func (s *memoryStore) revokeCurrent(_ context.Context, digest [32]byte, sessionID string, at time.Time, correlationID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if sessionID != "" {
+		for currentDigest, value := range s.records {
+			if value.id == sessionID && value.revokedAt == nil {
+				value.revokedAt = &at
+				value.revokedCorrelationID = correlationID
+				value.generation++
+				s.records[currentDigest] = value
+				return nil
+			}
+		}
+		return nil
+	}
 	value, found := s.records[digest]
 	if !found || value.revokedAt != nil {
 		return nil
