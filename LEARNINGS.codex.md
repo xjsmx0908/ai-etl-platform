@@ -1280,3 +1280,69 @@ This file is an append-only record of completed PRAR cycles.
   standalone 绝对重定向还需在 TLS gateway 只重写内部 `:3000` origin，并保留 Keycloak。
 - 边界：PD2 结果只标 `LocalPassed`。所有凭据与证书均可清理且不进入 Git；未实现 G～J、
   未连接企业 tenant，也不能据此声明 staging 或 production 身份能力。
+## 2026-09-02 - DOCX 表格解析修复
+
+- 感知：问答只能命中 Word 章节标题，无法回答该章节中的表格内容。
+- 推理：原始 DOCX 确实包含表格；解析器仅遍历 `doc.paragraphs`，导致表格单元格在进入切块和索引前被丢弃。
+- 行动：增加 DOCX 段落/表格顺序遍历，将表格渲染为制表符分隔行；补充回归测试，重建 parser-service，并重新处理受影响文档。
+- 验证：Parser Service 全部 33 个测试通过；原文档重处理后生成包含“每个服务必须补齐的信息”完整表格的分块，问答已返回表格内容。
+
+## 2026-09-02 - bugs.md 逐项核对与体验修复
+
+- 感知：9 项反馈中，SSE 后端原已存在但前端阶段提示不足；健康页是核心依赖白名单；审计接口已有分页参数但 UI 未使用。
+- 行动：为问答 SSE 增加 status 事件并在工作台显示检索/生成阶段；为知识空间、质量评测、Agent Run ID 和治理字段补充用途说明；审计增加关键词 q 查询、前端分页和检索控件；保留 ES 只读锁与“日常巡检”索引状态作为运行环境问题单独处理。
+- 验证：Web ESLint 通过；parser-service 33 项测试通过；Go 测试环境缺少 go/gofmt，未能在宿主机执行，代码变更保持 Go 现有格式与接口兼容。
+
+## 2026-09-02 - PDF 重复切块与关键词拒答修复
+
+- 感知：DNQ4/V30 手册的 166 个 Qdrant 切块不是两代数据，而是旧切块器在每个段落边界复制最多 200 字，短块会被完整带入下一块，形成阶梯式近重复；“聚恒博联”实际存在于多个块。
+- 推理：重叠只应服务于同一个超长正文的强制切分，不能跨自然段或 PDF 页边界；历史数据详情需要读侧兼容去重。
+- 行动：取消自然段边界 overlap，识别 PDF Page marker 为语义边界；文档详情过滤高度包含的相邻历史块；重启卡死的 Elasticsearch 并解除只读锁。
+- 验证：parser-service 35 项测试和 Go store 测试通过；ES pending tasks 归零、只读锁清除，重试队列开始成功补写，“聚恒博联”已有 27 条全文命中。
+- 续查：用户上传新版本后仍拒答，发现运行中的 etl-worker 仍是八天前旧镜像，写入的 payload 无 version/generation，且没有 manifest；新版 Query API 的发布可见性门禁因此正确地将候选全部剔除。重建 Worker 后重放最新持久化 ingestion job，成功激活 68/68 双索引一致 generation 并自动发布。
+
+## 2026-09-02 - 文档管理分页与视觉优化
+
+- 感知：文档管理页一次请求 100 条，列表缺少正式分页，筛选区和列表层次也不够清晰。
+- 推理：后端文档接口已经提供 `limit/offset/total`，应让分页直接驱动服务端查询；筛选条件变化必须回到第一页，避免当前页超出结果范围。
+- 行动：重做页面标题、能力提示和筛选卡片；列表改为每页 20/50/100 条，增加带省略号的页码、范围统计和禁用态；删除当前页最后一条时自动回退上一页。
+- 验证：Web ESLint 和 Next.js production build 均通过，并重建部署 web/query-api 容器。
+
+## 2026-09-02 - 文档管理交互二次优化
+
+- 反馈：初版筛选、正文检索和分页虽然可用，但不符合完整后台系统的视觉与交互预期。
+- 行动：将筛选区改为带清除操作的工具栏，正文检索改为独立搜索面板；分页补充首页/末页、页码跳转和更明确的范围信息，同时保持服务端 `limit/offset` 查询。
+- 验证：Lint、production build 通过，重新构建 web/query-api 后 `/documents` 返回 200。
+
+## 2026-09-02 - 文档管理紧凑布局与完整分页
+
+- 反馈：搜索区占用过大；当总数不足一页时分页栏被隐藏，用户看不到上一页/下一页和页码入口。
+- 行动：将文件筛选和正文检索压缩为单行工具栏；分页栏始终渲染，单页时按钮置灰，并提供首页、末页、上一页、下一页、页码和跳转输入。
+- 验证：Lint、production build 通过，重建 web/query-api 后 `/documents` 返回 200。
+
+## 2026-09-02 - 问答阶段化动态等待反馈
+
+- 感知：问答页只显示“正在检索知识库”，无法反映检索、证据筛选、生成和校验的真实进度。
+- 推理：SSE 原先在同步 `Ask` 前后只发送笼统文本；应在真实执行边界发出结构化阶段事件，并让前端按 running/completed/failed 渲染持续动画和终态。
+- 行动：增加 `QueryProgress` 事件，接入准备范围、文档检索、证据筛选、回答生成、回答校验、结果整理及拒答/失败状态；前端新增阶段进度卡片与动画。
+- 验证：Query 包测试、Web ESLint 和 production build 通过，重建 query-api/web 后 `/qa` 返回 200。
+
+## 2026-09-02 - 扫描 PDF 任务停止与上传限制
+
+- 感知：583 页扫描版《爱因斯坦传》触发逐页 OCR，Parser 事件循环被 CPU 任务阻塞，健康检查超时；Worker 解析请求超时后因 Kafka 未提交继续重试，任务长期显示 parsing。
+- 行动：将 Parser 的解析/ OCR 调用移入线程池；扫描 PDF 超过 300 个 OCR 页提前返回明确错误；停止并持久化失败该任务，重启 Parser/Worker 恢复健康。前端上传预检与 Query API/Parser Service 后端限制统一为 100MB。
+- 验证：Parser 35 项测试通过，Parser/Query API/Web 重建部署成功；Parser 配置显示 `MAX_FILE_SIZE_MB=100`、`MAX_OCR_PAGES=300`。
+
+## 2026-09-02 - 扫描 PDF 最终版处理链路
+
+- 感知：单次同步 OCR 无法承载数百页扫描 PDF，导致健康检查超时、Kafka 重试和页面长期停留 parsing。
+- 推理：必须以页批次作为可恢复边界；批次成功后同时写入 chunk/page checkpoint，恢复从下一页继续，并让 OCR 任务拥有独立 Kafka topic 与 consumer group。
+- 行动：Worker 增加可配置分页 OCR（默认 25 页）、稳定 chunk offset、页级状态、取消检查和 cancelled 终态；API 增加任务取消接口；Kafka 增加 OCR topic/DLQ 与路由；移除 Parser 的 300 页硬拒绝。
+- 验证：`go test ./internal/... ./cmd/api ./cmd/worker` 全部通过；Docker Compose 的 ETL Worker、Query API、Web、Parser 镜像成功构建；Next.js production build 通过。
+
+## 2026-09-02 - CPU Embedding 超时修复复核
+
+- 感知：同一份 583 页扫描 PDF 连续三次在 embedding 阶段失败，错误为 `strict generation embedding failed`，每批约 5–8 个 chunk `context deadline exceeded`，最终进入 DLQ。
+- 推理：运行态 Ollama 的 CPU `bge-m3` 对 1200 字符中文 chunk 单请求约 13 秒，批量并发和 180 秒 stage timeout 会让慢请求拖累同批成功结果；15 分钟总超时也不足以覆盖长文档。
+- 行动：OCR embedding 改为单 chunk 隔离；Parser/Worker 默认 chunk 调整为 600 字符、50 字符重叠；流水线默认超时调整为 2 小时，ingestion lease 调整为 12 小时，并修复因租约小于最坏重试窗口导致 worker 重启的问题。
+- 验证：重建并重启服务后，使用失败任务同一 PDF 的第 26–50 页重新解析得到 78 个、最大 600 字符 chunk；逐个调用真实 Ollama `bge-m3`，78/78 成功，最长 6.76 秒、总耗时 209 秒；完整 Go 测试全部通过。原失败任务已在 DLQ，不会被隐式篡改，需用户重新上传或显式重放。

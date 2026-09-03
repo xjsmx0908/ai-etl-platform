@@ -2167,3 +2167,31 @@ Outcome:
   second administrator.
 - Replaced the evaluator's obsolete publication PATCH with a read-only state
   assertion. The full 47-case mock evaluation passed all release thresholds.
+# bugs.md 反馈收敛（2026-09-02）
+
+- [x] 用户上传知识空间说明及自动发布/受管发布差异
+- [x] 可观测页标注 7 项为核心依赖探测白名单
+- [x] 问答 SSE 阶段状态提示（检索、生成/校验）
+- [x] 检索质量页补充面向对象与使用方式
+- [x] Agent Run ID、责任人、生效日期治理说明
+- [x] 审计日志关键词检索与前端分页
+- [x] DOCX 表格按原始顺序解析并回归测试
+- [ ] 核查 Elasticsearch read_only_allow_delete 锁并恢复全文索引写入
+- [x] 修复 PDF 自然段/page marker 跨边界 overlap 导致的近重复切块
+- [x] 文档详情对历史高度包含的相邻切块做兼容去重
+- [x] 恢复 Elasticsearch 集群事件队列并解除全文索引只读锁
+- [x] 通过文档“上传新版本”用新版切块器重建 DNQ4/V30 手册；修正旧 Worker 运行镜像并重放最新持久化 ingestion job
+- [x] 文档管理页视觉优化；文档列表改为服务端分页，支持筛选回到第一页、页码省略号、每页条数和当前范围提示
+- [x] 文档管理筛选、正文检索与分页二次优化；补充清除筛选、首页/末页、页码跳转和移动端布局
+- [x] 文档管理搜索区压缩为紧凑工具栏；分页在单页时也始终展示完整控件（上一页/下一页/页码跳转）
+- [x] 问答工作台接入真实阶段进度事件；阶段耗时时显示持续动画，完成/拒答/失败状态可区分
+- [x] 扫描 PDF OCR 增加后台线程执行与页数上限；统一前后端单文件 100MB 限制，超时任务明确失败
+## 扫描 PDF 最终处理能力（2026-09-02）
+
+- [x] 分页 OCR 与稳定 chunk offset
+- [x] Redis/Checkpoint 页级恢复（批次成功后持久化）
+- [x] TaskStatus 页级进度与前端动态展示
+- [x] 任务取消 API 与 cancelled 终态
+- [x] OCR 专用 Kafka topic、consumer group 与 DLQ
+- [x] 移除 300 页硬拒绝，保留 100MB 单文件边界
+- [ ] 真实 583 页文件重新上传并完成一次生产数据验收

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +41,10 @@ func (f *fakeAuditStore) List(_ context.Context, q audit.ListQuery) ([]audit.Ent
 		}
 		if q.Action != "" && e.Action != q.Action {
 			continue
+		}
+		if q.Query != "" {
+			matched := strings.Contains(strings.ToLower(e.ActorUserID), strings.ToLower(q.Query)) || strings.Contains(strings.ToLower(e.Action), strings.ToLower(q.Query)) || strings.Contains(strings.ToLower(e.ResourceID), strings.ToLower(q.Query))
+			if !matched { continue }
 		}
 		out = append(out, e)
 	}

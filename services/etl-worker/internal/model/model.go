@@ -18,6 +18,7 @@ type Task struct {
 	Permission string            `json:"permission,omitempty"` // "public" | "internal" | "confidential"
 	FileHash   string            `json:"file_hash,omitempty"`  // SHA-256 of source file
 	Metadata   map[string]string `json:"metadata,omitempty"`   // Business exact-match fields, e.g. order_id or trace_id
+	UploadedBy string            `json:"uploaded_by,omitempty"`
 	CreatedAt  time.Time         `json:"created_at"`
 }
 
@@ -72,6 +73,8 @@ type Checkpoint struct {
 	DocID       string `json:"doc_id"`
 	ChunksDone  int    `json:"chunks_done"`
 	LastChunkID string `json:"last_chunk_id"`
+	PagesDone   int    `json:"pages_done,omitempty"`
+	PagesTotal  int    `json:"pages_total,omitempty"`
 }
 
 // TaskStatusState describes a document processing task lifecycle.
@@ -82,6 +85,7 @@ const (
 	TaskStatusProcessing TaskStatusState = "processing"
 	TaskStatusCompleted  TaskStatusState = "completed"
 	TaskStatusFailed     TaskStatusState = "failed"
+	TaskStatusCancelled  TaskStatusState = "cancelled"
 )
 
 // TaskStatus is a tenant-scoped read model for upload/worker task progress.
@@ -89,14 +93,19 @@ type TaskStatus struct {
 	TaskID      string            `json:"task_id"`
 	DocID       string            `json:"doc_id"`
 	TenantID    string            `json:"tenant_id"`
+	JobID       string            `json:"job_id,omitempty"`
+	EventID     string            `json:"event_id,omitempty"`
 	Status      TaskStatusState   `json:"status"`
 	Stage       string            `json:"stage,omitempty"`
 	ChunksDone  int               `json:"chunks_done,omitempty"`
 	TotalChunks int               `json:"total_chunks,omitempty"`
+	PagesDone   int               `json:"pages_done,omitempty"`
+	PagesTotal  int               `json:"pages_total,omitempty"`
 	Error       string            `json:"error,omitempty"`
 	FilePath    string            `json:"file_path,omitempty"`
 	FileHash    string            `json:"file_hash,omitempty"`
 	Permission  string            `json:"permission,omitempty"`
+	UploadedBy  string            `json:"uploaded_by,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`

@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     
     # File limits
     MAX_FILE_SIZE_MB: int = 100
+    # Retained as an operational hint for deployments; batching is enforced by
+    # the Worker, so this value never rejects a multi-hundred-page document.
+    MAX_OCR_PAGES: int = 0
     
     # Logging
     LOG_LEVEL: str = "INFO"

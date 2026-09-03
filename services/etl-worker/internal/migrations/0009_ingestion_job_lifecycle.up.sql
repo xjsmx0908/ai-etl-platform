@@ -4,7 +4,7 @@
 ALTER TABLE ingestion_jobs
     DROP CONSTRAINT ingestion_jobs_status_check,
     ADD CONSTRAINT ingestion_jobs_status_check
-        CHECK (status IN ('queued','published','processing','completed','failed')),
+        CHECK (status IN ('queued','published','processing','completed','failed','cancelled')),
     ADD COLUMN processing_started_at TIMESTAMPTZ,
     ADD COLUMN lease_until           TIMESTAMPTZ,
     ADD COLUMN completed_at          TIMESTAMPTZ,

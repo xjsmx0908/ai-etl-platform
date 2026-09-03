@@ -4,9 +4,11 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +24,31 @@ import (
 type Producer struct {
 	writer *kafkago.Writer
 }
+
+// TopicRouter publishes OCR-heavy PDFs to a dedicated topic while preserving
+// the normal topic for text and office documents.
+type TopicRouter struct{ normal, ocr *Producer }
+
+func NewTopicRouter(brokers, normalTopic, ocrTopic string) (*TopicRouter, error) {
+	n, err := NewProducer(brokers, normalTopic)
+	if err != nil {
+		return nil, err
+	}
+	o, err := NewProducer(brokers, ocrTopic)
+	if err != nil {
+		_ = n.Close()
+		return nil, err
+	}
+	return &TopicRouter{normal: n, ocr: o}, nil
+}
+
+func (p *TopicRouter) Publish(ctx context.Context, task model.Task) error {
+	if strings.EqualFold(filepath.Ext(task.FilePath), ".pdf") {
+		return p.ocr.Publish(ctx, task)
+	}
+	return p.normal.Publish(ctx, task)
+}
+func (p *TopicRouter) Close() error { return errors.Join(p.normal.Close(), p.ocr.Close()) }
 
 // NewProducer creates a Kafka producer for publishing document processing tasks.
 func NewProducer(brokers, topic string) (*Producer, error) {
@@ -71,6 +98,38 @@ type Source struct {
 	offsets  *offsetTracker
 	commitMu sync.Mutex
 	pending  chan struct{}
+}
+
+type CombinedSource struct{ sources []model.TaskSource }
+
+func CombineSources(sources ...model.TaskSource) *CombinedSource {
+	return &CombinedSource{sources: sources}
+}
+func (s *CombinedSource) Consume(ctx context.Context) <-chan model.TaskWithAck {
+	out := make(chan model.TaskWithAck, 20)
+	var wg sync.WaitGroup
+	wg.Add(len(s.sources))
+	for _, src := range s.sources {
+		go func(src model.TaskSource) {
+			defer wg.Done()
+			for task := range src.Consume(ctx) {
+				select {
+				case out <- task:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}(src)
+	}
+	go func() { wg.Wait(); close(out) }()
+	return out
+}
+func (s *CombinedSource) Close() error {
+	var err error
+	for _, src := range s.sources {
+		err = errors.Join(err, src.Close())
+	}
+	return err
 }
 
 // NewSource creates a Kafka consumer connected to the given topic and group.

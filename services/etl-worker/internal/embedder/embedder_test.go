@@ -2,6 +2,7 @@ package embedder
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -177,6 +178,12 @@ func TestIsRetryableUnwraps(t *testing.T) {
 	}
 	if IsRetryable(&plainError{msg: "boom"}) {
 		t.Fatal("expected plain error not to be retryable")
+	}
+}
+
+func TestIsRetryableDeadline(t *testing.T) {
+	if !IsRetryable(fmt.Errorf("http: %w", context.DeadlineExceeded)) {
+		t.Fatal("expected deadline to be retryable")
 	}
 }
 

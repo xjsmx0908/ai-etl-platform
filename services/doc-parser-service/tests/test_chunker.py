@@ -60,3 +60,40 @@ def test_chunk_text_deduplicates_normalized_content_and_reindexes(monkeypatch):
     assert [item["content"] for item in chunks] == [repeated, unique]
     assert [item["index"] for item in chunks] == [0, 1]
     assert [item["chunk_id"] for item in chunks] == ["policy_0000", "policy_0001"]
+
+
+def test_paragraph_boundaries_do_not_copy_previous_chunk_into_next(monkeypatch):
+    monkeypatch.setattr(
+        chunker,
+        "get_settings",
+        lambda: SimpleNamespace(MIN_CHUNK_SIZE=20, MAX_CHUNK_SIZE=4000, CHUNK_OVERLAP=200),
+    )
+    first = "第一段是完整独立的业务说明，不应被复制到下一段内容中。"
+    second = "第二段同样是完整独立的业务说明，应当从自己的正文开始。"
+
+    chunks = chunker.chunk_text(
+        f"{first}\n\n{second}",
+        doc_id="manual",
+        tenant_id="tenant-a",
+    )
+
+    assert [item["content"] for item in chunks] == [first, second]
+
+
+def test_page_markers_start_a_new_semantic_chunk(monkeypatch):
+    monkeypatch.setattr(
+        chunker,
+        "get_settings",
+        lambda: SimpleNamespace(MIN_CHUNK_SIZE=20, MAX_CHUNK_SIZE=4000, CHUNK_OVERLAP=200),
+    )
+    first = "第一页包含足够长度的独立正文，用于说明设备安装和安全要求。"
+    second = "第二页包含足够长度的独立正文，用于说明厂家和售后联系方式。"
+
+    chunks = chunker.chunk_text(
+        f"--- Page 1 ---\n{first}\n--- Page 2 ---\n{second}",
+        doc_id="manual",
+        tenant_id="tenant-a",
+    )
+
+    assert len(chunks) == 2
+    assert chunks[1]["content"].startswith("--- Page 2 ---")

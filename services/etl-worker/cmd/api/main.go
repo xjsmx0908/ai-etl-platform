@@ -307,7 +307,7 @@ func main() {
 	}
 
 	// Initialize Kafka producer for upload gateway
-	producer, err := kafka.NewProducer(cfg.KafkaBrokers, cfg.KafkaTopic)
+	producer, err := kafka.NewTopicRouter(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.OCRKafkaTopic)
 	if err != nil {
 		slog.Error("failed to create kafka producer", "error", err)
 		os.Exit(1)
@@ -484,6 +484,7 @@ func main() {
 	apiV1.Handle("/v1/documents/{docID}/chunks", chunksHandler)
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
+	apiV1.Handle("/v1/tasks/{docID}/cancel", requireScopes("upload")(http.HandlerFunc(handleTaskCancel(taskStatusStore, admissionStore))))
 	apiV1.Handle("/v1/users", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUsers(userStore))))
 	apiV1.Handle("/v1/users/{userID}/external-identities", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleExternalIdentities(externalIdentityManager))))
 	apiV1.Handle("/v1/users/{userID}/external-identities/{bindingID}", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleExternalIdentities(externalIdentityManager))))
@@ -846,6 +847,56 @@ func handleTaskStatus(taskStatusStore model.TaskStatusStore) http.HandlerFunc {
 	}
 }
 
+func handleTaskCancel(taskStatusStore model.TaskStatusStore, jobs ingestion.JobStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			return
+		}
+		docID := r.PathValue("docID")
+		if docID == "" {
+			writeError(w, http.StatusBadRequest, "doc_id is required")
+			return
+		}
+		tenantID := auth.GetTenantID(r.Context())
+		status, found, err := taskStatusStore.Load(r.Context(), tenantID, docID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "status lookup failed")
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "task not found")
+			return
+		}
+		if !isAdminRole(auth.GetPermission(r.Context())) && (status.UploadedBy == "" || status.UploadedBy != auth.GetUserID(r.Context())) {
+			writeError(w, http.StatusForbidden, "only the uploader or an admin may cancel this task")
+			return
+		}
+		if status.Status == model.TaskStatusCompleted || status.Status == model.TaskStatusFailed || status.Status == model.TaskStatusCancelled {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(status)
+			return
+		}
+		status.Status = model.TaskStatusCancelled
+		status.Stage = "cancelled"
+		status.Error = "task cancelled by user"
+		status.UpdatedAt = time.Now().UTC()
+		if canceller, ok := jobs.(interface {
+			Cancel(context.Context, model.Task, string, time.Time) error
+		}); ok && status.JobID != "" && status.EventID != "" {
+			if err := canceller.Cancel(r.Context(), model.Task{JobID: status.JobID, EventID: status.EventID, DocID: status.DocID, TenantID: status.TenantID, FilePath: status.FilePath, FileHash: status.FileHash}, status.Error, status.UpdatedAt); err != nil {
+				writeError(w, http.StatusConflict, "task cancellation could not be persisted")
+				return
+			}
+		}
+		if err := taskStatusStore.Save(r.Context(), status); err != nil {
+			writeError(w, http.StatusInternalServerError, "status update failed")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
+	}
+}
+
 func handleUpload(cfg config.Config, qs *query.Service, producer uploadProducer, s3Client uploadDeleteObjectStore, idemStore idempotency.Store, taskStatusStore model.TaskStatusStore, docStore docstore.Store, audits audit.Store) http.HandlerFunc {
 	return handleUploadWithAdmission(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, audits, nil)
 }
@@ -1142,6 +1193,7 @@ func handleUploadWithAdmission(cfg config.Config, qs *query.Service, producer up
 			Permission: permission,
 			FileHash:   fileHash,
 			Metadata:   metadata,
+			UploadedBy: auth.GetUserID(r.Context()),
 			CreatedAt:  now,
 		}
 		publicationStatus := "draft"
@@ -1189,11 +1241,14 @@ func handleUploadWithAdmission(cfg config.Config, qs *query.Service, producer up
 				TaskID:     task.DocID,
 				DocID:      task.DocID,
 				TenantID:   task.TenantID,
+				JobID:      task.JobID,
+				EventID:    task.EventID,
 				Status:     model.TaskStatusQueued,
 				Stage:      "queued",
 				FilePath:   task.FilePath,
 				FileHash:   task.FileHash,
 				Permission: task.Permission,
+				UploadedBy: auth.GetUserID(r.Context()),
 				Metadata:   task.Metadata,
 				CreatedAt:  task.CreatedAt,
 				UpdatedAt:  now,

@@ -107,7 +107,7 @@ export default function ObservePage() {
             ))}
           </div>
         )}
-        <p className="mt-3 text-xs text-slate-400">经 query-api 聚合各服务 healthz · 每 10 秒自动刷新</p>
+        <p className="mt-3 text-xs text-slate-400">经 query-api 聚合主链路依赖（共 7 项）· 每 10 秒自动刷新。Kafka、PostgreSQL、MinIO、监控面板及一次性初始化容器属于基础设施/运维组件，不在此健康探测白名单中。</p>
       </Card>
     </div>
   );

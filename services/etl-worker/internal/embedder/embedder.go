@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -288,6 +289,7 @@ func (e *HTTPEmbedder) backoff(attempt int) time.Duration {
 }
 
 func truncate(s string, maxLen int) string {
+	s = strings.ToValidUTF8(s, "�")
 	if len(s) <= maxLen {
 		return s
 	}
@@ -307,6 +309,9 @@ func (e *RetryableError) Error() string { return e.Msg }
 func IsRetryable(err error) bool {
 	for err != nil {
 		if _, ok := err.(*RetryableError); ok {
+			return true
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return true
 		}
 		type causer interface{ Unwrap() error }

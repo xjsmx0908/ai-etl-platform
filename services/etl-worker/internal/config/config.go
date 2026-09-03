@@ -36,13 +36,14 @@ const (
 // Config holds all application configuration with environment variable overrides.
 type Config struct {
 	// Pipeline
-	MaxWorkers      int
-	TaskBufferSize  int
-	StageTimeout    time.Duration
-	PipelineTimeout time.Duration
-	MaxRetries      int
-	RetryBackoff    time.Duration
-	BatchSize       int
+	MaxWorkers       int
+	TaskBufferSize   int
+	StageTimeout     time.Duration
+	PipelineTimeout  time.Duration
+	MaxRetries       int
+	RetryBackoff     time.Duration
+	BatchSize        int
+	OCRPageBatchSize int
 
 	// Parser
 	MaxChunkSize   int
@@ -50,15 +51,16 @@ type Config struct {
 	ReadBufferSize int
 
 	// Embedder
-	EmbedEndpoint   string
-	EmbedAPIKey     string
-	EmbedModel      string
-	EmbedDimension  int
-	EmbedMaxRetries int
-	EmbedTimeout    time.Duration
-	EmbedBackoff    time.Duration
-	EmbedMaxBackoff time.Duration
-	EmbedRateLimit  float64 // requests per second
+	EmbedEndpoint    string
+	EmbedAPIKey      string
+	EmbedModel       string
+	EmbedDimension   int
+	EmbedMaxRetries  int
+	EmbedTimeout     time.Duration
+	EmbedBackoff     time.Duration
+	EmbedMaxBackoff  time.Duration
+	EmbedRateLimit   float64 // requests per second
+	EmbedConcurrency int
 
 	// Parser Service
 	ParserEndpoint      string
@@ -147,6 +149,8 @@ type Config struct {
 	KafkaTopic               string
 	KafkaGroupID             string
 	KafkaDLQTopic            string
+	OCRKafkaTopic            string
+	OCRKafkaDLQTopic         string
 	OutboxRelayBatchSize     int
 	OutboxRelayPollInterval  time.Duration
 	OutboxRelayLease         time.Duration
@@ -262,13 +266,14 @@ func Load() Config {
 
 	return Config{
 		// Pipeline defaults
-		MaxWorkers:      EnvInt("PIPELINE_MAX_WORKERS", 10),
-		TaskBufferSize:  EnvInt("PIPELINE_TASK_BUFFER", 100),
-		StageTimeout:    EnvDuration("PIPELINE_STAGE_TIMEOUT", 30*time.Second),
-		PipelineTimeout: EnvDuration("PIPELINE_TIMEOUT", 5*time.Minute),
-		MaxRetries:      EnvInt("PIPELINE_MAX_RETRIES", 3),
-		RetryBackoff:    EnvDuration("PIPELINE_RETRY_BACKOFF", 500*time.Millisecond),
-		BatchSize:       EnvInt("PIPELINE_BATCH_SIZE", 10),
+		MaxWorkers:       EnvInt("PIPELINE_MAX_WORKERS", 10),
+		TaskBufferSize:   EnvInt("PIPELINE_TASK_BUFFER", 100),
+		StageTimeout:     EnvDuration("PIPELINE_STAGE_TIMEOUT", 30*time.Second),
+		PipelineTimeout:  EnvDuration("PIPELINE_TIMEOUT", 5*time.Minute),
+		MaxRetries:       EnvInt("PIPELINE_MAX_RETRIES", 3),
+		RetryBackoff:     EnvDuration("PIPELINE_RETRY_BACKOFF", 500*time.Millisecond),
+		BatchSize:        EnvInt("PIPELINE_BATCH_SIZE", 10),
+		OCRPageBatchSize: EnvInt("OCR_PAGE_BATCH_SIZE", 25),
 
 		// Parser
 		MaxChunkSize:   EnvInt("PARSER_MAX_CHUNK_SIZE", 4096),
@@ -276,15 +281,16 @@ func Load() Config {
 		ReadBufferSize: EnvInt("PARSER_READ_BUFFER", 65536),
 
 		// Embedder
-		EmbedEndpoint:   EnvStr("EMBED_ENDPOINT", "https://api.openai.com/v1/embeddings"),
-		EmbedAPIKey:     EnvSecret("EMBED_API_KEY", ""),
-		EmbedModel:      EnvStr("EMBED_MODEL", "text-embedding-ada-002"),
-		EmbedDimension:  EnvInt("EMBED_DIMENSION", 1536),
-		EmbedMaxRetries: EnvInt("EMBED_MAX_RETRIES", 5),
-		EmbedTimeout:    EnvDuration("EMBED_TIMEOUT", 30*time.Second),
-		EmbedBackoff:    EnvDuration("EMBED_BACKOFF", 500*time.Millisecond),
-		EmbedMaxBackoff: EnvDuration("EMBED_MAX_BACKOFF", 30*time.Second),
-		EmbedRateLimit:  EnvFloat("EMBED_RATE_LIMIT", 50.0),
+		EmbedEndpoint:    EnvStr("EMBED_ENDPOINT", "https://api.openai.com/v1/embeddings"),
+		EmbedAPIKey:      EnvSecret("EMBED_API_KEY", ""),
+		EmbedModel:       EnvStr("EMBED_MODEL", "text-embedding-ada-002"),
+		EmbedDimension:   EnvInt("EMBED_DIMENSION", 1536),
+		EmbedMaxRetries:  EnvInt("EMBED_MAX_RETRIES", 5),
+		EmbedTimeout:     EnvDuration("EMBED_TIMEOUT", 30*time.Second),
+		EmbedBackoff:     EnvDuration("EMBED_BACKOFF", 500*time.Millisecond),
+		EmbedMaxBackoff:  EnvDuration("EMBED_MAX_BACKOFF", 30*time.Second),
+		EmbedRateLimit:   EnvFloat("EMBED_RATE_LIMIT", 50.0),
+		EmbedConcurrency: EnvInt("EMBED_CONCURRENCY", 2),
 
 		// Parser Service
 		ParserEndpoint:      EnvStr("PARSER_ENDPOINT", "http://parser-service:8000"),
@@ -353,6 +359,8 @@ func Load() Config {
 		KafkaTopic:               EnvStr("KAFKA_TOPIC", "doc-processing"),
 		KafkaGroupID:             EnvStr("KAFKA_GROUP_ID", "etl-pipeline"),
 		KafkaDLQTopic:            EnvStr("KAFKA_DLQ_TOPIC", "doc-processing-dlq"),
+		OCRKafkaTopic:            EnvStr("OCR_KAFKA_TOPIC", "doc-processing-ocr"),
+		OCRKafkaDLQTopic:         EnvStr("OCR_KAFKA_DLQ_TOPIC", "doc-processing-ocr-dlq"),
 		OutboxRelayBatchSize:     EnvInt("OUTBOX_RELAY_BATCH_SIZE", 50),
 		OutboxRelayPollInterval:  EnvDuration("OUTBOX_RELAY_POLL_INTERVAL", 500*time.Millisecond),
 		OutboxRelayLease:         EnvDuration("OUTBOX_RELAY_LEASE", 30*time.Second),
@@ -496,6 +504,12 @@ func (c Config) Validate() error {
 	}
 	if c.BatchSize < 1 || c.BatchSize > 100 {
 		return fmt.Errorf("PIPELINE_BATCH_SIZE must be between 1 and 100, got %d", c.BatchSize)
+	}
+	if c.EmbedConcurrency < 1 || c.EmbedConcurrency > 20 {
+		return fmt.Errorf("EMBED_CONCURRENCY must be between 1 and 20, got %d", c.EmbedConcurrency)
+	}
+	if c.OCRPageBatchSize < 1 || c.OCRPageBatchSize > 200 {
+		return fmt.Errorf("OCR_PAGE_BATCH_SIZE must be between 1 and 200, got %d", c.OCRPageBatchSize)
 	}
 	if c.MultipartMaxMemoryBytes < 1<<20 || c.MultipartMaxMemoryBytes > 64<<20 {
 		return fmt.Errorf("MULTIPART_MAX_MEMORY_MB must be between 1 and 64, got %d bytes", c.MultipartMaxMemoryBytes)

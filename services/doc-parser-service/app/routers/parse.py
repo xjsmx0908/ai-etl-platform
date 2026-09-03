@@ -1,5 +1,6 @@
 """Parse document endpoint"""
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.concurrency import run_in_threadpool
 from loguru import logger
 import time
 import os
@@ -12,6 +13,7 @@ from app.models import ParseResponse, ChunkResponse
 from app.security import require_internal_token
 from app.services.parser import parse_document
 from app.services.chunker import chunk_text
+import fitz
 
 router = APIRouter(prefix="/api/v1", tags=["parser"], dependencies=[Depends(require_internal_token)])
 
@@ -30,7 +32,10 @@ async def parse_document_endpoint(
     file: UploadFile = File(...),
     permission: str = Form(None),
     file_hash: str = Form(None),
-    metadata: str = Form(None)
+    metadata: str = Form(None),
+    page_start: int = Form(0),
+    page_end: int = Form(None),
+    chunk_index_offset: int = Form(0),
 ):
     """
     Parse uploaded document and return semantic chunks
@@ -49,6 +54,17 @@ async def parse_document_endpoint(
     
     try:
         settings = get_settings()
+        # FastAPI replaces Form defaults with concrete values during HTTP
+        # requests. Direct callers/tests may invoke the function without
+        # dependency resolution, leaving Form objects in these parameters;
+        # normalize those defaults before deciding whether this is a paged PDF
+        # parse.
+        if not isinstance(page_start, int):
+            page_start = 0
+        if not isinstance(page_end, int):
+            page_end = None
+        if not isinstance(chunk_index_offset, int):
+            chunk_index_offset = 0
         max_file_size_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
         metadata_values = parse_metadata(metadata)
 
@@ -74,9 +90,16 @@ async def parse_document_endpoint(
             content_hash = hasher.hexdigest()
         
         logger.info(f"Processing file: {file.filename} -> {tmp_path}")
+        pdf_page_count = 0
+        if suffix == ".pdf":
+            with fitz.open(tmp_path) as pdf_doc:
+                pdf_page_count = len(pdf_doc)
         
         # Parse document
-        extracted_text, file_size, parser_name = parse_document(tmp_path)
+        if page_start or page_end is not None:
+            extracted_text, file_size, parser_name = await run_in_threadpool(parse_document, tmp_path, page_start, page_end)
+        else:
+            extracted_text, file_size, parser_name = await run_in_threadpool(parse_document, tmp_path)
         
         # Generate file hash if not provided
         if not file_hash:
@@ -91,6 +114,10 @@ async def parse_document_endpoint(
             file_hash=file_hash,
             metadata=metadata_values
         )
+        if chunk_index_offset:
+            for index, chunk in enumerate(chunks):
+                chunk["index"] = chunk_index_offset + index
+                chunk["chunk_id"] = f"{doc_id}_{chunk_index_offset + index:04d}"
         
         parse_time_ms = (time.time() - start_time) * 1000
         
@@ -106,7 +133,11 @@ async def parse_document_endpoint(
             total_chunks=len(chunks),
             parse_time_ms=round(parse_time_ms, 2),
             file_size_bytes=file_size,
-            status="success"
+            status="success",
+            page_count=pdf_page_count or (page_end or 0),
+            page_start=page_start,
+            page_end=page_end if page_end is not None else (pdf_page_count or page_start),
+            ocr_pages=sum(1 for line in extracted_text.splitlines() if line.startswith("--- Page ")),
         )
         
     except FileNotFoundError as e:

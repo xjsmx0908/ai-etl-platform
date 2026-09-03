@@ -146,6 +146,16 @@ type Request struct {
 	ApplicableScope string `json:"applicable_scope,omitempty"`
 }
 
+// QueryProgress is emitted by the streaming endpoint at meaningful pipeline
+// boundaries. It intentionally describes user-visible work, not every internal
+// function call, so a long-running stage can remain visibly active until it
+// actually completes.
+type QueryProgress struct {
+	Stage   string `json:"stage"`
+	Message string `json:"message"`
+	State   string `json:"state"`
+}
+
 // Response represents the query result returned to the client.
 type Response struct {
 	Answer string `json:"answer"`
@@ -463,6 +473,10 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 // Ask executes the RAG query pipeline for an authenticated caller.
 func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (response Response, err error) {
+	return s.ask(ctx, req, access, nil)
+}
+
+func (s *Service) ask(ctx context.Context, req Request, access AccessContext, progress func(QueryProgress)) (response Response, err error) {
 	ctx, askSpan := s.tracer.Start(ctx, "QueryService.Ask")
 	defer func() {
 		if err != nil {
@@ -509,6 +523,13 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	)
 
 	start := time.Now()
+	emit := func(stage, message, state string) {
+		if progress != nil {
+			progress(QueryProgress{Stage: stage, Message: message, State: state})
+		}
+	}
+	emit("preparing", "正在确认检索范围…", "completed")
+	emit("retrieving", "正在检索相关文档…", "running")
 
 	retrievalResult, err := s.retriever.Retrieve(ctx, retrieval.Request{
 		Question:                 req.Question,
@@ -523,6 +544,8 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		slog.Error("retrieval failed", "error", err)
 		return Response{}, fmt.Errorf("%w: %v", ErrSearchFailed, err)
 	}
+	emit("retrieving", "文档检索完成", "completed")
+	emit("screening", "正在筛选并校验有效证据…", "running")
 	if len(retrievalResult.PartialErrors) > 0 {
 		slog.Warn("retrieval completed with partial errors",
 			"tenant_id", access.TenantID,
@@ -590,6 +613,8 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	// lifecycle filters have run, require the requested identifier to appear in
 	// one surviving evidence candidate before calling the LLM.
 	if !retrieval.ExactEvidenceSufficient(req.Question, candidates) {
+		emit("screening", "证据筛选完成", "completed")
+		emit("refused", "未找到足够的有效证据", "completed")
 		span.SetAttributes(attribute.Bool("retrieval.exact_evidence_insufficient", true))
 		return Response{
 			Answer:           NoEvidenceAnswer,
@@ -614,6 +639,8 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	}
 
 	if len(sources) == 0 {
+		emit("screening", "证据筛选完成", "completed")
+		emit("refused", "未找到足够的有效证据", "completed")
 		span.SetAttributes(attribute.Bool("retrieval.no_supporting_evidence", true))
 		return Response{
 			Answer:           NoEvidenceAnswer,
@@ -635,6 +662,8 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		attribute.Int("retrieval_partial_errors", len(retrievalResult.PartialErrors)),
 	)
 
+	emit("screening", "证据筛选完成", "completed")
+	emit("generating", "正在根据证据生成回答…", "running")
 	answer, usage, err := s.generateAnswer(ctx, req.Question, sources)
 	if err != nil {
 		slog.Error("LLM generation failed", "error", err)
@@ -646,6 +675,7 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	// Return no sources in that case, so a refusal never ships with citations
 	// that could be mistaken for supporting evidence.
 	if answer == NoEvidenceAnswer {
+		emit("refused", "回答缺少可验证证据", "completed")
 		span.SetAttributes(attribute.Bool("llm.refused_for_lack_of_evidence", true))
 		return Response{
 			Answer:           NoEvidenceAnswer,
@@ -665,6 +695,8 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 	groundingChecked := false
 	groundingPassed := true
 	groundingUnavailable := false
+	emit("generating", "回答生成完成", "completed")
+	emit("verifying", "正在校验回答与引用…", "running")
 	if s.cfg.RetrievalGroundingCheck && len(sources) > 0 {
 		maxRel := maxSourceRelevance(candidates)
 		if maxRel >= s.cfg.RetrievalGroundingLowBound && maxRel < s.cfg.RetrievalGroundingHighBound {
@@ -685,6 +717,8 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		}
 	}
 	if groundingChecked && !groundingPassed {
+		emit("verifying", "回答校验未通过", "completed")
+		emit("refused", "回答未通过证据校验", "completed")
 		span.SetAttributes(attribute.Bool("llm.ungrounded_answer_blocked", true))
 		info := annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions))
 		info.GroundingChecked = true
@@ -723,6 +757,10 @@ func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (r
 		PromptVersion:    s.promptVersion,
 		Retrieval:        retrievalInfo,
 	}
+	emit("verifying", "回答校验完成", "completed")
+	emit("finalizing", "正在整理回答和引用…", "running")
+	emit("finalizing", "回答和引用整理完成", "completed")
+	emit("completed", "回答已完成", "completed")
 
 	slog.Info("query completed",
 		"question_len", len(req.Question),
@@ -768,28 +806,39 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := auth.GetPermission(r.Context())
-
-	resp, err := s.Ask(r.Context(), req, AccessContext{TenantID: tenantID, UserID: auth.GetUserID(r.Context()), Role: role})
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrSearchFailed):
-			writeSSEError(w, "search failed")
-		case errors.Is(err, ErrGenerationFailed):
-			writeSSEError(w, "generation failed")
-		case errors.Is(err, ErrKnowledgeForbidden):
-			writeSSEError(w, "knowledge space forbidden")
-		case errors.Is(err, ErrKnowledgeUnavailable):
-			writeSSEError(w, "knowledge catalog unavailable")
-		default:
-			writeSSEError(w, "query failed")
-		}
-		return
-	}
-
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher := http.NewResponseController(w)
+	writeSSEStatus := func(progress QueryProgress) {
+		payload, _ := json.Marshal(progress)
+		fmt.Fprintf(w, "event: status\ndata: %s\n\n", payload)
+		_ = flusher.Flush()
+	}
+	writeSSEStatus(QueryProgress{Stage: "preparing", Message: "正在确认检索范围…", State: "running"})
+
+	resp, err := s.ask(r.Context(), req, AccessContext{TenantID: tenantID, UserID: auth.GetUserID(r.Context()), Role: role}, writeSSEStatus)
+	if err != nil {
+		failureMessage := "问答处理失败，请稍后重试"
+		switch {
+		case errors.Is(err, ErrSearchFailed):
+			failureMessage = "文档检索失败，请稍后重试"
+			writeSSEError(w, "search failed")
+		case errors.Is(err, ErrGenerationFailed):
+			failureMessage = "回答生成失败，请稍后重试"
+			writeSSEError(w, "generation failed")
+		case errors.Is(err, ErrKnowledgeForbidden):
+			failureMessage = "无权访问当前知识空间"
+			writeSSEError(w, "knowledge space forbidden")
+		case errors.Is(err, ErrKnowledgeUnavailable):
+			failureMessage = "知识空间暂时不可用"
+			writeSSEError(w, "knowledge catalog unavailable")
+		default:
+			writeSSEError(w, "query failed")
+		}
+		writeSSEStatus(QueryProgress{Stage: "failed", Message: failureMessage, State: "failed"})
+		return
+	}
 
 	// The answer is fully validated before the first event. This intentionally
 	// trades time-to-first-token for parity with the JSON path: an answer that is

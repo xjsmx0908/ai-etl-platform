@@ -191,10 +191,12 @@ export type AnswerMeta = {
 export type TaskStatus = {
   task_id: string;
   doc_id: string;
-  status: string; // queued | processing | completed | failed
+  status: string; // queued | processing | completed | failed | cancelled
   stage?: string;
   chunks_done?: number;
   total_chunks?: number;
+  pages_done?: number;
+  pages_total?: number;
   error?: string;
   file_path?: string;
 };

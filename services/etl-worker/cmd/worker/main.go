@@ -400,7 +400,22 @@ func newTaskSource(cfg config.Config, dlq model.DLQStore) (model.TaskSource, err
 		}
 		return kafka.NewMockSource(tasks, dlq), nil
 	}
-	return kafka.NewSource(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, dlq)
+	normal, err := kafka.NewSource(cfg.KafkaBrokers, cfg.KafkaTopic, cfg.KafkaGroupID, dlq)
+	if err != nil {
+		return nil, err
+	}
+	ocrDLQ, err := kafka.NewDLQ(cfg.KafkaBrokers, cfg.OCRKafkaDLQTopic)
+	if err != nil {
+		_ = normal.Close()
+		return nil, err
+	}
+	ocr, err := kafka.NewSource(cfg.KafkaBrokers, cfg.OCRKafkaTopic, cfg.KafkaGroupID+"-ocr", ocrDLQ)
+	if err != nil {
+		_ = normal.Close()
+		_ = ocrDLQ.Close()
+		return nil, err
+	}
+	return kafka.CombineSources(normal, ocr), nil
 }
 
 func newFullTextSink(cfg config.Config) (*es.AsyncSink, error) {

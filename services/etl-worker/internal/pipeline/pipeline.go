@@ -32,18 +32,21 @@ type docStatusWriter interface {
 }
 
 type Pipeline struct {
-	cfg              config.Config
-	parser           *parser.Parser
-	parserClient     *parser.Client
-	embedder         model.Embedder
-	storer           model.Storer
-	fullTextSink     model.FullTextSink
-	metrics          *metrics.Collector
-	checkpoint       model.CheckpointStore
-	dlq              model.DLQStore
-	taskStatus       model.TaskStatusStore
-	docStatus        docStatusWriter
-	ingestionJobs    ingestion.JobStore
+	cfg           config.Config
+	parser        *parser.Parser
+	parserClient  *parser.Client
+	embedder      model.Embedder
+	storer        model.Storer
+	fullTextSink  model.FullTextSink
+	metrics       *metrics.Collector
+	checkpoint    model.CheckpointStore
+	dlq           model.DLQStore
+	taskStatus    model.TaskStatusStore
+	docStatus     docStatusWriter
+	ingestionJobs ingestion.JobStore
+	taskCanceller interface {
+		Cancel(context.Context, model.Task, string, time.Time) error
+	}
 	generationBuilds indexmanifest.BuildStarter
 	sparseEncoder    *sparse.Encoder
 
@@ -52,8 +55,39 @@ type Pipeline struct {
 	running atomic.Bool
 }
 
+var ErrTaskCancelled = errors.New("task cancelled")
+
+// pageBatchRanges returns half-open page ranges for bounded OCR requests. The
+// checkpoint stores the next page to process, so restarting after a completed
+// batch never re-runs an already durable OCR batch.
+func pageBatchRanges(totalPages, batchSize, startPage int) [][2]int {
+	if totalPages <= 0 || batchSize <= 0 {
+		return nil
+	}
+	if startPage < 0 {
+		startPage = 0
+	}
+	if startPage >= totalPages {
+		return nil
+	}
+	ranges := make([][2]int, 0, (totalPages-startPage+batchSize-1)/batchSize)
+	for start := startPage; start < totalPages; start += batchSize {
+		end := start + batchSize
+		if end > totalPages {
+			end = totalPages
+		}
+		ranges = append(ranges, [2]int{start, end})
+	}
+	return ranges
+}
+
 func (p *Pipeline) WithIngestionJobs(store ingestion.JobStore) *Pipeline {
 	p.ingestionJobs = store
+	if canceller, ok := store.(interface {
+		Cancel(context.Context, model.Task, string, time.Time) error
+	}); ok {
+		p.taskCanceller = canceller
+	}
 	return p
 }
 
@@ -213,6 +247,14 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 		}
 
 		if err := p.processTask(ctx, twa.Task); err != nil {
+			if errors.Is(err, ErrTaskCancelled) {
+				if twa.Task.EventID != "" && p.taskCanceller != nil {
+					_ = p.taskCanceller.Cancel(ctx, twa.Task, err.Error(), time.Now().UTC())
+				}
+				twa.Ack()
+				p.saveTaskStatus(ctx, twa.Task, model.TaskStatusCancelled, "cancelled", err.Error())
+				return
+			}
 			lastErr = err
 			slog.Warn("task attempt failed", "worker", workerID,
 				"doc_id", twa.Task.DocID, "attempt", attempt+1, "error", err)
@@ -262,6 +304,10 @@ func (p *Pipeline) saveTaskStatus(ctx context.Context, task model.Task, state mo
 // saveTaskStatusProgress persists task status with chunk progress so the
 // frontend can render "embedding 12/37" instead of a static "processing".
 func (p *Pipeline) saveTaskStatusProgress(ctx context.Context, task model.Task, state model.TaskStatusState, stage string, message string, done, total int) {
+	p.saveTaskStatusProgressPages(ctx, task, state, stage, message, done, total, 0, 0)
+}
+
+func (p *Pipeline) saveTaskStatusProgressPages(ctx context.Context, task model.Task, state model.TaskStatusState, stage string, message string, done, total, pagesDone, pagesTotal int) {
 	if p.taskStatus == nil {
 		return
 	}
@@ -270,19 +316,24 @@ func (p *Pipeline) saveTaskStatusProgress(ctx context.Context, task model.Task, 
 		TaskID:      task.DocID,
 		DocID:       task.DocID,
 		TenantID:    task.TenantID,
+		JobID:       task.JobID,
+		EventID:     task.EventID,
 		Status:      state,
 		Stage:       stage,
 		ChunksDone:  done,
 		TotalChunks: total,
+		PagesDone:   pagesDone,
+		PagesTotal:  pagesTotal,
 		Error:       message,
 		FilePath:    task.FilePath,
 		FileHash:    task.FileHash,
 		Permission:  task.Permission,
+		UploadedBy:  task.UploadedBy,
 		Metadata:    task.Metadata,
 		CreatedAt:   task.CreatedAt,
 		UpdatedAt:   now,
 	}
-	if state == model.TaskStatusCompleted || state == model.TaskStatusFailed {
+	if state == model.TaskStatusCompleted || state == model.TaskStatusFailed || state == model.TaskStatusCancelled {
 		status.CompletedAt = now
 	}
 	if status.CreatedAt.IsZero() {
@@ -372,6 +423,22 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr 
 	// semantics to the golden-set eval). Binary documents (PDF/DOCX, including
 	// scanned PDFs) go to the parser service, which does real extraction and OCR.
 	needsParserService := requiresParserService(task.FilePath)
+	if needsParserService && strings.EqualFold(filepath.Ext(task.FilePath), ".pdf") {
+		total, err := p.processPDFBatches(taskCtx, task, resumeCheckpoint, hasCheckpoint, generationBuild)
+		if err != nil {
+			return err
+		}
+		if total == 0 {
+			return errors.New("parser produced no chunks")
+		}
+		if generationBuild != nil {
+			if err := generationBuild.Complete(taskCtx); err != nil {
+				return fmt.Errorf("complete generation build: %w", err)
+			}
+		}
+		slog.Info("document processed", "doc_id", task.DocID, "chunks", total)
+		return nil
+	}
 
 	// Stream parse with safe error propagation via channel. Both sources (the
 	// local scanner and the parser-service response) feed the same channel, so
@@ -492,6 +559,96 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr 
 	return nil
 }
 
+// processPDFBatches keeps OCR requests bounded and durable. A parser request
+// covers one page range; completed ranges are recorded in the checkpoint before
+// the next range starts. Generation builds intentionally replay from page zero
+// because their digest must include every chunk in the current build session.
+func (p *Pipeline) processPDFBatches(taskCtx context.Context, task model.Task, cp model.Checkpoint, hasCheckpoint bool, generationBuild indexmanifest.BuildSession) (int, error) {
+	localPath := task.FilePath
+	cleanup := func() {}
+	if !pathExists(localPath) {
+		path, _, c, err := p.parser.MaterializeObject(taskCtx, task.FilePath)
+		if err != nil {
+			return 0, fmt.Errorf("materialize object: %w", err)
+		}
+		localPath, cleanup = path, c
+	}
+	defer cleanup()
+	localTask := task
+	localTask.FilePath = localPath
+
+	startPage := 0
+	if hasCheckpoint && generationBuild == nil {
+		startPage = cp.PagesDone
+	}
+	batchSize := p.cfg.OCRPageBatchSize
+	if batchSize <= 0 {
+		batchSize = 25
+	}
+	var totalPages, totalChunks int
+	chunkOffset := 0
+	if hasCheckpoint && generationBuild == nil {
+		totalChunks = cp.ChunksDone
+	}
+	first := true
+	for first || startPage < totalPages {
+		if p.taskStatus != nil {
+			if status, found, err := p.taskStatus.Load(taskCtx, task.TenantID, task.DocID); err == nil && found && status.Status == model.TaskStatusCancelled {
+				return totalChunks, ErrTaskCancelled
+			}
+		}
+		first = false
+		end := startPage + batchSize
+		if totalPages > 0 && end > totalPages {
+			end = totalPages
+		}
+		// A large deterministic ID segment per page prevents two page batches
+		// from colliding even when the number of chunks per page varies.
+		chunkOffset = startPage * 10000
+		result, err := p.parserClient.ParseFileRangeResult(taskCtx, localTask, startPage, end, chunkOffset)
+		if err != nil {
+			return totalChunks, fmt.Errorf("parser service OCR pages %d-%d: %w", startPage+1, end, err)
+		}
+		if result.PageCount > 0 {
+			totalPages = result.PageCount
+		} else if end > totalPages {
+			totalPages = end
+		}
+		p.saveTaskStatusProgressPages(taskCtx, task, model.TaskStatusProcessing, "ocr", fmt.Sprintf("正在处理第 %d-%d 页", startPage+1, end), totalChunks, 0, startPage, totalPages)
+
+		batch := result.Chunks
+		if hasCheckpoint && generationBuild == nil && startPage < cp.PagesDone {
+			startPage = end
+			continue
+		}
+		if len(batch) > 0 {
+			// OCR output is slower to embed on the local CPU model than ordinary
+			// text. Isolate each chunk so one slow/invalid request cannot consume
+			// the shared stage timeout or repeat successful siblings on retry.
+			embedBatchSize := 1
+			for i := 0; i < len(batch); i += embedBatchSize {
+				endBatch := i + embedBatchSize
+				if endBatch > len(batch) {
+					endBatch = len(batch)
+				}
+				if err := p.processBatch(taskCtx, batch[i:endBatch], task.DocID, &totalChunks, generationBuild); err != nil {
+					return totalChunks, err
+				}
+				p.saveTaskStatusProgressPages(taskCtx, task, model.TaskStatusProcessing, "embedding", "正在生成向量并写入索引", totalChunks, totalChunks, startPage, totalPages)
+			}
+		}
+		startPage = end
+		if err := p.checkpoint.Save(taskCtx, model.Checkpoint{DocID: task.DocID, ChunksDone: totalChunks, PagesDone: startPage, PagesTotal: totalPages}); err != nil {
+			return totalChunks, fmt.Errorf("save OCR checkpoint: %w", err)
+		}
+		p.saveTaskStatusProgressPages(taskCtx, task, model.TaskStatusProcessing, "ocr", fmt.Sprintf("已完成第 %d / %d 页", startPage, totalPages), totalChunks, 0, startPage, totalPages)
+		if startPage >= totalPages {
+			break
+		}
+	}
+	return totalChunks, nil
+}
+
 func pathExists(path string) bool {
 	if _, err := os.Stat(path); err == nil {
 		return true
@@ -504,8 +661,14 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 	stageCtx, cancel := context.WithTimeout(ctx, p.cfg.StageTimeout)
 	defer cancel()
 
-	// Concurrent embed (semaphore limits to 5 goroutines)
-	sem := make(chan struct{}, 5)
+	// Concurrent embed is bounded independently from the worker pool. Local
+	// Ollama/bge-m3 instances commonly need a concurrency of 1–2; five parallel
+	// OCR chunks can otherwise queue until the per-request deadline expires.
+	concurrency := p.cfg.EmbedConcurrency
+	if concurrency <= 0 {
+		concurrency = 2
+	}
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	embedErrs := make([]error, len(batch))
 
@@ -600,11 +763,18 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 
 	// Update checkpoint
 	if *total > 0 && lastStoredChunkID != "" {
-		_ = p.checkpoint.Save(ctx, model.Checkpoint{
+		cp := model.Checkpoint{
 			DocID:       docID,
 			ChunksDone:  *total,
 			LastChunkID: lastStoredChunkID,
-		})
+		}
+		// Preserve page progress written by the OCR batch coordinator. A chunk
+		// checkpoint must never roll a document back to page zero after a partial
+		// batch failure.
+		if existing, found, err := p.checkpoint.Load(ctx, docID); err == nil && found {
+			cp.PagesDone, cp.PagesTotal = existing.PagesDone, existing.PagesTotal
+		}
+		_ = p.checkpoint.Save(ctx, cp)
 	}
 
 	return nil

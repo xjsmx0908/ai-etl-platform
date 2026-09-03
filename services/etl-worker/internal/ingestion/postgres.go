@@ -150,7 +150,7 @@ func (s *PostgresStore) Release(ctx context.Context, eventID string, nextAttempt
 
 func (s *PostgresStore) OperationsSnapshot(ctx context.Context) (OperationsSnapshot, error) {
 	snapshot := OperationsSnapshot{Jobs: map[string]int{
-		"queued": 0, "published": 0, "processing": 0, "completed": 0, "failed": 0,
+		"queued": 0, "published": 0, "processing": 0, "completed": 0, "failed": 0, "cancelled": 0,
 	}}
 	var oldestAge float64
 	if err := s.q.QueryRow(ctx, `
@@ -255,6 +255,10 @@ func (s *PostgresStore) Complete(ctx context.Context, task model.Task, completed
 
 func (s *PostgresStore) Fail(ctx context.Context, task model.Task, message string, completedAt time.Time) error {
 	return s.markJobTerminal(ctx, task, "failed", message, completedAt)
+}
+
+func (s *PostgresStore) Cancel(ctx context.Context, task model.Task, message string, completedAt time.Time) error {
+	return s.markJobTerminal(ctx, task, "cancelled", message, completedAt)
 }
 
 func (s *PostgresStore) markJobTerminal(ctx context.Context, task model.Task, state, message string, completedAt time.Time) error {

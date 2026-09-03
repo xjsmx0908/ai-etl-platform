@@ -40,6 +40,7 @@ type Entry struct {
 type ListQuery struct {
 	TenantID string
 	Action   string
+	Query    string
 	Limit    int
 	Offset   int
 }
@@ -93,6 +94,11 @@ func (s *PgStore) List(ctx context.Context, q ListQuery) ([]Entry, int, error) {
 	if q.Action != "" {
 		where += " AND action=$2"
 		args = append(args, q.Action)
+	}
+	if q.Query != "" {
+		idx := len(args) + 1
+		where += fmt.Sprintf(" AND (actor_user_id ILIKE $%d OR action ILIKE $%d OR resource_type ILIKE $%d OR resource_id ILIKE $%d OR detail::text ILIKE $%d)", idx, idx, idx, idx, idx)
+		args = append(args, "%"+q.Query+"%")
 	}
 
 	rows, err := s.q.Query(ctx, `

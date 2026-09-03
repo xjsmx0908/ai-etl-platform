@@ -89,6 +89,32 @@ func TestQdrantListChunksByDoc(t *testing.T) {
 	}
 }
 
+func TestQdrantListChunksByDocHidesLegacyContainedOverlap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/points/scroll") {
+			_, _ = w.Write([]byte(`{"result":{"points":[
+				{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"完整的上一段","index":0}},
+				{"payload":{"chunk_id":"c2","doc_id":"d1","tenant_id":"t1","content":"完整的上一段\n追加","index":1}}
+			],"next_page_offset":null}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	qs, err := NewQdrantStorer(srv.URL, "", "docs", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qs.Close()
+	chunks, err := qs.ListChunksByDoc(context.Background(), "t1", "d1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].ChunkID != "c2" {
+		t.Fatalf("expected only richer chunk c2, got %+v", chunks)
+	}
+}
+
 // ListChunksByDoc must require a tenant and doc id.
 func TestQdrantListChunksByDocRequiresTenantAndDoc(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -10,10 +10,12 @@ import type { KnowledgeSpace, TaskStatus, UploadResult } from "@/lib/types";
 
 const PIPELINE_STEPS = [
   { key: "queued", label: "上传 · Kafka 异步" },
+  { key: "ocr", label: "扫描解析 · OCR" },
   { key: "parsing", label: "解析 · parser-service" },
   { key: "embedding", label: "向量化 · embedding" },
   { key: "completed", label: "入库 · Qdrant + ES" },
 ];
+const MAX_UPLOAD_SIZE_MB = 100;
 
 // Classification is authorized server-side; the options are narrowed here so the
 // UI does not offer a level the caller's role would be rejected for.
@@ -35,6 +37,7 @@ export default function DataPage() {
   const [error, setError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const permissionOptions = PERMISSION_OPTIONS.filter((o) => isAdmin || !o.adminOnly);
+  const hasMultipleWritableSpaces = knowledgeSpaces.length > 1;
 
   useEffect(() => {
     void apiClient.listKnowledgeSpaces().then(({ items }) => {
@@ -86,7 +89,7 @@ export default function DataPage() {
         const d = await apiClient.getTaskStatus(docId);
         failures = 0;
         setTaskStatus(d);
-        if (d.status === "completed" || d.status === "failed") {
+        if (d.status === "completed" || d.status === "failed" || d.status === "cancelled") {
           stopPolling();
           setStatus("done");
         }
@@ -108,18 +111,24 @@ export default function DataPage() {
   const stage = taskStatus?.stage || (status === "uploading" || status === "polling" ? "parsing" : "");
   const isCompleted = backendStatus === "completed";
   const isFailed = backendStatus === "failed";
+  const isCancelled = backendStatus === "cancelled";
   const prog =
     taskStatus && (taskStatus.total_chunks ?? 0) > 0
       ? `${taskStatus.chunks_done ?? 0}/${taskStatus.total_chunks}`
       : "";
+  const pageProg = taskStatus && (taskStatus.pages_total ?? 0) > 0
+    ? `${taskStatus.pages_done ?? 0}/${taskStatus.pages_total}`
+    : "";
 
   const stepState = (key: string): "active" | "done" | "idle" | "failed" => {
     if (isCompleted) return "done";
     if (isFailed) return "failed";
+    if (isCancelled) return "failed";
     if (backendStatus === "queued") return key === "queued" ? "active" : "idle";
     if (backendStatus === "processing") {
       if (key === "queued") return "done";
       if (key === "parsing") return stage === "parsing" ? "active" : "done";
+      if (key === "ocr") return stage === "ocr" ? "active" : stage === "parsing" || stage === "embedding" ? "done" : "idle";
       if (key === "embedding") return stage === "embedding" ? "active" : "idle";
     }
     // No status yet (initial idle or before the first poll returns): only light
@@ -142,15 +151,22 @@ export default function DataPage() {
             onChange={(e) => setFile(e.target.files?.[0] || null)}
             className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
           />
+          <span className="text-xs text-slate-400">单文件上限 {MAX_UPLOAD_SIZE_MB} MB</span>
+          {hasMultipleWritableSpaces ? (
+            <select
+              value={knowledgeSpace}
+              onChange={(e) => setKnowledgeSpace(e.target.value)}
+              aria-label="目标知识空间"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            >
+              {knowledgeSpaces.map((space) => (
+                <option key={space.id} value={space.id}>
+                  {space.name}{space.id === "user-uploads" ? "（个人上传，处理完成自动发布）" : "（受管，需审批发布）"}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <select
-			value={knowledgeSpace}
-			onChange={(e) => setKnowledgeSpace(e.target.value)}
-			aria-label="目标知识空间"
-			className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
-		  >
-			{knowledgeSpaces.map((space) => <option key={space.id} value={space.id}>{space.name}</option>)}
-		  </select>
-		  <select
             value={permission}
             onChange={(e) => setPermission(e.target.value)}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
@@ -171,6 +187,9 @@ export default function DataPage() {
           {uploadResult && !isDuplicate && (
             <span className="font-mono text-xs text-slate-500">doc: {uploadResult.doc_id}</span>
           )}
+          {taskStatus && (taskStatus.status === "queued" || taskStatus.status === "processing") && (
+            <button onClick={() => void apiClient.cancelTask(taskStatus.doc_id).then(setTaskStatus)} className="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-600 hover:bg-red-50">取消任务</button>
+          )}
         </div>
         <p className="mt-2 text-xs text-slate-400">
           文档编号由系统分配。要更新已有文档，请在
@@ -179,7 +198,11 @@ export default function DataPage() {
           </Link>
           中打开该文档，使用「上传新版本」。
           {!isAdmin && <span className="ml-1 text-amber-600">机密级别需管理员上传。</span>}
-		  <span className="ml-1">新文档完成处理后仍为草稿，须由管理员发布后才会用于问答。</span>
+          {knowledgeSpace === "user-uploads" ? (
+            <span className="ml-1 text-emerald-600">个人上传空间：处理完成后自动发布并可用于问答。</span>
+          ) : knowledgeSpace ? (
+            <span className="ml-1 text-amber-600">受管空间：处理完成后为草稿，须管理员发布后才会用于问答。</span>
+          ) : null}
         </p>
 
         {/* Identical content is a normal outcome, not an error: what the user
@@ -227,6 +250,7 @@ export default function DataPage() {
                   {step.key === "embedding" && prog && state === "active" && (
                     <span className="font-semibold">({prog})</span>
                   )}
+                  {step.key === "ocr" && pageProg && state === "active" && <span className="font-semibold">({pageProg} 页)</span>}
                 </div>
                 {i < PIPELINE_STEPS.length - 1 && <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />}
               </div>
@@ -239,6 +263,7 @@ export default function DataPage() {
             <span className="font-medium text-slate-700">状态：{taskStatus.status}</span>
             {taskStatus.stage && <span className="ml-2">阶段：{taskStatus.stage}</span>}
             {prog && <span className="ml-2 font-medium text-blue-700">chunk {prog}</span>}
+            {pageProg && <span className="ml-2 font-medium text-blue-700">页 {pageProg}</span>}
             {taskStatus.error && <span className="ml-2 text-red-600">{taskStatus.error}</span>}
           </div>
         )}

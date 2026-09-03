@@ -24,6 +24,7 @@ const (
 	StatusProcessing = "processing"
 	StatusCompleted  = "completed"
 	StatusFailed     = "failed"
+	StatusCancelled  = "cancelled"
 )
 
 // DocStatus values describe a document's lifecycle as a knowledge source. This

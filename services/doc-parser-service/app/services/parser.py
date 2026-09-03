@@ -30,7 +30,7 @@ PARSER_MAP = {
 }
 
 
-def parse_document(file_path: str) -> Tuple[str, int, str]:
+def parse_document(file_path: str, page_start: int = 0, page_end: int | None = None) -> Tuple[str, int, str]:
     """
     Parse document file using appropriate parser
     
@@ -61,7 +61,10 @@ def parse_document(file_path: str) -> Tuple[str, int, str]:
     logger.info(f"Parsing document: {file_path} (type: {parser_name})")
     
     try:
-        extracted_text, file_size = parser_func(file_path)
+        if parser_name == "pdf":
+            extracted_text, file_size = parser_func(file_path, page_start, page_end)
+        else:
+            extracted_text, file_size = parser_func(file_path)
         return extracted_text, file_size, parser_name
     except Exception as e:
         logger.error(f"Parser {parser_name} failed for {file_path}: {e}")

@@ -540,6 +540,7 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 
 	var offset any
 	var chunks []StoredChunk
+	seen := make(map[string]struct{})
 	for {
 		body := map[string]interface{}{
 			"limit":        100,
@@ -590,6 +591,14 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 			if chunk.ChunkID == "" || chunk.Content == "" {
 				continue
 			}
+			// Defensive read-side deduplication for historical parser output: old
+			// paragraph overlap could emit a chunk fully contained in the following
+			// chunk. Keep the richer chunk and never show both in document details.
+			key := strings.Join(strings.Fields(chunk.Content), " ")
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
 			if idx, ok := p.Payload["index"].(float64); ok {
 				chunk.Index = int(idx)
 			}
@@ -605,7 +614,29 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 	}
 
 	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
-	return chunks, nil
+	return removeContainedAdjacentChunks(chunks), nil
+}
+
+func removeContainedAdjacentChunks(chunks []StoredChunk) []StoredChunk {
+	if len(chunks) < 2 {
+		return chunks
+	}
+	result := make([]StoredChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		normalized := strings.Join(strings.Fields(chunk.Content), " ")
+		if len(result) > 0 {
+			previous := strings.Join(strings.Fields(result[len(result)-1].Content), " ")
+			if previous != "" && strings.Contains(normalized, previous) && float64(len(previous))/float64(len(normalized)) >= 0.65 {
+				result[len(result)-1] = chunk
+				continue
+			}
+			if normalized != "" && strings.Contains(previous, normalized) && float64(len(normalized))/float64(len(previous)) >= 0.65 {
+				continue
+			}
+		}
+		result = append(result, chunk)
+	}
+	return result
 }
 
 // strVal returns a payload value as a string when it is one.

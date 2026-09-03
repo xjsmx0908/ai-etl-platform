@@ -45,7 +45,11 @@ services:
         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
         --topic doc-processing --partitions 6 --replication-factor 1 &&
         kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
-        --topic doc-processing-dlq --partitions 3 --replication-factor 1
+        --topic doc-processing-dlq --partitions 3 --replication-factor 1 &&
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+        --topic doc-processing-ocr --partitions 3 --replication-factor 1 &&
+        kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+        --topic doc-processing-ocr-dlq --partitions 3 --replication-factor 1
     restart: "no"
 
   # Evictable cache only (semantic retrieval cache). allkeys-lru is correct here:
@@ -273,8 +277,10 @@ services:
       - INTERNAL_API_TOKEN=${PARSER_INTERNAL_TOKEN:-}
       - INTERNAL_API_TOKEN_FILE=/run/secrets/parser_internal_token
       - MIN_CHUNK_SIZE=128
-      - MAX_CHUNK_SIZE=4000
-      - CHUNK_OVERLAP=200
+      - MAX_CHUNK_SIZE=${PARSER_MAX_CHUNK_SIZE:-600}
+      - CHUNK_OVERLAP=${PARSER_CHUNK_OVERLAP:-50}
+      - MAX_FILE_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-100}
+      - MAX_OCR_PAGES=${MAX_OCR_PAGES:-0}
       - LOG_LEVEL=INFO
     secrets:
       - parser_internal_token
@@ -295,13 +301,18 @@ services:
       - WORKER_METRICS_PORT=${WORKER_METRICS_PORT:-8081}
       - PIPELINE_MAX_WORKERS=${PIPELINE_MAX_WORKERS:-10}
       - PIPELINE_BATCH_SIZE=${PIPELINE_BATCH_SIZE:-10}
+      - PARSER_MAX_CHUNK_SIZE=${PARSER_MAX_CHUNK_SIZE:-600}
+      - PARSER_CHUNK_OVERLAP=${PARSER_CHUNK_OVERLAP:-50}
+      - OCR_PAGE_BATCH_SIZE=${OCR_PAGE_BATCH_SIZE:-25}
       - PIPELINE_STAGE_TIMEOUT=${PIPELINE_STAGE_TIMEOUT:-180s}
-      - PIPELINE_TIMEOUT=${PIPELINE_TIMEOUT:-15m}
-      - INGESTION_JOB_LEASE=${INGESTION_JOB_LEASE:-75m}
+      - PIPELINE_TIMEOUT=${PIPELINE_TIMEOUT:-2h}
+      - INGESTION_JOB_LEASE=${INGESTION_JOB_LEASE:-12h}
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TOPIC=${KAFKA_TOPIC:-doc-processing}
+      - OCR_KAFKA_TOPIC=${OCR_KAFKA_TOPIC:-doc-processing-ocr}
       - KAFKA_GROUP_ID=${KAFKA_GROUP_ID:-etl-pipeline}
       - KAFKA_DLQ_TOPIC=${KAFKA_DLQ_TOPIC:-doc-processing-dlq}
+      - OCR_KAFKA_DLQ_TOPIC=${OCR_KAFKA_DLQ_TOPIC:-doc-processing-ocr-dlq}
       - STORE_ENDPOINT=http://qdrant:6333
       - STORE_COLLECTION=${STORE_COLLECTION:-documents}
       # Worker touches only durable state (checkpoint, task status, ES retry queue).
@@ -329,6 +340,7 @@ services:
       - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
       - EMBED_DIMENSION=${EMBED_DIMENSION:-768}
       - EMBED_RATE_LIMIT=${EMBED_RATE_LIMIT:-50}
+      - EMBED_CONCURRENCY=${EMBED_CONCURRENCY:-1}
       - EMBED_TIMEOUT=${EMBED_TIMEOUT:-30s}
       - STORE_API_KEY=${STORE_API_KEY:-}
       - STORE_API_KEY_FILE=/run/secrets/store_api_key
@@ -406,6 +418,7 @@ services:
       - HTTP_WRITE_TIMEOUT=${HTTP_WRITE_TIMEOUT:-60s}
       - HTTP_IDLE_TIMEOUT=${HTTP_IDLE_TIMEOUT:-120s}
       - HTTP_MAX_HEADER_BYTES=${HTTP_MAX_HEADER_BYTES:-1048576}
+      - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-100}
       - IDEMPOTENCY_TTL=${IDEMPOTENCY_TTL:-24h}
       # API uses both: evictable semantic cache and durable Agent/idempotency state.
       - REDIS_CACHE_ADDR=redis-cache:6379

@@ -1,5 +1,6 @@
 """PDF Parser using PyMuPDF + OCR fallback for scanned (image-only) PDFs."""
 import fitz
+import os
 from loguru import logger
 from typing import Tuple
 
@@ -31,7 +32,7 @@ def _ocr_page(page: fitz.Page, page_num: int, dpi: int = 200) -> str:
         return ""
 
 
-def parse_pdf(file_path: str) -> Tuple[str, int]:
+def parse_pdf(file_path: str, page_start: int = 0, page_end: int | None = None) -> Tuple[str, int]:
     """
     Parse PDF file and extract text. Pages without a text layer (scanned
     documents) fall back to OCR.
@@ -40,8 +41,11 @@ def parse_pdf(file_path: str) -> Tuple[str, int]:
         doc = fitz.open(file_path)
         text_parts = []
         ocr_pages = 0
+        page_count = len(doc)
+        page_start = max(0, page_start)
+        page_end = page_count if page_end is None else min(page_count, max(page_start, page_end))
 
-        for page_num in range(len(doc)):
+        for page_num in range(page_start, page_end):
             page = doc[page_num]
             text = page.get_text("text")
             if text.strip():
@@ -55,7 +59,6 @@ def parse_pdf(file_path: str) -> Tuple[str, int]:
                 ocr_pages += 1
                 text_parts.append(f"\n--- Page {page_num + 1} ---\n{ocr_text}")
 
-        page_count = len(doc)
         doc.close()
         full_text = "\n".join(text_parts)
 
@@ -63,7 +66,7 @@ def parse_pdf(file_path: str) -> Tuple[str, int]:
             file_size = len(f.read())
 
         logger.info(
-            f"Parsed PDF: {file_path}, pages={page_count}, "
+            f"Parsed PDF: {file_path}, pages={page_start + 1}-{page_end}/{page_count}, "
             f"ocr_pages={ocr_pages}, size={file_size} bytes"
         )
         return full_text, file_size

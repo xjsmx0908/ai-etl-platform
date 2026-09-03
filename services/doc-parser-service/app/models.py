@@ -25,6 +25,10 @@ class ParseResponse(BaseModel):
     parse_time_ms: float
     file_size_bytes: int
     status: str = "success"
+    page_count: int = 0
+    page_start: int = 0
+    page_end: int = 0
+    ocr_pages: int = 0
 
 
 class HealthResponse(BaseModel):

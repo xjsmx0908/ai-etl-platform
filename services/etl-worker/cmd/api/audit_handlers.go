@@ -33,7 +33,7 @@ func toAuditView(e audit.Entry) auditView {
 }
 
 // handleAuditList serves GET /v1/audit: paginated audit trail for the caller's
-// tenant, optionally filtered by action. Admin scope only.
+// tenant, optionally filtered by action and keyword. Admin scope only.
 func handleAuditList(audits audit.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -45,6 +45,7 @@ func handleAuditList(audits audit.Store) http.HandlerFunc {
 		entries, total, err := audits.List(r.Context(), audit.ListQuery{
 			TenantID: auth.GetTenantID(r.Context()),
 			Action:   r.URL.Query().Get("action"),
+			Query:    r.URL.Query().Get("q"),
 			Limit:    limit,
 			Offset:   offset,
 		})

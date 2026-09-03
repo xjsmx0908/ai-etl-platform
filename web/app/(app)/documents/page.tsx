@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/Card";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { Spinner } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Files, Search, ShieldCheck, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Files, FileText, Filter, RotateCcw, Search, ShieldCheck, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
 import type { Document, DocumentSearchResult } from "@/lib/types";
@@ -42,6 +42,18 @@ function formatDate(iso?: string): string {
   return d.toLocaleString("zh-CN", { hour12: false });
 }
 
+function paginationItems(current: number, total: number): Array<number | "ellipsis"> {
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index);
+  const pages = new Set([0, total - 1, current - 1, current, current + 1]);
+  const visible = [...pages].filter((page) => page >= 0 && page < total).sort((a, b) => a - b);
+  const result: Array<number | "ellipsis"> = [];
+  visible.forEach((page, index) => {
+    if (index > 0 && page - visible[index - 1] > 1) result.push("ellipsis");
+    result.push(page);
+  });
+  return result;
+}
+
 export default function DocumentsPage() {
   const { isAdmin, role } = useAuth();
   const [items, setItems] = useState<Document[]>([]);
@@ -50,6 +62,9 @@ export default function DocumentsPage() {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const [permission, setPermission] = useState("");
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
+  const [pageInput, setPageInput] = useState("1");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -63,26 +78,33 @@ export default function DocumentsPage() {
     setError("");
     try {
       const data = await apiClient.listDocuments({
-        limit: 100,
+        limit: pageSize,
+        offset: page * pageSize,
         ...(q ? { q } : {}),
         ...(status ? { status } : {}),
         ...(permission ? { permission } : {}),
       });
       setItems(data.items);
       setTotal(data.total);
+      setPage((current) => Math.min(current, Math.max(0, Math.ceil(data.total / pageSize) - 1)));
     } catch (e) {
       setError((e as Error).message || "加载失败");
     } finally {
       setLoading(false);
     }
-  }, [q, status, permission]);
+  }, [q, status, permission, page, pageSize]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    setPageInput(String(page + 1));
+  }, [page]);
+
   const onSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    setPage(0);
     setQ(qInput.trim());
   };
 
@@ -92,12 +114,23 @@ export default function DocumentsPage() {
     setError("");
     try {
       await apiClient.deleteDocument(doc.doc_id);
-      void load();
+      if (items.length === 1 && page > 0) setPage((current) => current - 1);
+      else void load();
     } catch (e) {
       setError((e as Error).message || "删除失败");
     } finally {
       setDeleting(null);
     }
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const rangeStart = total === 0 ? 0 : page * pageSize + 1;
+  const rangeEnd = Math.min((page + 1) * pageSize, total);
+
+  const goToPage = () => {
+    const requested = Number.parseInt(pageInput, 10);
+    if (!Number.isFinite(requested)) return;
+    setPage(Math.min(totalPages - 1, Math.max(0, requested - 1)));
   };
 
   const onContentSearch = async () => {
@@ -117,8 +150,24 @@ export default function DocumentsPage() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3 text-xs text-slate-600">
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-cyan-500 text-white shadow-sm">
+            <FileText className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight text-slate-900">文档管理</h1>
+            <p className="mt-0.5 text-sm text-slate-500">浏览、检索并管理已接入知识库的企业文档</p>
+          </div>
+        </div>
+        <div className="hidden rounded-lg bg-slate-100 px-3 py-2 text-right sm:block">
+          <div className="text-lg font-semibold leading-none text-slate-800">{total}</div>
+          <div className="mt-1 text-[11px] text-slate-500">当前可见文档</div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-blue-100 bg-gradient-to-r from-blue-50/80 to-cyan-50/50 px-4 py-3 text-xs text-slate-600">
         <span className="flex items-center gap-1.5 font-medium text-slate-700">
           <Sparkles className="h-3.5 w-3.5 text-blue-600" />
           多格式解析：TXT / Markdown / DOCX / PDF / 图片 OCR / 扫描件 OCR
@@ -150,81 +199,68 @@ export default function DocumentsPage() {
         )}
       </div>
 
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="min-w-[220px] flex-1">
-          <label className="mb-1 block text-xs font-medium text-slate-500">搜索</label>
-          <form onSubmit={onSearch} className="flex gap-2">
-            <input
-              value={qInput}
-              onChange={(e) => setQInput(e.target.value)}
-              placeholder="按文件名 / doc_id 检索"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-            <button
-              type="submit"
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              搜索
-            </button>
+      <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <div className="flex shrink-0 items-center gap-2 text-xs font-semibold text-slate-700">
+            <Filter className="h-4 w-4 text-blue-600" />
+            筛选
+          </div>
+          <form onSubmit={onSearch} className="flex min-w-0 flex-1 gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                value={qInput}
+                onChange={(e) => setQInput(e.target.value)}
+                placeholder="文件名 / 文档 ID"
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm transition focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/10"
+              />
+            </div>
+            <button type="submit" className="rounded-lg bg-blue-600 px-3.5 text-sm font-medium text-white transition hover:bg-blue-700">搜索</button>
           </form>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">状态</label>
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-          >
-            <option value="">全部</option>
-            {Object.entries(STATUS_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
+          <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(0); }} aria-label="处理状态" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-400 focus:outline-none">
+            <option value="">处理状态：全部</option>
+            {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">权限</label>
-          <select
-            value={permission}
-            onChange={(e) => setPermission(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-          >
-            <option value="">全部</option>
-            {Object.entries(PERMISSION_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
+          <select value={permission} onChange={(e) => { setPermission(e.target.value); setPage(0); }} aria-label="访问权限" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-blue-400 focus:outline-none">
+            <option value="">访问权限：全部</option>
+            {Object.entries(PERMISSION_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
+          {(q || status || permission) && (
+            <button
+              type="button"
+              onClick={() => { setQInput(""); setQ(""); setStatus(""); setPermission(""); setPage(0); }}
+              className="inline-flex shrink-0 items-center gap-1 px-1 text-xs text-slate-500 transition hover:text-blue-600"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              清除
+            </button>
+          )}
         </div>
       </div>
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
 
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <label className="mb-1 block text-xs font-medium text-slate-500">内容全文检索（对文档正文）</label>
+      <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
         <form
           onSubmit={(e) => {
             e.preventDefault();
             void onContentSearch();
           }}
-          className="flex gap-2"
+          className="flex flex-col gap-2 sm:flex-row sm:items-center"
         >
-          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="输入正文关键词，如「pipeline」" />
-          <Button type="submit" icon={Search}>
-            内容搜索
-          </Button>
+          <div className="flex shrink-0 items-center gap-2 text-xs font-semibold text-slate-700"><Search className="h-4 w-4 text-indigo-600" />正文检索</div>
+          <Input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="搜索文档正文，例如：pipeline" className="border-slate-200 bg-slate-50 py-2" />
+          <Button type="submit" icon={Search} className="shrink-0 sm:px-4">搜索正文</Button>
         </form>
         {searchError && <p className="mt-2 text-xs text-red-600">{searchError}</p>}
         {searching && <p className="mt-2 text-xs text-slate-400">搜索中…</p>}
         {searchResults !== null && !searching && (
           <div className="mt-3 space-y-2">
             {searchResults.length === 0 ? (
-              <p className="text-xs text-slate-400">未找到匹配文档</p>
+              <div className="rounded-lg border border-dashed border-slate-200 bg-white/70 px-3 py-4 text-center text-xs text-slate-400">未找到匹配文档</div>
             ) : (
               searchResults.map((r) => (
-                <div key={r.doc_id} className="rounded-lg border border-slate-100 p-3">
+                <div key={r.doc_id} className="rounded-lg border border-slate-200 bg-white/80 p-3 shadow-sm">
                   <div className="flex flex-wrap items-center gap-2">
                     <Link href={`/documents/${r.doc_id}`} className="text-sm font-medium text-blue-600 hover:underline">
                       {r.file_name}
@@ -243,7 +279,16 @@ export default function DocumentsPage() {
         )}
       </div>
 
-      <Card header="文档列表" meta={`共 ${total} 篇`} padding="none">
+      <Card
+        header={
+          <div className="flex items-center gap-2 text-slate-800">
+            <Files className="h-4 w-4 text-blue-600" />
+            <span>文档列表</span>
+          </div>
+        }
+        meta={q || status || permission ? `筛选后 ${total} 篇` : `共 ${total} 篇`}
+        padding="none"
+      >
         {loading ? (
           <Spinner />
         ) : items.length === 0 ? (
@@ -251,7 +296,7 @@ export default function DocumentsPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs text-slate-500">
+              <thead className="bg-slate-50/90 text-xs text-slate-500">
                 <tr>
                   <th className="px-4 py-2 font-medium">文档 ID</th>
                   <th className="px-4 py-2 font-medium">文件名</th>
@@ -269,7 +314,7 @@ export default function DocumentsPage() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {items.map((doc) => (
-                  <tr key={doc.doc_id} className="hover:bg-slate-50/60">
+                  <tr key={doc.doc_id} className="transition-colors hover:bg-blue-50/30">
                     <td className="px-4 py-2.5 font-mono text-xs text-blue-600">
                       <Link href={`/documents/${doc.doc_id}`} className="hover:underline">
                         {doc.doc_id}
@@ -334,6 +379,92 @@ export default function DocumentsPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {(
+          <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3 text-xs text-slate-500">
+              <span>显示 {rangeStart}–{rangeEnd}，共 {total} 篇</span>
+              <label className="flex items-center gap-1.5">
+                每页
+                <select
+                  value={pageSize}
+                  onChange={(e) => { setPageSize(Number(e.target.value)); setPage(0); }}
+                  className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 focus:border-blue-400 focus:outline-none"
+                  aria-label="每页条数"
+                >
+                  <option value={20}>20</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+                篇
+              </label>
+            </div>
+            <nav aria-label="文档列表分页" className="flex flex-wrap items-center justify-end gap-1">
+                <button
+                  type="button"
+                  aria-label="上一页"
+                  disabled={page === 0 || loading}
+                  onClick={() => setPage((current) => Math.max(0, current - 1))}
+                  className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="第一页"
+                  disabled={page === 0 || loading}
+                  onClick={() => setPage(0)}
+                  className="hidden h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-35 sm:flex"
+                >
+                  <ChevronsLeft className="h-4 w-4" />
+                </button>
+                {paginationItems(page, totalPages).map((item, index) =>
+                  item === "ellipsis" ? (
+                    <span key={`ellipsis-${index}`} className="flex h-8 w-8 items-center justify-center text-xs text-slate-400">…</span>
+                  ) : (
+                    <button
+                      key={item}
+                      type="button"
+                      aria-current={item === page ? "page" : undefined}
+                      disabled={loading}
+                      onClick={() => setPage(item)}
+                      className={`flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-xs font-medium transition ${item === page ? "bg-blue-600 text-white shadow-sm" : "border border-slate-200 bg-white text-slate-600 hover:bg-blue-50 hover:text-blue-700"}`}
+                    >
+                      {item + 1}
+                    </button>
+                  )
+                )}
+                <button
+                  type="button"
+                  aria-label="下一页"
+                  disabled={(page + 1) * pageSize >= total || loading}
+                  onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+                  className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="最后一页"
+                  disabled={page === totalPages - 1 || loading}
+                  onClick={() => setPage(totalPages - 1)}
+                  className="hidden h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-35 sm:flex"
+                >
+                  <ChevronsRight className="h-4 w-4" />
+                </button>
+                <form onSubmit={(event) => { event.preventDefault(); goToPage(); }} className="ml-2 hidden items-center gap-1.5 sm:flex">
+                  <span className="text-xs text-slate-400">跳至</span>
+                  <input
+                    value={pageInput}
+                    onChange={(event) => setPageInput(event.target.value.replace(/\D/g, ""))}
+                    aria-label="跳转页码"
+                    className="h-8 w-12 rounded-md border border-slate-200 bg-white px-2 text-center text-xs text-slate-700 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/10"
+                    inputMode="numeric"
+                  />
+                  <span className="text-xs text-slate-400">页</span>
+                </form>
+            </nav>
           </div>
         )}
       </Card>

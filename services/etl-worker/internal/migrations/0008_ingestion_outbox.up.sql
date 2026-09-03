@@ -10,7 +10,7 @@ CREATE TABLE ingestion_jobs (
     request_signature TEXT NOT NULL,
     task              JSONB NOT NULL,
     status       TEXT NOT NULL DEFAULT 'queued'
-                 CHECK (status IN ('queued','published','completed','failed')),
+                 CHECK (status IN ('queued','published','completed','failed','cancelled')),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     published_at TIMESTAMPTZ,
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),

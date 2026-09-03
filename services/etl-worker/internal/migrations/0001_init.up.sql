@@ -35,7 +35,7 @@ CREATE TABLE documents (
     permission   TEXT NOT NULL DEFAULT 'internal'
                  CHECK (permission IN ('public','internal','confidential')),
     status       TEXT NOT NULL DEFAULT 'queued'
-                 CHECK (status IN ('queued','processing','completed','failed')),
+                 CHECK (status IN ('queued','processing','completed','failed','cancelled')),
     stage        TEXT NOT NULL DEFAULT 'queued',
     chunks_done  INT  NOT NULL DEFAULT 0,
     chunks_total INT  NOT NULL DEFAULT 0,

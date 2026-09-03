@@ -45,6 +45,20 @@ def chunk_text(
     chunk_idx = 0
     
     for line in lines:
+        # PDF page markers are explicit semantic boundaries. Without this,
+        # extracted pages can be repeatedly accumulated through short blank-line
+        # buffers and produce a staircase of near-duplicate chunks.
+        if re.match(r"^--- Page \d+ ---$", line.strip()) and buffer:
+            current = '\n'.join(buffer).strip()
+            if current:
+                chunks.extend(
+                    split_oversized_chunk(current, doc_id, tenant_id, chunk_idx,
+                                         permission, file_hash, metadata, max_size, overlap)
+                )
+                chunk_idx = len(chunks)
+            buffer = [line]
+            continue
+
         # Check if line is a markdown heading
         if is_heading(line) and buffer:
             # Emit current buffer as chunk
@@ -70,9 +84,11 @@ def chunk_text(
                 )
                 chunk_idx = len(chunks)
                 
-                # Keep overlap for next chunk
-                last_chunk = chunks[-1]['content'] if chunks else ''
-                buffer = [get_overlap(last_chunk, overlap)] if overlap > 0 else []
+                # Paragraph boundaries are semantic boundaries. Overlap is only
+                # useful when force-splitting one oversized body; copying a
+                # complete short paragraph into the next chunk creates near-
+                # duplicate chunks and lets repeated headers dominate retrieval.
+                buffer = []
             # If too short, keep accumulating (paragraph merge)
             else:
                 buffer.append(line)

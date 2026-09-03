@@ -61,6 +61,19 @@ func TestRequiresParserService(t *testing.T) {
 	}
 }
 
+func TestPageBatchRangesResumeAtCheckpoint(t *testing.T) {
+	got := pageBatchRanges(583, 50, 100)
+	if len(got) != 10 {
+		t.Fatalf("got %d ranges, want 10", len(got))
+	}
+	if got[0] != [2]int{100, 150} || got[len(got)-1] != [2]int{550, 583} {
+		t.Fatalf("ranges start/end = %+v ... %+v", got[0], got[len(got)-1])
+	}
+	if pageBatchRanges(10, 50, 10) != nil {
+		t.Fatal("expected no ranges after all pages are complete")
+	}
+}
+
 type noopEmbedder struct{}
 
 func (noopEmbedder) Embed(context.Context, *model.Chunk) error { return nil }

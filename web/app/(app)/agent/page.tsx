@@ -176,6 +176,7 @@ export default function AgentPage() {
         <div>
           <h1 className="text-xl font-semibold text-slate-900">文档发布治理</h1>
           <p className="mt-1 text-sm text-slate-500">受管草稿检查、审批与发布</p>
+          <p className="mt-1 text-xs text-slate-400">Run ID 用于恢复或审计已有的异步治理流程；“开始检查”会校验索引、责任人和生效日期，缺失项必须先在文档详情补齐后才能发布。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center">

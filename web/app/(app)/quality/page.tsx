@@ -48,6 +48,9 @@ export default function QualityPage() {
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-800">
+          本页面向管理员和运维人员，展示离线评测报告的检索回归指标，用于比较 embedding/检索配置是否改善整体召回；它不代表某一次问答的即时评分，也不会改变在线问答结果。建议在更换模型或索引后重新运行评测并关注趋势。
+        </div>
         <h2 className="mb-1 text-sm font-semibold text-slate-500">
           真实模型语义检索{modelLabel ? `（${modelLabel}）` : ""}
         </h2>

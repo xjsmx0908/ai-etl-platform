@@ -177,7 +177,7 @@ func (s *MemoryStore) Claim(_ context.Context, task model.Task, lease time.Durat
 		return "", ErrJobNotFound
 	}
 	switch s.states[task.JobID] {
-	case "completed", "failed":
+	case "completed", "failed", "cancelled":
 		return ClaimTerminal, nil
 	case "processing":
 		if time.Now().UTC().Before(s.leases[task.JobID]) {
@@ -195,6 +195,16 @@ func (s *MemoryStore) Complete(_ context.Context, task model.Task, _ time.Time) 
 
 func (s *MemoryStore) Fail(_ context.Context, task model.Task, _ string, _ time.Time) error {
 	return s.markTerminal(task, "failed")
+}
+
+func (s *MemoryStore) Cancel(_ context.Context, task model.Task, _ string, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if task.JobID == "" || s.states[task.JobID] == "" {
+		return ErrJobNotFound
+	}
+	s.states[task.JobID] = "cancelled"
+	return nil
 }
 
 func (s *MemoryStore) markTerminal(task model.Task, state string) error {

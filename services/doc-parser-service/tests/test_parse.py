@@ -8,6 +8,31 @@ from docx import Document
 from app.routers import parse as parse_module
 from app.services.chunker import estimate_tokens
 from app.services.parser import parse_document
+from app.services.parsers.docx import parse_docx
+
+
+def test_parse_docx_preserves_table_content_and_document_order(tmp_path):
+    path = tmp_path / "services.docx"
+    document = Document()
+    document.add_heading("服务清单", level=1)
+    document.add_paragraph("表格前的说明")
+    table = document.add_table(rows=2, cols=3)
+    table.style = "Table Grid"
+    table.cell(0, 0).text = "服务名称"
+    table.cell(0, 1).text = "配置位置"
+    table.cell(0, 2).text = "日志位置"
+    table.cell(1, 0).text = "前端服务"
+    table.cell(1, 1).text = "/srv/frontend"
+    table.cell(1, 2).text = "/var/log/frontend"
+    document.add_paragraph("表格后的说明")
+    document.save(path)
+
+    text, _ = parse_docx(str(path))
+
+    assert "服务名称\t配置位置\t日志位置" in text
+    assert "前端服务\t/srv/frontend\t/var/log/frontend" in text
+    assert text.index("表格前的说明") < text.index("服务名称\t配置位置")
+    assert text.index("日志位置") < text.index("表格后的说明")
 
 
 def test_parse_document_converts_legacy_word_doc(tmp_path, monkeypatch):

@@ -173,6 +173,10 @@ export async function uploadDocument(
   docId?: string,
   knowledgeSpaceId?: string
 ): Promise<UploadResult> {
+  const maxUploadSizeMB = 100;
+  if (file.size > maxUploadSizeMB * 1024 * 1024) {
+    throw new Error(`文件过大，单个文件最大允许 ${maxUploadSizeMB} MB`);
+  }
   const fd = new FormData();
   fd.append("file", file);
   fd.append("permission", permission);
@@ -183,6 +187,10 @@ export async function uploadDocument(
 
 export async function getTaskStatus(docId: string): Promise<TaskStatus> {
   return request<TaskStatus>(`/tasks/${encodeURIComponent(docId)}`);
+}
+
+export async function cancelTask(docId: string): Promise<TaskStatus> {
+  return request<TaskStatus>(`/tasks/${encodeURIComponent(docId)}/cancel`, { method: "POST" });
 }
 
 // ── Users (admin only) ───────────────────────────────────────────────────
@@ -237,6 +245,7 @@ export type ListAuditParams = {
   limit?: number;
   offset?: number;
   action?: string;
+  q?: string;
 };
 
 export async function listAudit(params: ListAuditParams = {}): Promise<AuditListResponse> {
@@ -244,6 +253,7 @@ export async function listAudit(params: ListAuditParams = {}): Promise<AuditList
   if (params.limit != null) sp.set("limit", String(params.limit));
   if (params.offset != null) sp.set("offset", String(params.offset));
   if (params.action) sp.set("action", params.action);
+  if (params.q) sp.set("q", params.q);
   const qs = sp.toString();
   return request<AuditListResponse>(`/audit${qs ? `?${qs}` : ""}`);
 }
@@ -302,6 +312,7 @@ export async function cancelAgentRun(id: string, reason: string): Promise<AgentR
 }
 
 export type QuerySSEHandlers = {
+  onStatus?: (progress: { stage: string; message: string; state: string }) => void;
   onSources?: (sources: Source[]) => void;
   onDelta?: (text: string) => void;
   onDone?: (meta: AnswerMeta) => void;
@@ -345,6 +356,9 @@ export async function querySSE(
     try {
       const payload = JSON.parse(data);
       switch (event) {
+        case "status":
+          handlers.onStatus?.({ stage: payload.stage || "processing", message: payload.message || "处理中…", state: payload.state || "running" });
+          break;
         case "sources":
           handlers.onSources?.(payload.sources || []);
           break;
@@ -394,6 +408,7 @@ export const apiClient = {
 	listKnowledgeSpaces,
   uploadDocument,
   getTaskStatus,
+  cancelTask,
   listUsers,
   createUser,
   updateUser,

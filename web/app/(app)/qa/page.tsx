@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import Link from "next/link";
 import { Card } from "@/components/ui/Card";
-import { AlertTriangle, ChevronDown, ShieldAlert, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Loader2, MessageSquareText, Send, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import type { AnswerMeta, KnowledgeSpace, Source } from "@/lib/types";
 
@@ -19,6 +19,15 @@ const ROLE_LABELS: Record<string, string> = {
   user: "普通用户",
   readonly: "只读用户",
 };
+
+const QUERY_STEPS = [
+  { key: "preparing", label: "确认范围" },
+  { key: "retrieving", label: "检索文档" },
+  { key: "screening", label: "筛选证据" },
+  { key: "generating", label: "生成回答" },
+  { key: "verifying", label: "校验引用" },
+  { key: "finalizing", label: "整理结果" },
+];
 
 const PERMISSION_LABELS: Record<string, string> = {
   public: "公开",
@@ -111,8 +120,13 @@ export default function QaPage() {
   const [citations, setCitations] = useState<Source[]>([]);
   const [meta, setMeta] = useState<AnswerMeta>({});
   const [status, setStatus] = useState<"idle" | "streaming" | "done" | "error">("idle");
+  const [phase, setPhase] = useState("等待提交");
+  const [activeStage, setActiveStage] = useState("");
+  const [completedStages, setCompletedStages] = useState<string[]>([]);
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  const selectedSpace = knowledgeSpaces.find((space) => space.id === knowledgeSpace);
+  const hasMultipleProductionSpaces = knowledgeSpaces.length > 1;
 
   const stream = useCallback(async (q: string) => {
     abortRef.current?.abort();
@@ -122,11 +136,21 @@ export default function QaPage() {
     setCitations([]);
     setMeta({});
     setStatus("streaming");
+    setPhase("正在检索知识库…");
+    setActiveStage("preparing");
+    setCompletedStages([]);
     setError("");
     try {
       await apiClient.querySSE(
         q,
         {
+          onStatus: (progress) => {
+            setPhase(progress.message);
+            setActiveStage(progress.stage);
+            if (progress.state === "completed" && QUERY_STEPS.some((step) => step.key === progress.stage)) {
+              setCompletedStages((previous) => previous.includes(progress.stage) ? previous : [...previous, progress.stage]);
+            }
+          },
           onSources: (s) => setCitations(s),
           onDelta: (text) => setAnswer((prev) => prev + text),
           onDone: (m) => setMeta(m),
@@ -139,17 +163,26 @@ export default function QaPage() {
         knowledgeSpace ? { knowledge_space_id: knowledgeSpace } : undefined
       );
       setStatus("done");
+      setActiveStage("completed");
+      setCompletedStages(QUERY_STEPS.map((step) => step.key));
+      setPhase("回答已完成");
     } catch (e: unknown) {
       if ((e as Error).name === "AbortError") return;
       setStatus("error");
+      setActiveStage("failed");
+      setPhase("处理失败");
       setError((e as Error).message || "未知错误");
     }
   }, [knowledgeSpace]);
 
   useEffect(() => {
     void apiClient.listKnowledgeSpaces().then(({ items }) => {
-      setKnowledgeSpaces(items);
-      const preferred = items.find((space) => space.is_default) || items[0];
+      // The formal Q&A workbench only operates on production knowledge spaces.
+      // Demo data belongs to an explicit demo/test entry point and should not
+      // compete with real business sources in the user's default workflow.
+      const productionSpaces = items.filter((space) => space.kind === "production");
+      setKnowledgeSpaces(productionSpaces);
+      const preferred = productionSpaces.find((space) => space.is_default) || productionSpaces[0];
       if (preferred) setKnowledgeSpace(preferred.id);
     }).catch((e: Error) => setError(e.message || "知识空间加载失败"));
     return () => abortRef.current?.abort();
@@ -166,34 +199,50 @@ export default function QaPage() {
 
   return (
     <div className="space-y-6">
-      <form onSubmit={onSubmit} className="flex flex-wrap gap-2">
-        <input
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="输入问题，基于企业文档知识库回答"
-          className="min-w-[280px] flex-1 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          disabled={status === "streaming"}
-        />
-        <select
-          value={knowledgeSpace}
-          onChange={(e) => setKnowledgeSpace(e.target.value)}
-          disabled={status === "streaming"}
-          aria-label="知识空间"
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        >
-          {knowledgeSpaces.map((space) => (
-            <option key={space.id} value={space.id}>
-              {space.name}{space.kind === "demo" ? "（演示）" : ""}
-            </option>
-          ))}
-        </select>
-        <button
-          type="submit"
-          disabled={status === "streaming" || !question.trim()}
-          className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-        >
-          {status === "streaming" ? "生成中…" : "提问"}
-        </button>
+      <div className="flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-cyan-500 text-white shadow-sm">
+          <MessageSquareText className="h-5 w-5" />
+        </div>
+        <div>
+          <h1 className="text-xl font-semibold text-slate-900">问答工作台</h1>
+          <p className="mt-0.5 text-sm text-slate-500">基于已发布的企业文档生成可追溯回答</p>
+        </div>
+      </div>
+
+      <form onSubmit={onSubmit} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="输入你的问题，例如：DNQ4/V30 用户手册的生产厂家是谁？"
+            className="min-w-0 flex-1 rounded-lg border border-transparent bg-slate-50 px-4 py-2.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-500/10"
+            disabled={status === "streaming"}
+          />
+          {hasMultipleProductionSpaces && (
+            <select
+              value={knowledgeSpace}
+              onChange={(e) => setKnowledgeSpace(e.target.value)}
+              disabled={status === "streaming"}
+              aria-label="知识空间"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-700 transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15 disabled:bg-slate-50"
+            >
+              {knowledgeSpaces.map((space) => (
+                <option key={space.id} value={space.id}>{space.name}</option>
+              ))}
+            </select>
+          )}
+          <button
+            type="submit"
+            disabled={status === "streaming" || !question.trim()}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {status !== "streaming" && <Send className="h-4 w-4" />}
+            {status === "streaming" ? phase : "发送问题"}
+          </button>
+        </div>
+        {selectedSpace && hasMultipleProductionSpaces && (
+          <p className="mt-2 px-1 text-xs text-slate-400">当前检索范围：{selectedSpace.name} · 仅使用该空间中已发布的文档</p>
+        )}
       </form>
 
       {(role === "admin" || role === "user" || role === "readonly") && (
@@ -218,6 +267,27 @@ export default function QaPage() {
       {(status === "streaming" || status === "done" || status === "error") && (
         <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
           <div className="space-y-4">
+            <Card className="border-slate-200/80 bg-white/95">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-700">处理进度</h2>
+                  <p className="mt-0.5 text-xs text-slate-400">每个阶段完成后自动进入下一步，耗时阶段会持续显示动画</p>
+                </div>
+                {status === "streaming" && <span className="inline-flex items-center gap-1.5 text-xs text-blue-600"><Loader2 className="h-3.5 w-3.5 animate-spin" />处理中</span>}
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                {QUERY_STEPS.map((step) => {
+                  const done = completedStages.includes(step.key);
+                  const active = activeStage === step.key && status === "streaming";
+                  return <div key={step.key} className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs ${done ? "border-emerald-200 bg-emerald-50 text-emerald-700" : active ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-slate-50 text-slate-400"}`}>
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/80">{done ? <Check className="h-3.5 w-3.5" /> : active ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}</span>
+                    {step.label}
+                  </div>;
+                })}
+              </div>
+              {activeStage === "refused" && <div className="mt-3 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><X className="h-4 w-4" />{phase}</div>}
+              {status === "error" && <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{phase}</div>}
+            </Card>
             {/* Conflicting sources are disclosed, never adjudicated: the system
                 does not decide which document is right, it shows both so a human
                 can. Placed above the answer because it qualifies everything below. */}
@@ -276,7 +346,7 @@ export default function QaPage() {
                   )}
                 </p>
               ) : (
-                <p className="text-slate-400">{status === "streaming" ? "等待回答…" : ""}</p>
+                <p className="text-slate-400">{status === "streaming" ? phase : ""}</p>
               )}
             </Card>
 
