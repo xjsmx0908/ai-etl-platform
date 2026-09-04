@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -10,10 +11,11 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/agent"
-	"ai-etl-pipeline/internal/agentapi"
 	"ai-etl-pipeline/internal/auth"
+	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/releasecenter"
+	"ai-etl-pipeline/internal/store"
 )
 
 type releaseRequestLister interface {
@@ -147,10 +149,43 @@ func handleReleaseCenterDecision(store releasecenter.Store, workflow releasecent
 	}
 }
 
-type releaseCenterReviewer struct{ service *agentapi.Service }
+type releaseCenterChunkReader interface {
+	ListChunksByDoc(context.Context, string, string, []string) ([]store.StoredChunk, error)
+}
+
+// releaseCenterAgentReviewService is the narrow seam needed by the release
+// center. Keeping the adapter independent from the concrete Agent service
+// makes exact-candidate/content review behavior testable without a live
+// orchestrator.
+type releaseCenterAgentReviewService interface {
+	ReviewPublication(context.Context, agent.Actor, string) (string, publicationworkflow.Assessment, error)
+}
+
+type releaseCenterReviewer struct {
+	service   releaseCenterAgentReviewService
+	documents docstore.Store
+	chunks    releaseCenterChunkReader
+}
 
 func (r releaseCenterReviewer) Review(ctx context.Context, actor publicationworkflow.Actor, documentID string) (releasecenter.AgentReview, error) {
+	if r.service == nil || r.documents == nil || r.chunks == nil {
+		return releasecenter.AgentReview{}, fmt.Errorf("release center content review is not configured")
+	}
 	runID, assessment, err := r.service.ReviewPublication(ctx, agent.Actor{TenantID: actor.TenantID, UserID: "release-center-agent", Role: "admin", Permissions: []string{"agent", "query"}}, documentID)
+	if err != nil {
+		return releasecenter.AgentReview{RunID: runID}, err
+	}
+	if !assessment.Ready || assessment.Candidate == nil {
+		return releasecenter.AgentReview{RunID: runID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: "预审未返回可绑定的精确候选"}, nil
+	}
+	doc, found, err := r.documents.Get(ctx, actor.TenantID, documentID)
+	if err != nil || !found {
+		if err != nil {
+			return releasecenter.AgentReview{RunID: runID}, err
+		}
+		return releasecenter.AgentReview{RunID: runID}, docstore.ErrNotFound
+	}
+	chunks, err := r.chunks.ListChunksByDoc(ctx, actor.TenantID, documentID, nil)
 	if err != nil {
 		return releasecenter.AgentReview{RunID: runID}, err
 	}
@@ -158,7 +193,27 @@ func (r releaseCenterReviewer) Review(ctx context.Context, actor publicationwork
 	if len(assessment.Blockers) > 0 {
 		risk = releasecenter.RiskMedium
 	}
-	return releasecenter.AgentReview{RunID: runID, Status: "completed", Recommendation: map[bool]string{true: "publish", false: "needs_info"}[assessment.Ready], RiskLevel: risk, Summary: strings.Join(assessment.Blockers, ", "), PromptVersion: "document-review-v1"}, nil
+	content := make([]releasecenter.ContentChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk.DocumentVersionID != assessment.Candidate.DocumentVersionID || chunk.GenerationID != assessment.Candidate.GenerationID {
+			continue
+		}
+		content = append(content, releasecenter.ContentChunk{ChunkID: chunk.ChunkID, Content: chunk.Content})
+	}
+	contentReview := releasecenter.AnalyzeContent(doc.Permission, content)
+	if contentReview.Failed {
+		return releasecenter.AgentReview{RunID: runID, Status: "failed", Recommendation: "manual_review", RiskLevel: contentReview.Risk, Summary: contentReview.Summary, Findings: contentReview.Findings, PromptVersion: "document-review-v1"}, nil
+	}
+	if contentReview.Risk == releasecenter.RiskHigh || contentReview.Risk == releasecenter.RiskCritical {
+		risk = contentReview.Risk
+	}
+	recommendation := map[bool]string{true: "publish", false: "needs_info"}[assessment.Ready]
+	if contentReview.Recommendation != "publish" {
+		recommendation = contentReview.Recommendation
+	}
+	findings := contentReview.Findings
+	summary := strings.Join(append(append([]string{}, assessment.Blockers...), contentReview.Summary), ", ")
+	return releasecenter.AgentReview{RunID: runID, Status: "completed", Recommendation: recommendation, RiskLevel: risk, Summary: summary, Findings: findings, PromptVersion: "document-review-v1"}, nil
 }
 
 func handleReleaseCenterReview(coordinator *releasecenter.Coordinator) http.HandlerFunc {

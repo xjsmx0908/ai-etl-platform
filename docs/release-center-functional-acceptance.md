@@ -16,6 +16,8 @@
 | 确定性门禁阻塞 | 缺责任人、无生效日期、非受管空间、ETL 未完成或无精确候选 | 不应触发成功预审/发布 | 不生成可发布审批任务 | `needs_info` 或 `review_blocked` |
 | 版本在审批期间变化 | generation/version/revision/digest 任一变化 | 旧报告失效 | 旧审批不可发布 | `needs_info`，保留审计记录 |
 | Agent 证据不完整 | status、recommendation 或 risk 缺失/非法 | fail-closed，标记失败 | 进入人工例外，不能按成功预审审批 | 需人工核对后处理 |
+| 内容级敏感信息 | exact candidate 切块包含密码、API key、身份证号或手机号 | 生成带 chunk 引用的 `sensitive_data_detected` finding；风险升为 high | internal 阻断；confidential 升级双人复核 | 不得静默放行 |
+| 内容级提示词注入 | 切块包含“忽略之前指令/输出系统提示词”等模式 | 生成 `prompt_injection_detected` finding，建议 `needs_info` | 不进入普通可发布审批 | 人工处理 |
 | 非管理员或发起人自审 | 普通用户、或请求发起人本人 | 不适用 | 拒绝决定请求 | 不改变发布状态 |
 
 ## 必须验证的断言
@@ -30,6 +32,8 @@
 7. 当前预审只负责受管发布资格和 Agent 证据编排；不得把资格复验结果描述成
    已完成的内容语义/敏感信息审查。若未来增加内容审查，必须新增独立输入、
    输出 schema、证据引用和对应功能矩阵。
+8. 内容 findings 必须引用 exact candidate 的 chunk ID；旧 generation 或旧 version
+   的内容不得进入当前 review report。
 
 ## 执行入口
 

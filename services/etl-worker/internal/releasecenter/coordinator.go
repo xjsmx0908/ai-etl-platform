@@ -113,7 +113,10 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 		status = "failed"
 		reviewResult.Recommendation = "manual_review"
 		reviewResult.Summary = reviewErr.Error()
-		reviewResult.RiskLevel = RiskLow
+		// An unavailable or malformed review is uncertainty, not a low-risk
+		// result. Keep the failure path visibly high risk so policy and UI do
+		// not imply that the document passed pre-review.
+		reviewResult.RiskLevel = RiskHigh
 	}
 	if reviewResult.Recommendation == "" {
 		reviewResult.Recommendation = "review"

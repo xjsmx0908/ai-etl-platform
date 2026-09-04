@@ -121,16 +121,16 @@ type OverviewInput struct {
 }
 
 type OverviewItem struct {
-	DocumentID        string        `json:"document_id"`
-	FileName          string        `json:"file_name"`
-	Permission        string        `json:"permission"`
-	KnowledgeSpaceID   string        `json:"knowledge_space_id"`
-	State             string        `json:"state"`
-	Blockers          []string      `json:"blockers,omitempty"`
-	RequestID         string        `json:"request_id,omitempty"`
-	RequestState      RequestState  `json:"request_state,omitempty"`
-	RequiredApprovals int           `json:"required_approvals,omitempty"`
-	ApprovedDecisions int           `json:"approved_decisions,omitempty"`
+	DocumentID        string       `json:"document_id"`
+	FileName          string       `json:"file_name"`
+	Permission        string       `json:"permission"`
+	KnowledgeSpaceID  string       `json:"knowledge_space_id"`
+	State             string       `json:"state"`
+	Blockers          []string     `json:"blockers,omitempty"`
+	RequestID         string       `json:"request_id,omitempty"`
+	RequestState      RequestState `json:"request_state,omitempty"`
+	RequiredApprovals int          `json:"required_approvals,omitempty"`
+	ApprovedDecisions int          `json:"approved_decisions,omitempty"`
 }
 
 // ProjectOverview applies deterministic, human-readable state rules to one
@@ -139,7 +139,7 @@ type OverviewItem struct {
 func ProjectOverview(in OverviewInput) OverviewItem {
 	item := OverviewItem{DocumentID: in.DocumentID, FileName: in.FileName,
 		Permission: in.Permission, KnowledgeSpaceID: in.KnowledgeSpaceID,
-		RequestID: in.RequestID,
+		RequestID:    in.RequestID,
 		RequestState: in.RequestState, RequiredApprovals: in.RequiredApprovals,
 		ApprovedDecisions: in.ApprovedDecisions}
 	if in.PublicationStatus == "published" || in.RequestState == RequestPublished {

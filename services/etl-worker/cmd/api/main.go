@@ -409,8 +409,7 @@ func main() {
 		slog.Error("failed to create agent api service", "error", err)
 		os.Exit(1)
 	}
-	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc}, releaseCenterStore)
-	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
+	// releaseCoordinator is wired after the long-lived chunk reader below.
 	defer agentSvc.Close()
 	rateLimiter := middleware.NewTenantRateLimiter(cfg.EmbedRateLimit, 100)
 
@@ -468,7 +467,6 @@ func main() {
 	apiV1.Handle("/v1/release-center/requests", requireScopes(auth.ScopeAdmin)(handleReleaseCenterRequests(releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/overview", requireScopes(auth.ScopeAdmin)(handleReleaseCenterOverview(releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/requests/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterDecision(releaseCenterStore, publicationWorkflow)))
-	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	// Document registry: list/detail open to any authenticated role (filtered by
 	// the role→permission matrix); DELETE checks upload scope in-handler.
 	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore, qs)))
@@ -480,15 +478,20 @@ func main() {
 	esRetriever := retrieval.NewElasticRetriever(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, &http.Client{Timeout: 15 * time.Second})
 	apiV1.Handle("/v1/documents/search", http.HandlerFunc(handleDocumentSearch(cfg, docStore, esRetriever, qs, releaseVisibility)))
 	var chunksHandler http.Handler
+	var chunkStorerForReview *store.QdrantStorer
 	if chunkStorer, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension); err != nil {
 		slog.Warn("qdrant storer for chunk detail failed", "error", err)
 		chunksHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "vector store unavailable")
 		})
 	} else {
+		chunkStorerForReview = chunkStorer
 		defer chunkStorer.Close()
 		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorer, qs))
 	}
+	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc, documents: docStore, chunks: chunkStorerForReview}, releaseCenterStore)
+	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
+	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	apiV1.Handle("/v1/documents/{docID}/chunks", chunksHandler)
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))

@@ -57,9 +57,12 @@ review recommendation and evidence, but cannot edit metadata, alter access,
 choose the authoritative conflicting document, approve itself, or publish.
 
 In the first release, “Agent pre-review” is a bounded release-eligibility
-review: it receives the deterministic assessment result and records an
-untrusted recommendation/evidence envelope. It is not yet a content-semantic,
-privacy, or confidentiality classifier. Any future content review must define
+review. It receives the deterministic assessment result and the exact active
+candidate's chunks, records an untrusted recommendation/evidence envelope, and
+runs bounded deterministic checks for exposed secrets, obvious personal data,
+and prompt-injection phrases. These checks can escalate risk or block a
+recommendation, but they are not a complete content-semantic, privacy, or
+confidentiality classifier. Any future model-based content review must define
 its own document-content input, structured output schema, evidence references,
 prompt-injection handling, and fail-closed policy before being presented as a
 security or compliance control.

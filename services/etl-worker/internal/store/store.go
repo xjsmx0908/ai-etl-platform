@@ -513,13 +513,15 @@ func (q *QdrantStorer) ListDocs(ctx context.Context, limit, pageSize int) ([]Doc
 
 // StoredChunk is a chunk read back from a Qdrant payload (no vectors).
 type StoredChunk struct {
-	ChunkID    string
-	DocID      string
-	TenantID   string
-	Content    string
-	Index      int
-	Permission string
-	Metadata   map[string]string
+	ChunkID           string
+	DocID             string
+	TenantID          string
+	DocumentVersionID string
+	GenerationID      string
+	Content           string
+	Index             int
+	Permission        string
+	Metadata          map[string]string
 }
 
 // ListChunksByDoc scrolls all points for a (tenant, doc) visible to the given
@@ -585,11 +587,13 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 
 		for _, p := range sr.Result.Points {
 			chunk := StoredChunk{
-				ChunkID:    strVal(p.Payload["chunk_id"]),
-				DocID:      strVal(p.Payload["doc_id"]),
-				TenantID:   strVal(p.Payload["tenant_id"]),
-				Content:    strVal(p.Payload["content"]),
-				Permission: strVal(p.Payload["permission"]),
+				ChunkID:           strVal(p.Payload["chunk_id"]),
+				DocID:             strVal(p.Payload["doc_id"]),
+				TenantID:          strVal(p.Payload["tenant_id"]),
+				DocumentVersionID: strVal(p.Payload["document_version_id"]),
+				GenerationID:      strVal(p.Payload["generation_id"]),
+				Content:           strVal(p.Payload["content"]),
+				Permission:        strVal(p.Payload["permission"]),
 			}
 			if chunk.ChunkID == "" || chunk.Content == "" {
 				continue

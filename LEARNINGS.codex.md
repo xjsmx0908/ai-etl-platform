@@ -1664,3 +1664,34 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: release-center package tests pass. The remaining content-semantic
   Agent review is explicitly documented as future scope rather than implied by
   current risk labels.
+
+## 2026-09-04 — Content-level pre-review first slice
+
+- Perceive: the pre-review shell only replayed deterministic eligibility and
+  could not inspect exact candidate content for obvious secrets or prompt
+  injection.
+- Reason: add a small deterministic content-review module behind the existing
+  ReviewAdapter seam before introducing model-dependent semantics. Findings
+  must reference exact chunk IDs and never mix generations.
+- Act: added bounded scans for passwords/API keys, national IDs/phone numbers,
+  and prompt-injection phrases; confidential findings escalate to high risk,
+  internal sensitive findings block publication, and unavailable/mismatched
+  content fails closed. The production reviewer now reads and filters Qdrant
+  chunks by current version/generation before persisting findings.
+- Refine: content-review red/green tests plus releasecenter/store/API tests pass.
+  This is a first content safety slice, not a claim of complete semantic or
+  confidentiality classification.
+
+## 2026-09-04 — Content pre-review boundary hardening
+
+- Perceive: an all-blank exact-candidate chunk set was indistinguishable from a
+  successfully inspected document, and adapter outages were recorded as low
+  risk after being converted to manual exceptions.
+- Reason: content availability must be fail-closed, while review uncertainty
+  must remain visibly high risk for policy and operator decisions.
+- Act: blank-only content now returns `manual_review`/high risk; coordinator
+  failure normalization preserves high risk; added boundary and exact-candidate
+  reviewer tests.
+- Refine: all Go packages, Python contracts, Web lint/typecheck, diff checks,
+  and the deployed HTTP seam passed; query-api was rebuilt and healthy, the
+  release-center page returned 200, and unauthenticated overview returned 401.

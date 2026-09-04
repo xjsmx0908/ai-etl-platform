@@ -129,7 +129,7 @@ func TestCoordinatorEscalatesConfidentialAndAgentFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "failed" || request.State != RequestManualException || request.RequiredApprovals != 2 {
+	if report.Status != "failed" || report.RiskLevel != RiskHigh || request.State != RequestManualException || request.RequiredApprovals != 2 {
 		t.Fatalf("report=%+v request=%+v", report, request)
 	}
 }

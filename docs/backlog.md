@@ -199,6 +199,10 @@ Progress (2026-09-03):
   workbench: compact status summary, single queue, release-stage timeline,
   explicit Agent pre-review evidence, collapsed audit details, and last-sync
   observability. Backend approval and exact-candidate seams remain unchanged.
+- [x] Add the first content-level pre-review slice: deterministic scanning of
+  exact-candidate chunks for prompt injection and exposed sensitive data,
+  evidence references in review findings, risk escalation for confidential
+  content, and fail-closed handling for unavailable/mismatched content.
 
 The implementation gate requires focused Go/API/Web tests before code changes
 are considered complete, followed by the existing full verification suite.
