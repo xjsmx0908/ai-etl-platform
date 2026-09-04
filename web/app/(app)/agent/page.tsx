@@ -53,6 +53,14 @@ const REQUEST_STATES: Record<string, string> = {
   rejected: "已拒绝",
   published: "已发布",
 };
+const OVERVIEW_STATES: Record<string, string> = {
+  needs_info: "需补齐",
+  checking: "检查中",
+  review_blocked: "预审受阻",
+  approval_pending: "待审批",
+  published: "已发布",
+  rejected: "已拒绝",
+};
 const TOOLS: Record<string, string> = {
   assess_document_publication: "Agent 发布检查",
   publish_document: "发布动作",
@@ -78,6 +86,7 @@ export default function AgentPage() {
     [reason, setReason] = useState(""),
     [runID, setRunID] = useState(""),
     [filter, setFilter] = useState<"all" | "ready" | "attention">("all"),
+    [overviewFilter, setOverviewFilter] = useState("all"),
     [loading, setLoading] = useState(true),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -149,6 +158,11 @@ export default function AgentPage() {
     () => new Map(releaseOverview.map((item) => [item.document_id, item])),
     [releaseOverview],
   );
+  const overviewCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const item of releaseOverview) counts[item.state] = (counts[item.state] || 0) + 1;
+    return counts;
+  }, [releaseOverview]);
   const requestByDocument = useMemo(
     () => {
       const requests = new Map<string, ReleaseRequest>();
@@ -319,6 +333,28 @@ export default function AgentPage() {
           {manualExceptionCount > 0 && <p className="mt-1 text-xs text-amber-700">其中人工例外 {manualExceptionCount}</p>}
         </div>
       </div>
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-800">业务状态总览</h2>
+            <p className="mt-1 text-xs text-slate-500">状态由服务端确定性投影计算，申请详情仍以持久化记录为准。</p>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-slate-500">
+            <span>状态筛选</span>
+            <select value={overviewFilter} onChange={(event) => setOverviewFilter(event.target.value)} className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-700">
+              <option value="all">全部状态</option>
+              {Object.entries(OVERVIEW_STATES).map(([state, label]) => <option key={state} value={state}>{label}（{overviewCounts[state] || 0}）</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {Object.entries(OVERVIEW_STATES).map(([state, label]) => (
+            <button key={state} type="button" onClick={() => setOverviewFilter(state)} className={`rounded-full border px-3 py-1 text-xs ${overviewFilter === state ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+              {label} {overviewCounts[state] || 0}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="grid min-h-[560px] overflow-hidden rounded-xl border border-slate-200 bg-white lg:grid-cols-[330px_minmax(0,1fr)]">
         <aside className="border-b border-slate-200 lg:border-b-0 lg:border-r">
           <div className="border-b border-slate-200 p-4">
@@ -395,7 +431,7 @@ export default function AgentPage() {
             </div>
           </div>
           <div className="max-h-[500px] overflow-y-auto p-2">
-            {visible.map((d) => (
+            {visible.filter((d) => overviewFilter === "all" || overviewByDocument.get(d.doc_id)?.state === overviewFilter).map((d) => (
               <button
                 key={d.doc_id}
                 type="button"
@@ -471,6 +507,14 @@ export default function AgentPage() {
                   <div className="mt-3 text-xs text-slate-500">审批记录：{requestDetail.decisions.length ? requestDetail.decisions.map((d) => `${d.decided_by} ${d.decision}`).join(" · ") : "暂无"}</div>
                 </section>
               )}
+              {selectedDocumentID && overviewByDocument.get(selectedDocumentID)?.blockers?.length ? (
+                <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                  <h3 className="text-sm font-semibold text-amber-900">确定性门禁阻塞</h3>
+                  <div className="mt-2 space-y-1 text-sm text-amber-800">
+                    {overviewByDocument.get(selectedDocumentID)?.blockers?.map((blocker) => <p key={blocker}>{LABELS[blocker] || blocker}</p>)}
+                  </div>
+                </section>
+              ) : null}
               {!run && selected && (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
                   <p className="font-medium text-slate-800">知识发布流程</p>

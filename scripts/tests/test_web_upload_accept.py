@@ -74,6 +74,19 @@ class WebUploadAcceptTests(unittest.TestCase):
         self.assertIn("setSelectedRequestID(request.request_id)", page)
         self.assertIn("已批准 {approvedDecisionCount} / {requestDetail.request.required_approvals}", page)
 
+    def test_release_center_renders_business_state_filters_and_blockers(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        for expected in (
+            "状态筛选",
+            "全部状态",
+            "needs_info",
+            "review_blocked",
+            "approval_pending",
+            "blockers",
+            "确定性门禁阻塞",
+        ):
+            self.assertIn(expected, page)
+
 
 if __name__ == "__main__":
     unittest.main()
