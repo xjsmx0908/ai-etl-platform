@@ -134,6 +134,11 @@ class WebUploadAcceptTests(unittest.TestCase):
         self.assertNotIn("受管草稿", page)
         self.assertNotIn("审计/恢复 Run ID", page)
 
+    def test_release_center_does_not_claim_second_approval_after_terminal_decision(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        self.assertIn("审批已生效，发布流程已完成", page)
+        self.assertIn("detail.request.state === 'approval_pending'", page)
+
     def test_release_center_observability_has_dedicated_route_and_dashboard_panels(self):
         metrics = (ROOT / "services/etl-worker/internal/prometheus/metrics.go").read_text(encoding="utf-8")
         dashboard = (ROOT / "infrastructure/grafana/dashboards/ai-etl-platform.json").read_text(encoding="utf-8")
