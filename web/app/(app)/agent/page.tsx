@@ -84,10 +84,11 @@ export default function AgentPage() {
     return () => window.clearInterval(timer);
   }, [refreshReleaseCenter]);
   useEffect(() => {
-    const selected = requests.find((item) => item.request_id === selectedRequestID);
+    const selected = requests.find((item) => item.request_id === selectedRequestID)
+      || requests.find((item) => item.document_id === selectedOverviewID);
     if (!selected) { setDetail(null); return; }
     void apiClient.getReleaseRequest(selected.request_id).then(setDetail).catch(() => setDetail(null));
-  }, [requests, selectedRequestID]);
+  }, [requests, selectedRequestID, selectedOverviewID]);
 
   const byDocument = useMemo(() => new Map(overview.map((item) => [item.document_id, item])), [overview]);
   const visible = useMemo(() => {
