@@ -87,6 +87,25 @@ class WebUploadAcceptTests(unittest.TestCase):
         ):
             self.assertIn(expected, page)
 
+    def test_release_center_overview_rows_are_selectable_without_request_history(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        for expected in (
+            "业务状态记录",
+            "setSelectedOverviewID(item.document_id)",
+            "apiClient.getDocument(item.document_id)",
+            "overviewFilter === \"all\" || item.state === overviewFilter",
+        ):
+            self.assertIn(expected, page)
+
+    def test_release_center_switching_to_request_or_draft_clears_overview_selection(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        self.assertGreaterEqual(page.count("setSelectedOverviewID(\"\")"), 2)
+
+    def test_release_center_overview_selection_is_read_only_context(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        self.assertIn("selected && !run && !selectedRequest && !selectedOverview", page)
+        self.assertIn("!run && selected && !selectedOverview", page)
+
 
 if __name__ == "__main__":
     unittest.main()

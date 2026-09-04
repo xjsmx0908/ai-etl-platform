@@ -80,6 +80,7 @@ export default function AgentPage() {
     [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>([]),
     [releaseOverview, setReleaseOverview] = useState<ReleaseOverviewItem[]>([]),
     [selectedID, setSelectedID] = useState(""),
+    [selectedOverviewID, setSelectedOverviewID] = useState(""),
     [selectedRequestID, setSelectedRequestID] = useState(""),
     [run, setRun] = useState<AgentRun | null>(null),
     [approvals, setApprovals] = useState<AgentApproval[]>([]),
@@ -188,7 +189,24 @@ export default function AgentPage() {
   const currentUserDecision = requestDetail?.decisions.find(
     (decision) => decision.decided_by === user?.id,
   );
-  const selectedDocumentID = selectedRequest?.document_id || selected?.doc_id || "";
+  const selectedDocumentID = selectedRequest?.document_id || selected?.doc_id || selectedOverviewID || "";
+  const selectedOverview = releaseOverview.find((item) => item.document_id === selectedOverviewID);
+  const selectOverview = async (item: ReleaseOverviewItem) => {
+    setSelectedOverviewID(item.document_id);
+    setSelectedID(item.document_id);
+    setSelectedRequestID(item.request_id || "");
+    setRun(null);
+    setApprovals([]);
+    setReason("");
+    if (!documents.some((document) => document.doc_id === item.document_id)) {
+      try {
+        const document = await apiClient.getDocument(item.document_id);
+        setDocuments((items) => [...items, document]);
+      } catch {
+        setError("无法加载文档详情");
+      }
+    }
+  };
   const applyRun = async (next: AgentRun) => {
     setRun(next);
     setApprovals(
@@ -359,6 +377,30 @@ export default function AgentPage() {
         <aside className="border-b border-slate-200 lg:border-b-0 lg:border-r">
           <div className="border-b border-slate-200 p-4">
             <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-800">业务状态记录</h2>
+              <Badge tone="brand">{releaseOverview.length}</Badge>
+            </div>
+            <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+              {releaseOverview
+                .filter((item) => overviewFilter === "all" || item.state === overviewFilter)
+                .map((item) => (
+                  <button
+                    key={item.document_id}
+                    type="button"
+                    onClick={() => void selectOverview(item)}
+                    className={`w-full rounded-lg border px-3 py-2 text-left ${selectedOverviewID === item.document_id ? "border-indigo-200 bg-indigo-50" : "border-transparent hover:bg-slate-50"}`}
+                  >
+                    <span className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-medium">{item.file_name || item.document_id}</span>
+                      <Badge tone={item.state === "published" ? "success" : item.state === "rejected" ? "danger" : "warning"}>{OVERVIEW_STATES[item.state] || item.state}</Badge>
+                    </span>
+                    {item.blockers?.length ? <span className="mt-1 block truncate text-xs text-amber-700">{item.blockers.length} 项阻塞</span> : null}
+                  </button>
+                ))}
+            </div>
+          </div>
+          <div className="border-b border-slate-200 p-4">
+            <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-800">发布申请</h2>
               <Badge tone="brand">{releaseRequests.length}</Badge>
             </div>
@@ -377,6 +419,7 @@ export default function AgentPage() {
                 key={request.request_id}
                 type="button"
                 onClick={() => {
+                  setSelectedOverviewID("");
                   setSelectedRequestID(request.request_id);
                   setSelectedID(request.document_id);
                   setRun(null);
@@ -436,6 +479,7 @@ export default function AgentPage() {
                 key={d.doc_id}
                 type="button"
                 onClick={() => {
+                  setSelectedOverviewID("");
                   setSelectedID(d.doc_id);
                   setSelectedRequestID(requestByDocument.get(d.doc_id)?.request_id || "");
                   setRun(null);
@@ -459,7 +503,7 @@ export default function AgentPage() {
           </div>
         </aside>
         <section className="min-w-0 p-5 sm:p-6">
-          {!selected && !selectedRequest ? (
+          {!selected && !selectedRequest && !selectedOverview ? (
             <div className="flex min-h-[460px] items-center justify-center text-sm text-slate-400">
               暂无待治理文档
             </div>
@@ -470,7 +514,7 @@ export default function AgentPage() {
                   <div className="flex items-center gap-2">
                     <FileCheck2 className="h-5 w-5 text-blue-600" />
                     <h2 className="truncate text-base font-semibold">
-                      {selected?.file_name || selectedRequest?.document_id}
+                      {selected?.file_name || selectedRequest?.document_id || selectedOverview?.file_name || selectedOverview?.document_id}
                     </h2>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-4 text-xs text-slate-500">
@@ -480,12 +524,17 @@ export default function AgentPage() {
                         <span>生效日期：{selected.effective_date || "未填写"}</span>
                         <span>空间：{selected.knowledge_space_id}</span>
                       </>
+                    ) : selectedOverview ? (
+                      <>
+                        <span>空间：{selectedOverview.knowledge_space_id}</span>
+                        <span>状态：{OVERVIEW_STATES[selectedOverview.state] || selectedOverview.state}</span>
+                      </>
                     ) : (
                       <span>文档：{selectedRequest?.document_id}</span>
                     )}
                   </div>
                 </div>
-                {selected && !run && !selectedRequest && (
+                {selected && !run && !selectedRequest && !selectedOverview && (
                   <Button
                     onClick={() => void start()}
                     loading={busy}
@@ -515,7 +564,7 @@ export default function AgentPage() {
                   </div>
                 </section>
               ) : null}
-              {!run && selected && (
+              {!run && selected && !selectedOverview && (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
                   <p className="font-medium text-slate-800">知识发布流程</p>
                   <p className="mt-1">

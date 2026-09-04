@@ -1572,3 +1572,18 @@ This file is an append-only record of completed PRAR cycles.
   matched 44 published and 3 retired catalog rows.
 - Refine: no business data or credentials changed; containers remain healthy
   and the repository stays clean after the acceptance commit.
+
+## 2026-09-04 — Direct overview record selection
+
+- Perceive: overview states were filterable and counted, but only request
+  history rows were selectable; published, rejected, and no-request records
+  could not open a detail context.
+- Reason: keep `document_id` as the read-side selection identity and load
+  document metadata lazily only when the existing document list lacks the row.
+  Request detail remains authoritative for approvals, while switching back to a
+  request or draft clears the overview selection.
+- Act: added a business-status record queue, shared status filtering, lazy
+  document loading, selected overview metadata/blocker display, and a guard
+  against stale selection state.
+- Refine: Web boundary tests, ESLint, TypeScript, production build, and diff
+  checks pass. No approval/publication/PDF behavior changed.

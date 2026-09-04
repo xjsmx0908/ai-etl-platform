@@ -182,6 +182,11 @@ Progress (2026-09-03):
   overview API and Web proxy. The default tenant returned 47 managed rows:
   44 `published` and 3 deterministic `needs_info` rows matching the catalog's
   44 published and 3 retired documents; unauthenticated access remains 401.
+- [x] Make overview rows directly selectable in the Web release center,
+  including `published`, `rejected`, and `needs_info` records without a durable
+  request. Selecting a row loads document metadata when needed and shows its
+  business state/blockers; switching back to a request or draft clears the
+  overview selection.
 
 The implementation gate requires focused Go/API/Web tests before code changes
 are considered complete, followed by the existing full verification suite.
