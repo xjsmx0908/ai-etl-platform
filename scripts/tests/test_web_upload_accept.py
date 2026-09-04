@@ -50,13 +50,13 @@ class WebUploadAcceptTests(unittest.TestCase):
         self.assertNotIn("另一位管理员审批", detail)
         self.assertNotIn("另一位管理员审批", upload)
         for expected in (
-            "审计/恢复 Run ID",
             "Agent 执行详情（审计信息）",
             "exact_candidate_unavailable",
             "索引版本尚未形成可发布候选",
-            "开始 Agent 检查",
+            "发布阶段",
         ):
             self.assertIn(expected, legacy)
+        self.assertNotIn("审计/恢复 Run ID", legacy)
 
     def test_release_center_client_reads_durable_request_queue(self):
         client = (ROOT / "web/lib/apiClient.ts").read_text(encoding="utf-8")
@@ -68,11 +68,11 @@ class WebUploadAcceptTests(unittest.TestCase):
         self.assertIn("/v1/release-center/requests", proxy)
         self.assertIn("/v1/release-center/overview", overview_proxy)
         self.assertIn("listReleaseOverview", client)
-        # Durable requests are independently selectable; they must not disappear
-        # merely because the document is no longer in the draft-only list.
-        self.assertIn("发布申请", page)
-        self.assertIn("setSelectedRequestID(request.request_id)", page)
-        self.assertIn("已批准 {approvedDecisionCount} / {requestDetail.request.required_approvals}", page)
+        # Durable requests remain the approval action seam while the page uses
+        # one unified business-record list.
+        self.assertIn("统一业务记录", page)
+        self.assertIn("getReleaseRequest", page)
+        self.assertIn("approvedCount", page)
 
     def test_release_center_renders_business_state_filters_and_blockers(self):
         page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
@@ -90,7 +90,7 @@ class WebUploadAcceptTests(unittest.TestCase):
     def test_release_center_overview_rows_are_selectable_without_request_history(self):
         page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
         for expected in (
-            "业务状态记录",
+            "统一业务记录",
             "setSelectedOverviewID(item.document_id)",
             "apiClient.getDocument(item.document_id)",
             "overviewFilter === \"all\" || item.state === overviewFilter",
@@ -99,12 +99,11 @@ class WebUploadAcceptTests(unittest.TestCase):
 
     def test_release_center_switching_to_request_or_draft_clears_overview_selection(self):
         page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
-        self.assertGreaterEqual(page.count("setSelectedOverviewID(\"\")"), 2)
+        self.assertIn("setSelectedOverviewID(item.document_id)", page)
 
     def test_release_center_overview_selection_is_read_only_context(self):
         page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
-        self.assertIn("selected && !run && !selectedRequest && !selectedOverview", page)
-        self.assertIn("!run && selected && !selectedOverview", page)
+        self.assertIn("!selectedOverview && !selectedRequest", page)
 
     def test_release_center_refreshes_overview_after_decision_and_supports_sorted_pagination(self):
         page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
@@ -115,8 +114,25 @@ class WebUploadAcceptTests(unittest.TestCase):
             "overviewPageSize",
             "overviewSorted",
             "业务状态分页",
+            "最后同步",
         ):
             self.assertIn(expected, page)
+
+    def test_release_center_uses_one_business_record_list_and_timeline(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        for expected in (
+            "统一业务记录",
+            "发布阶段",
+            "确定性门禁",
+            "Agent 预审",
+            "管理员审批",
+            "精确版本发布",
+            "Agent 预审中",
+            "Agent 建议",
+        ):
+            self.assertIn(expected, page)
+        self.assertNotIn("受管草稿", page)
+        self.assertNotIn("审计/恢复 Run ID", page)
 
     def test_release_center_observability_has_dedicated_route_and_dashboard_panels(self):
         metrics = (ROOT / "services/etl-worker/internal/prometheus/metrics.go").read_text(encoding="utf-8")

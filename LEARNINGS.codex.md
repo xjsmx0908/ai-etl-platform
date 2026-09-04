@@ -1615,3 +1615,20 @@ This file is an append-only record of completed PRAR cycles.
   the existing configuration validation as the executable invariant.
 - Refine: the targeted regression and all 168 Python tests pass; no live data
   or credentials were changed.
+
+## 2026-09-04 — Knowledge release center workbench redesign
+
+- Perceive: the legacy page exposed Run-ID recovery and three overlapping
+  queues, which made the durable release request and Agent pre-review state
+  difficult to observe as one business workflow.
+- Reason: keep the overview projection and release-request decision endpoints
+  as the external seams, then concentrate UI complexity behind one unified
+  record list and a four-stage publication timeline.
+- Act: removed the top-level Run ID workflow and large statistic cards; added
+  compact state filters, search/sort/pagination, 8-second silent refresh,
+  last-sync time, explicit Agent pre-review/risk/recommendation evidence, and
+  collapsed Agent Run audit details. Approval controls still call the durable
+  request decision seam and manual-exception reason validation remains intact.
+- Refine: Web contract tests and static checks pass; deployment HTTP seam is
+  used for final route/authentication verification. No backend approval,
+  exact-candidate, or PDF behavior changed.

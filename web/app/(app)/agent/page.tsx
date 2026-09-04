@@ -2,786 +2,151 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Bot,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  FileCheck2,
-  Play,
-  RefreshCw,
-  Search,
-  ShieldCheck,
-  X,
-  XCircle,
-} from "lucide-react";
+import { Check, ChevronDown, FileCheck2, RefreshCw, Search, X } from "lucide-react";
 import { apiClient } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Forbidden } from "@/components/ui/Forbidden";
-import type {
-  AgentApproval,
-  AgentRun,
-  Document,
-  ReleaseRequest,
-  ReleaseOverviewItem,
-} from "@/lib/types";
+import type { AgentRun, Document, ReleaseOverviewItem, ReleaseRequest, ReleaseRequestDetail } from "@/lib/types";
 
-const LABELS: Record<string, string> = {
-  managed_space_required: "文档不在受管知识空间",
-  ingestion_not_completed: "ETL 尚未完成",
-  document_not_active: "文档状态不是有效",
-  document_not_publishable: "文档当前不可发布",
-  owner_required: "缺少责任人",
-  effective_date_required: "缺少生效日期",
+const STATE_LABELS: Record<string, string> = {
+  needs_info: "需补齐", checking: "Agent 预审中", review_blocked: "预审受阻",
+  approval_pending: "待审批", published: "已发布", rejected: "已拒绝",
+};
+const REQUEST_LABELS: Record<string, string> = {
+  approval_pending: "待审批", manual_exception: "人工例外", needs_info: "候选已失效",
+  rejected: "已拒绝", published: "已发布",
+};
+const BLOCKER_LABELS: Record<string, string> = {
+  managed_space_required: "文档不在受管知识空间", ingestion_not_completed: "ETL 尚未完成",
+  document_not_active: "文档状态不是有效", document_not_publishable: "文档当前不可发布",
+  owner_required: "缺少责任人", effective_date_required: "缺少生效日期",
   exact_candidate_unavailable: "索引版本尚未形成可发布候选",
 };
-const STATES: Record<string, string> = {
-  pending_approval: "待审批",
-  completed: "已完成",
-  failed: "检查失败",
-  cancelled: "已取消",
-  running: "检查中",
-  waiting_tool: "检查中",
-  created: "待执行",
-};
-const REQUEST_STATES: Record<string, string> = {
-  approval_pending: "待审批",
-  manual_exception: "人工例外",
-  needs_info: "候选已失效",
-  rejected: "已拒绝",
-  published: "已发布",
-};
-const OVERVIEW_STATES: Record<string, string> = {
-  needs_info: "需补齐",
-  checking: "检查中",
-  review_blocked: "预审受阻",
-  approval_pending: "待审批",
-  published: "已发布",
-  rejected: "已拒绝",
-};
-const TOOLS: Record<string, string> = {
-  assess_document_publication: "Agent 发布检查",
-  publish_document: "发布动作",
-};
-const tone = (s: string): "success" | "danger" | "warning" | "info" =>
-  s === "completed"
-    ? "success"
-    : s === "failed" || s === "cancelled"
-      ? "danger"
-      : s === "running" || s === "waiting_tool"
-        ? "info"
-        : "warning";
+
+function tone(state: string): "success" | "danger" | "warning" | "info" {
+  if (state === "published") return "success";
+  if (state === "rejected") return "danger";
+  if (state === "checking") return "info";
+  return "warning";
+}
+
+function relativeTime(value: number | null) {
+  if (!value) return "尚未同步";
+  const seconds = Math.max(0, Math.floor((Date.now() - value) / 1000));
+  return seconds < 5 ? "刚刚" : `${seconds} 秒前`;
+}
 
 export default function AgentPage() {
   const { user, isAdmin } = useAuth();
-  const [documents, setDocuments] = useState<Document[]>([]),
-    [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>([]),
-    [releaseOverview, setReleaseOverview] = useState<ReleaseOverviewItem[]>([]),
-    [selectedID, setSelectedID] = useState(""),
-    [selectedOverviewID, setSelectedOverviewID] = useState(""),
-    [selectedRequestID, setSelectedRequestID] = useState(""),
-    [run, setRun] = useState<AgentRun | null>(null),
-    [approvals, setApprovals] = useState<AgentApproval[]>([]),
-    [reason, setReason] = useState(""),
-    [runID, setRunID] = useState(""),
-    [filter, setFilter] = useState<"all" | "ready" | "attention">("all"),
-    [overviewFilter, setOverviewFilter] = useState("all"),
-    [overviewSort, setOverviewSort] = useState<"priority" | "name">("priority"),
-    [overviewPage, setOverviewPage] = useState(1),
-    [overviewPageSize, setOverviewPageSize] = useState(10),
-    [loading, setLoading] = useState(true),
-    [refreshing, setRefreshing] = useState(false),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [requestDetail, setRequestDetail] = useState<import("@/lib/types").ReleaseRequestDetail | null>(null);
-  const refreshReleaseCenter = useCallback(async () => {
-    if (!isAdmin) {
-      setLoading(false);
-      return;
-    }
-    setRefreshing(true);
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [requests, setRequests] = useState<ReleaseRequest[]>([]);
+  const [overview, setOverview] = useState<ReleaseOverviewItem[]>([]);
+  const [selectedOverviewID, setSelectedOverviewID] = useState("");
+  const [selectedRequestID, setSelectedRequestID] = useState("");
+  const [detail, setDetail] = useState<ReleaseRequestDetail | null>(null);
+  const [run, setRun] = useState<AgentRun | null>(null);
+  const [reason, setReason] = useState("");
+  const [overviewFilter, setOverviewFilter] = useState("all");
+  const [overviewSort, setOverviewSort] = useState<"priority" | "name">("priority");
+  const [overviewPage, setOverviewPage] = useState(1);
+  const [overviewPageSize, setOverviewPageSize] = useState(10);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+
+  const refreshReleaseCenter = useCallback(async (quiet = false) => {
+    if (!isAdmin) { setLoading(false); return; }
+    if (!quiet) setRefreshing(true);
     try {
-      const [documentResponse, requestResponse, overviewResponse] = await Promise.all([
-      apiClient.listDocuments({ limit: 100 }),
-      apiClient.listReleaseRequests(),
-      apiClient.listReleaseOverview(),
+      const [docs, reqs, states] = await Promise.all([
+        apiClient.listDocuments({ limit: 100 }), apiClient.listReleaseRequests(), apiClient.listReleaseOverview(),
       ]);
-      const ds = documentResponse.items.filter(
-        (d) =>
-          d.knowledge_space_id &&
-          d.knowledge_space_id !== "user-uploads" &&
-          d.publication_status === "draft",
-      );
-      setDocuments(ds);
-      setReleaseRequests(requestResponse.items);
-      setReleaseOverview(overviewResponse.items);
-      const firstRequest =
-        requestResponse.items.find(
-          (request) =>
-            request.state === "approval_pending" ||
-            request.state === "manual_exception",
-        ) ?? requestResponse.items[0];
-      setSelectedRequestID((value) => value || firstRequest?.request_id || "");
-      setSelectedID(
-        (value) => value || firstRequest?.document_id || ds[0]?.doc_id || "",
-      );
-      setOverviewPage(1);
+      setDocuments(docs.items);
+      setRequests(reqs.items);
+      setOverview(states.items);
+      setLastSyncedAt(Date.now());
+      setSelectedOverviewID((id) => id || states.items[0]?.document_id || "");
     } catch (e: unknown) {
       setError((e as Error).message || "无法刷新发布中心");
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setLoading(false); if (!quiet) setRefreshing(false);
     }
   }, [isAdmin]);
-  useEffect(() => {
-    void refreshReleaseCenter();
-  }, [refreshReleaseCenter]);
-  const selected = useMemo(
-    () => documents.find((d) => d.doc_id === selectedID) ?? null,
-    [documents, selectedID],
-  );
-  const data = run?.steps.find(
-    (s) => s.tool_name === "assess_document_publication",
-  )?.tool_result?.data;
-  const blockers = Array.isArray(data?.blockers)
-    ? data.blockers.filter((x): x is string => typeof x === "string")
-    : [];
-  const approval = approvals.find(
-    (a) => a.status === "pending" || a.status === "approved",
-  );
-  const ready = (d: Document) => Boolean(d.owner && d.effective_date),
-    readyCount = documents.filter(ready).length;
-  const visible = documents.filter(
-    (d) => filter === "all" || (filter === "ready" ? ready(d) : !ready(d)),
-  );
-  const pendingRequestCount = releaseRequests.filter(
-    (request) => request.state === "approval_pending" || request.state === "manual_exception",
-  ).length;
-  const manualExceptionCount = releaseRequests.filter((request) => request.state === "manual_exception").length;
-  const overviewByDocument = useMemo(
-    () => new Map(releaseOverview.map((item) => [item.document_id, item])),
-    [releaseOverview],
-  );
-  const overviewCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const item of releaseOverview) counts[item.state] = (counts[item.state] || 0) + 1;
-    return counts;
-  }, [releaseOverview]);
-  const overviewFiltered = useMemo(
-    () => releaseOverview.filter((item) => overviewFilter === "all" || item.state === overviewFilter),
-    [overviewFilter, releaseOverview],
-  );
-  const overviewSorted = useMemo(() => {
-    const priority: Record<string, number> = {
-      approval_pending: 0,
-      review_blocked: 1,
-      checking: 2,
-      needs_info: 3,
-      rejected: 4,
-      published: 5,
-    };
-    return [...overviewFiltered].sort((a, b) => {
-      if (overviewSort === "name") {
-        return (a.file_name || a.document_id).localeCompare(b.file_name || b.document_id, "zh-CN");
-      }
-      return (priority[a.state] ?? 99) - (priority[b.state] ?? 99) ||
-        (a.file_name || a.document_id).localeCompare(b.file_name || b.document_id, "zh-CN");
-    });
-  }, [overviewFiltered, overviewSort]);
-  const overviewPageCount = Math.max(1, Math.ceil(overviewSorted.length / overviewPageSize));
-  const overviewPageItems = overviewSorted.slice(
-    (overviewPage - 1) * overviewPageSize,
-    overviewPage * overviewPageSize,
-  );
-  useEffect(() => {
-    if (overviewPage > overviewPageCount) setOverviewPage(overviewPageCount);
-  }, [overviewPage, overviewPageCount]);
-  const requestByDocument = useMemo(
-    () => {
-      const requests = new Map<string, ReleaseRequest>();
-      for (const request of releaseRequests) {
-        if (!requests.has(request.document_id)) {
-          requests.set(request.document_id, request);
-        }
-      }
-      return requests;
-    },
-    [releaseRequests],
-  );
-  const selectedRequest =
-    releaseRequests.find((request) => request.request_id === selectedRequestID) ??
-    (selected ? requestByDocument.get(selected.doc_id) : undefined);
-  useEffect(() => {
-    if (!selectedRequest) { setRequestDetail(null); return; }
-    apiClient.getReleaseRequest(selectedRequest.request_id).then(setRequestDetail).catch(() => setRequestDetail(null));
-  }, [selectedRequest]);
-  const approvedDecisionCount = requestDetail?.decisions.filter(
-    (decision) => decision.decision === "approved",
-  ).length ?? 0;
-  const currentUserDecision = requestDetail?.decisions.find(
-    (decision) => decision.decided_by === user?.id,
-  );
-  const selectedDocumentID = selectedRequest?.document_id || selected?.doc_id || selectedOverviewID || "";
-  const selectedOverview = releaseOverview.find((item) => item.document_id === selectedOverviewID);
-  const selectOverview = async (item: ReleaseOverviewItem) => {
-    setSelectedOverviewID(item.document_id);
-    setSelectedID(item.document_id);
-    setSelectedRequestID(item.request_id || "");
-    setRun(null);
-    setApprovals([]);
-    setReason("");
-    if (!documents.some((document) => document.doc_id === item.document_id)) {
-      try {
-        const document = await apiClient.getDocument(item.document_id);
-        setDocuments((items) => [...items, document]);
-      } catch {
-        setError("无法加载文档详情");
-      }
-    }
-  };
-  const applyRun = async (next: AgentRun) => {
-    setRun(next);
-    setApprovals(
-      next.state === "pending_approval"
-        ? await apiClient.listAgentApprovals(next.id)
-        : [],
-    );
-    if (
-      next.steps.some(
-        (s) =>
-          s.tool_name === "publish_document" &&
-          s.tool_result?.data?.publication_status === "published",
-      )
-    )
-      setDocuments((items) => items.filter((d) => d.doc_id !== selectedID));
-    if (next.steps.some((step) => step.tool_name === "publish_document" && step.tool_result?.data?.publication_status === "published")) {
-      await refreshReleaseCenter();
-    }
-  };
-  const start = async () => {
-    if (!selected) return;
-    setBusy(true);
-    setError("");
-    setRun(null);
-    try {
-      await applyRun(
-        await apiClient.createDocumentPublicationRun(selected.doc_id),
-      );
-    } catch (e: unknown) {
-      setError((e as Error).message || "发布检查失败");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const openRun = async () => {
-    if (!runID.trim()) return;
-    setBusy(true);
-    setError("");
-    try {
-      const next = await apiClient.getAgentRun(runID.trim());
-      const id = next.task.startsWith("document_publication:")
-        ? next.task.slice(21)
-        : "";
-      if (id) {
-        if (!documents.some((d) => d.doc_id === id)) {
-          const document = await apiClient.getDocument(id);
-          setDocuments((items) => [...items, document]);
-        }
-        setSelectedID(id);
-      }
-      await applyRun(next);
-      setRunID("");
-    } catch (e: unknown) {
-      setError((e as Error).message || "无法打开运行");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const decideRelease = async (decision: "approved" | "rejected") => {
-    if (!requestDetail) return;
-    setBusy(true);
-    setError("");
-    try {
-      const detail = await apiClient.decideReleaseRequest(requestDetail.request.request_id, decision, reason);
-      setRequestDetail(detail);
-      setReleaseRequests((items) => items.map((item) => item.request_id === detail.request.request_id ? detail.request : item));
-      setReason("");
-      await refreshReleaseCenter();
-    } catch (e: unknown) {
-      setError((e as Error).message || "审批操作失败");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const act = async (action: "approve" | "reject" | "cancel" | "resume") => {
-    if (!run) return;
-    setBusy(true);
-    setError("");
-    try {
-      const next =
-        action === "approve"
-          ? await apiClient.approveAgentRun(run.id, reason)
-          : action === "reject"
-            ? await apiClient.rejectAgentRun(run.id, reason)
-            : action === "cancel"
-              ? await apiClient.cancelAgentRun(run.id, reason)
-              : await apiClient.resumeAgentRun(run.id);
-      await applyRun(next);
-      setReason("");
-    } catch (e: unknown) {
-      setError((e as Error).message || "操作失败");
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (!isAdmin) return <Forbidden message="知识发布中心仅管理员可见。" />;
 
+  useEffect(() => { void refreshReleaseCenter(); }, [refreshReleaseCenter]);
+  useEffect(() => {
+    const timer = window.setInterval(() => void refreshReleaseCenter(true), 8000);
+    return () => window.clearInterval(timer);
+  }, [refreshReleaseCenter]);
+  useEffect(() => {
+    const selected = requests.find((item) => item.request_id === selectedRequestID);
+    if (!selected) { setDetail(null); return; }
+    void apiClient.getReleaseRequest(selected.request_id).then(setDetail).catch(() => setDetail(null));
+  }, [requests, selectedRequestID]);
+
+  const byDocument = useMemo(() => new Map(overview.map((item) => [item.document_id, item])), [overview]);
+  const visible = useMemo(() => {
+    const priority: Record<string, number> = { approval_pending: 0, review_blocked: 1, checking: 2, needs_info: 3, rejected: 4, published: 5 };
+    return overview.filter((item) => overviewFilter === "all" || item.state === overviewFilter)
+      .filter((item) => !query.trim() || `${item.file_name} ${item.document_id} ${item.knowledge_space_id}`.toLowerCase().includes(query.trim().toLowerCase()))
+      .sort((a, b) => overviewSort === "name" ? (a.file_name || a.document_id).localeCompare(b.file_name || b.document_id, "zh-CN") : (priority[a.state] ?? 99) - (priority[b.state] ?? 99));
+  }, [overview, overviewFilter, overviewSort, query]);
+  const overviewSorted = visible;
+  const pageCount = Math.max(1, Math.ceil(overviewSorted.length / overviewPageSize));
+  const pageItems = overviewSorted.slice((overviewPage - 1) * overviewPageSize, overviewPage * overviewPageSize);
+  const selectedOverview = byDocument.get(selectedOverviewID);
+  const selectedRequest = requests.find((item) => item.request_id === selectedRequestID) || (selectedOverview?.request_id ? requests.find((item) => item.request_id === selectedOverview.request_id) : undefined);
+  const selectedDocument = documents.find((item) => item.doc_id === (selectedOverviewID || selectedRequest?.document_id));
+  const approvedCount = detail?.decisions.filter((item) => item.decision === "approved").length ?? selectedOverview?.approved_decisions ?? 0;
+  const currentDecision = detail?.decisions.find((item) => item.decided_by === user?.id);
+
+  const selectItem = async (item: ReleaseOverviewItem) => {
+    setSelectedOverviewID(item.document_id); setSelectedRequestID(item.request_id || ""); setRun(null); setReason("");
+    if (!documents.some((doc) => doc.doc_id === item.document_id)) {
+      try { setDocuments((docs) => docs); const doc = await apiClient.getDocument(item.document_id); setDocuments((docs) => [...docs, doc]); }
+      catch { setError("无法加载文档详情"); }
+    }
+  };
+  const decide = async (decision: "approved" | "rejected") => {
+    if (!detail) return;
+    setBusy(true); setError("");
+    try { const next = await apiClient.decideReleaseRequest(detail.request.request_id, decision, reason); setDetail(next); setReason(""); await refreshReleaseCenter(); }
+    catch (e: unknown) { setError((e as Error).message || "审批操作失败"); }
+    finally { setBusy(false); }
+  };
+
+  if (!isAdmin) return <Forbidden />;
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Bot className="h-5 w-5 text-indigo-600" />
-            <h1 className="text-xl font-semibold text-slate-900">
-              知识发布中心
-            </h1>
-          </div>
-          <p className="mt-1 text-sm text-slate-500">
-            确定性发布门禁、Agent 预审与管理员审批。
-          </p>
-        </div>
-        <details className="relative">
-          <summary className="flex cursor-pointer list-none items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-            <Search className="h-3.5 w-3.5" />
-            审计/恢复 Run ID
-            <ChevronDown className="h-3.5 w-3.5" />
-          </summary>
-          <div className="absolute right-0 z-10 mt-2 flex w-80 gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
-            <input
-              value={runID}
-              onChange={(e) => setRunID(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void openRun()}
-              placeholder="粘贴 Run ID"
-              className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2 text-xs"
-            />
-            <Button size="sm" loading={busy} onClick={() => void openRun()}>
-              打开
-            </Button>
-          </div>
-        </details>
+    <div className="mx-auto max-w-[1500px] space-y-4 p-4 sm:p-6">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div><h1 className="text-2xl font-semibold text-slate-900">知识发布中心</h1><p className="mt-1 text-sm text-slate-500">统一查看发布状态、Agent 预审证据与管理员审批进度。</p></div>
+        <div className="flex items-center gap-2"><span className="text-xs text-slate-400">最后同步：{relativeTime(lastSyncedAt)}</span><Button variant="secondary" size="sm" icon={RefreshCw} loading={refreshing} onClick={() => void refreshReleaseCenter()}>刷新状态</Button></div>
+      </header>
+      {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+      {loading && <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">正在同步发布状态…</div>}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm"><span className="px-2 text-xs font-medium text-slate-500">状态筛选</span>
+        {[['all','全部状态'],['needs_info','需补齐'],['checking','处理中'],['review_blocked','预审受阻'],['approval_pending','待审批'],['published','已发布'],['rejected','已拒绝']].map(([key,label]) => <button key={key} type="button" onClick={() => { setOverviewFilter(key); setOverviewPage(1); }} className={`rounded-lg px-3 py-2 text-sm ${overviewFilter === key ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{label} <span className="ml-1 text-xs opacity-70">{key === 'all' ? overview.length : overview.filter((item) => item.state === key).length}</span></button>)}
       </div>
-      {error && (
-        <div className="border-l-2 border-red-500 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 bg-white p-4">
-          <p className="text-xs text-slate-500">待治理文档</p>
-          <p className="mt-1 text-2xl font-semibold">
-            {loading ? "—" : documents.length}
-          </p>
-        </div>
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
-          <p className="text-xs text-emerald-700">资料完整，可检查</p>
-          <p className="mt-1 text-2xl font-semibold text-emerald-800">
-            {readyCount}
-          </p>
-        </div>
-        <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4">
-          <p className="text-xs text-amber-700">需要补齐信息</p>
-          <p className="mt-1 text-2xl font-semibold text-amber-800">
-            {documents.length - readyCount}
-          </p>
-        </div>
-        <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-4">
-          <p className="text-xs text-blue-700">待处理申请</p>
-          <p className="mt-1 text-2xl font-semibold text-blue-800">
-            {pendingRequestCount}
-          </p>
-          {manualExceptionCount > 0 && <p className="mt-1 text-xs text-amber-700">其中人工例外 {manualExceptionCount}</p>}
-        </div>
-      </div>
-      <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-800">业务状态总览</h2>
-            <p className="mt-1 text-xs text-slate-500">状态由服务端确定性投影计算，申请详情仍以持久化记录为准。</p>
-          </div>
-          <label className="flex items-center gap-2 text-xs text-slate-500">
-            <span>状态筛选</span>
-            <select value={overviewFilter} onChange={(event) => { setOverviewFilter(event.target.value); setOverviewPage(1); }} className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-700">
-              <option value="all">全部状态</option>
-              {Object.entries(OVERVIEW_STATES).map(([state, label]) => <option key={state} value={state}>{label}（{overviewCounts[state] || 0}）</option>)}
-            </select>
-          </label>
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {Object.entries(OVERVIEW_STATES).map(([state, label]) => (
-            <button key={state} type="button" onClick={() => { setOverviewFilter(state); setOverviewPage(1); }} className={`rounded-full border px-3 py-1 text-xs ${overviewFilter === state ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
-              {label} {overviewCounts[state] || 0}
-            </button>
-          ))}
-          <select aria-label="状态排序" value={overviewSort} onChange={(event) => { setOverviewSort(event.target.value as "priority" | "name"); setOverviewPage(1); }} className="ml-auto rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600">
-            <option value="priority">优先级排序</option>
-            <option value="name">名称排序</option>
-          </select>
-          <button type="button" onClick={() => void refreshReleaseCenter()} disabled={refreshing} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50">
-            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
-            {refreshing ? "刷新中" : "刷新状态"}
-          </button>
-        </div>
-      </div>
-      <div className="grid min-h-[560px] overflow-hidden rounded-xl border border-slate-200 bg-white lg:grid-cols-[330px_minmax(0,1fr)]">
-        <aside className="border-b border-slate-200 lg:border-b-0 lg:border-r">
-          <div className="border-b border-slate-200 p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-800">业务状态记录</h2>
-              <Badge tone="brand">{releaseOverview.length}</Badge>
-            </div>
-            <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
-              {overviewPageItems.map((item) => (
-                  <button
-                    key={item.document_id}
-                    type="button"
-                    onClick={() => void selectOverview(item)}
-                    className={`w-full rounded-lg border px-3 py-2 text-left ${selectedOverviewID === item.document_id ? "border-indigo-200 bg-indigo-50" : "border-transparent hover:bg-slate-50"}`}
-                  >
-                    <span className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">{item.file_name || item.document_id}</span>
-                      <Badge tone={item.state === "published" ? "success" : item.state === "rejected" ? "danger" : "warning"}>{OVERVIEW_STATES[item.state] || item.state}</Badge>
-                    </span>
-                    {item.blockers?.length ? <span className="mt-1 block truncate text-xs text-amber-700">{item.blockers.length} 项阻塞</span> : null}
-                  </button>
-                ))}
-            </div>
-            <div className="mt-2 flex items-center justify-between px-1 text-xs text-slate-400">
-              <span>业务状态分页 {overviewSorted.length ? `${(overviewPage - 1) * overviewPageSize + 1}-${Math.min(overviewPage * overviewPageSize, overviewSorted.length)} / ${overviewSorted.length}` : "0 / 0"}</span>
-              <span className="flex items-center gap-1">
-                <select aria-label="每页条数" value={overviewPageSize} onChange={(event) => { setOverviewPageSize(Number(event.target.value)); setOverviewPage(1); }} className="rounded border border-slate-200 bg-white px-1 py-0.5">
-                  {[10, 25, 50].map((size) => <option key={size} value={size}>{size}/页</option>)}
-                </select>
-                <button type="button" aria-label="上一页" disabled={overviewPage <= 1} onClick={() => setOverviewPage((page) => page - 1)} className="rounded border border-slate-200 px-1.5 py-0.5 disabled:opacity-40">‹</button>
-                <span>{overviewPage}/{overviewPageCount}</span>
-                <button type="button" aria-label="下一页" disabled={overviewPage >= overviewPageCount} onClick={() => setOverviewPage((page) => page + 1)} className="rounded border border-slate-200 px-1.5 py-0.5 disabled:opacity-40">›</button>
-              </span>
-            </div>
-          </div>
-          <div className="border-b border-slate-200 p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-800">发布申请</h2>
-              <Badge tone="brand">{releaseRequests.length}</Badge>
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              持久化审批与历史记录
-            </p>
-          </div>
-          <div className="max-h-64 overflow-y-auto border-b border-slate-200 p-2">
-            {releaseRequests.length === 0 && (
-              <p className="px-3 py-4 text-center text-xs text-slate-400">
-                暂无发布申请
-              </p>
-            )}
-            {releaseRequests.map((request) => (
-              <button
-                key={request.request_id}
-                type="button"
-                onClick={() => {
-                  setSelectedOverviewID("");
-                  setSelectedRequestID(request.request_id);
-                  setSelectedID(request.document_id);
-                  setRun(null);
-                  setApprovals([]);
-                  setReason("");
-                }}
-                className={`mb-1 w-full rounded-lg border px-3 py-3 text-left ${selectedRequest?.request_id === request.request_id ? "border-indigo-200 bg-indigo-50" : "border-transparent hover:bg-slate-50"}`}
-              >
-                <span className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">
-                    {documents.find((document) => document.doc_id === request.document_id)?.file_name || request.document_id}
-                  </span>
-                  <Badge
-                    tone={
-                      request.state === "published"
-                        ? "success"
-                        : request.state === "rejected"
-                          ? "danger"
-                          : "warning"
-                    }
-                  >
-                    {REQUEST_STATES[request.state] || request.state}
-                  </Badge>
-                </span>
-                <span className="mt-1 block truncate text-xs text-slate-400">
-                  {request.document_id} · 需 {request.required_approvals} 人审批
-                </span>
-              </button>
-            ))}
-          </div>
-          <div className="border-b border-slate-200 p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-800">受管草稿</h2>
-              <Badge tone="brand">{documents.length}</Badge>
-            </div>
-            <div className="mt-3 flex gap-1 rounded-lg bg-slate-100 p-1 text-xs">
-              {(
-                [
-                  ["all", "全部"],
-                  ["ready", "可检查"],
-                  ["attention", "待补齐"],
-                ] as const
-              ).map(([k, l]) => (
-                <button
-                  key={k}
-                  onClick={() => setFilter(k)}
-                  className={`flex-1 rounded-md px-2 py-1.5 ${filter === k ? "bg-white font-medium shadow-sm" : "text-slate-500"}`}
-                >
-                  {l}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="max-h-[500px] overflow-y-auto p-2">
-            {visible.filter((d) => overviewFilter === "all" || overviewByDocument.get(d.doc_id)?.state === overviewFilter).map((d) => (
-              <button
-                key={d.doc_id}
-                type="button"
-                onClick={() => {
-                  setSelectedOverviewID("");
-                  setSelectedID(d.doc_id);
-                  setSelectedRequestID(requestByDocument.get(d.doc_id)?.request_id || "");
-                  setRun(null);
-                  setApprovals([]);
-                  setReason("");
-                }}
-                className={`mb-1 w-full rounded-lg border px-3 py-3 text-left ${selectedID === d.doc_id ? "border-blue-200 bg-blue-50" : "border-transparent hover:bg-slate-50"}`}
-              >
-                <span className="block truncate text-sm font-medium">
-                  {d.file_name}
-                </span>
-                <span className="mt-1 block truncate text-xs text-slate-400">
-                  {d.doc_id} · {overviewByDocument.get(d.doc_id)?.state || (requestByDocument.has(d.doc_id)
-                    ? `已生成发布申请 · 需 ${requestByDocument.get(d.doc_id)?.required_approvals} 人审批`
-                    : ready(d)
-                      ? "资料完整"
-                      : "缺少责任人/生效日期")}
-                </span>
-              </button>
-            ))}
-          </div>
+      <div className="grid min-h-[620px] gap-4 lg:grid-cols-[360px_1fr]">
+        <aside className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 p-4"><div className="flex items-center justify-between"><h2 className="text-sm font-semibold text-slate-800">统一业务记录</h2><Badge tone="brand">{visible.length}</Badge></div><div className="mt-3 flex gap-2"><div className="relative flex-1"><Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索文档或空间" className="w-full rounded-md border border-slate-300 py-2 pl-8 pr-2 text-sm" /></div><select aria-label="排序" value={overviewSort} onChange={(e) => setOverviewSort(e.target.value as "priority" | "name")} className="rounded-md border border-slate-300 px-2 text-xs"><option value="priority">优先级</option><option value="name">名称</option></select></div></div>
+          <div className="max-h-[500px] overflow-y-auto p-2">{pageItems.map((item) => <button key={item.document_id} type="button" onClick={() => void selectItem(item)} className={`mb-1 w-full rounded-lg border px-3 py-3 text-left ${selectedOverviewID === item.document_id ? 'border-indigo-200 bg-indigo-50' : 'border-transparent hover:bg-slate-50'}`}><span className="flex items-center justify-between gap-2"><span className="truncate text-sm font-medium">{item.file_name || item.document_id}</span><Badge tone={tone(item.state)}>{STATE_LABELS[item.state] || item.state}</Badge></span><span className="mt-1 block truncate text-xs text-slate-400">{item.knowledge_space_id} · {item.blockers?.length ? `${item.blockers.length} 项阻塞` : item.request_id && `${item.approved_decisions || 0} / ${item.required_approvals || 1} 已批准`}</span></button>)}</div>
+          <div className="flex items-center justify-between border-t border-slate-200 px-3 py-2 text-xs text-slate-400"><span>业务状态分页 {visible.length ? `${(overviewPage - 1) * overviewPageSize + 1}-${Math.min(overviewPage * overviewPageSize, visible.length)} / ${visible.length}` : '0 / 0'}</span><span className="flex items-center gap-1"><select aria-label="每页条数" value={overviewPageSize} onChange={(e) => { setOverviewPageSize(Number(e.target.value)); setOverviewPage(1); }} className="rounded border border-slate-200 px-1 py-0.5">{[10,25,50].map((n) => <option key={n} value={n}>{n}/页</option>)}</select><button type="button" disabled={overviewPage <= 1} onClick={() => setOverviewPage((n) => n - 1)}>‹</button><span>{overviewPage}/{pageCount}</span><button type="button" disabled={overviewPage >= pageCount} onClick={() => setOverviewPage((n) => n + 1)}>›</button></span></div>
         </aside>
-        <section className="min-w-0 p-5 sm:p-6">
-          {!selected && !selectedRequest && !selectedOverview ? (
-            <div className="flex min-h-[460px] items-center justify-center text-sm text-slate-400">
-              暂无待治理文档
-            </div>
-          ) : (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-5">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <FileCheck2 className="h-5 w-5 text-blue-600" />
-                    <h2 className="truncate text-base font-semibold">
-                      {selected?.file_name || selectedRequest?.document_id || selectedOverview?.file_name || selectedOverview?.document_id}
-                    </h2>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-4 text-xs text-slate-500">
-                    {selected ? (
-                      <>
-                        <span>责任人：{selected.owner || "未填写"}</span>
-                        <span>生效日期：{selected.effective_date || "未填写"}</span>
-                        <span>空间：{selected.knowledge_space_id}</span>
-                      </>
-                    ) : selectedOverview ? (
-                      <>
-                        <span>空间：{selectedOverview.knowledge_space_id}</span>
-                        <span>状态：{OVERVIEW_STATES[selectedOverview.state] || selectedOverview.state}</span>
-                      </>
-                    ) : (
-                      <span>文档：{selectedRequest?.document_id}</span>
-                    )}
-                  </div>
-                </div>
-                {selected && !run && !selectedRequest && !selectedOverview && (
-                  <Button
-                    onClick={() => void start()}
-                    loading={busy}
-                    icon={Play}
-                  >
-                    开始 Agent 检查
-                  </Button>
-                )}
-              </div>
-              {requestDetail && (
-                <section className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-4">
-                  <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold">发布申请与 Agent 预审</h3><Badge tone={requestDetail.request.state === "published" ? "success" : requestDetail.request.state === "rejected" ? "danger" : "warning"}>{REQUEST_STATES[requestDetail.request.state] || requestDetail.request.state}</Badge></div>
-                  <p className="mt-2 text-sm text-slate-700">{requestDetail.review.summary || "Agent 未提供补充说明。"}</p>
-                  <p className="mt-1 text-xs text-slate-500">风险：{requestDetail.review.risk_level} · 建议：{requestDetail.review.recommendation} · 已批准 {approvedDecisionCount} / {requestDetail.request.required_approvals}</p>
-                  {requestDetail.review.findings?.map((finding) => <p key={finding.code} className="mt-2 text-xs text-slate-600">{finding.code}：{finding.summary}</p>)}
-                  {requestDetail.request.state === "manual_exception" && <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">Agent 预审不可用。管理员必须完成人工核对并填写例外理由；批准记录将永久保留。</div>}
-                  {(requestDetail.request.state === "approval_pending" || requestDetail.request.state === "manual_exception") && !currentUserDecision && <div className="mt-4 flex flex-wrap gap-2"><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={requestDetail.request.state === "manual_exception" ? "人工例外理由（必填）" : "审批意见（可选）"} className="min-w-[220px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /><Button size="sm" icon={Check} loading={busy} disabled={requestDetail.request.state === "manual_exception" && !reason.trim()} onClick={() => void decideRelease("approved")}>批准发布</Button><Button size="sm" icon={X} variant="danger" disabled={busy} onClick={() => void decideRelease("rejected")}>拒绝</Button></div>}
-                  {(requestDetail.request.state === "approval_pending" || requestDetail.request.state === "manual_exception") && currentUserDecision && <p className="mt-3 text-sm text-indigo-700">你已提交{currentUserDecision.decision === "approved" ? "批准" : "拒绝"}决定，正在等待其他管理员处理。</p>}
-                  <div className="mt-3 text-xs text-slate-500">审批记录：{requestDetail.decisions.length ? requestDetail.decisions.map((d) => `${d.decided_by} ${d.decision}`).join(" · ") : "暂无"}</div>
-                </section>
-              )}
-              {selectedDocumentID && overviewByDocument.get(selectedDocumentID)?.blockers?.length ? (
-                <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-                  <h3 className="text-sm font-semibold text-amber-900">确定性门禁阻塞</h3>
-                  <div className="mt-2 space-y-1 text-sm text-amber-800">
-                    {overviewByDocument.get(selectedDocumentID)?.blockers?.map((blocker) => <p key={blocker}>{LABELS[blocker] || blocker}</p>)}
-                  </div>
-                </section>
-              ) : null}
-              {!run && selected && !selectedOverview && (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-                  <p className="font-medium text-slate-800">知识发布流程</p>
-                  <p className="mt-1">
-                    确定性检查 → Agent 预审 → 按风险策略审批 → 发布进入问答检索范围。
-                  </p>
-                  <Link
-                    href={`/documents/${encodeURIComponent(selected.doc_id)}`}
-                    className="mt-2 inline-flex text-xs text-blue-600 hover:underline"
-                  >
-                    去文档详情补齐治理信息 →
-                  </Link>
-                </div>
-              )}
-              {data && (
-                <section>
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">Agent 检查结果</h3>
-                    <Badge tone={blockers.length ? "warning" : "success"}>
-                      {blockers.length
-                        ? `需处理 ${blockers.length} 项`
-                        : "检查通过"}
-                    </Badge>
-                  </div>
-                  {blockers.length ? (
-                    <div className="space-y-2">
-                      {blockers.map((b) => (
-                        <div
-                          key={b}
-                          className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
-                        >
-                          <XCircle className="h-4 w-4" />
-                          {LABELS[b] || `需要处理：${b}`}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
-                      <CheckCircle2 className="h-4 w-4" />
-                      索引、治理信息和发布版本均已核验，等待审批。
-                    </div>
-                  )}
-                </section>
-              )}
-              {run?.state === "pending_approval" && approval && (
-                <section className="rounded-lg border border-indigo-200 bg-indigo-50/50 p-4">
-                  <div className="flex items-start gap-3">
-                    <ShieldCheck className="h-5 w-5 text-indigo-600" />
-                    <div className="flex-1">
-                      <h3 className="text-sm font-semibold">管理员审批</h3>
-                      <p className="mt-1 text-xs text-slate-600">
-                        请求人 {approval.requested_by} · 按文档风险策略等待管理员确认
-                      </p>
-                      {approval.status === "pending" &&
-                        isAdmin &&
-                        approval.requested_by !== user?.id && (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <input
-                              value={reason}
-                              onChange={(e) => setReason(e.target.value)}
-                              placeholder="审批意见（可选）"
-                              className="min-w-[220px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                            />
-                            <Button
-                              size="sm"
-                              icon={Check}
-                              loading={busy}
-                              onClick={() => void act("approve")}
-                            >
-                              批准发布
-                            </Button>
-                            <Button
-                              size="sm"
-                              icon={X}
-                              variant="danger"
-                              disabled={busy}
-                              onClick={() => void act("reject")}
-                            >
-                              拒绝
-                            </Button>
-                          </div>
-                        )}
-                      {approval.status === "pending" &&
-                        approval.requested_by === user?.id && (
-                          <p className="mt-3 text-sm text-amber-700">
-                        当前审批策略不允许发起人自审，请由符合条件的管理员处理。
-                          </p>
-                        )}
-                      {approval.status === "approved" && isAdmin && (
-                        <Button
-                          className="mt-3"
-                          size="sm"
-                          icon={RefreshCw}
-                          loading={busy}
-                          onClick={() => void act("resume")}
-                        >
-                          继续发布
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </section>
-              )}
-              {run?.final && (
-                <div
-                  className={`rounded-lg border px-4 py-3 text-sm ${blockers.length ? "border-amber-200 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}
-                >
-                  {run.final}
-                </div>
-              )}
-              {run && (
-                <details className="group rounded-lg border border-slate-200">
-                  <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium">
-                    Agent 执行详情（审计信息）
-                    <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
-                  </summary>
-                  <div className="border-t border-slate-200 px-4 py-3">
-                    <div className="mb-3 flex flex-wrap gap-2 text-xs text-slate-500">
-                      <Badge tone={tone(run.state)}>
-                        {STATES[run.state] || run.state}
-                      </Badge>
-                      <span className="font-mono">Run {run.id}</span>
-                    </div>
-                    {run.steps.map((s) => (
-                      <div key={s.index} className="mb-2 text-sm">
-                        <span className="mr-2 text-slate-400">{s.index}.</span>
-                        <span className="font-medium">
-                          {TOOLS[s.tool_name || ""] || "工作流完成"}
-                        </span>
-                        {s.observation && (
-                          <p className="ml-5 text-xs text-slate-500">
-                            {s.observation}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              )}
-              <Link
-                href={`/documents/${encodeURIComponent(selectedDocumentID)}`}
-                className="inline-flex text-xs text-blue-600 hover:underline"
-              >
-                查看文档详情
-              </Link>
-            </div>
-          )}
-        </section>
+        <main className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          {!selectedOverview && !selectedRequest ? <div className="flex min-h-[560px] items-center justify-center text-sm text-slate-400">暂无业务记录</div> : <div className="space-y-5">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-4"><div><div className="flex items-center gap-2"><FileCheck2 className="h-5 w-5 text-indigo-600" /><h2 className="text-lg font-semibold text-slate-900">{selectedDocument?.file_name || selectedOverview?.file_name || selectedRequest?.document_id}</h2><Badge tone={tone(selectedOverview?.state || selectedRequest?.state || '')}>{STATE_LABELS[selectedOverview?.state || ''] || REQUEST_LABELS[selectedRequest?.state || ''] || selectedOverview?.state}</Badge></div><div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-500"><span>空间：{selectedDocument?.knowledge_space_id || selectedOverview?.knowledge_space_id}</span><span>权限：{selectedDocument?.permission || selectedOverview?.permission || '—'}</span><span>责任人：{selectedDocument?.owner || '未填写'}</span><span>生效日期：{selectedDocument?.effective_date || '未填写'}</span></div></div><Link href={`/documents/${encodeURIComponent(selectedOverviewID || selectedRequest?.document_id || '')}`} className="text-xs text-indigo-600 hover:underline">查看文档详情 →</Link></div>
+            <section><h3 className="mb-4 text-sm font-semibold text-slate-800">发布阶段</h3><div className="grid gap-3 md:grid-cols-4">{(['确定性门禁','Agent 预审','管理员审批','精确版本发布'] as const).map((stage, index) => { const state = selectedOverview?.state || selectedRequest?.state || ''; const statuses = index === 0 ? (state === 'needs_info' || state === 'review_blocked' ? 'blocked' : 'done') : index === 1 ? (state === 'checking' ? 'active' : state === 'review_blocked' ? 'blocked' : 'done') : index === 2 ? (state === 'approval_pending' || state === 'manual_exception' ? 'active' : state === 'published' || state === 'rejected' ? 'done' : 'waiting') : (state === 'published' ? 'done' : 'waiting'); return <div key={stage} className={`rounded-lg border p-3 ${statuses === 'blocked' ? 'border-amber-300 bg-amber-50' : statuses === 'active' ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-slate-50'}`}><div className="flex items-center justify-between"><span className="text-sm font-medium">{stage}</span><Badge tone={statuses === 'done' ? 'success' : statuses === 'blocked' ? 'warning' : statuses === 'active' ? 'info' : 'neutral'}>{statuses === 'done' ? '完成' : statuses === 'blocked' ? '阻塞' : statuses === 'active' ? '进行中' : '等待'}</Badge></div></div>; })}</div></section>
+            {selectedOverview?.blockers?.length ? <section className="rounded-lg border border-amber-200 bg-amber-50 p-4"><h3 className="text-sm font-semibold text-amber-900">确定性门禁阻塞</h3>{selectedOverview.blockers.map((item) => <p key={item} className="mt-1 text-sm text-amber-800">{BLOCKER_LABELS[item] || item}</p>)}</section> : null}
+            {detail && <section className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-4"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold">Agent 预审</h3><Badge tone={detail.request.state === 'published' ? 'success' : detail.request.state === 'rejected' ? 'danger' : 'warning'}>{REQUEST_LABELS[detail.request.state] || detail.request.state}</Badge></div><div className="mt-3 grid gap-3 text-sm sm:grid-cols-3"><div><span className="text-xs text-slate-500">风险评估</span><p className="font-medium">{detail.review.risk_level === 'low' ? '低风险' : detail.review.risk_level}</p></div><div><span className="text-xs text-slate-500">Agent 建议</span><p className="font-medium">{detail.review.recommendation === 'publish' ? '建议发布' : detail.review.recommendation}</p></div><div><span className="text-xs text-slate-500">管理员审批</span><p className="font-medium">{approvedCount} / {detail.request.required_approvals}</p></div></div><p className="mt-3 text-xs text-slate-600">{detail.review.summary || 'Agent 未提供补充说明。'}</p><p className="mt-2 text-xs text-slate-500">Agent 建议仅作为审核证据，不能自行批准或发布。</p>{detail.request.state === 'manual_exception' && <p className="mt-2 text-xs text-amber-700">Agent 预审不可用，管理员必须填写人工例外理由。</p>}{(detail.request.state === 'approval_pending' || detail.request.state === 'manual_exception') && !currentDecision && <div className="mt-4 flex flex-wrap gap-2"><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={detail.request.state === 'manual_exception' ? '人工例外理由（必填）' : '审批意见（可选）'} className="min-w-[220px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /><Button size="sm" icon={Check} loading={busy} disabled={detail.request.state === 'manual_exception' && !reason.trim()} onClick={() => void decide('approved')}>批准发布</Button><Button size="sm" icon={X} variant="danger" disabled={busy} onClick={() => void decide('rejected')}>拒绝</Button></div>}{currentDecision && <p className="mt-3 text-sm text-indigo-700">你已提交决定，正在等待其他管理员处理。</p>}<div className="mt-3 text-xs text-slate-500">审批记录：{detail.decisions.length ? detail.decisions.map((item) => `${item.decided_by} ${item.decision}`).join(' · ') : '暂无'}</div></section>}
+            <details className="group rounded-lg border border-slate-200"><summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium">Agent 执行详情（审计信息）<ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" /></summary><div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-500">{run ? <><p>Run ID：<span className="font-mono">{run.id}</span></p><p>执行状态：{run.state} · 步骤数：{run.steps.length}</p></> : detail?.review.agent_run_id ? <p>Run ID：<span className="font-mono">{detail.review.agent_run_id}</span></p> : <p>暂无 Agent Run 审计记录</p>}{detail?.review.model && <p>模型：{detail.review.model} · Prompt 版本：{detail.review.prompt_version || '—'}</p>}</div></details>
+          </div>}
+        </main>
       </div>
     </div>
   );
