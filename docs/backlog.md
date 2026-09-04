@@ -208,6 +208,9 @@ Progress (2026-09-03):
   evidence, and the confidential two-admin escalation explanation.
 - [x] Keep pre-review evidence observable for overview records without a durable
   request via the tenant-scoped read-only review-report seam.
+- [x] Add an isolated public-HTTP Agent pre-review business matrix covering
+  ordinary/confidential approval, sensitive and prompt-injection findings,
+  deterministic blockers, stale replacement requests, and auth boundaries.
 
 The implementation gate requires focused Go/API/Web tests before code changes
 are considered complete, followed by the existing full verification suite.

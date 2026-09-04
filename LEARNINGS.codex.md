@@ -1720,3 +1720,19 @@ This file is an append-only record of completed PRAR cycles.
   `/v1/release-center/review-reports/{id}` API and same-origin Web proxy, and
   loaded standalone reports in the release-center detail view.
 - Refine: focused API/Web tests pass; full deployment verification is pending.
+
+## 2026-09-04 — Agent pre-review business acceptance matrix
+
+- Perceive: unit and contract tests covered individual branches, but no
+  isolated executable gate exercised document attributes through real HTTP,
+  durable requests, review findings, and stale-request reconciliation.
+- Reason: keep the existing dependency/recovery acceptance separate and add a
+  deterministic, secret-free matrix focused on release-center business paths.
+- Act: added `scripts/release-center-functional-acceptance.sh` and its Python
+  driver covering ordinary one-admin approval, confidential two-admin policy,
+  sensitive and prompt-injection findings, deterministic blockers, replacement
+  invalidation, and authentication boundaries.
+- Refine: driver/shell contract tests, syntax checks, and sanitizer checks pass;
+  the isolated full-stack command is the remaining release evidence gate.
+- The isolated run completed all 7 scenarios successfully after aligning the
+  acceptance stack to the deterministic 1024-dimensional embedding output.

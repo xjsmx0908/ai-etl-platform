@@ -19,6 +19,7 @@
 | 内容级敏感信息 | exact candidate 切块包含密码、API key、身份证号或手机号 | 生成带 chunk 引用的 `sensitive_data_detected` finding；风险升为 high | internal 阻断；confidential 升级双人复核 | 不得静默放行 |
 | 内容级提示词注入 | 切块包含“忽略之前指令/输出系统提示词”等模式 | 生成 `prompt_injection_detected` finding，建议 `needs_info` | 不进入普通可发布审批 | 人工处理 |
 | 非管理员或发起人自审 | 普通用户、或请求发起人本人 | 不适用 | 拒绝决定请求 | 不改变发布状态 |
+| 未认证和跨租户访问 | 无凭证或其他租户管理员访问 | 不适用 | 返回 401/租户隔离 | 不泄露记录或证据 |
 
 ## 必须验证的断言
 
@@ -54,6 +55,12 @@ docker run --rm \
 
 ```bash
 bash scripts/governance-acceptance.sh
+```
+
+Agent 预审业务矩阵（独立隔离栈，验证文档属性到审批终态）:
+
+```bash
+bash scripts/release-center-functional-acceptance.sh
 ```
 
 每次修改 `releasecenter`、Agent 预审适配器、publication workflow 或发布中心
