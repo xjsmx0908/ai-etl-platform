@@ -1632,3 +1632,19 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: Web contract tests and static checks pass; deployment HTTP seam is
   used for final route/authentication verification. No backend approval,
   exact-candidate, or PDF behavior changed.
+
+## 2026-09-04 — Agent pre-review functional matrix and boundary fix
+
+- Perceive: existing coverage exercised policy/coordinator seams, but did not
+  present an explicit business matrix for ordinary, confidential, high-risk,
+  Agent failure, and deterministic-blocker documents.
+- Reason: define functional acceptance as a required post-change gate and test
+  the user-visible workflow combinations, including malformed Agent evidence.
+- Act: added `docs/release-center-functional-acceptance.md`, made the matrix a
+  repository requirement in `AGENTS.md`, and added coordinator coverage for an
+  Agent returning `status=failed` without a Go error plus incomplete evidence.
+  The coordinator now converts explicit failed/error statuses into the audited
+  manual-exception path.
+- Refine: the new red test failed before the fix and passes after it, alongside
+  the existing release-center package tests. This prevents a failed Agent from
+  being misclassified as a successful pre-review.

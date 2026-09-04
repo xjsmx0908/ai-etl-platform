@@ -98,6 +98,9 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	if status == "" {
 		status = "completed"
 	}
+	if reviewErr == nil && (strings.EqualFold(status, "failed") || strings.EqualFold(status, "error")) {
+		reviewErr = fmt.Errorf("agent review returned status %q", status)
+	}
 	if reviewErr != nil {
 		status = "failed"
 		reviewResult.Recommendation = "manual_review"

@@ -20,6 +20,15 @@ Use `gofmt` for Go and keep package names short, lowercase, and domain-focused. 
 ## Testing Guidelines
 Add or update tests with behavioral changes. Go coverage is collected by `make test`; CI also runs `go vet` and `go test ./... -count=1`. Python tests use `pytest` from `services/doc-parser-service` and `services/reranker-service`. Prefer deterministic fixtures and mocks for external systems; use `scripts/e2e-smoke.sh` only for full-stack validation.
 
+For Knowledge Release Center changes, functional behavior is a mandatory gate,
+not an optional integration exercise. Run the matrix in
+`docs/release-center-functional-acceptance.md` after every change to release
+center policy, Agent pre-review, publication workflow, or its Web surface.
+The matrix must cover ordinary single-admin approval, confidential/high-risk
+two-admin approval, Agent success, Agent errors and explicit failed statuses,
+deterministic blockers, stale exact-candidate rejection, and idempotent/conflict
+decisions. A green build or happy-path test alone is insufficient.
+
 ## Commit & Pull Request Guidelines
 The Git history uses Conventional Commit-style prefixes such as `feat:`, `fix:`, and `chore:`. Keep commits focused and describe the user-visible or operational impact. Pull requests should include a concise summary, linked issue when applicable, verification commands run, and screenshots or logs for API/operational behavior changes. Branch protection expects one approval and the `Required Checks` CI gate to pass before merge.
 

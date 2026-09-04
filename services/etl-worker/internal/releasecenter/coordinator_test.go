@@ -134,6 +134,38 @@ func TestCoordinatorEscalatesConfidentialAndAgentFailure(t *testing.T) {
 	}
 }
 
+func TestCoordinatorTreatsFailedAgentStatusAsManualException(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{
+		Status: "failed", Recommendation: "publish", RiskLevel: RiskLow, Summary: "agent returned a failed status",
+	}}, store)
+	_, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.State != RequestManualException {
+		t.Fatalf("failed Agent status was treated as successful review: request=%+v", request)
+	}
+}
+
+func TestCoordinatorNormalizesIncompleteAgentEvidenceSafely(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal"}}, reviewerStub{review: AgentReview{
+		Status: "completed", Recommendation: "", RiskLevel: "untrusted-risk",
+	}}, store)
+	report, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Recommendation != "review" || report.RiskLevel != RiskLow || request.State != RequestApprovalPending {
+		t.Fatalf("incomplete Agent evidence was not normalized safely: report=%+v request=%+v", report, request)
+	}
+}
+
 func TestApprovalPublishesOnlyAfterRequiredDistinctDecisions(t *testing.T) {
 	candidate := readyCandidate()
 	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
