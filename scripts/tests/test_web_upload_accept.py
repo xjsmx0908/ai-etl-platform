@@ -139,6 +139,20 @@ class WebUploadAcceptTests(unittest.TestCase):
         self.assertIn("审批已生效，发布流程已完成", page)
         self.assertIn("detail.request.state === 'approval_pending'", page)
 
+    def test_release_center_exposes_pre_review_findings_and_evidence(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        for expected in (
+            "预审发现",
+            "finding.code",
+            "finding.evidence_ref",
+            "敏感信息",
+            "提示词注入",
+            "预审时间",
+            "Prompt 版本",
+            "风险升高，仍需双人审批",
+        ):
+            self.assertIn(expected, page)
+
     def test_release_center_observability_has_dedicated_route_and_dashboard_panels(self):
         metrics = (ROOT / "services/etl-worker/internal/prometheus/metrics.go").read_text(encoding="utf-8")
         dashboard = (ROOT / "infrastructure/grafana/dashboards/ai-etl-platform.json").read_text(encoding="utf-8")

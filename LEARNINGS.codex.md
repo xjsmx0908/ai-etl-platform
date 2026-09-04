@@ -1695,3 +1695,17 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: all Go packages, Python contracts, Web lint/typecheck, diff checks,
   and the deployed HTTP seam passed; query-api was rebuilt and healthy, the
   release-center page returned 200, and unauthenticated overview returned 401.
+
+## 2026-09-04 — Pre-review finding observability
+
+- Perceive: the API already persisted structured findings, but the release
+  center only showed aggregate risk/recommendation and hid the evidence needed
+  for an administrator to understand the decision.
+- Reason: expose the existing untrusted evidence without changing approval or
+  publication semantics; labels must distinguish failed review, clean review,
+  sensitive data, and prompt injection.
+- Act: added Web rendering for review status, risk, recommendation, timestamp,
+  prompt version, finding severity/type/chunk reference, and the confidential
+  two-admin escalation explanation; added the corresponding contract gate.
+- Refine: Web contract tests and static checks pass. The backend review and
+  approval seams remain unchanged.

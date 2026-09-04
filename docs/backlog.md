@@ -203,6 +203,9 @@ Progress (2026-09-03):
   exact-candidate chunks for prompt injection and exposed sensitive data,
   evidence references in review findings, risk escalation for confidential
   content, and fail-closed handling for unavailable/mismatched content.
+- [x] Surface Agent pre-review observability in the Web detail: status, risk,
+  recommendation, review time, prompt version, finding type/severity/chunk
+  evidence, and the confidential two-admin escalation explanation.
 
 The implementation gate requires focused Go/API/Web tests before code changes
 are considered complete, followed by the existing full verification suite.
