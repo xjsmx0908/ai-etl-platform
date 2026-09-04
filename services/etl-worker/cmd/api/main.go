@@ -466,6 +466,7 @@ func main() {
 	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
 	apiV1.Handle("/v1/release-center/requests", requireScopes(auth.ScopeAdmin)(handleReleaseCenterRequests(releaseCenterStore)))
+	apiV1.Handle("/v1/release-center/overview", requireScopes(auth.ScopeAdmin)(handleReleaseCenterOverview(releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/requests/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterDecision(releaseCenterStore, publicationWorkflow)))
 	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	// Document registry: list/detail open to any authenticated role (filtered by

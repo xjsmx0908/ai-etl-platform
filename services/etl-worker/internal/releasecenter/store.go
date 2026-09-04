@@ -40,6 +40,10 @@ type Decision struct {
 	DecidedAt time.Time `json:"decided_at"`
 }
 
+type OverviewStore interface {
+	ListOverview(context.Context, string, int) ([]OverviewItem, error)
+}
+
 // PostgresStore persists business release records. Publication itself remains
 // owned by publicationworkflow and is intentionally not part of this adapter.
 type PostgresStore struct{ q db.Querier }
@@ -47,6 +51,66 @@ type PostgresStore struct{ q db.Querier }
 func NewPostgresStore(q db.Querier) *PostgresStore { return &PostgresStore{q: q} }
 
 var _ Store = (*PostgresStore)(nil)
+
+var _ OverviewStore = (*PostgresStore)(nil)
+
+func (s *PostgresStore) ListOverview(ctx context.Context, tenantID string, limit int) ([]OverviewItem, error) {
+	if s == nil || s.q == nil {
+		return nil, fmt.Errorf("release center store is not configured")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := s.q.Query(ctx, `
+		SELECT d.doc_id,d.file_name,d.permission,d.status,d.doc_status,d.owner,
+		       (d.effective_date IS NOT NULL),d.knowledge_space_id,d.publication_status,d.deletion_status,
+		       COALESCE(q.request_id,''),COALESCE(q.state,''),COALESCE(q.required_approvals,0),
+		       COALESCE(rv.status,''),
+		       (r.resolution_status='resolved' AND m.state='active'
+		        AND m.expected_chunk_count > 0 AND m.expected_chunk_digest <> ''
+		        AND m.qdrant_count=m.expected_chunk_count AND m.qdrant_digest=m.expected_chunk_digest
+		        AND m.elasticsearch_count=m.expected_chunk_count AND m.elasticsearch_digest=m.expected_chunk_digest),
+		       COALESCE((SELECT count(*) FROM release_center_decisions dec
+		                 WHERE dec.tenant_id=d.tenant_id AND dec.request_id=q.request_id
+		                   AND dec.decision='approved'),0)
+		FROM documents d
+		LEFT JOIN document_releases r ON r.tenant_id=d.tenant_id AND r.document_id=d.doc_id
+		LEFT JOIN LATERAL (
+			SELECT m1.* FROM index_manifests m1
+			WHERE m1.tenant_id=d.tenant_id AND m1.document_id=d.doc_id
+			  AND m1.document_version_id=r.current_version_id
+			ORDER BY (m1.state='active') DESC, m1.created_at DESC LIMIT 1
+		) m ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT q1.* FROM release_center_requests q1
+			WHERE q1.tenant_id=d.tenant_id AND q1.document_id=d.doc_id
+			ORDER BY q1.updated_at DESC LIMIT 1
+		) q ON TRUE
+		LEFT JOIN release_center_reviews rv ON rv.tenant_id=q.tenant_id AND rv.review_id=q.review_id
+		WHERE d.tenant_id=$1 AND d.knowledge_space_id<>'' AND d.knowledge_space_id<>'user-uploads'
+		ORDER BY d.updated_at DESC LIMIT $2`, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list release overview: %w", err)
+	}
+	defer rows.Close()
+	var out []OverviewItem
+	for rows.Next() {
+		var in OverviewInput
+		var requestState string
+		if err := rows.Scan(&in.DocumentID, &in.FileName, &in.Permission, &in.IngestionStatus,
+			&in.DocStatus, &in.Owner, &in.EffectiveDatePresent, &in.KnowledgeSpaceID,
+			&in.PublicationStatus, &in.DeletionStatus, &in.RequestID, &requestState,
+			&in.RequiredApprovals, &in.ReviewStatus, &in.CandidateReady, &in.ApprovedDecisions); err != nil {
+			return nil, fmt.Errorf("scan release overview: %w", err)
+		}
+		in.RequestState = RequestState(requestState)
+		out = append(out, ProjectOverview(in))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate release overview: %w", err)
+	}
+	return out, nil
+}
 
 func (s *PostgresStore) SaveReview(ctx context.Context, report ReviewReport) error {
 	if s == nil || s.q == nil {

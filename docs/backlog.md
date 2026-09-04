@@ -169,6 +169,12 @@ Progress (2026-09-03):
   including published, rejected, and invalidated history no longer present in
   the draft-only document list. Show approved-versus-required progress and
   suppress duplicate decision controls after the current administrator acts.
+- [x] Add the tenant-scoped release-center overview projection. The API now
+  derives deterministic `needs_info`, `checking`, `review_blocked`,
+  `approval_pending`, `published`, and `rejected` states from document,
+  release, generation, review, request, and decision records; the Web consumes
+  the projection for queue labels while durable request detail remains the
+  approval action seam.
 
 The implementation gate requires focused Go/API/Web tests before code changes
 are considered complete, followed by the existing full verification suite.

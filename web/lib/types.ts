@@ -281,6 +281,19 @@ export type ReleaseReview = {
 };
 export type ReleaseDecision = { decision_id: string; tenant_id: string; request_id: string; decided_by: string; decision: string; reason?: string; decided_at: string };
 export type ReleaseRequestDetail = { request: ReleaseRequest; review: ReleaseReview; decisions: ReleaseDecision[] };
+export type ReleaseOverviewItem = {
+  document_id: string;
+  file_name: string;
+  permission: DocumentPermission;
+  knowledge_space_id: string;
+  state: "needs_info" | "checking" | "review_blocked" | "approval_pending" | "published" | "rejected";
+  blockers?: string[];
+  request_id?: string;
+  request_state?: ReleaseRequest["state"];
+  required_approvals?: number;
+  approved_decisions?: number;
+};
+export type ReleaseOverviewResponse = { items: ReleaseOverviewItem[] };
 
 export type HealthService = { status: string; latency_ms: number };
 export type Health = {

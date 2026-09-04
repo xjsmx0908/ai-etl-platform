@@ -61,10 +61,13 @@ class WebUploadAcceptTests(unittest.TestCase):
     def test_release_center_client_reads_durable_request_queue(self):
         client = (ROOT / "web/lib/apiClient.ts").read_text(encoding="utf-8")
         proxy = (ROOT / "web/app/api/release-center/requests/route.ts").read_text(encoding="utf-8")
+        overview_proxy = (ROOT / "web/app/api/release-center/overview/route.ts").read_text(encoding="utf-8")
         page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
         self.assertIn("listReleaseRequests", client)
         self.assertIn('request<ReleaseRequestsResponse>("/release-center/requests")', client)
         self.assertIn("/v1/release-center/requests", proxy)
+        self.assertIn("/v1/release-center/overview", overview_proxy)
+        self.assertIn("listReleaseOverview", client)
         # Durable requests are independently selectable; they must not disappear
         # merely because the document is no longer in the draft-only list.
         self.assertIn("发布申请", page)

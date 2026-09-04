@@ -98,6 +98,106 @@ type ReleaseRequest struct {
 	UpdatedAt         time.Time                     `json:"updated_at"`
 }
 
+// OverviewInput is the authoritative read-side snapshot used to project a
+// business-facing release-center state. It intentionally contains no mutable
+// action fields: publication and approval remain owned by their workflows.
+type OverviewInput struct {
+	DocumentID           string
+	FileName             string
+	Permission           string
+	IngestionStatus      string
+	DocStatus            string
+	Owner                string
+	EffectiveDatePresent bool
+	KnowledgeSpaceID     string
+	PublicationStatus    string
+	DeletionStatus       string
+	CandidateReady       bool
+	ReviewStatus         string
+	RequestState         RequestState
+	RequiredApprovals    int
+	ApprovedDecisions    int
+	RequestID            string
+}
+
+type OverviewItem struct {
+	DocumentID        string        `json:"document_id"`
+	FileName          string        `json:"file_name"`
+	Permission        string        `json:"permission"`
+	KnowledgeSpaceID   string        `json:"knowledge_space_id"`
+	State             string        `json:"state"`
+	Blockers          []string      `json:"blockers,omitempty"`
+	RequestID         string        `json:"request_id,omitempty"`
+	RequestState      RequestState  `json:"request_state,omitempty"`
+	RequiredApprovals int           `json:"required_approvals,omitempty"`
+	ApprovedDecisions int           `json:"approved_decisions,omitempty"`
+}
+
+// ProjectOverview applies deterministic, human-readable state rules to one
+// document snapshot. The ordering is deliberate: terminal publication state
+// wins, then active approval/review states, then deterministic blockers.
+func ProjectOverview(in OverviewInput) OverviewItem {
+	item := OverviewItem{DocumentID: in.DocumentID, FileName: in.FileName,
+		Permission: in.Permission, KnowledgeSpaceID: in.KnowledgeSpaceID,
+		RequestID: in.RequestID,
+		RequestState: in.RequestState, RequiredApprovals: in.RequiredApprovals,
+		ApprovedDecisions: in.ApprovedDecisions}
+	if in.PublicationStatus == "published" || in.RequestState == RequestPublished {
+		item.State = "published"
+		return item
+	}
+	if in.RequestState == RequestRejected {
+		item.State = "rejected"
+		return item
+	}
+	if in.IngestionStatus == "queued" || in.IngestionStatus == "processing" {
+		item.State = "checking"
+		item.Blockers = []string{"ingestion_not_completed"}
+		return item
+	}
+	if in.RequestState == RequestApprovalPending || in.RequestState == RequestManualException {
+		item.State = "approval_pending"
+		return item
+	}
+	if in.RequestState == RequestNeedsInfo {
+		item.State = "needs_info"
+		item.Blockers = []string{"exact_candidate_unavailable"}
+		return item
+	}
+	if in.ReviewStatus == "failed" {
+		item.State = "review_blocked"
+		item.Blockers = []string{"agent_review_unavailable"}
+		return item
+	}
+	if in.KnowledgeSpaceID == "" || in.KnowledgeSpaceID == "user-uploads" {
+		item.Blockers = append(item.Blockers, "managed_space_required")
+	}
+	if in.IngestionStatus != "completed" {
+		item.Blockers = append(item.Blockers, "ingestion_not_completed")
+	}
+	if in.DocStatus != "" && in.DocStatus != "active" {
+		item.Blockers = append(item.Blockers, "document_not_active")
+	}
+	if in.DeletionStatus == "pending" {
+		item.Blockers = append(item.Blockers, "document_deletion_pending")
+	}
+	if strings.TrimSpace(in.Owner) == "" {
+		item.Blockers = append(item.Blockers, "owner_required")
+	}
+	if !in.EffectiveDatePresent {
+		item.Blockers = append(item.Blockers, "effective_date_required")
+	}
+	if !in.CandidateReady {
+		item.Blockers = append(item.Blockers, "exact_candidate_unavailable")
+	}
+	if len(item.Blockers) > 0 {
+		item.State = "needs_info"
+	} else {
+		item.State = "checking"
+	}
+	return item
+}
+
 var (
 	ErrStaleReview   = errors.New("release center: review is stale")
 	ErrInvalidReview = errors.New("release center: invalid review binding")

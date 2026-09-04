@@ -25,6 +25,7 @@ import type {
   AgentRun,
   Document,
   ReleaseRequest,
+  ReleaseOverviewItem,
 } from "@/lib/types";
 
 const LABELS: Record<string, string> = {
@@ -69,6 +70,7 @@ export default function AgentPage() {
   const { user, isAdmin } = useAuth();
   const [documents, setDocuments] = useState<Document[]>([]),
     [releaseRequests, setReleaseRequests] = useState<ReleaseRequest[]>([]),
+    [releaseOverview, setReleaseOverview] = useState<ReleaseOverviewItem[]>([]),
     [selectedID, setSelectedID] = useState(""),
     [selectedRequestID, setSelectedRequestID] = useState(""),
     [run, setRun] = useState<AgentRun | null>(null),
@@ -91,8 +93,9 @@ export default function AgentPage() {
     Promise.all([
       apiClient.listDocuments({ limit: 100 }),
       apiClient.listReleaseRequests(),
+      apiClient.listReleaseOverview(),
     ])
-      .then(([documentResponse, requestResponse]) => {
+      .then(([documentResponse, requestResponse, overviewResponse]) => {
         if (!active) return;
         const ds = documentResponse.items.filter(
           (d) =>
@@ -102,6 +105,7 @@ export default function AgentPage() {
         );
         setDocuments(ds);
         setReleaseRequests(requestResponse.items);
+        setReleaseOverview(overviewResponse.items);
         const firstRequest =
           requestResponse.items.find(
             (request) =>
@@ -141,6 +145,10 @@ export default function AgentPage() {
     (request) => request.state === "approval_pending" || request.state === "manual_exception",
   ).length;
   const manualExceptionCount = releaseRequests.filter((request) => request.state === "manual_exception").length;
+  const overviewByDocument = useMemo(
+    () => new Map(releaseOverview.map((item) => [item.document_id, item])),
+    [releaseOverview],
+  );
   const requestByDocument = useMemo(
     () => {
       const requests = new Map<string, ReleaseRequest>();
@@ -404,11 +412,11 @@ export default function AgentPage() {
                   {d.file_name}
                 </span>
                 <span className="mt-1 block truncate text-xs text-slate-400">
-                  {d.doc_id} · {requestByDocument.has(d.doc_id)
+                  {d.doc_id} · {overviewByDocument.get(d.doc_id)?.state || (requestByDocument.has(d.doc_id)
                     ? `已生成发布申请 · 需 ${requestByDocument.get(d.doc_id)?.required_approvals} 人审批`
                     : ready(d)
                       ? "资料完整"
-                      : "缺少责任人/生效日期"}
+                      : "缺少责任人/生效日期")}
                 </span>
               </button>
             ))}

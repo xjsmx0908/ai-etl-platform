@@ -12,6 +12,7 @@ import type {
   KnowledgeSpace,
   ReleaseRequestsResponse,
   ReleaseRequestDetail,
+  ReleaseOverviewResponse,
   Source,
   TaskStatus,
   UploadResult,
@@ -302,6 +303,9 @@ export async function createDocumentPublicationRun(documentId: string): Promise<
 export async function listReleaseRequests(): Promise<ReleaseRequestsResponse> {
   return request<ReleaseRequestsResponse>("/release-center/requests");
 }
+export async function listReleaseOverview(): Promise<ReleaseOverviewResponse> {
+  return request<ReleaseOverviewResponse>("/release-center/overview");
+}
 export async function getReleaseRequest(id: string): Promise<ReleaseRequestDetail> {
   return request<ReleaseRequestDetail>(`/release-center/requests/${encodeURIComponent(id)}`);
 }
@@ -452,6 +456,7 @@ export const apiClient = {
   createAgentRun,
   createDocumentPublicationRun,
 	listReleaseRequests,
+	listReleaseOverview,
 	getReleaseRequest,
 	decideReleaseRequest,
   getAgentRun,

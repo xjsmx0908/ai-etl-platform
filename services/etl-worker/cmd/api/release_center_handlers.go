@@ -25,6 +25,34 @@ type releaseRequestService interface {
 	releasecenter.Store
 }
 
+func handleReleaseCenterOverview(store releasecenter.OverviewStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if auth.GetPermission(r.Context()) != "admin" {
+			writeError(w, http.StatusForbidden, "admin role required")
+			return
+		}
+		limit := 100
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 200 {
+				limit = parsed
+			}
+		}
+		items, err := store.ListOverview(r.Context(), auth.GetTenantID(r.Context()), limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list release overview")
+			return
+		}
+		if items == nil {
+			items = []releasecenter.OverviewItem{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
 // handleReleaseCenterRequests serves the durable business queue. It does not
 // expose Agent Run storage and derives tenant scope only from authentication.
 func handleReleaseCenterRequests(store releaseRequestLister) http.HandlerFunc {

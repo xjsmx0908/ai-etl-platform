@@ -16,6 +16,16 @@ type releaseRequestListerStub struct {
 	err      error
 }
 
+type releaseOverviewStub struct {
+	items    []releasecenter.OverviewItem
+	tenantID string
+}
+
+func (s *releaseOverviewStub) ListOverview(_ context.Context, tenantID string, _ int) ([]releasecenter.OverviewItem, error) {
+	s.tenantID = tenantID
+	return s.items, nil
+}
+
 func (s *releaseRequestListerStub) ListRequests(_ context.Context, tenantID string, _ int) ([]releasecenter.ReleaseRequest, error) {
 	s.tenantID = tenantID
 	return s.requests, s.err
@@ -42,6 +52,23 @@ func TestReleaseCenterQueueIsAdminAndTenantScoped(t *testing.T) {
 		Items []releasecenter.ReleaseRequest `json:"items"`
 	}
 	if err := json.NewDecoder(allowed.Body).Decode(&body); err != nil || len(body.Items) != 1 || body.Items[0].ID != "request-1" {
+		t.Fatalf("response=%+v err=%v", body, err)
+	}
+}
+
+func TestReleaseCenterOverviewIsAdminAndTenantScoped(t *testing.T) {
+	store := &releaseOverviewStub{items: []releasecenter.OverviewItem{{DocumentID: "doc-1", State: "approval_pending", ApprovedDecisions: 1, RequiredApprovals: 2}}}
+	handler := handleReleaseCenterOverview(store)
+	denied := doRequest(handler, http.MethodGet, "/v1/release-center/overview", nil, ctxWithRole("acme", "user", "query"))
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("user status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	allowed := doRequest(handler, http.MethodGet, "/v1/release-center/overview", nil, ctxWithRole("acme", "admin", "admin"))
+	if allowed.Code != http.StatusOK || store.tenantID != "acme" {
+		t.Fatalf("admin status=%d tenant=%q body=%s", allowed.Code, store.tenantID, allowed.Body.String())
+	}
+	var body struct{ Items []releasecenter.OverviewItem `json:"items"` }
+	if err := json.NewDecoder(allowed.Body).Decode(&body); err != nil || len(body.Items) != 1 || body.Items[0].State != "approval_pending" {
 		t.Fatalf("response=%+v err=%v", body, err)
 	}
 }

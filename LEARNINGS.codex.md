@@ -1523,3 +1523,20 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: the Web boundary regression test, ESLint, TypeScript, production
   build, and live route acceptance verify the slice without changing release
   policy or exact-candidate publication behavior.
+
+## 2026-09-04 — Release-center business state projection
+
+- Perceive: the request queue alone could not represent managed documents that
+  were still processing, blocked in deterministic eligibility, unavailable for
+  Agent review, or had no request yet. The browser was forced to infer state by
+  joining draft documents and durable requests.
+- Reason: project one tenant-scoped business state on the server from the
+  authoritative document, release, generation, review, request, and decision
+  records. Keep this read model side-effect free and leave approvals and exact
+  publication on their existing write seams.
+- Act: added `GET /v1/release-center/overview`, deterministic state/blocker
+  projection tests, a same-origin Web proxy/client type, and release-center
+  queue labels sourced from the projection.
+- Refine: Go release-center/API tests, Web contract tests, ESLint, TypeScript,
+  production build, Compose validation, and live authentication-boundary checks
+  pass; no PDF or approval-policy behavior changed.
