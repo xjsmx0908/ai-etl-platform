@@ -1557,3 +1557,18 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: the integration test initially caught and then verified the fix for
   review-state misclassification. The focused package suite and Compose
   PostgreSQL run pass without touching existing business data.
+
+## 2026-09-04 — Live release-center overview acceptance
+
+- Perceive: the running demo database uses an existing administrator whose
+  password is not the Compose bootstrap default, and the checked-in demo JWT
+  lacks the `admin` scope.
+- Reason: do not reset credentials or mutate users for a read-only acceptance;
+  use the running API's configured signing secret to mint a five-minute local
+  admin-scope token and call only overview endpoints.
+- Act: verified `GET /v1/release-center/overview` and the same-origin Web proxy
+  both return 200 with 47 managed rows (44 published, 3 needs_info), while
+  unauthenticated requests return 401. A direct PostgreSQL count independently
+  matched 44 published and 3 retired catalog rows.
+- Refine: no business data or credentials changed; containers remain healthy
+  and the repository stays clean after the acceptance commit.

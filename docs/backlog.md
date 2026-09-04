@@ -178,6 +178,10 @@ Progress (2026-09-03):
 - [x] Add real PostgreSQL integration coverage for overview aggregation,
   including published/approval/review-blocked/stale states, approval counts,
   version-bound review selection, and tenant isolation.
+- [x] Run live administrator read-only acceptance against the deployed
+  overview API and Web proxy. The default tenant returned 47 managed rows:
+  44 `published` and 3 deterministic `needs_info` rows matching the catalog's
+  44 published and 3 retired documents; unauthenticated access remains 401.
 
 The implementation gate requires focused Go/API/Web tests before code changes
 are considered complete, followed by the existing full verification suite.
