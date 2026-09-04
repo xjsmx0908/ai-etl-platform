@@ -118,6 +118,12 @@ type Store interface {
 	GovernanceByDocIDs(ctx context.Context, tenantID string, docIDs []string) (map[string]Governance, error)
 }
 
+// GovernanceUpdater edits controlled-document metadata without touching the
+// uploaded object, ETL state, or publication release.
+type GovernanceUpdater interface {
+	UpdateGovernance(context.Context, string, string, string, time.Time, string, string) error
+}
+
 // PgStore implements Store on PostgreSQL.
 type PgStore struct {
 	q db.Querier
@@ -335,6 +341,21 @@ func (s *PgStore) UpdatePublication(ctx context.Context, tenantID, docID, status
 		tenantID, docID, status)
 	if err != nil {
 		return fmt.Errorf("update publication: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PgStore) UpdateGovernance(ctx context.Context, tenantID, docID, owner string, effectiveDate time.Time, docStatus, supersedes string) error {
+	if docStatus != "" && docStatus != DocStatusActive && docStatus != DocStatusSuperseded && docStatus != DocStatusArchived {
+		return ErrNotFound
+	}
+	tag, err := s.q.Exec(ctx, `UPDATE documents SET owner=CASE WHEN $3<>'' THEN $3 ELSE owner END,effective_date=COALESCE($4::date,effective_date),doc_status=COALESCE(NULLIF($5,''),doc_status),supersedes=CASE WHEN $6<>'' THEN $6 ELSE supersedes END,updated_at=now()
+		WHERE tenant_id=$1 AND doc_id=$2`, tenantID, docID, strings.TrimSpace(owner), dateParam(effectiveDate), docStatus, strings.TrimSpace(supersedes))
+	if err != nil {
+		return fmt.Errorf("update governance: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

@@ -2,6 +2,85 @@
 
 This file is an append-only record of completed PRAR cycles.
 
+## 2026-09-03 - Knowledge Release Center design review
+
+- **Perceive:** The existing UI exposed Agent Run IDs and described a fixed
+  two-admin flow, while the backend actually has only `admin/user/readonly`,
+  stores Agent runs with TTL, and already owns exact-candidate publication in
+  PostgreSQL.
+- **Reason:** Keep deterministic eligibility and transactional publication as
+  the authority. Place Agent work after eligibility as a mandatory managed-
+  document pre-review, but treat its output as an untrusted recommendation.
+  Make approval count a deterministic risk policy: one administrator normally,
+  two for confidential/high-risk cases, with an audited exception on Agent
+  outage.
+- **Act:** Approved the Knowledge Release Center terminology and staged design:
+  durable review/request records, business read models, automatic Agent task
+  creation, and reuse of `publicationworkflow` for exact release.
+- **Refine:** Removed the misleading “one admin only views, another approves”
+  responsibility split and the assumption that document owner is an approver.
+  Run IDs remain audit correlation only; future business-owner groups are
+  explicitly out of first-release scope.
+
+## 2026-09-03 - Knowledge Release Center entry-point slice
+
+- **Perceive:** The existing `/agent` page was still the navigation target and
+  several user-facing descriptions implied a fixed second-admin workflow.
+- **Reason:** Change the business-facing seam first while retaining `/agent` for
+  compatibility; do not change approval semantics until durable review records
+  and the deterministic risk policy are implemented together.
+- **Act:** Added `/release-center`, switched navigation and document links to
+  “知识发布中心”, updated workflow copy to describe risk-based approval, and
+  kept Run IDs under the existing audit detail.
+- **Refine:** The Web contract suite (4 tests), ESLint, TypeScript, and Next.js
+  production build passed. No ETL, exact-candidate, or publication transaction
+  behavior was changed in this slice.
+
+## 2026-09-03 - Knowledge Release Center durable review slice
+
+- **Perceive:** Agent Run state is Redis-backed and TTL-bound, so it cannot be
+  the long-lived business record for a release request or review decision.
+- **Reason:** Persist version-bound review reports, release requests, and
+  per-person decisions in PostgreSQL. Keep exact candidate identity and tenant
+  scope as database constraints, and make the risk approval count a
+  deterministic policy rather than model output.
+- **Act:** Added the `releasecenter` domain module with policy evaluation,
+  review binding validation, PostgreSQL store interfaces/adapter, and migration
+  `0024_release_center.up.sql` for reviews, requests, and decisions.
+- **Refine:** Added composite foreign keys, candidate uniqueness, and decision
+  uniqueness so cross-tenant or duplicate approval records fail closed. Focused
+  releasecenter and migration tests plus the complete Go internal suite passed.
+
+## 2026-09-03 - Knowledge Release Center request queue slice
+
+- **Perceive:** Administrators still had to open an Agent Run before they could
+  discover a publication task; the durable request tables had no business HTTP
+  seam.
+- **Reason:** Expose a tenant-scoped, admin-only queue backed by PostgreSQL and
+  proxy it through the same-origin Web BFF. Keep Agent Run details out of this
+  read path.
+- **Act:** Added `GET /v1/release-center/requests`, its Web proxy and typed
+  `listReleaseRequests` client method, with a focused HTTP authorization and
+  tenant-isolation test.
+- **Refine:** The HTTP test, five Web contract tests, full Go internal tests,
+  ESLint, TypeScript, production build, container rebuild, and live route check
+  passed. Unauthenticated live queue access correctly returned 401.
+
+## 2026-09-03 - Knowledge Release Center queue UI slice
+
+- **Perceive:** The new durable request queue existed behind HTTP, but the
+  release-center page still made every administrator discover work through the
+  legacy Agent Run flow.
+- **Reason:** Show the durable queue as a first-class business signal while
+  retaining old draft discovery for migration compatibility. Restrict the page
+  and navigation to administrators because release requests contain governed
+  workflow data.
+- **Act:** Added queue loading, pending-approval count, per-document request
+  labels, and an administrator-only page guard. The Agent Run panel remains
+  available as secondary audit detail.
+- **Refine:** Web contract tests, ESLint, TypeScript, and production build all
+  passed. The queue endpoint remains fail-closed for unauthenticated callers.
+
 ## 2026-08-29 - P2.4 governance acceptance planning
 
 - **Perceive:** P2.1 publication approval, P2.2 durable document versions, and
@@ -1346,3 +1425,101 @@ This file is an append-only record of completed PRAR cycles.
 - 推理：运行态 Ollama 的 CPU `bge-m3` 对 1200 字符中文 chunk 单请求约 13 秒，批量并发和 180 秒 stage timeout 会让慢请求拖累同批成功结果；15 分钟总超时也不足以覆盖长文档。
 - 行动：OCR embedding 改为单 chunk 隔离；Parser/Worker 默认 chunk 调整为 600 字符、50 字符重叠；流水线默认超时调整为 2 小时，ingestion lease 调整为 12 小时，并修复因租约小于最坏重试窗口导致 worker 重启的问题。
 - 验证：重建并重启服务后，使用失败任务同一 PDF 的第 26–50 页重新解析得到 78 个、最大 600 字符 chunk；逐个调用真实 Ollama `bge-m3`，78/78 成功，最长 6.76 秒、总耗时 209 秒；完整 Go 测试全部通过。原失败任务已在 DLQ，不会被隐式篡改，需用户重新上传或显式重放。
+
+## 2026-09-03 - 长任务 generation 断点恢复与状态修复
+
+- 感知：583 页 PDF 在 2 小时总 deadline 到期后进入 DLQ；虽然 Redis checkpoint 已到 500/583 页，但 generation 重试仍从第 0 页开始，前端只显示旧进度并报 `Failed to fetch`。
+- 推理：generation 重试必须复用页级 checkpoint，同时持久化已完成 chunk 的稳定身份与内容哈希，才能在不重复投影的情况下完成全量 digest；失败终态也不能清空最后进度。
+- 行动：checkpoint 增加 chunk identities；generation build 增加身份播种并以累计身份计算 digest/count；正式 PDF 任务安全地从完整 checkpoint 的下一页恢复，旧格式 checkpoint 自动回退；失败状态保留进度；Next.js 任务代理将上游断连映射为可重试 503，前端延长瞬时故障容忍并立即启动首次轮询；CPU 默认任务窗口调整为 4h、单次重试。
+- 验证：新增 generation digest、分页恢复和失败进度回归测试；Go 全量测试、Web ESLint、Next.js production build、Compose config 与 diff 检查全部通过。
+- 部署：重建并替换当前 Compose 的 etl-worker、query-api、web、parser-service；运行态确认 `PIPELINE_TIMEOUT=4h`、`PIPELINE_MAX_RETRIES=1`、`EMBED_MODEL=bge-m3`、`EMBED_CONCURRENCY=1`。
+
+## 2026-09-03 - Qdrant generation 完成校验可见性修复
+
+- 感知：583 页任务已写入 2170 个 chunk，但完成校验首次 Qdrant scroll 只观察到 2159 个，任务因此失败；稍后独立查询 Qdrant 与 Elasticsearch 均为完整的 2170 个且 chunk identity 唯一。
+- 推理：根因是 Qdrant `next_page_offset` 大整数被 Go 默认 JSON 解码为 `float64`，游标舍入后后续分页漏掉 11 条；最终一致性重试只能作为防御，不能替代精确分页和严格 count/digest 规则。
+- 行动：Qdrant 三处 scroll 解码均改用 `json.RawMessage` 保留精确游标；Verifier 最多观察 10 次、间隔 1 秒，且仅对 under-count 等待；增加大游标分页和短暂可见性回归测试。
+- 验证：indexmanifest、store、pipeline 定向测试与 Go 全量测试通过；重建并重启 Worker 后从 Redis checkpoint 2170 条恢复，无 OCR/embedding 重跑；任务最终 `completed`，generation `active`，Qdrant/Elasticsearch 均为 2170/2170。
+
+## 2026-09-03 - 受管知识空间 Web 上传入口
+
+- 感知：后端已支持创建 production 知识空间和上传治理字段，但 Web 仅能选择已有空间，无法创建受管空间或填写责任人/生效日期。
+- 行动：数据接入页增加管理员“新建受管空间”表单；选择非 `user-uploads` 空间时显示 owner、effective date、doc status，并通过 multipart 传给后端；apiClient 增加创建空间和治理参数。
+- 验证：Web 上传契约测试、ESLint、Next.js production build 全部通过；重建 Web 容器后上线。
+
+## 2026-09-03 - 旧受管草稿治理信息编辑
+
+- 感知：上传页字段只覆盖新上传，历史草稿无法补齐 owner/effective_date，Agent 发布检查因此无法继续。
+- 推理：治理元数据需要独立于内容重处理的深接口；更新不能修改对象、ETL 状态、generation 或 publication_status，也不能绕过 Agent 审批。
+- 行动：新增管理员 PATCH 治理字段、PostgreSQL 持久化与审计事件；文档详情增加“编辑治理信息”弹窗，必填责任人/生效日期；保留受管直接发布拒绝。
+- 验证：新增 API 回归测试；Go docstore/cmd-api 测试、Web lint/build 通过；容器重建部署。
+
+## 2026-09-03 - 受管草稿双管理员代办发布
+
+- 感知：恢复后的受管草稿均已有 exact candidate，但发布门禁还独立要求责任人和生效日期；41 篇中只有两篇具备完整治理信息，其中 `PUB-2024-001` 已由用户完成发布。
+- 行动：以 `admin` 发起 `FIN-2024-002` 发布检查，以另一管理员 `agent` 审批；未对其余 39 篇臆造治理元数据或绕过门禁。
+- 验证：Run `run-bd5775d7acfcdcbb4aa4bebb936c7844` completed，approval 的 requester/decider 不同，文档 release 与发布审计均记录成功。
+
+## 2026-09-03 - 受管草稿统一治理后批量发布
+
+- 感知：用户明确指定剩余草稿统一责任人为“小卡拉米”、生效日期为 `2026-09-03`。
+- 行动：先通过管理员治理 PATCH 为 39 篇补齐元数据，再由 `admin` 发起、`agent` 管理员审批每个独立发布 Run；不修改原有已发布或退役文档。
+- 验证：39/39 治理更新成功，39/39 双管理员审批与发布成功；`enterprise-demo` 当前 42 篇 published、3 篇 retired、0 篇 draft，所有近期审批均为不同管理员。
+
+## 2026-09-03 - Agent 发布治理工作台重构
+
+- 感知：原页面把 Run ID、内部步骤日志、文档选择和审批动作混在主流程中，技术错误码也直接暴露给管理员。
+- 方案复核：保留 Agent 工作流和双管理员门禁作为深模块接口；不增加默认批量审批，以免削弱逐文档责任链。将业务状态置于主界面，Run ID 与执行日志下沉到审计详情，并把 blocker 映射为可操作的中文提示。
+- 行动：重做 `/agent` 为发布治理工作台，增加状态统计、全部/可检查/待补齐筛选、三步流程说明、Agent 检查结果和折叠审计详情；保留逐文档检查、另一位管理员审批和文档详情入口。
+- 验证：Web 契约测试 4 项、ESLint、Next.js production build 通过；重建 Web 容器后 `/agent` 返回 HTTP 200。
+
+## 2026-09-03 - 历史受管草稿原位恢复
+
+- 感知：41 篇 `enterprise-demo` 草稿均为迁移前历史记录，ETL 显示 completed，但没有 ingestion version、release current version 或 index manifest，Agent 检查统一返回 `exact_candidate_unavailable`。
+- 推理：直接删除会丢失仍保存在 MinIO 的原始对象；应使用正式上传接口按原 `doc_id` 重建版本，让 outbox、ETL、generation 和双索引一致性校验重新建立可信身份。
+- 行动：备份 41 篇文档清单与语料源；从 MinIO 逐一读取原对象，以原权限/知识空间/治理字段和原文档编号提交 41 次受管版本恢复。
+- 验证：41/41 上传接受，ETL 41/41 completed；41/41 release resolved，active manifest 存在，Qdrant/ES 数量和 digest 全部一致；41 篇仍保持 draft，未自动发布。
+
+## 2026-09-03 — Durable automatic Knowledge Release Center
+
+- Perceive: the queue existed, but managed drafts still depended on a manually
+  created Agent Run and its short-lived approval state.
+- Reason: keep Agent execution as an adapter and derive stable review/request
+  IDs from the exact release candidate. Retry discovery from PostgreSQL so an
+  API restart cannot permanently lose the post-ETL trigger.
+- Act: added a read-only Agent review planner, automatic collector, persisted
+  reports/requests, detail and decision APIs, one/two-person policy execution,
+  exact-candidate revalidation, and release-center UI actions.
+- Refine: focused and complete Go internal/API tests, ESLint, TypeScript, and
+  Next.js production build pass. The implementation preserves the invariant
+  that Agent output cannot grant publication authority.
+
+## 2026-09-04 — Release request invalidation and manual exception
+
+- Perceive: exact-candidate validation prevented unsafe publication, but stale
+  requests could remain visually pending and manual exceptions lacked a
+  mandatory recorded justification.
+- Reason: reconcile state as a projection while retaining reports and decisions
+  as audit evidence; never delete or silently rewrite prior approvals.
+- Act: the durable collector now marks mismatched pending candidates
+  `needs_info`; manual-exception approval requires a non-empty reason and the UI
+  labels the exceptional path separately.
+- Refine: focused store/domain tests and Web lint/type checks pass, including
+  the exception-reason contract.
+
+## 2026-09-04 — Durable release request work queue
+
+- Perceive: release requests were fetched from PostgreSQL, but the UI attached
+  them to the current draft list by document ID. Published, rejected, stale,
+  or otherwise absent documents therefore had no selectable business record,
+  and a first approver could not see explicit two-person approval progress.
+- Reason: keep release requests as independent list identities and resolve the
+  draft document only as optional display metadata. The request detail remains
+  authoritative for per-person decisions.
+- Act: added an independently selectable durable request list, prioritized
+  pending work on initial load, displayed approved-versus-required progress,
+  retained terminal history access, and hid decision controls after the
+  current administrator recorded a decision.
+- Refine: the Web boundary regression test, ESLint, TypeScript, production
+  build, and live route acceptance verify the slice without changing release
+  policy or exact-candidate publication behavior.

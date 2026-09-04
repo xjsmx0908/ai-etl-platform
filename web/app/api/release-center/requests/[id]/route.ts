@@ -1,0 +1,23 @@
+import { NextRequest } from "next/server";
+
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const backend = process.env.BACKEND_URL || "http://query-api:8080";
+  const token = req.cookies.get("ai_etl_token")?.value || "";
+  const { id } = await params;
+  const upstream = await fetch(`${backend}/v1/release-center/requests/${encodeURIComponent(id)}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: "no-store",
+  });
+  const text = await upstream.text();
+  return new Response(upstream.status === 204 ? null : text, { status: upstream.status, headers: { "Content-Type": "application/json" } });
+}
+
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const backend = process.env.BACKEND_URL || "http://query-api:8080";
+  const token = req.cookies.get("ai_etl_token")?.value || "";
+  const { id } = await params;
+  const upstream = await fetch(`${backend}/v1/release-center/requests/${encodeURIComponent(id)}/decision`, {
+    method: "POST", headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json" }, body: await req.text(), cache: "no-store",
+  });
+  const text = await upstream.text();
+  return new Response(upstream.status === 204 ? null : text, { status: upstream.status, headers: { "Content-Type": "application/json" } });
+}

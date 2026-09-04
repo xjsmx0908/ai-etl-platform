@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -132,6 +133,8 @@ type checkpointStub struct {
 
 func (c *checkpointStub) Save(_ context.Context, cp model.Checkpoint) error {
 	c.saveCalls = append(c.saveCalls, cp)
+	c.cp = cp
+	c.found = true
 	return nil
 }
 
@@ -171,7 +174,10 @@ func (s *taskStatusStub) Save(_ context.Context, status model.TaskStatus) error 
 }
 
 func (s *taskStatusStub) Load(context.Context, string, string) (model.TaskStatus, bool, error) {
-	return model.TaskStatus{}, false, nil
+	if len(s.statuses) == 0 {
+		return model.TaskStatus{}, false, nil
+	}
+	return s.statuses[len(s.statuses)-1], true, nil
 }
 
 func (s *taskStatusStub) Close() error { return nil }
@@ -187,6 +193,10 @@ type generationBuildStub struct {
 	upsertErr   error
 	completeErr error
 	abortCause  error
+}
+
+func (s *generationBuildStub) SeedIdentities(identities []indexmanifest.ChunkIdentity) {
+	s.events = append(s.events, fmt.Sprintf("seed:%d", len(identities)))
 }
 
 func (s *generationBuildStub) Begin(_ context.Context, request indexmanifest.BuildRequest) (indexmanifest.BuildSession, error) {
@@ -423,6 +433,23 @@ func TestHandleTask_CommitsOffsetOnlyAfterDLQSuccess(t *testing.T) {
 	}
 	if statuses.statuses[0].Status != model.TaskStatusProcessing || statuses.statuses[len(statuses.statuses)-1].Status != model.TaskStatusFailed {
 		t.Fatalf("unexpected status sequence: %+v", statuses.statuses)
+	}
+}
+
+func TestHandleTaskFailedStatusPreservesLastProgress(t *testing.T) {
+	statuses := &taskStatusStub{statuses: []model.TaskStatus{{
+		TaskID: "doc-1", DocID: "doc-1", TenantID: "tenant-a", Status: model.TaskStatusProcessing,
+		Stage: "embedding", ChunksDone: 1762, TotalChunks: 1762, PagesDone: 500, PagesTotal: 583,
+	}}}
+	p := New(baseTestConfig(), noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).
+		WithTaskStatusStore(statuses)
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: model.Task{DocID: "doc-1", TenantID: "tenant-a", FilePath: "missing"},
+		Ack:  func() {}, Nack: func(error) {},
+	})
+	got := statuses.statuses[len(statuses.statuses)-1]
+	if got.Status != model.TaskStatusFailed || got.ChunksDone != 1762 || got.TotalChunks != 1762 || got.PagesDone != 500 || got.PagesTotal != 583 {
+		t.Fatalf("failed status lost progress: %+v", got)
 	}
 }
 
@@ -760,6 +787,92 @@ func TestProcessTask_BinaryParserServicePathCompletes(t *testing.T) {
 	}
 	if !foundTotal {
 		t.Fatalf("expected an embedding stage with TotalChunks=2, got %+v", statuses.statuses)
+	}
+}
+
+func TestProcessTaskDurablePDFResumesAtCompletedPageBatch(t *testing.T) {
+	var starts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		starts = append(starts, r.FormValue("page_start"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"doc_id": "doc-resume", "page_count": 50, "status": "success",
+			"chunks": []map[string]interface{}{{
+				"chunk_id": "doc-resume_250000", "doc_id": "doc-resume", "tenant_id": "acme", "content": "remaining", "index": 250000,
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	tmp, err := os.CreateTemp(t.TempDir(), "resume-*.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previous := []model.CheckpointChunkIdentity{
+		{ChunkID: "doc-resume_0000", Index: 0, ContentHash: indexmanifest.ContentHash("first")},
+		{ChunkID: "doc-resume_0001", Index: 1, ContentHash: indexmanifest.ContentHash("second")},
+	}
+	checkpoint := &checkpointStub{found: true, cp: model.Checkpoint{
+		DocID: "doc-resume", JobID: "job-1", ChunksDone: 2, PagesDone: 25, PagesTotal: 50, ChunkIdentities: previous,
+	}}
+	build := &generationBuildStub{}
+	cfg := baseTestConfig()
+	cfg.ParserEndpoint = srv.URL
+	cfg.OCRPageBatchSize = 25
+	cfg.PipelineTimeout = 5 * time.Second
+	cfg.StageTimeout = 5 * time.Second
+	p := New(cfg, vectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), checkpoint, &dlqStub{}).
+		WithGenerationBuilder(build)
+	err = p.processTask(context.Background(), model.Task{
+		JobID: "job-1", EventID: "event-1", DocID: "doc-resume", TenantID: "acme", FilePath: tmp.Name(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(starts, ","); got != "25" {
+		t.Fatalf("parser page_start calls = %q, want only 25", got)
+	}
+	if len(checkpoint.cp.ChunkIdentities) != 3 || checkpoint.cp.PagesDone != 50 || checkpoint.cp.ChunksDone != 3 {
+		t.Fatalf("resumed checkpoint = %+v", checkpoint.cp)
+	}
+	if got := strings.Join(build.events, ","); !strings.Contains(got, "seed:2") || !strings.Contains(got, "complete") {
+		t.Fatalf("build events = %q", got)
+	}
+}
+
+func TestProcessTaskDurablePDFCompletedCheckpointSkipsParser(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("parser called after all pages were checkpointed")
+	}))
+	defer srv.Close()
+	tmp, err := os.CreateTemp(t.TempDir(), "complete-resume-*.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := &checkpointStub{found: true, cp: model.Checkpoint{
+		DocID: "doc-resume", JobID: "job-1", ChunksDone: 1, PagesDone: 583, PagesTotal: 583,
+		ChunkIdentities: []model.CheckpointChunkIdentity{{ChunkID: "doc-resume_0000", Index: 0, ContentHash: indexmanifest.ContentHash("done")}},
+	}}
+	build := &generationBuildStub{}
+	cfg := baseTestConfig()
+	cfg.ParserEndpoint = srv.URL
+	p := New(cfg, vectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), checkpoint, &dlqStub{}).WithGenerationBuilder(build)
+	if err := p.processTask(context.Background(), model.Task{
+		JobID: "job-1", EventID: "event-1", DocID: "doc-resume", TenantID: "acme", FilePath: tmp.Name(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(build.events, ","); got != "begin,seed:1,complete" {
+		t.Fatalf("build events = %q", got)
 	}
 }
 

@@ -31,13 +31,18 @@ export default function DataPage() {
   const [permission, setPermission] = useState("internal");
   const [knowledgeSpace, setKnowledgeSpace] = useState("");
   const [knowledgeSpaces, setKnowledgeSpaces] = useState<KnowledgeSpace[]>([]);
+  const [showCreateSpace, setShowCreateSpace] = useState(false);
+  const [newSpace, setNewSpace] = useState({ id: "", name: "" });
+  const [spaceBusy, setSpaceBusy] = useState(false);
+  const [owner, setOwner] = useState("");
+  const [effectiveDate, setEffectiveDate] = useState("");
+  const [docStatus, setDocStatus] = useState<"active" | "superseded" | "archived">("active");
   const [status, setStatus] = useState<"idle" | "uploading" | "polling" | "done" | "error">("idle");
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [taskStatus, setTaskStatus] = useState<TaskStatus | null>(null);
   const [error, setError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const permissionOptions = PERMISSION_OPTIONS.filter((o) => isAdmin || !o.adminOnly);
-  const hasMultipleWritableSpaces = knowledgeSpaces.length > 1;
 
   useEffect(() => {
     void apiClient.listKnowledgeSpaces().then(({ items }) => {
@@ -50,6 +55,29 @@ export default function DataPage() {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
+
+  const selectedSpace = knowledgeSpaces.find((space) => space.id === knowledgeSpace);
+  const managedUpload = selectedSpace && selectedSpace.id !== "user-uploads";
+  const governanceComplete = !managedUpload || !isAdmin || (owner.trim() !== "" && effectiveDate !== "");
+
+  const createSpace = async () => {
+    const id = newSpace.id.trim();
+    const name = newSpace.name.trim();
+    if (!id || !name) return;
+    setSpaceBusy(true);
+    setError("");
+    try {
+      const created = await apiClient.createKnowledgeSpace({ id, name, kind: "production" });
+      setKnowledgeSpaces((items) => [...items, created]);
+      setKnowledgeSpace(created.id);
+      setNewSpace({ id: "", name: "" });
+      setShowCreateSpace(false);
+    } catch (e: unknown) {
+      setError((e as Error).message || "创建知识空间失败");
+    } finally {
+      setSpaceBusy(false);
+    }
+  };
 
   const stopPolling = () => {
     if (pollRef.current) {
@@ -66,7 +94,11 @@ export default function DataPage() {
     setTaskStatus(null);
     setError("");
     try {
-      const res = await apiClient.uploadDocument(file, permission, undefined, knowledgeSpace);
+      const res = await apiClient.uploadDocument(file, permission, undefined, knowledgeSpace, managedUpload && isAdmin ? {
+        docStatus,
+        owner,
+        effectiveDate,
+      } : undefined);
       setUploadResult(res);
       // Identical content is already indexed: there is no new task to follow, and
       // polling a doc_id whose ETL finished long ago would just spin.
@@ -84,7 +116,7 @@ export default function DataPage() {
 
   const poll = (docId: string) => {
     let failures = 0;
-    pollRef.current = setInterval(async () => {
+    const check = async () => {
       try {
         const d = await apiClient.getTaskStatus(docId);
         failures = 0;
@@ -94,16 +126,18 @@ export default function DataPage() {
           setStatus("done");
         }
       } catch (e: unknown) {
-        // A transient blip keeps polling, but repeated failures mean the status
-        // lookup is genuinely broken — stop spinning and surface the error.
+        // Keep polling through transient proxy/upstream blips. Do not replace a
+        // known backend terminal status with the browser's generic "Failed to fetch".
         failures += 1;
-        if (failures >= 3) {
+        if (failures >= 10) {
           stopPolling();
           setStatus("error");
-          setError((e as Error).message || "任务状态查询失败");
+          setError((e as Error).message || "任务状态暂时不可用，请刷新重试");
         }
       }
-    }, 2000);
+    };
+    void check();
+    pollRef.current = setInterval(() => void check(), 2000);
   };
 
   const isDuplicate = Boolean(uploadResult?.duplicate_of);
@@ -152,7 +186,8 @@ export default function DataPage() {
             className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
           />
           <span className="text-xs text-slate-400">单文件上限 {MAX_UPLOAD_SIZE_MB} MB</span>
-          {hasMultipleWritableSpaces ? (
+          {knowledgeSpaces.length > 0 ? (
+            <>
             <select
               value={knowledgeSpace}
               onChange={(e) => setKnowledgeSpace(e.target.value)}
@@ -165,6 +200,8 @@ export default function DataPage() {
                 </option>
               ))}
             </select>
+            {isAdmin && <button type="button" onClick={() => setShowCreateSpace((value) => !value)} className="rounded-lg border border-blue-200 px-3 py-2 text-sm text-blue-700 hover:bg-blue-50">{showCreateSpace ? "收起" : "新建受管空间"}</button>}
+            </>
           ) : null}
           <select
             value={permission}
@@ -179,7 +216,7 @@ export default function DataPage() {
           </select>
           <button
             onClick={() => void upload()}
-            disabled={!file || !knowledgeSpace || status === "uploading" || status === "polling"}
+            disabled={!file || !knowledgeSpace || !governanceComplete || status === "uploading" || status === "polling"}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {status === "uploading" || status === "polling" ? "上传中…" : "上传"}
@@ -191,6 +228,21 @@ export default function DataPage() {
             <button onClick={() => void apiClient.cancelTask(taskStatus.doc_id).then(setTaskStatus)} className="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-600 hover:bg-red-50">取消任务</button>
           )}
         </div>
+        {showCreateSpace && isAdmin && (
+          <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+            <label className="text-xs text-slate-600">空间 ID<input value={newSpace.id} onChange={(e) => setNewSpace((v) => ({ ...v, id: e.target.value }))} placeholder="managed-demo" className="mt-1 block rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs text-slate-600">空间名称<input value={newSpace.name} onChange={(e) => setNewSpace((v) => ({ ...v, name: e.target.value }))} placeholder="受管测试知识库" className="mt-1 block rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="button" onClick={() => void createSpace()} disabled={spaceBusy || !newSpace.id.trim() || !newSpace.name.trim()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{spaceBusy ? "创建中…" : "创建 production 受管空间"}</button>
+          </div>
+        )}
+        {managedUpload && isAdmin && file && (
+          <div className="mt-3 grid gap-3 rounded-lg border border-amber-100 bg-amber-50/50 p-3 sm:grid-cols-3">
+            <label className="text-xs text-slate-600">责任人 <span className="text-red-500">*</span><input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="知识管理部" className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs text-slate-600">生效日期 <span className="text-red-500">*</span><input type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs text-slate-600">文档状态<select value={docStatus} onChange={(e) => setDocStatus(e.target.value as typeof docStatus)} className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"><option value="active">active（有效）</option><option value="superseded">superseded（已替代）</option><option value="archived">archived（归档）</option></select></label>
+            <p className="text-xs text-amber-700 sm:col-span-3">受管文档建议上传时填写责任人和生效日期；处理完成后仍为草稿，需在知识发布中心完成 Agent 预审和管理员审批。</p>
+          </div>
+        )}
         <p className="mt-2 text-xs text-slate-400">
           文档编号由系统分配。要更新已有文档，请在
           <Link href="/documents" className="mx-1 text-blue-600 hover:underline">

@@ -46,6 +46,7 @@ import (
 	"ai-etl-pipeline/internal/publicationrelease"
 	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/query"
+	"ai-etl-pipeline/internal/releasecenter"
 	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/s3"
 	"ai-etl-pipeline/internal/scim"
@@ -399,6 +400,7 @@ func main() {
 	exactPublication := publicationworkflow.NewPostgresPublication(pgPool, qs)
 	publicationWorkflow := publicationworkflow.New(docStore, exactPublication).
 		WithPublisher(exactPublication)
+	releaseCenterStore := releasecenter.NewPostgresStore(pgPool)
 	agentSvc, err := agentapi.NewServiceWithDependencies(cfg, qs, taskStatusStore, prom, agentapi.Dependencies{
 		ApprovalStore:       agent.NewPostgresApprovalStore(pgPool),
 		PublicationWorkflow: publicationWorkflow,
@@ -407,6 +409,8 @@ func main() {
 		slog.Error("failed to create agent api service", "error", err)
 		os.Exit(1)
 	}
+	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc}, releaseCenterStore)
+	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
 	defer agentSvc.Close()
 	rateLimiter := middleware.NewTenantRateLimiter(cfg.EmbedRateLimit, 100)
 
@@ -461,6 +465,9 @@ func main() {
 	})))
 	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
+	apiV1.Handle("/v1/release-center/requests", requireScopes(auth.ScopeAdmin)(handleReleaseCenterRequests(releaseCenterStore)))
+	apiV1.Handle("/v1/release-center/requests/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterDecision(releaseCenterStore, publicationWorkflow)))
+	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	// Document registry: list/detail open to any authenticated role (filtered by
 	// the role→permission matrix); DELETE checks upload scope in-handler.
 	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore, qs)))

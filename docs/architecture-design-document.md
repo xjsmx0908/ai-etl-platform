@@ -19,6 +19,33 @@ space ID. The module returns a resolved space or a typed forbidden,
 unavailable, or not-found error. It owns membership and default-space rules so
 upload, query, and HTTP handlers cannot diverge.
 
+## Knowledge Release Center
+
+The release center is a business-facing module above the existing
+`publicationworkflow` seam. It composes four concerns without making the
+Agent Run the source of truth:
+
+1. `ReleaseEligibility` resolves the current exact candidate and deterministic
+   blockers.
+2. `DocumentReview` runs the Agent pre-review and stores a version-bound report.
+3. `ReleaseApproval` applies the configured risk policy to an approval task and
+   records decisions in PostgreSQL.
+4. `publicationworkflow` revalidates the candidate and performs the atomic
+   release, release CAS, cache invalidation, and audit.
+
+The Agent is an adapter behind the `DocumentReview` seam. Its output is an
+untrusted recommendation: document text is treated as prompt-injection-prone
+input, and no model output grants tools or authority. Agent Run IDs remain
+correlation fields for diagnostics, not durable release state.
+
+The first policy is deliberately small and deterministic: ordinary managed
+documents need one administrator decision; confidential or deterministic
+high-risk documents need two distinct administrators. Agent findings can
+escalate a policy but cannot reduce it. If the Agent is unavailable, the
+document enters an audited manual-exception path rather than being marked
+reviewed. A changed document version or generation invalidates the report and
+all pending decisions.
+
 ## Query Flow
 
 1. Authenticate the principal.

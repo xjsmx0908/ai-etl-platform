@@ -37,3 +37,36 @@ quarantined in a non-default demo space and cannot enter production answers.
 P1 adds review/approval workflow, richer authority and applicability metadata,
 and transactional publication audit. P2 adds enterprise identity integration,
 retention, disaster recovery, supply-chain controls, and SLO-driven deployment.
+
+## Knowledge Release Center (approved design, 2026-09-03)
+
+The publication entry point is named **Knowledge Release Center**, not Agent
+Publication Governance. It presents the business release state of managed
+documents; Agent execution details and Run IDs are secondary audit information.
+
+Managed documents follow this flow:
+
+```text
+ETL complete -> deterministic eligibility gate -> Agent pre-review
+             -> approval task -> administrator decision -> exact-version release
+```
+
+The eligibility gate is authoritative for ingestion completion, governance
+fields, and the sealed Qdrant/Elasticsearch generation. The Agent produces a
+review recommendation and evidence, but cannot edit metadata, alter access,
+choose the authoritative conflicting document, approve itself, or publish.
+
+Approval policy is deterministic and risk-based:
+
+- `user-uploads` keeps automatic publication and does not enter this workflow.
+- Ordinary managed documents require one administrator decision after a
+  successful pre-review.
+- `confidential` documents and deterministic high-risk cases require two
+  different administrators.
+- Agent failure creates an audited manual-exception task; it never silently
+  becomes a successful review.
+
+The current implementation has only `admin`, `user`, and `readonly` roles.
+An `owner` is document metadata, not an authenticated approval role. Business
+owner groups and configurable approval policies are future scope and must not
+be implied by the first release-center UI.

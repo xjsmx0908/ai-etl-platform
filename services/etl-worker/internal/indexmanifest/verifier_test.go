@@ -13,6 +13,23 @@ type projectionStub struct {
 	err         error
 }
 
+type sequenceProjection struct {
+	observations []BackendObservation
+	calls        int
+}
+
+func (p *sequenceProjection) UpsertGeneration(context.Context, GenerationIdentity, model.Chunk) error {
+	return nil
+}
+func (p *sequenceProjection) ObserveGeneration(context.Context, GenerationIdentity) (BackendObservation, error) {
+	idx := p.calls
+	if idx >= len(p.observations) {
+		idx = len(p.observations) - 1
+	}
+	p.calls++
+	return p.observations[idx], nil
+}
+
 func (p projectionStub) UpsertGeneration(context.Context, GenerationIdentity, model.Chunk) error {
 	return p.err
 }
@@ -65,5 +82,18 @@ func TestVerifierFailsManifestOnBackendErrorOrIdentityMismatch(t *testing.T) {
 				t.Fatalf("err=%v lifecycle=%+v", err, lifecycle)
 			}
 		})
+	}
+}
+
+func TestVerifierRetriesTransientVisibilityMismatch(t *testing.T) {
+	manifest := Manifest{GenerationID: "gen-1", TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1", ExpectedChunkCount: 2, ExpectedChunkDigest: "digest"}
+	qdrant := &sequenceProjection{observations: []BackendObservation{{Count: 1, Digest: "partial"}, {Count: 2, Digest: "digest"}}}
+	elastic := projectionStub{observation: BackendObservation{Count: 2, Digest: "digest"}}
+	lifecycle := &lifecycleStub{}
+	if err := NewVerifier(qdrant, elastic, lifecycle).Verify(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if qdrant.calls != 2 || !lifecycle.ready || lifecycle.failed {
+		t.Fatalf("calls=%d lifecycle=%+v", qdrant.calls, lifecycle)
 	}
 }

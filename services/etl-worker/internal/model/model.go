@@ -71,10 +71,20 @@ type Metric struct {
 // Checkpoint tracks processing progress for crash recovery.
 type Checkpoint struct {
 	DocID       string `json:"doc_id"`
+	JobID       string `json:"job_id,omitempty"`
 	ChunksDone  int    `json:"chunks_done"`
 	LastChunkID string `json:"last_chunk_id"`
 	PagesDone   int    `json:"pages_done,omitempty"`
 	PagesTotal  int    `json:"pages_total,omitempty"`
+	// ChunkIdentities is persisted for generation builds so a retry can resume
+	// from the page checkpoint while still sealing a digest over all chunks.
+	ChunkIdentities []CheckpointChunkIdentity `json:"chunk_identities,omitempty"`
+}
+
+type CheckpointChunkIdentity struct {
+	ChunkID     string `json:"chunk_id"`
+	Index       int    `json:"index"`
+	ContentHash string `json:"content_hash"`
 }
 
 // TaskStatusState describes a document processing task lifecycle.

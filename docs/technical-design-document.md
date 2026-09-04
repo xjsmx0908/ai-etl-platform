@@ -104,6 +104,65 @@ completion appends its audit and deletes the catalog row, whose foreign-key
 cascade removes releases, ingestion state, manifests, and the deletion job.
 Prometheus exposes only fixed state/condition/outcome labels.
 
+## Knowledge Release Center (next implementation baseline)
+
+The Web `/agent` route is to be renamed and reshaped as `/release-center` (a
+compatibility redirect may remain). The page is driven by release-center read
+models, not by a manually entered Run ID. Run details are expandable audit
+data only.
+
+The first implementation is split into deep module seams:
+
+```text
+ReleaseEligibility.Assess(document_id) -> Eligibility
+DocumentReview.Review(exact_candidate) -> ReviewReport
+ReleaseApproval.Decide(request_id, decision) -> ApprovalState
+publicationworkflow.PublishApproved(candidate, idempotency_key)
+```
+
+`ReviewReport` is persisted and must contain the document version, generation,
+model, prompt version, recommendation, risk level, findings, evidence
+references, timestamps, and the originating Agent Run ID. Reports and approval
+requests are stale when the exact candidate or release revision changes.
+
+The release-center read model combines document, ETL, eligibility, review,
+approval, and release records into business states such as `needs_info`,
+`checking`, `review_blocked`, `approval_pending`, `published`, and `rejected`.
+These are projections; they do not replace the authoritative document and
+release state machines.
+
+The first approval policy is deterministic and stored server-side:
+
+| Condition | Required decisions |
+| --- | ---: |
+| Personal `user-uploads` space | 0 (automatic release) |
+| Ordinary managed document | 1 administrator |
+| `confidential` or deterministic high-risk document | 2 distinct administrators |
+| Agent unavailable | audited manual exception, then policy above |
+
+The Agent may add findings or escalate risk, but it cannot lower the required
+decision count or invoke publication. Approval success calls the existing
+exact-candidate publication module once; the UI does not expose a separate
+"continue publishing" action.
+
+Implemented: migration `0024_release_center.up.sql` persists review, request,
+and per-person decision records. A restart-safe collector discovers eligible
+managed drafts and starts a read-only Agent assessment which cannot plan a
+publication tool. The coordinator stores stable IDs derived from the exact
+candidate, and Agent failure becomes a manual-exception request.
+
+Tenant-scoped admin APIs list requests, return request/review/decision detail,
+and accept approval or rejection. One or two distinct decisions are enforced
+from server-side policy; the final approval re-assesses the exact candidate and
+calls `publicationworkflow.PublishApproved`. The Web BFF and release-center UI
+use these durable records as their primary workflow.
+
+The collector also reconciles pending requests against the current release and
+healthy active generation. A mismatched version, generation, digest, or release
+revision moves the old request to `needs_info` while preserving all review and
+decision rows. `manual_exception` remains publishable only through the same
+exact-candidate revalidation and requires an administrator-supplied reason.
+
 ## P2.4 governance acceptance harness
 
 The governance overlay exposes worker metrics on loopback and replaces only its

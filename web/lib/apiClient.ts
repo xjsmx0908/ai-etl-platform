@@ -10,6 +10,8 @@ import type {
   Health,
   LoginResponse,
   KnowledgeSpace,
+  ReleaseRequestsResponse,
+  ReleaseRequestDetail,
   Source,
   TaskStatus,
   UploadResult,
@@ -158,8 +160,22 @@ export async function updateDocumentPublication(id: string, publicationStatus: "
   });
 }
 
+export async function updateDocumentGovernance(id: string, params: { owner: string; effective_date: string; doc_status: "active" | "superseded" | "archived"; supersedes?: string }): Promise<Document> {
+  return request<Document>(`/documents/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(params),
+  });
+}
+
 export async function listKnowledgeSpaces(): Promise<{ items: KnowledgeSpace[] }> {
   return request<{ items: KnowledgeSpace[] }>("/knowledge-spaces");
+}
+
+export async function createKnowledgeSpace(params: { id: string; name: string; kind?: "production" | "demo" }): Promise<KnowledgeSpace> {
+  return request<KnowledgeSpace>("/knowledge-spaces", {
+    method: "POST",
+    body: JSON.stringify({ id: params.id, name: params.name, kind: params.kind || "production" }),
+  });
 }
 
 // ── Upload / Task ────────────────────────────────────────────────────────
@@ -171,7 +187,8 @@ export async function uploadDocument(
   file: File,
   permission: string,
   docId?: string,
-  knowledgeSpaceId?: string
+  knowledgeSpaceId?: string,
+  governance?: { docStatus?: "active" | "superseded" | "archived"; owner?: string; effectiveDate?: string; supersedes?: string }
 ): Promise<UploadResult> {
   const maxUploadSizeMB = 100;
   if (file.size > maxUploadSizeMB * 1024 * 1024) {
@@ -182,6 +199,10 @@ export async function uploadDocument(
   fd.append("permission", permission);
   if (docId?.trim()) fd.append("doc_id", docId.trim());
   if (knowledgeSpaceId?.trim()) fd.append("knowledge_space_id", knowledgeSpaceId.trim());
+  if (governance?.docStatus) fd.append("doc_status", governance.docStatus);
+  if (governance?.owner?.trim()) fd.append("owner", governance.owner.trim());
+  if (governance?.effectiveDate?.trim()) fd.append("effective_date", governance.effectiveDate.trim());
+  if (governance?.supersedes?.trim()) fd.append("supersedes", governance.supersedes.trim());
   return request<UploadResult>("/upload", { method: "POST", body: fd });
 }
 
@@ -276,6 +297,16 @@ export async function createDocumentPublicationRun(documentId: string): Promise<
     method: "POST",
     body: JSON.stringify({ workflow: "document_publication", document_id: documentId }),
   });
+}
+
+export async function listReleaseRequests(): Promise<ReleaseRequestsResponse> {
+  return request<ReleaseRequestsResponse>("/release-center/requests");
+}
+export async function getReleaseRequest(id: string): Promise<ReleaseRequestDetail> {
+  return request<ReleaseRequestDetail>(`/release-center/requests/${encodeURIComponent(id)}`);
+}
+export async function decideReleaseRequest(id: string, decision: "approved" | "rejected", reason = ""): Promise<ReleaseRequestDetail> {
+  return request<ReleaseRequestDetail>(`/release-center/requests/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ decision, reason }) });
 }
 
 export async function getAgentRun(id: string): Promise<AgentRun> {
@@ -405,7 +436,9 @@ export const apiClient = {
   searchDocuments,
   deleteDocument,
 	updateDocumentPublication,
-	listKnowledgeSpaces,
+	updateDocumentGovernance,
+  listKnowledgeSpaces,
+  createKnowledgeSpace,
   uploadDocument,
   getTaskStatus,
   cancelTask,
@@ -418,6 +451,9 @@ export const apiClient = {
   getHealth,
   createAgentRun,
   createDocumentPublicationRun,
+	listReleaseRequests,
+	getReleaseRequest,
+	decideReleaseRequest,
   getAgentRun,
   listAgentApprovals,
   approveAgentRun,

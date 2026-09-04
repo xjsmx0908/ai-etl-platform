@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"sync"
+	"time"
 
 	"ai-etl-pipeline/internal/docstore"
 )
@@ -181,6 +182,24 @@ func (f *fakeDocStore) UpdatePublication(_ context.Context, tenantID, docID, sta
 		return docstore.ErrNotFound
 	}
 	doc.PublicationStatus = status
+	f.docs[key] = doc
+	return nil
+}
+
+func (f *fakeDocStore) UpdateGovernance(_ context.Context, tenantID, docID, owner string, effectiveDate time.Time, docStatus, supersedes string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := f.key(tenantID, docID)
+	doc, ok := f.docs[key]
+	if !ok {
+		return docstore.ErrNotFound
+	}
+	doc.Owner = owner
+	doc.EffectiveDate = effectiveDate
+	if docStatus != "" {
+		doc.DocStatus = docStatus
+	}
+	doc.Supersedes = supersedes
 	f.docs[key] = doc
 	return nil
 }

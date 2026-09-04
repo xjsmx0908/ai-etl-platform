@@ -417,3 +417,26 @@ func expectLockAndSchema(mock pgxmock.PgxConnIface) {
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS schema_migrations").
 		WillReturnResult(pgxmock.NewResult("CREATE", 0))
 }
+
+func TestMigration0024ReleaseCenter(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0024_release_center.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	source := string(body)
+	for _, expected := range []string{
+		"CREATE TABLE release_center_reviews",
+		"CREATE TABLE release_center_requests",
+		"CREATE TABLE release_center_decisions",
+		"document_version_id",
+		"generation_id",
+		"release_revision",
+		"required_approvals",
+		"findings JSONB",
+		"REFERENCES release_center_reviews (tenant_id, review_id)",
+	} {
+		if !strings.Contains(source, expected) {
+			t.Errorf("migration missing %q", expected)
+		}
+	}
+}

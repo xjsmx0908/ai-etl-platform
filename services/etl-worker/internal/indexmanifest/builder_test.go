@@ -166,6 +166,38 @@ func TestBuilderGenerationIsStableForRedeliveryAndChangesWithConfiguration(t *te
 	}
 }
 
+func TestBuilderSeededIdentitiesAreIncludedInCompletionDigest(t *testing.T) {
+	lifecycle := &buildLifecycleStub{}
+	qdrant := &buildProjectionStub{name: "qdrant", events: &lifecycle.events}
+	elasticsearch := &buildProjectionStub{name: "elasticsearch", events: &lifecycle.events}
+	build, err := NewBuilder(lifecycle, qdrant, elasticsearch).Begin(context.Background(), testBuildRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := []ChunkIdentity{{ChunkID: "doc-1_0000", Index: 0, ContentHash: ContentHash("already durable")}}
+	seededChunk := model.Chunk{ChunkID: seeded[0].ChunkID, TenantID: "acme", DocID: "doc-1", Index: seeded[0].Index, Content: "already durable"}
+	qdrant.chunks = append(qdrant.chunks, seededChunk)
+	elasticsearch.chunks = append(elasticsearch.chunks, seededChunk)
+	build.(*Build).SeedIdentities(seeded)
+	chunk := model.Chunk{ChunkID: "doc-1_0001", TenantID: "acme", DocID: "doc-1", Index: 1, Content: "new"}
+	if err := build.Upsert(context.Background(), chunk); err != nil {
+		t.Fatal(err)
+	}
+	if err := build.Complete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	identity := build.Identity()
+	want, err := IdentityDigest(identity, []ChunkIdentity{
+		seeded[0], {ChunkID: chunk.ChunkID, Index: chunk.Index, ContentHash: ContentHash(chunk.Content)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle.manifest.ExpectedChunkCount != 2 || lifecycle.manifest.ExpectedChunkDigest != want {
+		t.Fatalf("sealed manifest = count:%d digest:%s, want count:2 digest:%s", lifecycle.manifest.ExpectedChunkCount, lifecycle.manifest.ExpectedChunkDigest, want)
+	}
+}
+
 func TestBuilderDoesNotPublishWhenElasticsearchWriteFails(t *testing.T) {
 	lifecycle := &buildLifecycleStub{}
 	qdrant := &buildProjectionStub{name: "qdrant", events: &lifecycle.events}

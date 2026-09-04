@@ -270,7 +270,7 @@ func Load() Config {
 		TaskBufferSize:   EnvInt("PIPELINE_TASK_BUFFER", 100),
 		StageTimeout:     EnvDuration("PIPELINE_STAGE_TIMEOUT", 30*time.Second),
 		PipelineTimeout:  EnvDuration("PIPELINE_TIMEOUT", 5*time.Minute),
-		MaxRetries:       EnvInt("PIPELINE_MAX_RETRIES", 3),
+		MaxRetries:       EnvInt("PIPELINE_MAX_RETRIES", 1),
 		RetryBackoff:     EnvDuration("PIPELINE_RETRY_BACKOFF", 500*time.Millisecond),
 		BatchSize:        EnvInt("PIPELINE_BATCH_SIZE", 10),
 		OCRPageBatchSize: EnvInt("OCR_PAGE_BATCH_SIZE", 25),

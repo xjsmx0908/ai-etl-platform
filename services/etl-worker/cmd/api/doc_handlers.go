@@ -252,17 +252,70 @@ func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjec
 			}
 			var input struct {
 				PublicationStatus string `json:"publication_status"`
+				Owner             string `json:"owner"`
+				EffectiveDate     string `json:"effective_date"`
+				DocStatus         string `json:"doc_status"`
+				Supersedes        string `json:"supersedes"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid request body")
 				return
 			}
-			if input.PublicationStatus != "draft" && input.PublicationStatus != "published" && input.PublicationStatus != "retired" {
+			if input.PublicationStatus != "" && input.PublicationStatus != "draft" && input.PublicationStatus != "published" && input.PublicationStatus != "retired" {
 				writeError(w, http.StatusBadRequest, "invalid publication_status")
 				return
 			}
 			if input.PublicationStatus == "published" && doc.KnowledgeSpaceID != "" && doc.KnowledgeSpaceID != "user-uploads" {
 				writeError(w, http.StatusConflict, "managed documents require the publication governance workflow")
+				return
+			}
+			if input.Owner != "" || input.EffectiveDate != "" || input.DocStatus != "" || input.Supersedes != "" {
+				parsedDate := time.Time{}
+				var err error
+				if input.EffectiveDate != "" {
+					parsedDate, err = time.Parse("2006-01-02", input.EffectiveDate)
+				}
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "effective_date must be YYYY-MM-DD")
+					return
+				}
+				if input.DocStatus != "" && input.DocStatus != docstore.DocStatusActive && input.DocStatus != docstore.DocStatusSuperseded && input.DocStatus != docstore.DocStatusArchived {
+					writeError(w, http.StatusBadRequest, "doc_status must be one of active, superseded, archived")
+					return
+				}
+				if len(input.Owner) > 256 || len(input.Supersedes) > 256 {
+					writeError(w, http.StatusBadRequest, "governance field too long")
+					return
+				}
+				if strings.TrimSpace(input.Supersedes) == docID {
+					writeError(w, http.StatusBadRequest, "supersedes must not reference the document itself")
+					return
+				}
+				updater, ok := docs.(docstore.GovernanceUpdater)
+				if !ok {
+					writeError(w, http.StatusServiceUnavailable, "governance management unavailable")
+					return
+				}
+				if err := updater.UpdateGovernance(r.Context(), tenantID, docID, input.Owner, parsedDate, input.DocStatus, input.Supersedes); err != nil {
+					writeError(w, http.StatusConflict, "document governance cannot be updated")
+					return
+				}
+				recordAudit(r.Context(), audits, audit.Entry{
+					TenantID: tenantID, ActorUserID: auth.GetUserID(r.Context()), ActorRole: "admin",
+					Action: "document.governance.update", ResourceType: "document", ResourceID: docID,
+					Result: audit.ResultSuccess, Detail: map[string]any{
+						"owner": input.Owner, "effective_date": input.EffectiveDate,
+						"doc_status": input.DocStatus, "supersedes": input.Supersedes,
+					},
+				})
+			}
+			if input.PublicationStatus == "" {
+				updated, found, getErr := docs.Get(r.Context(), tenantID, docID)
+				if getErr != nil || !found {
+					writeError(w, http.StatusInternalServerError, "failed to reload document")
+					return
+				}
+				writeJSON(w, http.StatusOK, toDocView(updated))
 				return
 			}
 			updater, ok := docs.(interface {

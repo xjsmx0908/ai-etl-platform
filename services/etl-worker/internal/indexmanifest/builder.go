@@ -23,6 +23,7 @@ type BuildRequest struct {
 
 type BuildSession interface {
 	Identity() GenerationIdentity
+	SeedIdentities([]ChunkIdentity)
 	Upsert(context.Context, model.Chunk) error
 	Complete(context.Context) error
 	Abort(context.Context, error) error
@@ -54,13 +55,14 @@ func NewBuilder(lifecycle BuildLifecycle, qdrant, elasticsearch Projection) *Bui
 }
 
 type Build struct {
-	lifecycle BuildLifecycle
-	verifier  *Verifier
-	identity  GenerationIdentity
-	manifest  Manifest
-	qdrant    Projection
-	elastic   Projection
-	chunks    []model.Chunk
+	lifecycle  BuildLifecycle
+	verifier   *Verifier
+	identity   GenerationIdentity
+	manifest   Manifest
+	qdrant     Projection
+	elastic    Projection
+	chunks     []model.Chunk
+	identities []ChunkIdentity
 }
 
 func (b *Builder) Begin(ctx context.Context, request BuildRequest) (BuildSession, error) {
@@ -89,6 +91,13 @@ var _ BuildStarter = (*Builder)(nil)
 
 func (b *Build) Identity() GenerationIdentity { return b.identity }
 
+// SeedIdentities restores chunk identities written by an earlier attempt. It
+// does not write projections; those chunks are already durable in this
+// generation and only need to participate in the final completeness digest.
+func (b *Build) SeedIdentities(identities []ChunkIdentity) {
+	b.identities = append([]ChunkIdentity(nil), identities...)
+}
+
 func (b *Build) Upsert(ctx context.Context, chunk model.Chunk) error {
 	if err := b.qdrant.UpsertGeneration(ctx, b.identity, chunk); err != nil {
 		return fmt.Errorf("write qdrant generation: %w", err)
@@ -97,15 +106,16 @@ func (b *Build) Upsert(ctx context.Context, chunk model.Chunk) error {
 		return fmt.Errorf("write elasticsearch generation: %w", err)
 	}
 	b.chunks = append(b.chunks, chunk)
+	b.identities = append(b.identities, ChunkIdentity{ChunkID: chunk.ChunkID, Index: chunk.Index, ContentHash: ContentHash(chunk.Content)})
 	return nil
 }
 
 func (b *Build) Complete(ctx context.Context) error {
-	digest, err := ChunkIdentityDigest(b.identity, b.chunks)
+	digest, err := IdentityDigest(b.identity, b.identities)
 	if err != nil {
 		return err
 	}
-	manifest, err := b.lifecycle.SealExpected(ctx, b.identity.GenerationID, len(b.chunks), digest)
+	manifest, err := b.lifecycle.SealExpected(ctx, b.identity.GenerationID, len(b.identities), digest)
 	if err != nil {
 		return fmt.Errorf("seal generation manifest: %w", err)
 	}

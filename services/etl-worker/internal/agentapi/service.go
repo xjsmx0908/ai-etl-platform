@@ -15,6 +15,7 @@ import (
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/query"
 )
 
@@ -149,7 +150,7 @@ func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusSt
 		return nil, err
 	}
 	if dependencies.PublicationWorkflow != nil {
-		planner = routingPlanner{fallback: planner, governance: GovernancePlanner{}}
+		planner = routingPlanner{fallback: planner, governance: GovernancePlanner{}, review: ReviewPlanner{}}
 	}
 	orchestrator, err := agent.NewOrchestrator(store, lockManager, registry, planner, agent.Options{
 		NodeID:          cfg.AgentNodeID,
@@ -164,6 +165,37 @@ func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusSt
 		return nil, err
 	}
 	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, observer: observerOrNoop(observer), closers: closers}, nil
+}
+
+// ReviewPublication executes a bounded Agent pre-review without granting or
+// planning publication authority. The returned run ID is diagnostic only.
+func (s *Service) ReviewPublication(ctx context.Context, actor agent.Actor, documentID string) (string, publicationworkflow.Assessment, error) {
+	if s == nil || s.orchestrator == nil {
+		return "", publicationworkflow.Assessment{}, fmt.Errorf("agent service is not configured")
+	}
+	run, err := s.orchestrator.Start(ctx, actor, documentReviewTaskPrefix+strings.TrimSpace(documentID))
+	if err != nil {
+		return "", publicationworkflow.Assessment{}, err
+	}
+	run, err = s.orchestrator.RunToCompletion(ctx, run.ID, actor)
+	if err != nil {
+		return run.ID, publicationworkflow.Assessment{}, err
+	}
+	for _, step := range run.Steps {
+		if step.ToolName != assessPublicationToolName || step.ToolResult == nil {
+			continue
+		}
+		payload, marshalErr := json.Marshal(step.ToolResult.Data)
+		if marshalErr != nil {
+			return run.ID, publicationworkflow.Assessment{}, marshalErr
+		}
+		var assessment publicationworkflow.Assessment
+		if unmarshalErr := json.Unmarshal(payload, &assessment); unmarshalErr != nil {
+			return run.ID, publicationworkflow.Assessment{}, unmarshalErr
+		}
+		return run.ID, assessment, nil
+	}
+	return run.ID, publicationworkflow.Assessment{}, fmt.Errorf("agent review produced no assessment")
 }
 
 func newServiceWithComponents(orchestrator *agent.Orchestrator, store agent.Store) *Service {

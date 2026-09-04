@@ -9,7 +9,7 @@ import { Modal } from "@/components/ui/Modal";
 import { useAuth } from "@/lib/auth";
 import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
 import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
-import { Bot, Upload } from "lucide-react";
+import { Bot, Upload, Pencil } from "lucide-react";
 import type { Document, DocumentChunk } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -78,6 +78,9 @@ export default function DocumentDetailPage() {
   const [replaceError, setReplaceError] = useState("");
   const [replaced, setReplaced] = useState(false);
   const [updatingPublication, setUpdatingPublication] = useState(false);
+  const [editingGovernance, setEditingGovernance] = useState(false);
+  const [governanceForm, setGovernanceForm] = useState({ owner: "", effective_date: "", doc_status: "active" as "active" | "superseded" | "archived", supersedes: "" });
+  const [savingGovernance, setSavingGovernance] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -141,6 +144,26 @@ export default function DocumentDetailPage() {
       setError((e as Error).message || "发布状态更新失败");
     } finally {
       setUpdatingPublication(false);
+    }
+  };
+
+  const openGovernance = () => {
+    if (!doc) return;
+    setGovernanceForm({ owner: doc.owner || "", effective_date: doc.effective_date || "", doc_status: doc.doc_status || "active", supersedes: doc.supersedes || "" });
+    setEditingGovernance(true);
+  };
+
+  const saveGovernance = async () => {
+    if (!doc || !governanceForm.owner.trim() || !governanceForm.effective_date) return;
+    setSavingGovernance(true);
+    setError("");
+    try {
+      setDoc(await apiClient.updateDocumentGovernance(doc.doc_id, { ...governanceForm, owner: governanceForm.owner.trim(), supersedes: governanceForm.supersedes.trim() || undefined }));
+      setEditingGovernance(false);
+    } catch (e) {
+      setError((e as Error).message || "治理信息保存失败");
+    } finally {
+      setSavingGovernance(false);
     }
   };
 
@@ -285,12 +308,20 @@ export default function DocumentDetailPage() {
             </div>
           )}
         </dl>
+        {isAdmin && doc.knowledge_space_id !== "user-uploads" && doc.publication_status === "draft" && (
+          <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div><p className="text-sm font-medium text-slate-700">发布信息</p><p className="mt-1 text-xs text-slate-500">补齐责任人和生效日期不会自动发布，保存后仍需经过知识发布中心的预审与审批。</p></div>
+              <Button size="sm" variant="secondary" icon={Pencil} onClick={openGovernance}>编辑治理信息</Button>
+            </div>
+          </div>
+        )}
         {isAdmin && (
           <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
             {doc.knowledge_space_id !== "user-uploads" && doc.publication_status === "draft" ? (
-              <Link href="/agent" className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700">
+              <Link href="/release-center" className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700">
                 <Bot className="h-4 w-4" />
-                发布治理
+                进入知识发布中心
               </Link>
             ) : (
               <Button size="sm" onClick={() => void updatePublication("published")} loading={updatingPublication} disabled={doc.publication_status === "published" || doc.status !== "completed"}>
@@ -318,6 +349,18 @@ export default function DocumentDetailPage() {
           </div>
         )}
       </div>
+
+      {editingGovernance && (
+        <Modal title="编辑治理信息" onClose={() => setEditingGovernance(false)}>
+          <div className="space-y-3">
+            <label className="block text-xs font-medium text-slate-600">责任人<input value={governanceForm.owner} onChange={(e) => setGovernanceForm((v) => ({ ...v, owner: e.target.value }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" /></label>
+            <label className="block text-xs font-medium text-slate-600">生效日期<input type="date" value={governanceForm.effective_date} onChange={(e) => setGovernanceForm((v) => ({ ...v, effective_date: e.target.value }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" /></label>
+            <label className="block text-xs font-medium text-slate-600">文档状态<select value={governanceForm.doc_status} onChange={(e) => setGovernanceForm((v) => ({ ...v, doc_status: e.target.value as typeof governanceForm.doc_status }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"><option value="active">active（有效）</option><option value="superseded">superseded（已替代）</option><option value="archived">archived（归档）</option></select></label>
+            <label className="block text-xs font-medium text-slate-600">替代文档（可选）<input value={governanceForm.supersedes} onChange={(e) => setGovernanceForm((v) => ({ ...v, supersedes: e.target.value }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" /></label>
+            <div className="flex justify-end gap-2 pt-2"><Button variant="secondary" onClick={() => setEditingGovernance(false)}>取消</Button><Button loading={savingGovernance} disabled={!governanceForm.owner.trim() || !governanceForm.effective_date} onClick={() => void saveGovernance()}>保存治理信息</Button></div>
+          </div>
+        </Modal>
+      )}
 
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">

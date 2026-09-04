@@ -14,6 +14,7 @@ import (
 const (
 	documentPublicationWorkflow = "document_publication"
 	governanceTaskPrefix        = documentPublicationWorkflow + ":"
+	documentReviewTaskPrefix    = "document_review:"
 	assessPublicationToolName   = "assess_document_publication"
 	publishDocumentToolName     = "publish_document"
 )
@@ -112,6 +113,26 @@ func (GovernancePlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecis
 	}
 }
 
+// ReviewPlanner runs the same tenant-scoped eligibility tool but terminates
+// after producing a pre-review. It never plans the publication side effect.
+type ReviewPlanner struct{}
+
+func (ReviewPlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecision, error) {
+	docID, ok := reviewDocumentID(run.Task)
+	if !ok {
+		return agent.PlanDecision{}, fmt.Errorf("invalid document review task")
+	}
+	if len(run.Steps) == 0 {
+		args, _ := json.Marshal(map[string]string{"document_id": docID})
+		return agent.PlanDecision{Type: agent.DecisionToolCall, ToolName: assessPublicationToolName, Arguments: args}, nil
+	}
+	last := run.Steps[len(run.Steps)-1]
+	if last.ToolResult == nil || last.ToolName != assessPublicationToolName {
+		return agent.PlanDecision{}, fmt.Errorf("document review has no assessment")
+	}
+	return agent.PlanDecision{Type: agent.DecisionFinal, Final: last.ToolResult.Content}, nil
+}
+
 func candidateFromMap(values map[string]interface{}) (publicationworkflow.Candidate, error) {
 	payload, err := json.Marshal(values)
 	if err != nil {
@@ -127,13 +148,25 @@ func candidateFromMap(values map[string]interface{}) (publicationworkflow.Candid
 type routingPlanner struct {
 	fallback   agent.Planner
 	governance agent.Planner
+	review     agent.Planner
 }
 
 func (p routingPlanner) Plan(ctx context.Context, run agent.Run) (agent.PlanDecision, error) {
+	if _, ok := reviewDocumentID(run.Task); ok {
+		return p.review.Plan(ctx, run)
+	}
 	if _, ok := governanceDocumentID(run.Task); ok {
 		return p.governance.Plan(ctx, run)
 	}
 	return p.fallback.Plan(ctx, run)
+}
+
+func reviewDocumentID(task string) (string, bool) {
+	if !strings.HasPrefix(task, documentReviewTaskPrefix) {
+		return "", false
+	}
+	docID := strings.TrimSpace(strings.TrimPrefix(task, documentReviewTaskPrefix))
+	return docID, docID != ""
 }
 
 func governanceDocumentID(task string) (string, bool) {

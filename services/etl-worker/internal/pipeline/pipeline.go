@@ -333,6 +333,16 @@ func (p *Pipeline) saveTaskStatusProgressPages(ctx context.Context, task model.T
 		CreatedAt:   task.CreatedAt,
 		UpdatedAt:   now,
 	}
+	if (done == 0 && total == 0 && pagesDone == 0 && pagesTotal == 0) || state == model.TaskStatusFailed {
+		if previous, found, err := p.taskStatus.Load(ctx, task.TenantID, task.DocID); err == nil && found {
+			if done == 0 && total == 0 {
+				status.ChunksDone, status.TotalChunks = previous.ChunksDone, previous.TotalChunks
+			}
+			if pagesDone == 0 && pagesTotal == 0 {
+				status.PagesDone, status.PagesTotal = previous.PagesDone, previous.PagesTotal
+			}
+		}
+	}
 	if state == model.TaskStatusCompleted || state == model.TaskStatusFailed || state == model.TaskStatusCancelled {
 		status.CompletedAt = now
 	}
@@ -410,11 +420,23 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr 
 	if err != nil {
 		return fmt.Errorf("load checkpoint: %w", err)
 	}
+	// A document ID can have multiple uploaded versions. Never let a new job
+	// inherit page progress or chunk identities from an older generation.
+	if hasCheckpoint && task.JobID != "" && resumeCheckpoint.JobID != task.JobID {
+		resumeCheckpoint, hasCheckpoint = model.Checkpoint{}, false
+	}
 	if hasCheckpoint {
 		slog.Info("resuming task from checkpoint",
 			"doc_id", task.DocID,
 			"chunks_done", resumeCheckpoint.ChunksDone,
 			"last_chunk_id", resumeCheckpoint.LastChunkID)
+	}
+	if generationBuild != nil && hasCheckpoint && len(resumeCheckpoint.ChunkIdentities) == resumeCheckpoint.ChunksDone {
+		identities := make([]indexmanifest.ChunkIdentity, 0, len(resumeCheckpoint.ChunkIdentities))
+		for _, identity := range resumeCheckpoint.ChunkIdentities {
+			identities = append(identities, indexmanifest.ChunkIdentity{ChunkID: identity.ChunkID, Index: identity.Index, ContentHash: identity.ContentHash})
+		}
+		generationBuild.SeedIdentities(identities)
 	}
 
 	p.saveTaskStatusProgress(taskCtx, task, model.TaskStatusProcessing, "parsing", "", 0, 0)
@@ -578,7 +600,7 @@ func (p *Pipeline) processPDFBatches(taskCtx context.Context, task model.Task, c
 	localTask.FilePath = localPath
 
 	startPage := 0
-	if hasCheckpoint && generationBuild == nil {
+	if hasCheckpoint && (generationBuild == nil || len(cp.ChunkIdentities) == cp.ChunksDone) {
 		startPage = cp.PagesDone
 	}
 	batchSize := p.cfg.OCRPageBatchSize
@@ -587,10 +609,13 @@ func (p *Pipeline) processPDFBatches(taskCtx context.Context, task model.Task, c
 	}
 	var totalPages, totalChunks int
 	chunkOffset := 0
-	if hasCheckpoint && generationBuild == nil {
+	if hasCheckpoint && (generationBuild == nil || len(cp.ChunkIdentities) == cp.ChunksDone) {
 		totalChunks = cp.ChunksDone
 	}
 	first := true
+	if hasCheckpoint && (generationBuild == nil || len(cp.ChunkIdentities) == cp.ChunksDone) && cp.PagesDone >= cp.PagesTotal && cp.PagesTotal > 0 {
+		return totalChunks, nil
+	}
 	for first || startPage < totalPages {
 		if p.taskStatus != nil {
 			if status, found, err := p.taskStatus.Load(taskCtx, task.TenantID, task.DocID); err == nil && found && status.Status == model.TaskStatusCancelled {
@@ -617,7 +642,7 @@ func (p *Pipeline) processPDFBatches(taskCtx context.Context, task model.Task, c
 		p.saveTaskStatusProgressPages(taskCtx, task, model.TaskStatusProcessing, "ocr", fmt.Sprintf("正在处理第 %d-%d 页", startPage+1, end), totalChunks, 0, startPage, totalPages)
 
 		batch := result.Chunks
-		if hasCheckpoint && generationBuild == nil && startPage < cp.PagesDone {
+		if hasCheckpoint && (generationBuild == nil || len(cp.ChunkIdentities) == cp.ChunksDone) && startPage < cp.PagesDone {
 			startPage = end
 			continue
 		}
@@ -638,9 +663,19 @@ func (p *Pipeline) processPDFBatches(taskCtx context.Context, task model.Task, c
 			}
 		}
 		startPage = end
-		if err := p.checkpoint.Save(taskCtx, model.Checkpoint{DocID: task.DocID, ChunksDone: totalChunks, PagesDone: startPage, PagesTotal: totalPages}); err != nil {
+		checkpoint := model.Checkpoint{DocID: task.DocID, JobID: task.JobID, ChunksDone: totalChunks, PagesDone: startPage, PagesTotal: totalPages}
+		checkpoint.LastChunkID = cp.LastChunkID
+		if generationBuild != nil {
+			checkpoint.ChunkIdentities = append(checkpoint.ChunkIdentities, cp.ChunkIdentities...)
+			for _, chunk := range batch {
+				checkpoint.ChunkIdentities = append(checkpoint.ChunkIdentities, model.CheckpointChunkIdentity{ChunkID: chunk.ChunkID, Index: chunk.Index, ContentHash: indexmanifest.ContentHash(chunk.Content)})
+				checkpoint.LastChunkID = chunk.ChunkID
+			}
+		}
+		if err := p.checkpoint.Save(taskCtx, checkpoint); err != nil {
 			return totalChunks, fmt.Errorf("save OCR checkpoint: %w", err)
 		}
+		cp = checkpoint
 		p.saveTaskStatusProgressPages(taskCtx, task, model.TaskStatusProcessing, "ocr", fmt.Sprintf("已完成第 %d / %d 页", startPage, totalPages), totalChunks, 0, startPage, totalPages)
 		if startPage >= totalPages {
 			break
@@ -762,7 +797,7 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 	}
 
 	// Update checkpoint
-	if *total > 0 && lastStoredChunkID != "" {
+	if generationBuild == nil && *total > 0 && lastStoredChunkID != "" {
 		cp := model.Checkpoint{
 			DocID:       docID,
 			ChunksDone:  *total,
@@ -773,6 +808,9 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 		// batch failure.
 		if existing, found, err := p.checkpoint.Load(ctx, docID); err == nil && found {
 			cp.PagesDone, cp.PagesTotal = existing.PagesDone, existing.PagesTotal
+			if generationBuild == nil {
+				cp.ChunkIdentities = append(cp.ChunkIdentities, existing.ChunkIdentities...)
+			}
 		}
 		_ = p.checkpoint.Save(ctx, cp)
 	}

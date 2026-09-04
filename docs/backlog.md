@@ -116,6 +116,63 @@ No implementation phase starts merely because this backlog entry exists. Each
 ADR must first be reviewed, its open decisions resolved, and its phase-specific
 plan approved.
 
+## Knowledge Release Center redesign (approved baseline, 2026-09-03)
+
+The former “Agent 发布治理” concept is replaced by a business-facing Knowledge
+Release Center. The design review found no remaining principle-level blocker,
+but rejected three misleading assumptions: Agent Runs are not durable release
+records, every document does not require two administrators, and `owner` text
+is not a business-approver identity.
+
+Implementation is staged and test-first:
+
+1. Rename and rebuild the page around release-center document queues and
+   human-readable deterministic blockers; keep Run ID under audit details.
+2. Add PostgreSQL review reports and release requests bound to exact version,
+   generation, and release revision.
+3. Trigger Agent pre-review automatically for managed documents after the
+   deterministic gate. Store recommendations as untrusted evidence; never let
+   the Agent mutate governance, permissions, approval, or publication state.
+4. Add the first deterministic approval policy: one administrator for ordinary
+   managed documents; two distinct administrators for confidential or
+   deterministic high-risk documents; audited manual exception on Agent outage.
+5. On approval, call `publicationworkflow` for one atomic exact-candidate
+   release and invalidate stale reports/requests after replacement.
+
+Progress (2026-09-03):
+
+- [x] Renamed the primary Web entry point to `/release-center` and retained
+  `/agent` as a compatibility route.
+- [x] Added deterministic risk-policy domain rules and PostgreSQL tables for
+  version-bound reviews, release requests, and individual approval decisions.
+- [x] Added admin-only, tenant-scoped `GET /v1/release-center/requests` and the
+  same-origin Web proxy/client queue seam.
+- [x] Release-center page now reads the durable queue, shows pending-approval
+  count, and is visible only to administrators; legacy Agent Run details remain
+  secondary compatibility information.
+- [x] Added a recoverable collector that discovers completed managed drafts
+  with an exact current candidate, runs a read-only Agent pre-review, and
+  persists stable candidate-bound review/request IDs. Agent failure creates a
+  manual-exception request instead of failing ETL.
+- [x] Added request detail and decision APIs. Ordinary requests publish after
+  one administrator decision; confidential/high-risk requests require two
+  distinct administrators; every approval revalidates the current exact
+  candidate before calling `publicationworkflow.PublishApproved`.
+- [x] The release-center Web page now displays the durable review and decision
+  history and approves/rejects the request directly. Legacy Run-ID controls
+  remain audit compatibility only.
+- [x] Reconcile superseded version/generation/revision requests to `needs_info`
+  without deleting their reports or decisions. Manual-exception approval now
+  requires a non-empty audited reason and is visibly separated from ordinary
+  approval in the Web queue.
+- [x] Make durable release requests independently selectable in the Web queue,
+  including published, rejected, and invalidated history no longer present in
+  the draft-only document list. Show approved-versus-required progress and
+  suppress duplicate decision controls after the current administrator acts.
+
+The implementation gate requires focused Go/API/Web tests before code changes
+are considered complete, followed by the existing full verification suite.
+
 P2.3 progress (2026-08-28):
 
 - Added a generation manifest schema containing immutable build configuration,
@@ -2195,3 +2252,7 @@ Outcome:
 - [x] OCR 专用 Kafka topic、consumer group 与 DLQ
 - [x] 移除 300 页硬拒绝，保留 100MB 单文件边界
 - [ ] 真实 583 页文件重新上传并完成一次生产数据验收
+- [x] generation 完成校验对 Qdrant 短暂 under-count 做严格、有限重试；错误 digest/超量仍立即失败
+- [x] Web 数据接入页支持管理员创建 production 受管空间，并填写责任人/生效日期/文档状态
+- [x] 文档详情支持管理员编辑旧受管草稿治理信息，保存不触发重新 ETL 或自动发布
+- [x] 使用 MinIO 原始对象原位恢复 41 篇 `enterprise-demo` 历史草稿，重建 exact publication candidate 且保持 draft

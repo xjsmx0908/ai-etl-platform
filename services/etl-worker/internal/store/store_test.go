@@ -150,6 +150,39 @@ func TestQdrantGenerationProjectionObservesIdentityDigest(t *testing.T) {
 	}
 }
 
+func TestQdrantGenerationProjectionPreservesLargeScrollCursor(t *testing.T) {
+	identity := indexmanifest.GenerationIdentity{GenerationID: "gen-1", VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
+	var secondOffset string
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var body map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"result":{"points":[],"next_page_offset":5750035}}`))
+			return
+		}
+		secondOffset = string(body["offset"])
+		_, _ = w.Write([]byte(`{"result":{"points":[],"next_page_offset":null}}`))
+	}))
+	defer srv.Close()
+	qs, err := NewQdrantStorer(srv.URL, "", "docs", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qs.Close()
+	if _, err := qs.ObserveGeneration(context.Background(), identity); err != nil {
+		t.Fatal(err)
+	}
+	if secondOffset != `5750035` {
+		t.Fatalf("cursor=%s, want exact integer", secondOffset)
+	}
+}
+
 func TestQdrantDeletesOnlyExactGeneration(t *testing.T) {
 	identity := indexmanifest.GenerationIdentity{GenerationID: "gen-old", VersionIdentity: indexmanifest.VersionIdentity{TenantID: "tenant-a", DocumentID: "doc", DocumentVersionID: "job-1"}}
 	var got map[string]interface{}

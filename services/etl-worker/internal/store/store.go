@@ -261,7 +261,10 @@ func (q *QdrantStorer) ObserveGeneration(ctx context.Context, identity indexmani
 				Points []struct {
 					Payload map[string]interface{} `json:"payload"`
 				} `json:"points"`
-				NextPageOffset any `json:"next_page_offset"`
+				// Keep the cursor as raw JSON. Qdrant point IDs are uint64 and
+				// decoding them into interface{} would route through float64,
+				// rounding large offsets and skipping points on later pages.
+				NextPageOffset json.RawMessage `json:"next_page_offset"`
 			} `json:"result"`
 		}
 		err = json.NewDecoder(resp.Body).Decode(&result)
@@ -276,7 +279,7 @@ func (q *QdrantStorer) ObserveGeneration(ctx context.Context, identity indexmani
 			}
 			identities = append(identities, indexmanifest.ChunkIdentity{ChunkID: strVal(point.Payload["chunk_id"]), Index: int(idx), ContentHash: strVal(point.Payload["content_hash"])})
 		}
-		if result.Result.NextPageOffset == nil {
+		if len(result.Result.NextPageOffset) == 0 || string(result.Result.NextPageOffset) == "null" {
 			break
 		}
 		offset = result.Result.NextPageOffset
@@ -473,7 +476,7 @@ func (q *QdrantStorer) ListDocs(ctx context.Context, limit, pageSize int) ([]Doc
 				Points []struct {
 					Payload map[string]interface{} `json:"payload"`
 				} `json:"points"`
-				NextPageOffset any `json:"next_page_offset"`
+				NextPageOffset json.RawMessage `json:"next_page_offset"`
 			} `json:"result"`
 		}
 		decodeErr := json.NewDecoder(resp.Body).Decode(&sr)
@@ -495,7 +498,7 @@ func (q *QdrantStorer) ListDocs(ctx context.Context, limit, pageSize int) ([]Doc
 			}
 		}
 		collected += len(sr.Result.Points)
-		if sr.Result.NextPageOffset == nil {
+		if len(sr.Result.NextPageOffset) == 0 || string(sr.Result.NextPageOffset) == "null" {
 			break
 		}
 		offset = sr.Result.NextPageOffset
@@ -571,7 +574,7 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 				Points []struct {
 					Payload map[string]interface{} `json:"payload"`
 				} `json:"points"`
-				NextPageOffset any `json:"next_page_offset"`
+				NextPageOffset json.RawMessage `json:"next_page_offset"`
 			} `json:"result"`
 		}
 		decodeErr := json.NewDecoder(resp.Body).Decode(&sr)
@@ -607,7 +610,7 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 			}
 			chunks = append(chunks, chunk)
 		}
-		if sr.Result.NextPageOffset == nil {
+		if len(sr.Result.NextPageOffset) == 0 || string(sr.Result.NextPageOffset) == "null" {
 			break
 		}
 		offset = sr.Result.NextPageOffset

@@ -127,6 +127,23 @@ func TestHandleDocument_AdminPublishesCompletedDraft(t *testing.T) {
 	}
 }
 
+func TestHandleDocument_AdminUpdatesGovernanceWithoutPublishing(t *testing.T) {
+	store := newFakeDocStore()
+	_ = store.Upsert(context.Background(), docstore.Document{TenantID: "acme", DocID: "doc-1", FileName: "doc.txt", Permission: "internal", Status: docstore.StatusCompleted, DocStatus: docstore.DocStatusActive, PublicationStatus: "draft", Metadata: map[string]string{}})
+	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store, nil)
+	rec := doRequest(handler, http.MethodPatch, "/v1/documents/doc-1", map[string]string{"owner": "知识管理部", "effective_date": "2026-09-03", "doc_status": "active"}, ctxWithRole("acme", "admin", "admin"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var view documentView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Owner != "知识管理部" || view.EffectiveDate != "2026-09-03" || view.PublicationStatus != "draft" {
+		t.Fatalf("view=%+v", view)
+	}
+}
+
 func TestHandleDocument_ManagedDraftRequiresGovernanceWorkflow(t *testing.T) {
 	store := newFakeDocStore()
 	if err := store.Upsert(context.Background(), docstore.Document{

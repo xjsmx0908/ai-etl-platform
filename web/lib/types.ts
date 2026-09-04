@@ -240,6 +240,48 @@ export type AgentApproval = {
   reason?: string;
 };
 
+export type ReleaseRequest = {
+  request_id: string;
+  tenant_id: string;
+  document_id: string;
+  review_id: string;
+  required_approvals: number;
+  state: "approval_pending" | "manual_exception" | "needs_info" | "rejected" | "published";
+  requested_by: string;
+  candidate: {
+    document_id: string;
+    document_version_id: string;
+    generation_id: string;
+    expected_chunk_count: number;
+    expected_chunk_digest: string;
+    release_revision: number;
+  };
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReleaseRequestsResponse = { items: ReleaseRequest[] };
+export type ReleaseReview = {
+  review_id: string;
+  tenant_id: string;
+  document_id: string;
+  document_version_id: string;
+  generation_id: string;
+  release_revision: number;
+  agent_run_id?: string;
+  status: string;
+  recommendation: string;
+  risk_level: string;
+  summary: string;
+  findings?: { code: string; severity: string; summary: string; evidence_ref?: string }[];
+  model?: string;
+  prompt_version?: string;
+  created_at: string;
+  expires_at?: string;
+};
+export type ReleaseDecision = { decision_id: string; tenant_id: string; request_id: string; decided_by: string; decision: string; reason?: string; decided_at: string };
+export type ReleaseRequestDetail = { request: ReleaseRequest; review: ReleaseReview; decisions: ReleaseDecision[] };
+
 export type HealthService = { status: string; latency_ms: number };
 export type Health = {
   overall: string;
