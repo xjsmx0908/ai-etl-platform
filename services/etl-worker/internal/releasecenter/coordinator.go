@@ -101,6 +101,14 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	if reviewErr == nil && (strings.EqualFold(status, "failed") || strings.EqualFold(status, "error")) {
 		reviewErr = fmt.Errorf("agent review returned status %q", status)
 	}
+	if reviewErr == nil {
+		recommendation := strings.ToLower(strings.TrimSpace(reviewResult.Recommendation))
+		validStatus := strings.EqualFold(status, "completed") || strings.EqualFold(status, "success")
+		validRisk := reviewResult.RiskLevel == RiskLow || reviewResult.RiskLevel == RiskMedium || reviewResult.RiskLevel == RiskHigh || reviewResult.RiskLevel == RiskCritical
+		if !validStatus || !validRisk || recommendation == "" || (recommendation != "publish" && recommendation != "needs_info" && recommendation != "reject" && recommendation != "manual_review") {
+			reviewErr = fmt.Errorf("agent review returned incomplete evidence")
+		}
+	}
 	if reviewErr != nil {
 		status = "failed"
 		reviewResult.Recommendation = "manual_review"
@@ -123,6 +131,17 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 		PromptVersion: reviewResult.PromptVersion, CreatedAt: now}
 	if err := c.store.SaveReview(ctx, report); err != nil {
 		return ReviewReport{}, ReleaseRequest{}, err
+	}
+	if reviewErr == nil && report.Recommendation != "publish" {
+		state := RequestNeedsInfo
+		if report.Recommendation == "manual_review" {
+			state = RequestManualException
+		}
+		request := ReleaseRequest{ID: stableID("request", actor.TenantID, candidate), TenantID: actor.TenantID, DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: state, RequestedBy: "release-center-agent", CreatedAt: now, UpdatedAt: now}
+		if err := c.store.SaveRequest(ctx, request); err != nil {
+			return ReviewReport{}, ReleaseRequest{}, err
+		}
+		return report, request, nil
 	}
 	policy := EvaluatePolicy(PolicyInput{Permission: doc.Permission, Risk: report.RiskLevel, AgentAvailable: reviewErr == nil})
 	request := ReleaseRequest{ID: stableID("request", actor.TenantID, candidate), TenantID: actor.TenantID,

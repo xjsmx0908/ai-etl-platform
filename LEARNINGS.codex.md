@@ -1648,3 +1648,19 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: the new red test failed before the fix and passes after it, alongside
   the existing release-center package tests. This prevents a failed Agent from
   being misclassified as a successful pre-review.
+
+## 2026-09-04 — Agent pre-review fail-closed semantics
+
+- Perceive: review output was still able to create an approval request when the
+  Agent recommended `needs_info`, or when status/risk/recommendation evidence
+  was incomplete.
+- Reason: a recommendation other than `publish` must never be actionable, and
+  malformed evidence must not receive permissive defaults.
+- Act: added red/green coordinator tests and changed the coordinator to fail
+  closed on invalid evidence; non-publish recommendations create `needs_info`
+  (or manual exception) requests without an approval path. Updated the PRD to
+  distinguish the current eligibility review from future content-semantic
+  confidentiality analysis.
+- Refine: release-center package tests pass. The remaining content-semantic
+  Agent review is explicitly documented as future scope rather than implied by
+  current risk labels.

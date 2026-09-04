@@ -150,7 +150,7 @@ func TestCoordinatorTreatsFailedAgentStatusAsManualException(t *testing.T) {
 	}
 }
 
-func TestCoordinatorNormalizesIncompleteAgentEvidenceSafely(t *testing.T) {
+func TestCoordinatorFailsClosedOnIncompleteAgentEvidence(t *testing.T) {
 	candidate := readyCandidate()
 	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
 	store := newMemoryStore()
@@ -161,8 +161,24 @@ func TestCoordinatorNormalizesIncompleteAgentEvidenceSafely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Recommendation != "review" || report.RiskLevel != RiskLow || request.State != RequestApprovalPending {
-		t.Fatalf("incomplete Agent evidence was not normalized safely: report=%+v request=%+v", report, request)
+	if report.Status != "failed" || request.State != RequestManualException {
+		t.Fatalf("incomplete Agent evidence was not failed closed: report=%+v request=%+v", report, request)
+	}
+}
+
+func TestCoordinatorDoesNotCreateApprovalForAgentNonPublishRecommendation(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal"}}, reviewerStub{review: AgentReview{
+		Status: "completed", Recommendation: "needs_info", RiskLevel: RiskLow, Summary: "document needs business clarification",
+	}}, store)
+	report, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || request.State != RequestNeedsInfo {
+		t.Fatalf("non-publish recommendation entered approval path: report=%+v request=%+v", report, request)
 	}
 }
 

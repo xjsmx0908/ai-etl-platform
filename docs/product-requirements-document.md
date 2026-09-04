@@ -56,6 +56,14 @@ fields, and the sealed Qdrant/Elasticsearch generation. The Agent produces a
 review recommendation and evidence, but cannot edit metadata, alter access,
 choose the authoritative conflicting document, approve itself, or publish.
 
+In the first release, “Agent pre-review” is a bounded release-eligibility
+review: it receives the deterministic assessment result and records an
+untrusted recommendation/evidence envelope. It is not yet a content-semantic,
+privacy, or confidentiality classifier. Any future content review must define
+its own document-content input, structured output schema, evidence references,
+prompt-injection handling, and fail-closed policy before being presented as a
+security or compliance control.
+
 Approval policy is deterministic and risk-based:
 
 - `user-uploads` keeps automatic publication and does not enter this workflow.
