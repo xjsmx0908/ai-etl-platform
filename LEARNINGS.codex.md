@@ -1709,3 +1709,14 @@ This file is an append-only record of completed PRAR cycles.
   two-admin escalation explanation; added the corresponding contract gate.
 - Refine: Web contract tests and static checks pass. The backend review and
   approval seams remain unchanged.
+
+## 2026-09-04 — Read-only review evidence for overview history
+
+- Perceive: overview rows without a current durable request could show state
+  but not the persisted Agent report or its findings.
+- Reason: preserve audit traceability through a read-only, tenant-scoped seam;
+  no overview record should gain an implicit approval action.
+- Act: linked `review_id` into overview projection, added the
+  `/v1/release-center/review-reports/{id}` API and same-origin Web proxy, and
+  loaded standalone reports in the release-center detail view.
+- Refine: focused API/Web tests pass; full deployment verification is pending.

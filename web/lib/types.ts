@@ -289,6 +289,7 @@ export type ReleaseOverviewItem = {
   state: "needs_info" | "checking" | "review_blocked" | "approval_pending" | "published" | "rejected";
   blockers?: string[];
   request_id?: string;
+  review_id?: string;
   request_state?: ReleaseRequest["state"];
   required_approvals?: number;
   approved_decisions?: number;

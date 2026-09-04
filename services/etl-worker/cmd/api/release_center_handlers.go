@@ -55,6 +55,34 @@ func handleReleaseCenterOverview(store releasecenter.OverviewStore) http.Handler
 	}
 }
 
+// handleReleaseCenterReviewReport exposes read-only, tenant-scoped review
+// evidence for overview records that no longer have a durable request.
+func handleReleaseCenterReviewReport(store interface {
+	GetReview(context.Context, string, string) (releasecenter.ReviewReport, error)
+}) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if auth.GetPermission(r.Context()) != "admin" {
+			writeError(w, http.StatusForbidden, "admin role required")
+			return
+		}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 4 || parts[0] != "v1" || parts[1] != "release-center" || parts[2] != "review-reports" || parts[3] == "" {
+			http.NotFound(w, r)
+			return
+		}
+		review, err := store.GetReview(r.Context(), auth.GetTenantID(r.Context()), parts[3])
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"review": review})
+	}
+}
+
 // handleReleaseCenterRequests serves the durable business queue. It does not
 // expose Agent Run storage and derives tenant scope only from authentication.
 func handleReleaseCenterRequests(store releaseRequestLister) http.HandlerFunc {

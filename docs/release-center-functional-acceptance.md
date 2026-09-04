@@ -36,6 +36,8 @@
    的内容不得进入当前 review report。
 9. Web 详情必须展示预审状态、风险、建议、预审时间、Prompt 版本以及每条
    finding 的类型、严重度和 chunk 证据引用；机密敏感内容必须明确提示仍需双人审批。
+10. 没有 durable release request 的历史业务记录仍必须通过只读、租户隔离的
+    review report seam 查看预审证据；该 seam 不提供审批或发布动作。
 
 ## 执行入口
 

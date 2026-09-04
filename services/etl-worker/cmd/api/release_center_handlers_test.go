@@ -95,6 +95,17 @@ type releaseOverviewStub struct {
 	tenantID string
 }
 
+type releaseReviewStoreStub struct {
+	review   releasecenter.ReviewReport
+	tenantID string
+	reviewID string
+}
+
+func (s *releaseReviewStoreStub) GetReview(_ context.Context, tenantID, reviewID string) (releasecenter.ReviewReport, error) {
+	s.tenantID, s.reviewID = tenantID, reviewID
+	return s.review, nil
+}
+
 func (s *releaseOverviewStub) ListOverview(_ context.Context, tenantID string, _ int) ([]releasecenter.OverviewItem, error) {
 	s.tenantID = tenantID
 	return s.items, nil
@@ -145,6 +156,25 @@ func TestReleaseCenterOverviewIsAdminAndTenantScoped(t *testing.T) {
 		Items []releasecenter.OverviewItem `json:"items"`
 	}
 	if err := json.NewDecoder(allowed.Body).Decode(&body); err != nil || len(body.Items) != 1 || body.Items[0].State != "approval_pending" {
+		t.Fatalf("response=%+v err=%v", body, err)
+	}
+}
+
+func TestReleaseCenterReviewReportIsAdminAndTenantScoped(t *testing.T) {
+	store := &releaseReviewStoreStub{review: releasecenter.ReviewReport{ID: "review-1", TenantID: "acme", DocumentID: "doc-1", Status: "completed", Recommendation: "publish", RiskLevel: releasecenter.RiskLow}}
+	handler := handleReleaseCenterReviewReport(store)
+	denied := doRequest(handler, http.MethodGet, "/v1/release-center/review-reports/review-1", nil, ctxWithRole("acme", "user", "query"))
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("user status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	allowed := doRequest(handler, http.MethodGet, "/v1/release-center/review-reports/review-1", nil, ctxWithRole("acme", "admin", "admin"))
+	if allowed.Code != http.StatusOK || store.tenantID != "acme" || store.reviewID != "review-1" {
+		t.Fatalf("status=%d tenant=%q review=%q body=%s", allowed.Code, store.tenantID, store.reviewID, allowed.Body.String())
+	}
+	var body struct {
+		Review releasecenter.ReviewReport `json:"review"`
+	}
+	if err := json.NewDecoder(allowed.Body).Decode(&body); err != nil || body.Review.ID != "review-1" {
 		t.Fatalf("response=%+v err=%v", body, err)
 	}
 }

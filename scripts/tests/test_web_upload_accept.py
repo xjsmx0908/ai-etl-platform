@@ -153,6 +153,17 @@ class WebUploadAcceptTests(unittest.TestCase):
         ):
             self.assertIn(expected, page)
 
+    def test_release_center_loads_read_only_review_for_records_without_request(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        client = (ROOT / "web/lib/apiClient.ts").read_text(encoding="utf-8")
+        types = (ROOT / "web/lib/types.ts").read_text(encoding="utf-8")
+        self.assertIn("getReleaseReview", client)
+        self.assertIn("review_id", types)
+        self.assertIn("review_id", page)
+        self.assertIn("standaloneReview", page)
+        proxy = (ROOT / "web/app/api/release-center/review-reports/[id]/route.ts").read_text(encoding="utf-8")
+        self.assertIn("release-center/review-reports", proxy)
+
     def test_release_center_observability_has_dedicated_route_and_dashboard_panels(self):
         metrics = (ROOT / "services/etl-worker/internal/prometheus/metrics.go").read_text(encoding="utf-8")
         dashboard = (ROOT / "infrastructure/grafana/dashboards/ai-etl-platform.json").read_text(encoding="utf-8")

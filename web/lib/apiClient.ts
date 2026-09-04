@@ -12,6 +12,7 @@ import type {
   KnowledgeSpace,
   ReleaseRequestsResponse,
   ReleaseRequestDetail,
+  ReleaseReview,
   ReleaseOverviewResponse,
   Source,
   TaskStatus,
@@ -307,7 +308,10 @@ export async function listReleaseOverview(): Promise<ReleaseOverviewResponse> {
   return request<ReleaseOverviewResponse>("/release-center/overview");
 }
 export async function getReleaseRequest(id: string): Promise<ReleaseRequestDetail> {
-  return request<ReleaseRequestDetail>(`/release-center/requests/${encodeURIComponent(id)}`);
+	return request<ReleaseRequestDetail>(`/release-center/requests/${encodeURIComponent(id)}`);
+}
+export async function getReleaseReview(id: string): Promise<{ review: ReleaseReview }> {
+	return request<{ review: ReleaseReview }>(`/release-center/review-reports/${encodeURIComponent(id)}`);
 }
 export async function decideReleaseRequest(id: string, decision: "approved" | "rejected", reason = ""): Promise<ReleaseRequestDetail> {
   return request<ReleaseRequestDetail>(`/release-center/requests/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ decision, reason }) });
@@ -458,6 +462,7 @@ export const apiClient = {
 	listReleaseRequests,
 	listReleaseOverview,
 	getReleaseRequest,
+	getReleaseReview,
 	decideReleaseRequest,
   getAgentRun,
   listAgentApprovals,

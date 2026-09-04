@@ -64,7 +64,7 @@ func (s *PostgresStore) ListOverview(ctx context.Context, tenantID string, limit
 	rows, err := s.q.Query(ctx, `
 		SELECT d.doc_id,d.file_name,d.permission,d.status,d.doc_status,d.owner,
 		       (d.effective_date IS NOT NULL),d.knowledge_space_id,d.publication_status,d.deletion_status,
-		       COALESCE(q.request_id,''),COALESCE(q.state,''),COALESCE(q.required_approvals,0),
+		       COALESCE(q.request_id,''),COALESCE(rv.review_id,''),COALESCE(q.state,''),COALESCE(q.required_approvals,0),
 		       COALESCE(rv.status,''),
 		       (r.resolution_status='resolved' AND m.state='active'
 		        AND m.expected_chunk_count > 0 AND m.expected_chunk_digest <> ''
@@ -106,7 +106,7 @@ func (s *PostgresStore) ListOverview(ctx context.Context, tenantID string, limit
 		var requestState string
 		if err := rows.Scan(&in.DocumentID, &in.FileName, &in.Permission, &in.IngestionStatus,
 			&in.DocStatus, &in.Owner, &in.EffectiveDatePresent, &in.KnowledgeSpaceID,
-			&in.PublicationStatus, &in.DeletionStatus, &in.RequestID, &requestState,
+			&in.PublicationStatus, &in.DeletionStatus, &in.RequestID, &in.ReviewID, &requestState,
 			&in.RequiredApprovals, &in.ReviewStatus, &in.CandidateReady, &in.ApprovedDecisions); err != nil {
 			return nil, fmt.Errorf("scan release overview: %w", err)
 		}

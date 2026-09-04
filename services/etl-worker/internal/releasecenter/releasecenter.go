@@ -115,6 +115,7 @@ type OverviewInput struct {
 	CandidateReady       bool
 	ReviewStatus         string
 	RequestState         RequestState
+	ReviewID             string
 	RequiredApprovals    int
 	ApprovedDecisions    int
 	RequestID            string
@@ -128,6 +129,7 @@ type OverviewItem struct {
 	State             string       `json:"state"`
 	Blockers          []string     `json:"blockers,omitempty"`
 	RequestID         string       `json:"request_id,omitempty"`
+	ReviewID          string       `json:"review_id,omitempty"`
 	RequestState      RequestState `json:"request_state,omitempty"`
 	RequiredApprovals int          `json:"required_approvals,omitempty"`
 	ApprovedDecisions int          `json:"approved_decisions,omitempty"`
@@ -140,6 +142,7 @@ func ProjectOverview(in OverviewInput) OverviewItem {
 	item := OverviewItem{DocumentID: in.DocumentID, FileName: in.FileName,
 		Permission: in.Permission, KnowledgeSpaceID: in.KnowledgeSpaceID,
 		RequestID:    in.RequestID,
+		ReviewID:     in.ReviewID,
 		RequestState: in.RequestState, RequiredApprovals: in.RequiredApprovals,
 		ApprovedDecisions: in.ApprovedDecisions}
 	if in.PublicationStatus == "published" || in.RequestState == RequestPublished {
