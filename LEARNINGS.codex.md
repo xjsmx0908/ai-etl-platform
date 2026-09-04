@@ -1540,3 +1540,20 @@ This file is an append-only record of completed PRAR cycles.
 - Refine: Go release-center/API tests, Web contract tests, ESLint, TypeScript,
   production build, Compose validation, and live authentication-boundary checks
   pass; no PDF or approval-policy behavior changed.
+
+## 2026-09-04 — Release-center PostgreSQL overview acceptance
+
+- Perceive: unit and HTTP stub tests proved the projection contract, but the
+  multi-table SQL join had not been exercised against PostgreSQL. A failed
+  review without a request also exposed a risk of silently collapsing into a
+  generic checking state.
+- Reason: use an isolated PostgreSQL schema and fixture rows to verify the
+  public read seam, including tenant filtering and exact current
+  version/generation/revision binding for reviews.
+- Act: added a real integration test covering published, approval-pending with
+  one of two approvals, review-blocked, stale-request, replacement-version,
+  and cross-tenant rows. The SQL now loads the latest review only when its
+  exact current candidate identity matches the current release.
+- Refine: the integration test initially caught and then verified the fix for
+  review-state misclassification. The focused package suite and Compose
+  PostgreSQL run pass without touching existing business data.

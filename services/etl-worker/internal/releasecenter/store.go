@@ -86,7 +86,14 @@ func (s *PostgresStore) ListOverview(ctx context.Context, tenantID string, limit
 			WHERE q1.tenant_id=d.tenant_id AND q1.document_id=d.doc_id
 			ORDER BY q1.updated_at DESC LIMIT 1
 		) q ON TRUE
-		LEFT JOIN release_center_reviews rv ON rv.tenant_id=q.tenant_id AND rv.review_id=q.review_id
+		LEFT JOIN LATERAL (
+			SELECT rv1.* FROM release_center_reviews rv1
+			WHERE rv1.tenant_id=d.tenant_id AND rv1.document_id=d.doc_id
+			  AND rv1.document_version_id=r.current_version_id
+			  AND rv1.generation_id=m.generation_id
+			  AND rv1.release_revision=r.revision
+			ORDER BY rv1.created_at DESC LIMIT 1
+		) rv ON TRUE
 		WHERE d.tenant_id=$1 AND d.knowledge_space_id<>'' AND d.knowledge_space_id<>'user-uploads'
 		ORDER BY d.updated_at DESC LIMIT $2`, tenantID, limit)
 	if err != nil {

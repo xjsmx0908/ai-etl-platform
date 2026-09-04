@@ -175,6 +175,9 @@ Progress (2026-09-03):
   release, generation, review, request, and decision records; the Web consumes
   the projection for queue labels while durable request detail remains the
   approval action seam.
+- [x] Add real PostgreSQL integration coverage for overview aggregation,
+  including published/approval/review-blocked/stale states, approval counts,
+  version-bound review selection, and tenant isolation.
 
 The implementation gate requires focused Go/API/Web tests before code changes
 are considered complete, followed by the existing full verification suite.
