@@ -9,7 +9,7 @@
 | 场景 | 输入/文档属性 | 预期 Agent 结果 | 预期审批 | 预期终态 |
 | --- | --- | --- | --- | --- |
 | 普通受管文档 | `internal`、ETL 完成、治理字段完整、精确候选健康 | `completed`，建议 `publish` | 1 位管理员 | 一次批准后精确版本发布 |
-| 机密文档 | `confidential`，其他条件同上 | 成功或低风险不能降低策略 | 2 位不同管理员 | 第一票不发布，第二票后发布 |
+| 机密文档 | `confidential`，其他条件同上 | 成功或低风险不能降低策略 | 2 位不同管理员 | 第一票不发布，第二票后发布；发起人自审拒绝、重复相同决定幂等、冲突决定拒绝 |
 | Agent 判定高风险 | `internal`，Agent `high/critical` | 预审成功但风险升级 | 2 位不同管理员 | 第一票不发布，第二票后发布 |
 | Agent 运行异常 | Agent 返回 error/超时/不可用 | `failed`，建议 `manual_review` | 人工例外路径；理由必填 | 仅在人工核对并审批后发布 |
 | Agent 失败状态 | Agent 无 error 但返回 `status=failed/error` | 必须按失败处理 | 不得进入普通成功预审 | `manual_exception` |

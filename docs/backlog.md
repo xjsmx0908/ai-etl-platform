@@ -2266,6 +2266,24 @@ Outcome:
   second administrator.
 - Replaced the evaluator's obsolete publication PATCH with a read-only state
   assertion. The full 47-case mock evaluation passed all release thresholds.
+
+## 2026-09-04 - Confidential Approval State-Machine Acceptance
+
+Status: implemented
+
+Goal: make the real HTTP functional matrix prove the complete confidential
+two-administrator approval state machine, not only the configured approval count.
+
+Outcome:
+
+- Verified the first distinct administrator approval leaves the request in
+  `approval_pending` and does not publish.
+- Verified the second distinct administrator approval publishes the exact
+  candidate; non-admin decisions are rejected.
+- Verified same-admin identical replay is idempotent and a conflicting replay
+  is rejected.
+- Isolated deployment acceptance passed all 7 scenarios; Python, Go, and Web
+  verification gates pass.
 # bugs.md 反馈收敛（2026-09-02）
 
 - [x] 用户上传知识空间说明及自动发布/受管发布差异

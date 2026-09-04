@@ -1736,3 +1736,16 @@ This file is an append-only record of completed PRAR cycles.
   the isolated full-stack command is the remaining release evidence gate.
 - The isolated run completed all 7 scenarios successfully after aligning the
   acceptance stack to the deterministic 1024-dimensional embedding output.
+
+## 2026-09-04 — Confidential approval state-machine acceptance
+
+- Perceive: the functional matrix only checked `required_approvals == 2`, so
+  it could miss premature publication or non-idempotent reviewer behavior.
+- Reason: exercise the durable HTTP decision seam with two distinct admins and
+  assert each intermediate and terminal state, while keeping requester
+  identity semantics explicit (the request is created by the internal Agent).
+- Act: added non-admin rejection, first-vote pending, second-vote publication,
+  same-admin replay idempotency, and conflicting replay assertions to the
+  confidential scenario and documented them in the matrix.
+- Refine: isolated real-stack acceptance passed 7/7; full Python (175 passed,
+  17 skipped), Go, and Web lint/typecheck/build gates passed.

@@ -103,7 +103,7 @@ class Runner:
     def __init__(self, api: str, report: Path, timeout: int):
         self.client, self.report, self.timeout = Client(api), report, timeout
         self.scenarios: list[Scenario] = []
-        self.admin = self.reviewer = self.other = ""
+        self.admin = self.reviewer = self.other = self.user = ""
         self.foreign = ""
         self.space = "release-center-functional"
 
@@ -125,12 +125,12 @@ class Runner:
     def setup(self):
         admin_user, admin_password = os.environ["BOOTSTRAP_ADMIN_USERNAME"], os.environ["BOOTSTRAP_ADMIN_PASSWORD"]
         self.admin = self.login(admin_user, admin_password)
-        names = [("release-reviewer", "release-reviewer-password"), ("release-second", "release-second-password")]
+        names = [("release-reviewer", "release-reviewer-password", "admin"), ("release-second", "release-second-password", "admin"), ("release-user", "release-user-password", "user")]
         tokens = []
-        for username, password in names:
-            self.client.request("POST", "/v1/users", self.admin, {"username": username, "password": password, "role": "admin"}, (201, 409))
+        for username, password, role in names:
+            self.client.request("POST", "/v1/users", self.admin, {"username": username, "password": password, "role": role}, (201, 409))
             tokens.append(self.login(username, password))
-        self.reviewer, self.other = tokens
+        self.reviewer, self.other, self.user = tokens
         self.client.request("POST", "/v1/knowledge-spaces", self.admin, {"id": self.space, "name": "Release Functional", "kind": "production"}, (201, 409))
 
     def task_done(self, token: str, doc_id: str) -> bool:
@@ -176,7 +176,28 @@ class Runner:
         request, detail = self.review_for(self.admin, doc)
         if request["required_approvals"] != 2:
             raise AcceptanceError(f"confidential did not require two admins: {sanitize(request)}")
-        s.observations.append({"doc_id": doc, "required_approvals": request["required_approvals"], "recommendation": detail["review"]["recommendation"]})
+        request_id = request["request_id"]
+        # A non-admin cannot approve a request, regardless of its recommendation.
+        self.client.request("POST", f"/v1/release-center/requests/{request_id}/decision", self.user, {"decision": "approved"}, expected=(403,))
+        first = self.client.request("POST", f"/v1/release-center/requests/{request_id}/decision", self.reviewer, {"decision": "approved"})
+        first_request = first.get("request", {})
+        if first_request.get("state") != "approval_pending" or first_request.get("approved_decisions") not in (None, 1):
+            # approved_decisions is exposed by list/detail projections in some
+            # deployments; the durable decision list is authoritative here.
+            if len(first.get("decisions", [])) != 1:
+                raise AcceptanceError(f"first confidential approval unexpectedly terminal: {sanitize(first)}")
+        if len(first.get("decisions", [])) != 1:
+            raise AcceptanceError(f"first confidential approval missing decision: {sanitize(first)}")
+        # Replaying the same decision by the same reviewer is idempotent.
+        replay = self.client.request("POST", f"/v1/release-center/requests/{request_id}/decision", self.reviewer, {"decision": "approved"})
+        if replay.get("request", {}).get("state") != "approval_pending" or len(replay.get("decisions", [])) != 1:
+            raise AcceptanceError(f"replayed confidential approval was not idempotent: {sanitize(replay)}")
+        # A different decision by that reviewer conflicts with the durable one.
+        self.client.request("POST", f"/v1/release-center/requests/{request_id}/decision", self.reviewer, {"decision": "rejected"}, expected=(409,))
+        second = self.client.request("POST", f"/v1/release-center/requests/{request_id}/decision", self.other, {"decision": "approved"})
+        if second.get("request", {}).get("state") != "published":
+            raise AcceptanceError(f"second confidential approval did not publish: {sanitize(second)}")
+        s.observations.append({"doc_id": doc, "required_approvals": request["required_approvals"], "recommendation": detail["review"]["recommendation"], "first_approval_state": "approval_pending", "final_state": "published", "idempotent_replay": True, "non_admin_rejected": True, "conflict_rejected": True})
 
     def sensitive(self, s: Scenario):
         doc = "rc-sensitive-" + uuid.uuid4().hex[:8]

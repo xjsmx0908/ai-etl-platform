@@ -46,6 +46,10 @@ class ReleaseCenterFunctionalAcceptanceTests(unittest.TestCase):
             '"schema_version"',
             '"scenarios"',
             'runner.write("failed")',
+            'first_approval_state',
+            'idempotent_replay',
+            'non_admin_rejected',
+            'conflict_rejected',
         ):
             self.assertIn(expected, source)
         sanitized = driver.sanitize({"password": "secret", "nested": {"Authorization": "Bearer abc"}})
