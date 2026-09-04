@@ -106,6 +106,27 @@ class WebUploadAcceptTests(unittest.TestCase):
         self.assertIn("selected && !run && !selectedRequest && !selectedOverview", page)
         self.assertIn("!run && selected && !selectedOverview", page)
 
+    def test_release_center_refreshes_overview_after_decision_and_supports_sorted_pagination(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        for expected in (
+            "const refreshReleaseCenter",
+            "await refreshReleaseCenter()",
+            "overviewPage",
+            "overviewPageSize",
+            "overviewSorted",
+            "业务状态分页",
+        ):
+            self.assertIn(expected, page)
+
+    def test_release_center_observability_has_dedicated_route_and_dashboard_panels(self):
+        metrics = (ROOT / "services/etl-worker/internal/prometheus/metrics.go").read_text(encoding="utf-8")
+        dashboard = (ROOT / "infrastructure/grafana/dashboards/ai-etl-platform.json").read_text(encoding="utf-8")
+        alerts = (ROOT / "infrastructure/rules/etl-alerts.yml").read_text(encoding="utf-8")
+        self.assertIn('strings.HasPrefix(path, "/v1/release-center")', metrics)
+        self.assertIn('/v1/release-center/overview', dashboard)
+        self.assertIn('/v1/release-center/requests', dashboard)
+        self.assertIn("ReleaseCenterHighErrorRate", alerts)
+
 
 if __name__ == "__main__":
     unittest.main()

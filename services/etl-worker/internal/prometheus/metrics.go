@@ -709,6 +709,14 @@ func routeLabel(path string) string {
 		return "/v1/query"
 	case strings.HasPrefix(path, "/v1/agent/runs"):
 		return "/v1/agent/runs"
+	case strings.HasPrefix(path, "/v1/release-center"):
+		if strings.HasPrefix(path, "/v1/release-center/overview") {
+			return "/v1/release-center/overview"
+		}
+		if strings.HasPrefix(path, "/v1/release-center/requests") {
+			return "/v1/release-center/requests"
+		}
+		return "/v1/release-center"
 	default:
 		return "/other"
 	}

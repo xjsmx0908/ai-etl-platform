@@ -238,3 +238,22 @@ tests:
               connector: new-workforce
             exp_annotations:
               summary: No successful SCIM lifecycle request has completed for 24 hours
+
+  - name: sustained release center API failures trigger an alert
+    interval: 1m
+    input_series:
+      - series: 'ai_etl_http_request_duration_seconds_count{path="/v1/release-center/overview",status="200"}'
+        values: '0 5 10 15 20 25 30 35 40 45 50 55 60 65 70 75 80 85 90 95 100'
+      - series: 'ai_etl_http_request_duration_seconds_count{path="/v1/release-center/overview",status="500"}'
+        values: '0 5 10 15 20 25 30 35 40 45 50 55 60 65 70 75 80 85 90 95 100'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ReleaseCenterHighErrorRate
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ReleaseCenterHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Knowledge Release Center API 5xx rate is above 5%

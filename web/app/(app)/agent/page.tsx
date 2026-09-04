@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bot,
   Check,
@@ -88,51 +88,56 @@ export default function AgentPage() {
     [runID, setRunID] = useState(""),
     [filter, setFilter] = useState<"all" | "ready" | "attention">("all"),
     [overviewFilter, setOverviewFilter] = useState("all"),
+    [overviewSort, setOverviewSort] = useState<"priority" | "name">("priority"),
+    [overviewPage, setOverviewPage] = useState(1),
+    [overviewPageSize, setOverviewPageSize] = useState(10),
     [loading, setLoading] = useState(true),
+    [refreshing, setRefreshing] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [requestDetail, setRequestDetail] = useState<import("@/lib/types").ReleaseRequestDetail | null>(null);
-  useEffect(() => {
-    let active = true;
+  const refreshReleaseCenter = useCallback(async () => {
     if (!isAdmin) {
       setLoading(false);
-      return () => {
-        active = false;
-      };
+      return;
     }
-    Promise.all([
+    setRefreshing(true);
+    try {
+      const [documentResponse, requestResponse, overviewResponse] = await Promise.all([
       apiClient.listDocuments({ limit: 100 }),
       apiClient.listReleaseRequests(),
       apiClient.listReleaseOverview(),
-    ])
-      .then(([documentResponse, requestResponse, overviewResponse]) => {
-        if (!active) return;
-        const ds = documentResponse.items.filter(
-          (d) =>
-            d.knowledge_space_id &&
-            d.knowledge_space_id !== "user-uploads" &&
-            d.publication_status === "draft",
-        );
-        setDocuments(ds);
-        setReleaseRequests(requestResponse.items);
-        setReleaseOverview(overviewResponse.items);
-        const firstRequest =
-          requestResponse.items.find(
-            (request) =>
-              request.state === "approval_pending" ||
-              request.state === "manual_exception",
-          ) ?? requestResponse.items[0];
-        setSelectedRequestID((value) => value || firstRequest?.request_id || "");
-        setSelectedID(
-          (value) => value || firstRequest?.document_id || ds[0]?.doc_id || "",
-        );
-      })
-      .catch((e: Error) => active && setError(e.message))
-      .finally(() => active && setLoading(false));
-    return () => {
-      active = false;
-    };
+      ]);
+      const ds = documentResponse.items.filter(
+        (d) =>
+          d.knowledge_space_id &&
+          d.knowledge_space_id !== "user-uploads" &&
+          d.publication_status === "draft",
+      );
+      setDocuments(ds);
+      setReleaseRequests(requestResponse.items);
+      setReleaseOverview(overviewResponse.items);
+      const firstRequest =
+        requestResponse.items.find(
+          (request) =>
+            request.state === "approval_pending" ||
+            request.state === "manual_exception",
+        ) ?? requestResponse.items[0];
+      setSelectedRequestID((value) => value || firstRequest?.request_id || "");
+      setSelectedID(
+        (value) => value || firstRequest?.document_id || ds[0]?.doc_id || "",
+      );
+      setOverviewPage(1);
+    } catch (e: unknown) {
+      setError((e as Error).message || "无法刷新发布中心");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, [isAdmin]);
+  useEffect(() => {
+    void refreshReleaseCenter();
+  }, [refreshReleaseCenter]);
   const selected = useMemo(
     () => documents.find((d) => d.doc_id === selectedID) ?? null,
     [documents, selectedID],
@@ -164,6 +169,35 @@ export default function AgentPage() {
     for (const item of releaseOverview) counts[item.state] = (counts[item.state] || 0) + 1;
     return counts;
   }, [releaseOverview]);
+  const overviewFiltered = useMemo(
+    () => releaseOverview.filter((item) => overviewFilter === "all" || item.state === overviewFilter),
+    [overviewFilter, releaseOverview],
+  );
+  const overviewSorted = useMemo(() => {
+    const priority: Record<string, number> = {
+      approval_pending: 0,
+      review_blocked: 1,
+      checking: 2,
+      needs_info: 3,
+      rejected: 4,
+      published: 5,
+    };
+    return [...overviewFiltered].sort((a, b) => {
+      if (overviewSort === "name") {
+        return (a.file_name || a.document_id).localeCompare(b.file_name || b.document_id, "zh-CN");
+      }
+      return (priority[a.state] ?? 99) - (priority[b.state] ?? 99) ||
+        (a.file_name || a.document_id).localeCompare(b.file_name || b.document_id, "zh-CN");
+    });
+  }, [overviewFiltered, overviewSort]);
+  const overviewPageCount = Math.max(1, Math.ceil(overviewSorted.length / overviewPageSize));
+  const overviewPageItems = overviewSorted.slice(
+    (overviewPage - 1) * overviewPageSize,
+    overviewPage * overviewPageSize,
+  );
+  useEffect(() => {
+    if (overviewPage > overviewPageCount) setOverviewPage(overviewPageCount);
+  }, [overviewPage, overviewPageCount]);
   const requestByDocument = useMemo(
     () => {
       const requests = new Map<string, ReleaseRequest>();
@@ -222,6 +256,9 @@ export default function AgentPage() {
       )
     )
       setDocuments((items) => items.filter((d) => d.doc_id !== selectedID));
+    if (next.steps.some((step) => step.tool_name === "publish_document" && step.tool_result?.data?.publication_status === "published")) {
+      await refreshReleaseCenter();
+    }
   };
   const start = async () => {
     if (!selected) return;
@@ -258,6 +295,22 @@ export default function AgentPage() {
       setRunID("");
     } catch (e: unknown) {
       setError((e as Error).message || "无法打开运行");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const decideRelease = async (decision: "approved" | "rejected") => {
+    if (!requestDetail) return;
+    setBusy(true);
+    setError("");
+    try {
+      const detail = await apiClient.decideReleaseRequest(requestDetail.request.request_id, decision, reason);
+      setRequestDetail(detail);
+      setReleaseRequests((items) => items.map((item) => item.request_id === detail.request.request_id ? detail.request : item));
+      setReason("");
+      await refreshReleaseCenter();
+    } catch (e: unknown) {
+      setError((e as Error).message || "审批操作失败");
     } finally {
       setBusy(false);
     }
@@ -359,18 +412,26 @@ export default function AgentPage() {
           </div>
           <label className="flex items-center gap-2 text-xs text-slate-500">
             <span>状态筛选</span>
-            <select value={overviewFilter} onChange={(event) => setOverviewFilter(event.target.value)} className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-700">
+            <select value={overviewFilter} onChange={(event) => { setOverviewFilter(event.target.value); setOverviewPage(1); }} className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-700">
               <option value="all">全部状态</option>
               {Object.entries(OVERVIEW_STATES).map(([state, label]) => <option key={state} value={state}>{label}（{overviewCounts[state] || 0}）</option>)}
             </select>
           </label>
         </div>
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           {Object.entries(OVERVIEW_STATES).map(([state, label]) => (
-            <button key={state} type="button" onClick={() => setOverviewFilter(state)} className={`rounded-full border px-3 py-1 text-xs ${overviewFilter === state ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+            <button key={state} type="button" onClick={() => { setOverviewFilter(state); setOverviewPage(1); }} className={`rounded-full border px-3 py-1 text-xs ${overviewFilter === state ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
               {label} {overviewCounts[state] || 0}
             </button>
           ))}
+          <select aria-label="状态排序" value={overviewSort} onChange={(event) => { setOverviewSort(event.target.value as "priority" | "name"); setOverviewPage(1); }} className="ml-auto rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600">
+            <option value="priority">优先级排序</option>
+            <option value="name">名称排序</option>
+          </select>
+          <button type="button" onClick={() => void refreshReleaseCenter()} disabled={refreshing} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+            {refreshing ? "刷新中" : "刷新状态"}
+          </button>
         </div>
       </div>
       <div className="grid min-h-[560px] overflow-hidden rounded-xl border border-slate-200 bg-white lg:grid-cols-[330px_minmax(0,1fr)]">
@@ -381,9 +442,7 @@ export default function AgentPage() {
               <Badge tone="brand">{releaseOverview.length}</Badge>
             </div>
             <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
-              {releaseOverview
-                .filter((item) => overviewFilter === "all" || item.state === overviewFilter)
-                .map((item) => (
+              {overviewPageItems.map((item) => (
                   <button
                     key={item.document_id}
                     type="button"
@@ -397,6 +456,17 @@ export default function AgentPage() {
                     {item.blockers?.length ? <span className="mt-1 block truncate text-xs text-amber-700">{item.blockers.length} 项阻塞</span> : null}
                   </button>
                 ))}
+            </div>
+            <div className="mt-2 flex items-center justify-between px-1 text-xs text-slate-400">
+              <span>业务状态分页 {overviewSorted.length ? `${(overviewPage - 1) * overviewPageSize + 1}-${Math.min(overviewPage * overviewPageSize, overviewSorted.length)} / ${overviewSorted.length}` : "0 / 0"}</span>
+              <span className="flex items-center gap-1">
+                <select aria-label="每页条数" value={overviewPageSize} onChange={(event) => { setOverviewPageSize(Number(event.target.value)); setOverviewPage(1); }} className="rounded border border-slate-200 bg-white px-1 py-0.5">
+                  {[10, 25, 50].map((size) => <option key={size} value={size}>{size}/页</option>)}
+                </select>
+                <button type="button" aria-label="上一页" disabled={overviewPage <= 1} onClick={() => setOverviewPage((page) => page - 1)} className="rounded border border-slate-200 px-1.5 py-0.5 disabled:opacity-40">‹</button>
+                <span>{overviewPage}/{overviewPageCount}</span>
+                <button type="button" aria-label="下一页" disabled={overviewPage >= overviewPageCount} onClick={() => setOverviewPage((page) => page + 1)} className="rounded border border-slate-200 px-1.5 py-0.5 disabled:opacity-40">›</button>
+              </span>
             </div>
           </div>
           <div className="border-b border-slate-200 p-4">
@@ -551,7 +621,7 @@ export default function AgentPage() {
                   <p className="mt-1 text-xs text-slate-500">风险：{requestDetail.review.risk_level} · 建议：{requestDetail.review.recommendation} · 已批准 {approvedDecisionCount} / {requestDetail.request.required_approvals}</p>
                   {requestDetail.review.findings?.map((finding) => <p key={finding.code} className="mt-2 text-xs text-slate-600">{finding.code}：{finding.summary}</p>)}
                   {requestDetail.request.state === "manual_exception" && <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">Agent 预审不可用。管理员必须完成人工核对并填写例外理由；批准记录将永久保留。</div>}
-                  {(requestDetail.request.state === "approval_pending" || requestDetail.request.state === "manual_exception") && !currentUserDecision && <div className="mt-4 flex flex-wrap gap-2"><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={requestDetail.request.state === "manual_exception" ? "人工例外理由（必填）" : "审批意见（可选）"} className="min-w-[220px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /><Button size="sm" icon={Check} loading={busy} disabled={requestDetail.request.state === "manual_exception" && !reason.trim()} onClick={async () => { setBusy(true); try { const d = await apiClient.decideReleaseRequest(requestDetail.request.request_id, "approved", reason); setRequestDetail(d); setReleaseRequests((items) => items.map((x) => x.request_id === d.request.request_id ? d.request : x)); if (d.request.state === "published") setDocuments((items) => items.filter((document) => document.doc_id !== d.request.document_id)); setReason(""); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }}>批准发布</Button><Button size="sm" icon={X} variant="danger" disabled={busy} onClick={async () => { setBusy(true); try { const d = await apiClient.decideReleaseRequest(requestDetail.request.request_id, "rejected", reason); setRequestDetail(d); setReleaseRequests((items) => items.map((x) => x.request_id === d.request.request_id ? d.request : x)); setReason(""); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }}>拒绝</Button></div>}
+                  {(requestDetail.request.state === "approval_pending" || requestDetail.request.state === "manual_exception") && !currentUserDecision && <div className="mt-4 flex flex-wrap gap-2"><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={requestDetail.request.state === "manual_exception" ? "人工例外理由（必填）" : "审批意见（可选）"} className="min-w-[220px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /><Button size="sm" icon={Check} loading={busy} disabled={requestDetail.request.state === "manual_exception" && !reason.trim()} onClick={() => void decideRelease("approved")}>批准发布</Button><Button size="sm" icon={X} variant="danger" disabled={busy} onClick={() => void decideRelease("rejected")}>拒绝</Button></div>}
                   {(requestDetail.request.state === "approval_pending" || requestDetail.request.state === "manual_exception") && currentUserDecision && <p className="mt-3 text-sm text-indigo-700">你已提交{currentUserDecision.decision === "approved" ? "批准" : "拒绝"}决定，正在等待其他管理员处理。</p>}
                   <div className="mt-3 text-xs text-slate-500">审批记录：{requestDetail.decisions.length ? requestDetail.decisions.map((d) => `${d.decided_by} ${d.decision}`).join(" · ") : "暂无"}</div>
                 </section>

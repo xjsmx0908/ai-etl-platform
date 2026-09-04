@@ -187,6 +187,14 @@ Progress (2026-09-03):
   request. Selecting a row loads document metadata when needed and shows its
   business state/blockers; switching back to a request or draft clears the
   overview selection.
+- [x] Complete release-center interaction and operational polish: refresh the
+  overview projection after an approval/publication decision, add deterministic
+  priority/name sorting and bounded pagination, add browser-facing HTTP route
+  coverage, and provision release-center request/overview rate and error panels
+  with a dedicated 5xx alert.
+- [x] Correct the Compose/default ingestion lease so it exceeds the full
+  pipeline timeout plus retry backoff window; the 18h setting is documented in
+  both environment examples and guarded by the existing contract test.
 
 The implementation gate requires focused Go/API/Web tests before code changes
 are considered complete, followed by the existing full verification suite.

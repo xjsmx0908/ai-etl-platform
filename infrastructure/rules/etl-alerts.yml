@@ -202,3 +202,17 @@ groups:
           severity: warning
         annotations:
           summary: Agent run p95 duration is above 60s
+
+      - alert: ReleaseCenterHighErrorRate
+        expr: |
+          (
+            sum(rate(ai_etl_http_request_duration_seconds_count{path=~"/v1/release-center.*",status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(ai_etl_http_request_duration_seconds_count{path=~"/v1/release-center.*"}[5m])), 0.001)
+          ) > 0.05
+          and sum(increase(ai_etl_http_request_duration_seconds_count{path=~"/v1/release-center.*"}[5m])) >= 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Knowledge Release Center API 5xx rate is above 5%

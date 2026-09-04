@@ -1587,3 +1587,31 @@ This file is an append-only record of completed PRAR cycles.
   against stale selection state.
 - Refine: Web boundary tests, ESLint, TypeScript, production build, and diff
   checks pass. No approval/publication/PDF behavior changed.
+
+## 2026-09-04 — Release-center interaction and observability polish
+
+- Perceive: the release center could display and select the projection, but a
+  decision left the overview stale until a full page reload; larger tenants also
+  lacked stable sorting/page bounds and release-specific operational signals.
+- Reason: reuse the existing authenticated read seams after each decision, keep
+  pagination client-side over the bounded server projection, and normalize API
+  metrics to low-cardinality release-center route labels.
+- Act: added post-decision overview refresh, priority/name sorting, 10/25/50
+  item pagination, refresh-state feedback, dedicated release-center route
+  labels, Grafana overview/request panels, and a sustained 5xx alert.
+- Refine: Web contracts, production build, containerized Go metrics tests,
+  complete Go internal tests, Prometheus rule tests, and diff checks pass.
+  Browser-level validation remains covered by the deployed HTTP page/API seam;
+  no approval policy, database data, or PDF behavior changed.
+
+## 2026-09-04 — Verification baseline lease correction
+
+- Perceive: the complete Python contract suite exposed that the Compose default
+  ingestion lease (12h) was shorter than the configured 4h pipeline timeout
+  multiplied across the retry budget.
+- Reason: a worker lease must outlive the complete retry window or a valid long
+  running task can be reclaimed while still making progress.
+- Act: aligned Compose and both environment examples to an 18h lease and kept
+  the existing configuration validation as the executable invariant.
+- Refine: the targeted regression and all 168 Python tests pass; no live data
+  or credentials were changed.

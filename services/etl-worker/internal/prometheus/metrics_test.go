@@ -39,6 +39,21 @@ func TestHTTPMiddlewareRecordsStatusAndNormalizedPath(t *testing.T) {
 	}
 }
 
+func TestHTTPMiddlewareUsesDedicatedReleaseCenterRouteLabels(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{path: "/v1/release-center/overview", want: "/v1/release-center/overview"},
+		{path: "/v1/release-center/requests/request-1", want: "/v1/release-center/requests"},
+		{path: "/v1/release-center/reviews/doc-1", want: "/v1/release-center"},
+	} {
+		if got := routeLabel(test.path); got != test.want {
+			t.Fatalf("routeLabel(%q)=%q want %q", test.path, got, test.want)
+		}
+	}
+}
+
 func TestSCIMMiddlewareRecordsBoundedOutcomeAndDuration(t *testing.T) {
 	m := New("test_ai_etl_scim_duration")
 	handler := m.SCIMMiddleware("workforce", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
