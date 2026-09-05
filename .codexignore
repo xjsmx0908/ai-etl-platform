@@ -1,0 +1,21 @@
+# 1. 第三方依赖与语言缓存（提升检索效率，节省大量 Token）
+**/node_modules/
+**/__pycache__/
+*.pyc
+
+# 2. 运行时状态与构建产物（避免读取非源码文件）
+artifacts/
+state/
+
+# 3. 评估报告、日志与生成语料（消除噪音，防止误导 Codex）
+rag_datas/
+docs/corpora/generated/
+docs/evals/
+
+# 4. 废弃与归档代码（防止 Codex 学习并使用旧架构/API）
+docs/archive/
+scripts/archive/
+
+# 5. 敏感凭据（安全风险控制）
+secrets/dev/
+!secrets/examples/
