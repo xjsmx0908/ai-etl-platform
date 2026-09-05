@@ -22,10 +22,13 @@
 
 ## Open limitations at archive time
 
+以下条目是归档时的事实记录，不代表当前执行顺序；当前路线以 `docs/backlog.md` 和
+`CONTINUATION.md` 的“Current execution plan”为准。
+
 - 企业身份生产启用仍等待 IdP、连接器负责人、权限/会话/MFA、保留期和 staging 验收等外部决策。
 - P2.3 retention cleanup 默认关闭；启用需要获批的 `INDEX_RETENTION_WINDOW` 和生产部署证据。
 - 私有业务 Gold 仍需要授权责任人的签名批准，不能用技术候选替代。
-- 扫描 PDF 的 583 页真实文件尚未完成一次完整生产数据验收。
+- 扫描 PDF 的 583 页真实文件已由用户独立完成验证，不再作为当前执行事项。
 - 内容级预审目前是确定性首个切片，不代表完整的语义合规或敏感信息分类能力。
 - 预审报告的 `expires_at` 字段和过期校验已存在，但当前协调器不设置 TTL，也没有过期清理或自动重审调度。
 - 协调器曾接受 Agent `status=success`，但 PostgreSQL 只允许 `completed/failed/expired`；现已将 `success`（含大小写变体）规范化为 `completed`，仍需在真实发布中心矩阵中保留 PG 验收证据。
@@ -37,6 +40,13 @@
 - Reason: normalize provider aliases at the coordinator boundary so persisted reports always satisfy the durable schema without weakening fail-closed validation.
 - Act: added a regression test and canonicalized trimmed, case-insensitive `success` to `completed` before saving the review report.
 - Refine: the focused release-center coordinator tests pass; the full PostgreSQL-backed release-center matrix remains the deployment evidence gate.
+
+## 2026-09-05 - Agent audit scope and execution order
+
+- Perceive: the user confirmed that OCR is independently verified and that enterprise Agent audit completeness is the primary goal.
+- Reason: production-readiness decisions and unrelated pipeline validation must not compete with the Agent audit feature roadmap.
+- Act: set the durable execution order to P2.4-R2 → P2.4-R1 → P2.4-R5, with P2.4-R3 deferred; marked P1.9, P2.3, P2.5, P2.6, and OCR as non-current unless explicitly reactivated.
+- Refine: synchronized `docs/backlog.md`, `CONTINUATION.md`, and the release-center acceptance document so new sessions have one unambiguous route.
 
 ## 维护约定
 

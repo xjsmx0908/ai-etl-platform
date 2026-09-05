@@ -13,17 +13,29 @@
 | P2.5-PROD | 企业身份生产方案 | blocked | 选择 IdP 和 connector owner，确认 subject/default-role/撤权/保留/SLA/轮换策略 | [`docs/enterprise-identity-decision-register.md`](enterprise-identity-decision-register.md) |
 | P2.5-STAGE | 真实身份 staging 验收 | blocked | 完成 SCIM create/update/deactivate/reactivate、OIDC 登录、并发重放、标识复用和密钥轮换验收，保留签名 evidence bundle | [`docs/enterprise-identity-production-acceptance.md`](enterprise-identity-production-acceptance.md) |
 | P2.6 | 生产证据门 | blocked | 由业务和运维批准 SLO、RPO/RTO、容量、质量、备份恢复、驻留和预算，再执行保留证据的验收 | 归档快照 P2.6 规划章节 |
-| OCR | 583 页扫描 PDF | open | 重新上传真实文件，确认全量 OCR、embedding、generation、发布和查询最终 `completed`，记录无密验收结果 | `scripts/e2e-smoke.sh` 与 parser/worker 验收 |
+
+以上事项保留在 backlog 中用于生产准入跟踪，但不属于当前 Agent 审计功能路线；除非用户重新指定，不得自动启动。
+
+## Current execution plan
+
+当前唯一主线是“企业级 Agent 审计功能完善”，不是通用生产准入或 OCR 验收。新会话必须按以下顺序推进：
+
+1. **P2.4-R2：企业审批组与可配置策略**（下一项）——定义责任人组、审批身份、双人审批、委托、升级、撤权及空间/文档级策略。
+2. **P2.4-R1：完整语义、隐私和合规审查**——定义模型输入、结构化输出、chunk 证据、提示词注入处理、fail-closed 和模型评测。
+3. **P2.4-R5：企业级编排**——补齐异步审批通知、失败补偿、Saga 和外部工作流接入。
+4. **P2.4-R3：Review report 生命周期**（后置）——最后处理 TTL、过期清理和自动重审。
+
+当前路线的完成标准是：权限边界、审计证据、失败处理、幂等性、租户隔离和对应业务验收矩阵均已覆盖。不得把当前已实现的受限规则扫描描述为完整合规审查。
 
 ## Agent pre-review remaining
 
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
-| P2.4-R1 | 完整语义、隐私和合规审查 | future scope | 定义文档内容输入、结构化输出、证据引用、提示词注入处理和 fail-closed 策略；补充模型评测与业务验收 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
-| P2.4-R2 | 企业审批组与可配置策略 | future scope | 引入业务责任人/审批组身份模型、空间或文档级策略、委托与升级规则，并完成权限和双人审批验收 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
-| P2.4-R3 | Review report 生命周期 | open | 决定报告 TTL、过期状态、清理/重审调度和历史审计保留策略；补充 PostgreSQL 集成测试 | [`services/etl-worker/internal/releasecenter/releasecenter.go`](../services/etl-worker/internal/releasecenter/releasecenter.go) |
+| P2.4-R2 | 企业审批组与可配置策略 | next | 引入业务责任人/审批组身份模型、空间或文档级策略、委托与升级规则，并完成权限和双人审批验收 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
+| P2.4-R1 | 完整语义、隐私和合规审查 | planned | 定义文档内容输入、结构化输出、证据引用、提示词注入处理和 fail-closed 策略；补充模型评测与业务验收 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
+| P2.4-R5 | Agent 周边编排能力 | planned | 评估多工具 Saga、异步审批通知和外部工作流引擎；每项定义可靠性、审计和失败补偿验收 | [`docs/agent-orchestrator-design.md`](agent-orchestrator-design.md) |
+| P2.4-R3 | Review report 生命周期 | deferred | 暂不实施；待 R2、R1、R5 完成后再决定报告 TTL、过期状态、清理/重审调度和历史审计保留策略 | [`services/etl-worker/internal/releasecenter/releasecenter.go`](../services/etl-worker/internal/releasecenter/releasecenter.go) |
 | P2.4-R4 | `success` 状态数据库兼容 | completed | 已将 `success`（含大小写变体）规范化为 PostgreSQL 允许的 `completed`，并补充协调器回归测试；后续真实 PG 验收随发布中心矩阵执行 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |
-| P2.4-R5 | Agent 周边编排能力 | future scope | 评估多工具 Saga、异步审批通知和外部工作流引擎；每项定义可靠性、审计和失败补偿验收 | [`docs/agent-orchestrator-design.md`](agent-orchestrator-design.md) |
 
 ## Completed baseline
 
@@ -32,6 +44,7 @@
 - P2.4 version-bound publication、exact-candidate approval、替换、可恢复删除和治理验收已完成。
 - P2.5-A～D 及个人演示 F1～F6 已实现；企业生产启用仍受外部输入约束。
 - Knowledge Release Center 的发布策略、Agent 预审、内容 findings、HTTP 矩阵和 Web 工作台已完成。
+- 583 页扫描 PDF 已由用户独立完成验证，不再作为当前 backlog 事项。
 - 上述完成仅指首个版本的受限发布资格预审；P2.4-R1～R5 仍是未完成、未来范围或待修复事项，不得将当前规则扫描描述为完整合规审查。
 - Elasticsearch 只读锁恢复、文档管理优化、OCR 分页恢复和相关反馈项已在历史验收中关闭；若运行环境再次出现，应创建新的带证据条目。
 
