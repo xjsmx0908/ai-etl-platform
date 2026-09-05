@@ -11,7 +11,7 @@
 | 普通受管文档 | `internal`、ETL 完成、治理字段完整、精确候选健康 | `completed`，建议 `publish` | 1 位管理员 | 一次批准后精确版本发布 |
 | 机密文档 | `confidential`，其他条件同上 | 成功或低风险不能降低策略 | 2 位不同管理员 | 第一票不发布，第二票后发布；发起人自审拒绝、重复相同决定幂等、冲突决定拒绝 |
 | Agent 判定高风险 | `internal`，Agent `high/critical` | 预审成功但风险升级 | 2 位不同管理员 | 第一票不发布，第二票后发布 |
-| Agent 运行异常 | Agent 返回 error/超时/不可用 | `failed`，建议 `manual_review` | 人工例外路径；理由必填 | 仅在人工核对并审批后发布 |
+| Agent 运行异常 | Agent 返回 error/超时/不可用 | `failed`，建议 `manual_review`，风险归一化为 high | 人工例外路径；两位管理员均需填写理由 | 第一票仍为人工例外，第二票后发布 |
 | Agent 失败状态 | Agent 无 error 但返回 `status=failed/error` | 必须按失败处理 | 不得进入普通成功预审 | `manual_exception` |
 | 确定性门禁阻塞 | 缺责任人、无生效日期、非受管空间、ETL 未完成或无精确候选 | 不应触发成功预审/发布 | 不生成可发布审批任务 | `needs_info` 或 `review_blocked` |
 | 版本在审批期间变化 | generation/version/revision/digest 任一变化 | 旧报告失效 | 旧审批不可发布 | `needs_info`，保留审计记录 |
@@ -62,6 +62,25 @@ Agent 预审业务矩阵（独立隔离栈，验证文档属性到审批终态�
 ```bash
 bash scripts/release-center-functional-acceptance.sh
 ```
+
+隔离栈当前执行 10 个真实业务场景：普通单审、机密双审、机密敏感双审、
+Agent 状态依赖故障与两票人工例外、internal 敏感阻断、提示词注入阻断、
+确定性门禁、版本替换失效与旧 finding 隔离、拒绝终态、双租户隔离。故障场景
+只通过 Compose 控制面停止并恢复隔离栈 `redis-state`；业务输入和结果仍通过认证
+HTTP API 写入及观察，不向生产服务加入测试端点或测试模式。
+
+生产适配器不会自然生成的上游异常证据由真实 HTTP handler 功能测试覆盖：
+
+```bash
+docker run --rm \
+  -v "$PWD/services/etl-worker:/app" -w /app \
+  golang:1.25-alpine \
+  sh -c 'go test ./cmd/api -run "TestReleaseCenterHTTP" -count=1'
+```
+
+该层注入 error、显式 `failed/error`、缺失 status、非法 recommendation/risk，
+并验证 internal high-risk 双管理员策略和请求发起人自审拒绝。它使用生产 HTTP
+handler 和协调器，只替换上游 `ReviewAdapter`，避免为了验收引入生产测试后门。
 
 每次修改 `releasecenter`、Agent 预审适配器、publication workflow 或发布中心
 页面，都必须执行快速功能矩阵和 Web/Python 全量测试；发布前还必须保留完整

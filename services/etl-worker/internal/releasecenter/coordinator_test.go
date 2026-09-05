@@ -107,7 +107,7 @@ func TestCoordinatorPersistsVersionBoundReviewAndRequest(t *testing.T) {
 	candidate := readyCandidate()
 	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
 	store := newMemoryStore()
-	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{RunID: "run-1", Recommendation: "publish", RiskLevel: RiskLow, Summary: "checks passed", Model: "governance-agent", PromptVersion: "document-review-v1"}}, store)
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{RunID: "run-1", Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, Summary: "checks passed", Model: "governance-agent", PromptVersion: "document-review-v1"}}, store)
 	report, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
 	if err != nil {
 		t.Fatal(err)

@@ -2284,6 +2284,42 @@ Outcome:
   is rejected.
 - Isolated deployment acceptance passed all 7 scenarios; Python, Go, and Web
   verification gates pass.
+
+## 2026-09-05 - Release Center HTTP Matrix Completion
+
+Status: implemented
+
+Goal: close the first-release Agent pre-review acceptance gaps without adding
+production test hooks or expanding into model-based semantic compliance review.
+
+Plan:
+
+1. Extend the isolated deployment matrix with confidential-sensitive approval,
+   controlled Agent infrastructure failure/manual exception, real cross-tenant
+   isolation, finding binding, and rejected-terminal behavior.
+2. Add HTTP-handler functional cases for upstream evidence states that cannot
+   be produced naturally by the production adapter: explicit failed/error,
+   malformed evidence, internal high-risk escalation, and requester self-review.
+3. Keep all observations on authenticated HTTP seams; use the isolated Compose
+   control plane only to inject and recover the Agent dependency outage.
+4. Run the isolated matrix plus complete Python, Go, Web, syntax, and diff gates.
+5. Record results in the acceptance specification and learning log, then commit
+   and push the verified slice.
+
+Outcome:
+
+- Expanded isolated full-stack acceptance from 7 to 10 scenarios, including a
+  real second tenant, confidential sensitive two-admin release, controlled
+  Redis State outage/manual exception recovery, rejection terminal behavior,
+  current-chunk evidence binding, and old-generation finding exclusion.
+- Added HTTP-handler functional coverage for Agent error, explicit failed/error
+  status, missing status, malformed recommendation/risk, internal high-risk
+  two-admin approval, and requester self-review rejection.
+- Found and fixed a fail-open boundary where a missing Agent review status was
+  silently normalized to `completed`; incomplete evidence now enters the high-
+  risk manual-exception path.
+- Isolated HTTP acceptance passes all 10 scenarios. Complete Python, Go, and Web
+  verification results are recorded in the learning log.
 # bugs.md 反馈收敛（2026-09-02）
 
 - [x] 用户上传知识空间说明及自动发布/受管发布差异

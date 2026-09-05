@@ -1749,3 +1749,26 @@ This file is an append-only record of completed PRAR cycles.
   confidential scenario and documented them in the matrix.
 - Refine: isolated real-stack acceptance passed 7/7; full Python (175 passed,
   17 skipped), Go, and Web lint/typecheck/build gates passed.
+
+## 2026-09-05 — Release-center HTTP matrix completion
+
+- Perceive: the isolated matrix covered common paths but not Agent outages,
+  manual exceptions, confidential sensitive approval, terminal rejection, or
+  an actual second tenant. Upstream malformed evidence was covered only below
+  the HTTP boundary.
+- Reason: keep naturally reachable behavior in the isolated deployment and use
+  the production HTTP handler with a replaceable ReviewAdapter for evidence
+  states the production adapter cannot emit intentionally. Inject dependency
+  failure through the isolated Compose control plane instead of a test endpoint.
+- Act: expanded full-stack acceptance to 10 scenarios and added handler-level
+  HTTP cases for errors, failed/error status, malformed evidence, high-risk
+  escalation, and self-review. The new missing-status case found that empty
+  status was silently defaulted to completed; the coordinator now fails closed.
+- Refine: the isolated stack passed 10/10, including Redis State outage/recovery,
+  two-reason manual approval, exact chunk/report binding, old-generation finding
+  exclusion, and tenant-B isolation from tenant-A overview/request/report/action.
+  Python contracts passed 175 tests with 17 skipped; Go internal race tests,
+  full Go tests and vet passed; parser tests passed 35 cases; Web lint,
+  typecheck and production build, Compose validation, and diff checks passed.
+  The main Query API was rebuilt healthy; `/release-center` returned 200 and
+  unauthenticated release-center overview remained 401.

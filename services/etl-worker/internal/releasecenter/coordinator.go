@@ -95,9 +95,6 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	reportID := stableID("review", actor.TenantID, candidate)
 	reviewResult, reviewErr := c.reviewer.Review(ctx, actor, documentID)
 	status := strings.TrimSpace(reviewResult.Status)
-	if status == "" {
-		status = "completed"
-	}
 	if reviewErr == nil && (strings.EqualFold(status, "failed") || strings.EqualFold(status, "error")) {
 		reviewErr = fmt.Errorf("agent review returned status %q", status)
 	}
