@@ -1,5 +1,16 @@
 # Repository Guidelines
 
+## Response Style
+
+默认使用中文并保持简洁：
+
+- 先给结论，再给必要依据。
+- 简单问题用 1～3 句话回答；复杂问题最多列出 3～5 个要点。
+- 不重复用户问题，不展开无关背景。
+- 不输出内部思考过程，只提供结论、关键依据和下一步。
+- 代码任务只汇报改动、验证结果和剩余风险；用户明确要求时再展开细节。
+- 存在多个方案时直接推荐一个，并用一句话说明原因。
+
 ## Project Structure & Module Organization
 This repository contains an AI ETL/RAG platform with Go and Python services. `services/etl-worker/` is the Go module for the Kafka ETL worker and Query API; entry points live in `cmd/worker` and `cmd/api`, while reusable packages live under `internal/`. `services/doc-parser-service/` is the Python FastAPI parser service, with application code in `app/` and tests in `tests/`. `services/reranker-service/` is an optional FastAPI Cross-Encoder reranker enabled through the `rerank` Docker Compose profile. Shared orchestration and operational assets are at the root: `docker-compose.yml`, `infrastructure/`, `deploy/`, `scripts/`, `docs/`, and `secrets/examples/`.
 
@@ -31,6 +42,17 @@ decisions. A green build or happy-path test alone is insufficient.
 
 ## Commit & Pull Request Guidelines
 The Git history uses Conventional Commit-style prefixes such as `feat:`, `fix:`, and `chore:`. Keep commits focused and describe the user-visible or operational impact. Pull requests should include a concise summary, linked issue when applicable, verification commands run, and screenshots or logs for API/operational behavior changes. Branch protection expects one approval and the `Required Checks` CI gate to pass before merge.
+
+## Automatic Git Commit and Push
+- When the user has explicitly enabled automatic delivery, complete each fully finished task with a Git commit and push it to the configured remote.
+- Run the affected tests, builds, linters, and `git diff --check` before committing; do not commit when verification fails.
+- Record the task-start baseline with `git status --short`, preserve pre-existing changes, and stage only files changed by the current task.
+- Never use `git add -A` or `git add .`; do not stage secrets, generated artifacts, or unrelated changes.
+- Use a Conventional Commit message such as `feat: add agent pre-review validation`.
+- Push the new commit to its upstream remote branch; never force-push, amend, reset, or delete existing commits.
+- If the branch has no configured upstream, push with `git push -u origin <branch>` after verifying the remote and branch name.
+- If conflicts, authentication failures, or uncertain change ownership prevent a safe push, stop and report the exact reason.
+- After delivery, report the commit hash, remote branch, and verification commands.
 
 ## Security & Configuration Tips
 Never commit real credentials. Use `.env.example` and `secrets/examples/` as templates, and keep local secrets in ignored files. Parser endpoints require `X-Internal-Token` outside development; preserve tenant, permission, JWT, and CORS checks when changing request flows.

@@ -113,6 +113,19 @@
 6. 清理或隔离 Jaeger invalid UTF-8 告警，并确认新任务日志不再出现该错误。
 7. 若进入企业化阶段，先由业务、身份、安全和 SRE 负责人完成 E～I 决策，再解除 D0 并按 D1～D7 验收。
 
+## 5A. Agent 预审后续工作
+
+新窗口继续 Agent 预审工作时，先读取 `docs/backlog.md` 的 P2.4-R1～R5，按以下顺序处理：
+
+1. P2.4-R4 已完成：`success`（含大小写变体）统一规范化为 `completed`，回归测试已加入；真实 PG 验收随发布中心矩阵执行。
+2. 决定 P2.4-R3 的报告 TTL、过期状态、重审和审计保留语义，再实现调度与清理。
+3. 若要实现 P2.4-R1，先定义模型审查的内容输入、结构化输出、chunk 证据、提示词注入处理和 fail-closed 策略；不得直接把当前规则扫描升级宣传为合规控制。
+4. 若要实现 P2.4-R2，先取得业务责任人组、审批委托和策略配置决策；当前 `owner` 字段不能直接作为审批权限。
+5. P2.4-R5 仅在核心状态机稳定后推进，并分别为 Saga、通知和外部工作流保留验收证据。
+
+涉及发布中心策略、预审适配器、publication workflow 或 Web 页面时，必须运行
+`docs/release-center-functional-acceptance.md` 要求的快速矩阵和完整业务矩阵；另外运行受影响的 Go、Python 和 Web 测试。
+
 ## 6. 继续当前任务必须知道的上下文
 
 - 工作目录：`/home/ubuntu/ai-projects/ai-etl-platform`；分支：`master`；远程：`origin`。

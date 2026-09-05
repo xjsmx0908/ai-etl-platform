@@ -120,6 +120,22 @@ func TestCoordinatorPersistsVersionBoundReviewAndRequest(t *testing.T) {
 	}
 }
 
+func TestCoordinatorCanonicalizesSuccessfulAgentStatus(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{
+		Status: "success", Recommendation: "publish", RiskLevel: RiskLow,
+	}}, store)
+	report, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || request.State != RequestApprovalPending {
+		t.Fatalf("report=%+v request=%+v", report, request)
+	}
+}
+
 func TestCoordinatorEscalatesConfidentialAndAgentFailure(t *testing.T) {
 	candidate := readyCandidate()
 	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}

@@ -94,16 +94,19 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	now := c.now().UTC()
 	reportID := stableID("review", actor.TenantID, candidate)
 	reviewResult, reviewErr := c.reviewer.Review(ctx, actor, documentID)
-	status := strings.TrimSpace(reviewResult.Status)
+	status := strings.ToLower(strings.TrimSpace(reviewResult.Status))
 	if reviewErr == nil && (strings.EqualFold(status, "failed") || strings.EqualFold(status, "error")) {
 		reviewErr = fmt.Errorf("agent review returned status %q", status)
 	}
 	if reviewErr == nil {
 		recommendation := strings.ToLower(strings.TrimSpace(reviewResult.Recommendation))
-		validStatus := strings.EqualFold(status, "completed") || strings.EqualFold(status, "success")
+		validStatus := status == "completed" || status == "success"
 		validRisk := reviewResult.RiskLevel == RiskLow || reviewResult.RiskLevel == RiskMedium || reviewResult.RiskLevel == RiskHigh || reviewResult.RiskLevel == RiskCritical
 		if !validStatus || !validRisk || recommendation == "" || (recommendation != "publish" && recommendation != "needs_info" && recommendation != "reject" && recommendation != "manual_review") {
 			reviewErr = fmt.Errorf("agent review returned incomplete evidence")
+		}
+		if reviewErr == nil && status == "success" {
+			status = "completed"
 		}
 	}
 	if reviewErr != nil {
