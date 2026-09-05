@@ -161,6 +161,14 @@ Group membership is checked again for every decision; one or two distinct
 decisions are enforced from server-side policy. The final approval re-assesses
 the exact candidate and calls `publicationworkflow.PublishApproved`.
 
+The optional model-backed R1 reviewer is configured with
+`AGENT_SEMANTIC_REVIEW_ENDPOINT`, `AGENT_SEMANTIC_REVIEW_API_KEY`,
+`AGENT_SEMANTIC_REVIEW_MODEL`, `AGENT_SEMANTIC_REVIEW_PROMPT_VERSION`,
+`AGENT_SEMANTIC_REVIEW_TIMEOUT`, and `AGENT_SEMANTIC_REVIEW_MAX_TOKENS`.
+When the endpoint is not configured, the deterministic safety slice remains
+the only reviewer; production enablement must configure a tenant-approved
+private model endpoint and retain the model evaluation evidence.
+
 The collector also reconciles pending requests against the current release and
 healthy active generation. A mismatched version, generation, digest, or release
 revision moves the old request to `needs_info` while preserving all review and

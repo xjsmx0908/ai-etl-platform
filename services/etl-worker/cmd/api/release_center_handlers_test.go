@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -27,6 +28,15 @@ func (s releaseReviewServiceStub) ReviewPublication(_ context.Context, _ agent.A
 type releaseChunkReaderStub struct {
 	chunks []store.StoredChunk
 	err    error
+}
+
+type semanticReviewerStub struct {
+	result releasecenter.SemanticReviewResult
+	err    error
+}
+
+func (s semanticReviewerStub) Review(context.Context, releasecenter.SemanticReviewInput) (releasecenter.SemanticReviewResult, error) {
+	return s.result, s.err
 }
 
 func (s releaseChunkReaderStub) ListChunksByDoc(context.Context, string, string, []string) ([]store.StoredChunk, error) {
@@ -81,6 +91,40 @@ func TestReleaseCenterReviewerEscalatesConfidentialSensitiveContent(t *testing.T
 	}
 	if got.Status != "completed" || got.Recommendation != "publish" || got.RiskLevel != releasecenter.RiskHigh || len(got.Findings) != 1 {
 		t.Fatalf("confidential sensitive content handling incorrect: %+v", got)
+	}
+}
+
+func TestReleaseCenterReviewerMergesValidatedSemanticReview(t *testing.T) {
+	candidate := publicationworkflow.Candidate{DocumentID: "doc-1", DocumentVersionID: "job-1", GenerationID: "gen-1", ExpectedChunkCount: 1, ExpectedChunkDigest: "sha256:x", ReleaseRevision: 1}
+	reviewer := releaseCenterReviewer{
+		service:   releaseReviewServiceStub{runID: "run-semantic", assessment: publicationworkflow.Assessment{Ready: true, Candidate: &candidate}},
+		documents: &fakeDocStore{docs: map[string]docstore.Document{"acme/doc-1": {TenantID: "acme", DocID: "doc-1", Permission: "internal", KnowledgeSpaceID: "production"}}},
+		chunks:    releaseChunkReaderStub{chunks: []store.StoredChunk{{ChunkID: "c1", DocumentVersionID: "job-1", GenerationID: "gen-1", Content: "业务内容"}}},
+		semantic:  semanticReviewerStub{result: releasecenter.SemanticReviewResult{Status: "completed", Recommendation: "needs_info", RiskLevel: releasecenter.RiskHigh, Summary: "缺少合规说明", Model: "review-model", PromptVersion: "semantic-v2", Findings: []releasecenter.Finding{{Code: "compliance_gap", Severity: "high", Summary: "缺少合规说明", EvidenceRef: "c1"}}}},
+	}
+	got, err := reviewer.Review(context.Background(), publicationworkflow.Actor{TenantID: "acme"}, "doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Recommendation != "needs_info" || got.RiskLevel != releasecenter.RiskHigh || got.Model != "review-model" || got.PromptVersion != "semantic-v2" || len(got.Findings) != 1 {
+		t.Fatalf("semantic result was not merged: %+v", got)
+	}
+}
+
+func TestReleaseCenterReviewerFailsClosedOnSemanticReviewError(t *testing.T) {
+	candidate := publicationworkflow.Candidate{DocumentID: "doc-1", DocumentVersionID: "job-1", GenerationID: "gen-1", ExpectedChunkCount: 1, ExpectedChunkDigest: "sha256:x", ReleaseRevision: 1}
+	reviewer := releaseCenterReviewer{
+		service:   releaseReviewServiceStub{runID: "run-semantic-error", assessment: publicationworkflow.Assessment{Ready: true, Candidate: &candidate}},
+		documents: &fakeDocStore{docs: map[string]docstore.Document{"acme/doc-1": {TenantID: "acme", DocID: "doc-1", Permission: "internal", KnowledgeSpaceID: "production"}}},
+		chunks:    releaseChunkReaderStub{chunks: []store.StoredChunk{{ChunkID: "c1", DocumentVersionID: "job-1", GenerationID: "gen-1", Content: "业务内容"}}},
+		semantic:  semanticReviewerStub{err: errors.New("model unavailable")},
+	}
+	got, err := reviewer.Review(context.Background(), publicationworkflow.Actor{TenantID: "acme"}, "doc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "failed" || got.Recommendation != "manual_review" || got.RiskLevel != releasecenter.RiskHigh {
+		t.Fatalf("semantic failure was not failed closed: %+v", got)
 	}
 }
 

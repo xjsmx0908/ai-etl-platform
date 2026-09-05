@@ -312,6 +312,7 @@ type releaseCenterReviewer struct {
 	service   releaseCenterAgentReviewService
 	documents docstore.Store
 	chunks    releaseCenterChunkReader
+	semantic  releasecenter.SemanticReviewer
 }
 
 func (r releaseCenterReviewer) Review(ctx context.Context, actor publicationworkflow.Actor, documentID string) (releasecenter.AgentReview, error) {
@@ -360,7 +361,45 @@ func (r releaseCenterReviewer) Review(ctx context.Context, actor publicationwork
 	}
 	findings := contentReview.Findings
 	summary := strings.Join(append(append([]string{}, assessment.Blockers...), contentReview.Summary), ", ")
-	return releasecenter.AgentReview{RunID: runID, Status: "completed", Recommendation: recommendation, RiskLevel: risk, Summary: summary, Findings: findings, PromptVersion: "document-review-v1"}, nil
+	modelName := ""
+	promptVersion := "document-review-v1"
+	if r.semantic != nil {
+		semanticResult, semanticErr := r.semantic.Review(ctx, releasecenter.SemanticReviewInput{
+			TenantID: actor.TenantID, DocumentID: documentID, KnowledgeSpaceID: doc.KnowledgeSpaceID,
+			Permission: doc.Permission, Candidate: *assessment.Candidate, Chunks: content,
+		})
+		if semanticErr != nil {
+			return releasecenter.AgentReview{RunID: runID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: "语义审查失败：" + semanticErr.Error(), Findings: findings, PromptVersion: promptVersion}, nil
+		}
+		if semanticResult.Recommendation != "publish" {
+			recommendation = semanticResult.Recommendation
+		}
+		if releasecenterRiskRank(semanticResult.RiskLevel) > releasecenterRiskRank(risk) {
+			risk = semanticResult.RiskLevel
+		}
+		findings = append(findings, semanticResult.Findings...)
+		if strings.TrimSpace(semanticResult.Summary) != "" {
+			summary = strings.Trim(strings.Join([]string{summary, semanticResult.Summary}, ", "), ",")
+		}
+		modelName = semanticResult.Model
+		promptVersion = semanticResult.PromptVersion
+	}
+	return releasecenter.AgentReview{RunID: runID, Status: "completed", Recommendation: recommendation, RiskLevel: risk, Summary: summary, Findings: findings, Model: modelName, PromptVersion: promptVersion}, nil
+}
+
+func releasecenterRiskRank(risk releasecenter.RiskLevel) int {
+	switch risk {
+	case releasecenter.RiskCritical:
+		return 4
+	case releasecenter.RiskHigh:
+		return 3
+	case releasecenter.RiskMedium:
+		return 2
+	case releasecenter.RiskLow:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func handleReleaseCenterReview(coordinator *releasecenter.Coordinator) http.HandlerFunc {

@@ -9,8 +9,8 @@ import (
 // The chunk ID is retained as an evidence reference; no full document payload
 // is persisted in the review report.
 type ContentChunk struct {
-	ChunkID string
-	Content string
+	ChunkID string `json:"chunk_id"`
+	Content string `json:"content"`
 }
 
 type ContentReviewResult struct {

@@ -55,6 +55,13 @@
 - Act: added PostgreSQL and in-memory approval groups, member activation, space/permission/risk policy matching, priority resolution, requester self-approval control, request policy persistence, and authenticated admin management APIs. Added a composite tenant/user foreign key and fail-closed behavior when a group-constrained request lacks its policy store.
 - Refine: focused Go tests, the 10-scenario release-center functional acceptance, and the governance acceptance matrix passed. Enterprise IdP group sync, delegation, timed escalation, revocation workflows, and a dedicated Web policy editor remain explicitly outside this slice.
 
+## 2026-09-05 - P2.4-R1 semantic review contract (in progress)
+
+- Perceive: the existing release-center reviewer only performed deterministic eligibility and bounded pattern scans, so it could not provide model-backed semantic, privacy, or compliance evidence.
+- Reason: model output must remain untrusted and version-bound; the boundary therefore needs an explicit input contract, structured result schema, exact chunk evidence validation, and fail-closed transport/schema handling before any model can influence a release recommendation.
+- Act: added a replaceable semantic reviewer interface and OpenAI-compatible client, wired it after exact-candidate deterministic checks, merged only risk escalations/non-publish recommendations, and exposed endpoint/model/prompt settings through environment configuration.
+- Refine: added HTTP-client, input-boundary, evidence-reference, handler-merge, and model-failure tests. Model evaluation datasets, business taxonomy calibration, and deployment acceptance remain before marking R1 complete.
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。

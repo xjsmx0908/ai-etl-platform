@@ -67,6 +67,14 @@ its own document-content input, structured output schema, evidence references,
 prompt-injection handling, and fail-closed policy before being presented as a
 security or compliance control.
 
+P2.4-R1 is the current implementation milestone for that model-based review.
+Its first slice defines a strict document-content input bound to the exact
+candidate, a JSON result contract for status/recommendation/risk/findings, and
+chunk-ID evidence validation. A configured OpenAI-compatible reviewer is
+fail-closed on transport, schema, risk, recommendation, and unknown-evidence
+errors; deterministic findings and minimum approval requirements remain
+authoritative.
+
 Approval policy is deterministic and risk-based:
 
 - `user-uploads` keeps automatic publication and does not enter this workflow.

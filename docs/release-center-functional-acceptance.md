@@ -18,6 +18,8 @@
 | Agent 证据不完整 | status、recommendation 或 risk 缺失/非法 | fail-closed，标记失败 | 进入人工例外，不能按成功预审审批 | 需人工核对后处理 |
 | 内容级敏感信息 | exact candidate 切块包含密码、API key、身份证号或手机号 | 生成带 chunk 引用的 `sensitive_data_detected` finding；风险升为 high | internal 阻断；confidential 升级双人复核 | 不得静默放行 |
 | 内容级提示词注入 | 切块包含“忽略之前指令/输出系统提示词”等模式 | 生成 `prompt_injection_detected` finding，建议 `needs_info` | 不进入普通可发布审批 | 人工处理 |
+| 模型语义审查成功 | 配置 OpenAI-compatible semantic reviewer，返回合法结构化结果 | 保留模型、Prompt 版本和 exact chunk finding；仅允许风险升级 | 按确定性最低策略审批 | 结果可审计且候选绑定 |
+| 模型语义审查失败 | 超时、HTTP 错误、非法 JSON、非法枚举或未知 chunk 证据 | 预审 `failed`、风险 `high`、建议 `manual_review` | 人工例外；不得按成功预审发布 | fail-closed |
 | 非管理员或发起人自审 | 普通用户、或请求发起人本人 | 不适用 | 拒绝决定请求 | 不改变发布状态 |
 | 未认证和跨租户访问 | 无凭证或其他租户管理员访问 | 不适用 | 返回 401/租户隔离 | 不泄露记录或证据 |
 
