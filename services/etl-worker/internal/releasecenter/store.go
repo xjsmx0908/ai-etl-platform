@@ -204,9 +204,11 @@ func (s *PostgresStore) SaveRequest(ctx context.Context, request ReleaseRequest)
 	tag, err := s.q.Exec(ctx, `INSERT INTO release_center_requests (
 		request_id,tenant_id,document_id,document_version_id,generation_id,
 		expected_chunk_count,expected_chunk_digest,release_revision,review_id,
-		required_approvals,state,requested_by,created_at,updated_at
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		policy_id,approver_group_id,allow_requester_approval,required_approvals,state,requested_by,created_at,updated_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 	ON CONFLICT (request_id) DO UPDATE SET state=EXCLUDED.state,
+		policy_id=EXCLUDED.policy_id, approver_group_id=EXCLUDED.approver_group_id,
+		allow_requester_approval=EXCLUDED.allow_requester_approval,
 		required_approvals=EXCLUDED.required_approvals,updated_at=EXCLUDED.updated_at
 		WHERE release_center_requests.tenant_id=EXCLUDED.tenant_id
 		  AND release_center_requests.document_id=EXCLUDED.document_id
@@ -219,8 +221,8 @@ func (s *PostgresStore) SaveRequest(ctx context.Context, request ReleaseRequest)
 		request.ID, request.TenantID, request.DocumentID, request.Candidate.DocumentVersionID,
 		request.Candidate.GenerationID, request.Candidate.ExpectedChunkCount,
 		request.Candidate.ExpectedChunkDigest, request.Candidate.ReleaseRevision,
-		request.ReviewID, request.RequiredApprovals, request.State, request.RequestedBy,
-		request.CreatedAt, request.UpdatedAt)
+		request.ReviewID, nullableString(request.PolicyID), nullableString(request.ApproverGroupID), request.AllowRequesterApproval,
+		request.RequiredApprovals, request.State, request.RequestedBy, request.CreatedAt, request.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("save release request: %w", err)
 	}
@@ -237,12 +239,13 @@ func (s *PostgresStore) GetRequest(ctx context.Context, tenantID, requestID stri
 	var request ReleaseRequest
 	err := s.q.QueryRow(ctx, `SELECT request_id,tenant_id,document_id,document_version_id,generation_id,
 		expected_chunk_count,expected_chunk_digest,release_revision,review_id,
-		required_approvals,state,requested_by,created_at,updated_at
+		COALESCE(policy_id,''),COALESCE(approver_group_id,''),allow_requester_approval,required_approvals,state,requested_by,created_at,updated_at
 		FROM release_center_requests WHERE tenant_id=$1 AND request_id=$2`, tenantID, requestID).Scan(
 		&request.ID, &request.TenantID, &request.DocumentID,
 		&request.Candidate.DocumentVersionID, &request.Candidate.GenerationID,
 		&request.Candidate.ExpectedChunkCount, &request.Candidate.ExpectedChunkDigest,
-		&request.Candidate.ReleaseRevision, &request.ReviewID, &request.RequiredApprovals,
+		&request.Candidate.ReleaseRevision, &request.ReviewID, &request.PolicyID, &request.ApproverGroupID,
+		&request.AllowRequesterApproval, &request.RequiredApprovals,
 		&request.State, &request.RequestedBy, &request.CreatedAt, &request.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReleaseRequest{}, ErrRequestNotFound
@@ -302,7 +305,7 @@ func (s *PostgresStore) ListRequests(ctx context.Context, tenantID string, limit
 	}
 	query := `SELECT request_id,tenant_id,document_id,document_version_id,generation_id,
 		expected_chunk_count,expected_chunk_digest,release_revision,review_id,
-		required_approvals,state,requested_by,created_at,updated_at
+		COALESCE(policy_id,''),COALESCE(approver_group_id,''),allow_requester_approval,required_approvals,state,requested_by,created_at,updated_at
 		FROM release_center_requests WHERE tenant_id=$1 ORDER BY updated_at DESC`
 	args := []any{tenantID}
 	if limit > 0 {
@@ -320,7 +323,8 @@ func (s *PostgresStore) ListRequests(ctx context.Context, tenantID string, limit
 		if err := rows.Scan(&request.ID, &request.TenantID, &request.DocumentID,
 			&request.Candidate.DocumentVersionID, &request.Candidate.GenerationID,
 			&request.Candidate.ExpectedChunkCount, &request.Candidate.ExpectedChunkDigest,
-			&request.Candidate.ReleaseRevision, &request.ReviewID, &request.RequiredApprovals,
+			&request.Candidate.ReleaseRevision, &request.ReviewID, &request.PolicyID, &request.ApproverGroupID,
+			&request.AllowRequesterApproval, &request.RequiredApprovals,
 			&request.State, &request.RequestedBy, &request.CreatedAt, &request.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan release request: %w", err)
 		}
@@ -432,6 +436,13 @@ func (s *PostgresStore) ReconcileStaleRequests(ctx context.Context, limit int) (
 
 func nullableTime(value time.Time) any {
 	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
+func nullableString(value string) any {
+	if strings.TrimSpace(value) == "" {
 		return nil
 	}
 	return value

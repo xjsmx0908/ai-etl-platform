@@ -77,7 +77,19 @@ Approval policy is deterministic and risk-based:
 - Agent failure creates an audited manual-exception task; it never silently
   becomes a successful review.
 
-The current implementation has only `admin`, `user`, and `readonly` roles.
-An `owner` is document metadata, not an authenticated approval role. Business
-owner groups and configurable approval policies are future scope and must not
-be implied by the first release-center UI.
+### P2.4-R2 approval groups and policies
+
+P2.4-R2 adds tenant-scoped approval groups and server-side policy resolution.
+Administrators can create or deactivate groups, add or deactivate members, and
+define policies matching a knowledge space, document permission, minimum risk,
+priority, required decisions, and requester self-approval. The most specific
+active policy wins; deterministic safety floors still apply, so configuration
+cannot reduce the two-person requirement for confidential or high-risk
+documents. Requests persist the selected policy and group, and every decision
+rechecks active group membership before exact-candidate publication.
+
+The implementation exposes authenticated admin HTTP APIs for group/member and
+policy management. The existing roles remain `admin`, `user`, and `readonly`;
+an `owner` is document metadata, not an approval identity. Enterprise IdP group
+sync, delegated approval, timed escalation, and approval revocation are not
+silently inferred from local groups and remain separate follow-up work.

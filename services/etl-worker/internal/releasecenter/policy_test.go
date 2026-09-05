@@ -1,6 +1,78 @@
 package releasecenter
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"ai-etl-pipeline/internal/publicationworkflow"
+)
+
+func TestApprovalPolicyMatchesMostSpecificRule(t *testing.T) {
+	store := NewMemoryApprovalPolicyStore()
+	if err := store.PutPolicy(context.Background(), ApprovalPolicy{ID: "default", TenantID: "acme", RequiredApprovals: 1, ApproverGroupID: "admins", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutPolicy(context.Background(), ApprovalPolicy{ID: "hr-confidential", TenantID: "acme", KnowledgeSpaceID: "hr", Permission: "confidential", RequiredApprovals: 2, ApproverGroupID: "hr-reviewers", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := store.ResolveApprovalPolicy(nil, "acme", "hr", "confidential", RiskLow)
+	if err != nil || !found {
+		t.Fatalf("policy found=%v err=%v", found, err)
+	}
+	if got.ID != "hr-confidential" || got.RequiredApprovals != 2 || got.ApproverGroupID != "hr-reviewers" {
+		t.Fatalf("policy=%+v", got)
+	}
+}
+
+func TestApprovalPolicyRejectsAgentRiskBelowConfiguredMinimum(t *testing.T) {
+	store := NewMemoryApprovalPolicyStore()
+	if err := store.PutPolicy(context.Background(), ApprovalPolicy{ID: "high-risk", TenantID: "acme", MinimumRisk: RiskHigh, RequiredApprovals: 2, ApproverGroupID: "risk", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.ResolveApprovalPolicy(nil, "acme", "production", "internal", RiskLow); err != nil || found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+}
+
+func TestApprovalGroupMembershipIsTenantScoped(t *testing.T) {
+	store := NewMemoryApprovalPolicyStore()
+	if err := store.PutGroup(context.Background(), ApprovalGroup{ID: "reviewers", TenantID: "acme", Name: "Reviewers", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGroupMember(context.Background(), "acme", "reviewers", "alice", true); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.IsApprovalGroupMember(context.Background(), "acme", "reviewers", "alice"); err != nil || !ok {
+		t.Fatalf("member=%v err=%v", ok, err)
+	}
+	if ok, err := store.IsApprovalGroupMember(context.Background(), "other", "reviewers", "alice"); err != nil || ok {
+		t.Fatalf("cross-tenant member=%v err=%v", ok, err)
+	}
+}
+
+func TestApprovalPolicyValidatesConfiguration(t *testing.T) {
+	store := NewMemoryApprovalPolicyStore()
+	if err := store.PutPolicy(context.Background(), ApprovalPolicy{ID: "invalid", TenantID: "acme", RequiredApprovals: 3, ApproverGroupID: "group"}); err == nil {
+		t.Fatal("expected invalid approval count")
+	}
+}
+
+func TestAuthorizeApprovalRequiresConfiguredGroupMember(t *testing.T) {
+	store := NewMemoryApprovalPolicyStore()
+	if err := store.PutGroup(context.Background(), ApprovalGroup{ID: "reviewers", TenantID: "acme", Name: "Reviewers", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGroupMember(context.Background(), "acme", "reviewers", "alice", true); err != nil {
+		t.Fatal(err)
+	}
+	request := ReleaseRequest{TenantID: "acme", RequestedBy: "requester", ApproverGroupID: "reviewers"}
+	if err := AuthorizeApproval(context.Background(), store, publicationworkflow.Actor{TenantID: "acme", UserID: "bob"}, request); err == nil {
+		t.Fatal("expected non-member to be rejected")
+	}
+	if err := AuthorizeApproval(context.Background(), store, publicationworkflow.Actor{TenantID: "acme", UserID: "alice"}, request); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestApprovalPolicyIsDeterministicAndCannotBeLoweredByAgent(t *testing.T) {
 	checks := []struct {

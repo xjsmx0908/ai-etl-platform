@@ -440,3 +440,23 @@ func TestMigration0024ReleaseCenter(t *testing.T) {
 		}
 	}
 }
+
+func TestMigration0025ReleaseCenterApprovalPolicies(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0025_release_center_approval_policies.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	source := string(body)
+	for _, expected := range []string{
+		"CREATE TABLE release_center_approval_groups",
+		"CREATE TABLE release_center_approval_group_members",
+		"CREATE TABLE release_center_approval_policies",
+		"allow_requester_approval",
+		"REFERENCES users (id, tenant_id)",
+		"ALTER TABLE release_center_requests",
+	} {
+		if !strings.Contains(source, expected) {
+			t.Errorf("migration missing %q", expected)
+		}
+	}
+}

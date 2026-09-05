@@ -131,7 +131,8 @@ approval, and release records into business states such as `needs_info`,
 These are projections; they do not replace the authoritative document and
 release state machines.
 
-The first approval policy is deterministic and stored server-side:
+The baseline approval policy remains deterministic and is augmented by
+tenant-scoped administrator configuration:
 
 | Condition | Required decisions |
 | --- | ---: |
@@ -152,10 +153,13 @@ publication tool. The coordinator stores stable IDs derived from the exact
 candidate, and Agent failure becomes a manual-exception request.
 
 Tenant-scoped admin APIs list requests, return request/review/decision detail,
-and accept approval or rejection. One or two distinct decisions are enforced
-from server-side policy; the final approval re-assesses the exact candidate and
-calls `publicationworkflow.PublishApproved`. The Web BFF and release-center UI
-use these durable records as their primary workflow.
+and accept approval or rejection. P2.4-R2 adds approval-group/member and
+approval-policy management APIs backed by migration `0025_release_center_approval_policies.up.sql`.
+The resolver chooses the most-specific active space/permission/risk rule by
+priority, while the coordinator preserves the deterministic safety floor.
+Group membership is checked again for every decision; one or two distinct
+decisions are enforced from server-side policy. The final approval re-assesses
+the exact candidate and calls `publicationworkflow.PublishApproved`.
 
 The collector also reconciles pending requests against the current release and
 healthy active generation. A mismatched version, generation, digest, or release

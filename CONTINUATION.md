@@ -1,6 +1,6 @@
 # 项目任务续接记录
 
-更新时间：2026-09-03（Asia/Shanghai）
+更新时间：2026-09-05（Asia/Shanghai）
 
 ## 1. 已完成的工作
 
@@ -10,7 +10,7 @@
 - 已完成持久化接入、事务 outbox、重试/DLQ、任务状态、检查点、幂等、孤儿对象清理和崩溃恢复。
 - 已完成 generation manifest、双索引一致性、原子激活、回滚、对账、版本绑定发布、四眼审批和可恢复删除。
 - 已完成个人演示身份运行时：Keycloak、真实密码 + TOTP、SCIM provisioning、OIDC、HTTPS、会话管理和退出验收。
-- PR #42 已合并；当前最新提交为 `54eccbd`，并已推送到 `origin/master`。
+- PR #42 已合并；R2 最新提交为 `dc5f10f`，并已推送到 `origin/master`。
 
 ### 产品与前端体验
 
@@ -48,6 +48,7 @@
 - 当前没有正在运行的代码实现任务。
 - 583 页扫描 PDF 已由用户独立验证，OCR 全流程不再是当前工作项。
 - 当前唯一主线是企业级 Agent 审计功能完善；不得从历史 OCR、生产准入或身份部署记录自动推导下一项。
+- P2.4-R2 已完成：租户隔离审批组、成员启停、空间/权限/风险策略、双人审批、自审控制和策略持久化/API 已交付；审批存储不可用时 fail-closed。
 
 ## 3. 已修改的文件及修改内容
 
@@ -80,6 +81,9 @@
 - `internal/query/service.go`：问答检索与阶段事件支持。
 - `cmd/api/main.go`、`cmd/api/audit_handlers.go`、`cmd/api/audit_fake_test.go`、`internal/audit/store.go`：上传、任务取消、审计检索和分页接口。
 - `internal/pipeline/pipeline_test.go`、`internal/store/store_chunks_test.go`：流程、检查点、部分失败和索引测试。
+- `internal/releasecenter/approval_policy.go`、`approval_policy_postgres.go`：租户隔离审批组、成员启停、风险/空间/权限策略匹配和成员授权。
+- `internal/migrations/0025_release_center_approval_policies.up.sql`：审批组、成员、策略及发布请求关联字段迁移。
+- `internal/releasecenter/coordinator.go`、`store.go`、`cmd/api/release_center_handlers.go`：策略解析、请求持久化、审批成员校验和管理员管理 API。
 
 ### Web
 
@@ -107,10 +111,12 @@
 
 目标：完善企业级 Agent 审计功能。新会话只按以下顺序推进：
 
-1. **P2.4-R2（下一项）**：企业审批组、审批身份、双人审批、委托、升级、撤权和可配置策略。
-2. **P2.4-R1**：模型化语义/隐私/合规审查、结构化输出、chunk 证据、提示词注入处理和 fail-closed。
-3. **P2.4-R5**：异步审批通知、失败补偿、Saga 和外部工作流集成。
-4. **P2.4-R3（后置）**：Review report TTL、过期清理和自动重审。
+1. **P2.4-R1（下一项）**：模型化语义/隐私/合规审查、结构化输出、chunk 证据、提示词注入处理和 fail-closed。
+2. **P2.4-R5**：异步审批通知、失败补偿、Saga 和外部工作流集成。
+3. **P2.4-R3（后置）**：Review report TTL、过期清理和自动重审。
+
+P2.4-R2 的企业 IdP 组同步、委托、定时升级和审批撤权不在本次本地策略切片内；
+它们需要独立的身份/编排决策，不得在新会话中被假设为已实现或自动扩展。
 
 P2.3、P2.5、P2.6、P1.9 属于生产准入或外部决策，不是当前 Agent 审计开发路线；OCR 已验证并移出路线。除非用户明确重新指定，不得把这些事项列为下一步。
 
@@ -122,7 +128,7 @@ P2.3、P2.5、P2.6、P1.9 属于生产准入或外部决策，不是当前 Agent
 ## 6. 继续当前任务必须知道的上下文
 
 - 工作目录：`/home/ubuntu/ai-projects/ai-etl-platform`；分支：`master`；远程：`origin`。
-- 当前 HEAD 与远程同步：`54eccbd fix: harden document ingestion and admin workflows`。
+- 当前 HEAD 与远程同步：`dc5f10f feat: add configurable release approval policies`。
 - 本地入口：Web `http://localhost:3100`，Query API `http://localhost:8080`，Parser `http://127.0.0.1:8000`。
 - 当前关键运行配置：`PARSER_MAX_CHUNK_SIZE=600`、`PARSER_CHUNK_OVERLAP=50`、`OCR_PAGE_BATCH_SIZE=25`、`EMBED_CONCURRENCY=1`、`EMBED_TIMEOUT=180s`、`PIPELINE_STAGE_TIMEOUT=180s`、`PIPELINE_TIMEOUT=4h`、`PIPELINE_MAX_RETRIES=1`、`INGESTION_JOB_LEASE=12h`。
 - 当前模型端点是本机 Ollama：`http://host.docker.internal:11434/api/embeddings`，模型 `bge-m3`，维度 1024；CPU 推理是整本任务耗时的主要因素。

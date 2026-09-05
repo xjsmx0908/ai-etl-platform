@@ -245,6 +245,9 @@ export type ReleaseRequest = {
   tenant_id: string;
   document_id: string;
   review_id: string;
+  policy_id?: string;
+  approver_group_id?: string;
+  allow_requester_approval?: boolean;
   required_approvals: number;
   state: "approval_pending" | "manual_exception" | "needs_info" | "rejected" | "published";
   requested_by: string;
@@ -258,6 +261,27 @@ export type ReleaseRequest = {
   };
   created_at: string;
   updated_at: string;
+};
+
+export type ReleaseApprovalGroup = {
+  group_id: string;
+  tenant_id?: string;
+  name: string;
+  active: boolean;
+  members?: string[];
+};
+
+export type ReleaseApprovalPolicy = {
+  policy_id: string;
+  tenant_id?: string;
+  knowledge_space_id?: string;
+  permission?: string;
+  minimum_risk?: string;
+  required_approvals: number;
+  approver_group_id: string;
+  allow_requester_approval: boolean;
+  priority: number;
+  active: boolean;
 };
 
 export type ReleaseRequestsResponse = { items: ReleaseRequest[] };

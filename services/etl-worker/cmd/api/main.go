@@ -466,7 +466,10 @@ func main() {
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
 	apiV1.Handle("/v1/release-center/requests", requireScopes(auth.ScopeAdmin)(handleReleaseCenterRequests(releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/overview", requireScopes(auth.ScopeAdmin)(handleReleaseCenterOverview(releaseCenterStore)))
-	apiV1.Handle("/v1/release-center/requests/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterDecision(releaseCenterStore, publicationWorkflow)))
+	apiV1.Handle("/v1/release-center/requests/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterDecision(releaseCenterStore, publicationWorkflow, releaseCenterStore)))
+	apiV1.Handle("/v1/release-center/approval-groups", requireScopes(auth.ScopeAdmin)(handleReleaseCenterApprovalGroups(releaseCenterStore)))
+	apiV1.Handle("/v1/release-center/approval-groups/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterApprovalGroups(releaseCenterStore)))
+	apiV1.Handle("/v1/release-center/approval-policies", requireScopes(auth.ScopeAdmin)(handleReleaseCenterApprovalPolicies(releaseCenterStore)))
 	// Document registry: list/detail open to any authenticated role (filtered by
 	// the role→permission matrix); DELETE checks upload scope in-handler.
 	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore, qs)))
@@ -489,7 +492,7 @@ func main() {
 		defer chunkStorer.Close()
 		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorer, qs))
 	}
-	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc, documents: docStore, chunks: chunkStorerForReview}, releaseCenterStore)
+	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc, documents: docStore, chunks: chunkStorerForReview}, releaseCenterStore, releaseCenterStore)
 	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
 	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	apiV1.Handle("/v1/release-center/review-reports/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReviewReport(releaseCenterStore)))

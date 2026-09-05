@@ -27,6 +27,125 @@ type releaseRequestService interface {
 	releasecenter.Store
 }
 
+func handleReleaseCenterApprovalGroups(manager releasecenter.ApprovalPolicyManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if auth.GetPermission(r.Context()) != "admin" {
+			writeError(w, http.StatusForbidden, "admin role required")
+			return
+		}
+		path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/release-center/approval-groups"), "/")
+		if path == "" && r.Method == http.MethodGet {
+			groups, err := manager.ListGroups(r.Context(), auth.GetTenantID(r.Context()))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to list approval groups")
+				return
+			}
+			if groups == nil {
+				groups = []releasecenter.ApprovalGroup{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"items": groups})
+			return
+		}
+		if path == "" && r.Method == http.MethodPost {
+			var body struct {
+				ID     string `json:"group_id"`
+				Name   string `json:"name"`
+				Active *bool  `json:"active"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			active := true
+			if body.Active != nil {
+				active = *body.Active
+			}
+			group := releasecenter.ApprovalGroup{ID: body.ID, Name: body.Name, TenantID: auth.GetTenantID(r.Context()), Active: active}
+			if err := manager.PutGroup(r.Context(), group); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{"group": group})
+			return
+		}
+		parts := strings.Split(path, "/")
+		if len(parts) == 2 && parts[1] == "members" && r.Method == http.MethodPost && parts[0] != "" {
+			var body struct {
+				UserID string `json:"user_id"`
+				Active *bool  `json:"active"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			active := true
+			if body.Active != nil {
+				active = *body.Active
+			}
+			if err := manager.SetGroupMember(r.Context(), auth.GetTenantID(r.Context()), parts[0], body.UserID, active); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"tenant_id": auth.GetTenantID(r.Context()), "group_id": parts[0], "user_id": body.UserID, "active": active})
+			return
+		}
+		http.NotFound(w, r)
+	}
+}
+
+func handleReleaseCenterApprovalPolicies(manager releasecenter.ApprovalPolicyManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if auth.GetPermission(r.Context()) != "admin" {
+			writeError(w, http.StatusForbidden, "admin role required")
+			return
+		}
+		if r.Method == http.MethodGet {
+			policies, err := manager.ListPolicies(r.Context(), auth.GetTenantID(r.Context()))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to list approval policies")
+				return
+			}
+			if policies == nil {
+				policies = []releasecenter.ApprovalPolicy{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"items": policies})
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var body struct {
+			ID                     string                  `json:"policy_id"`
+			KnowledgeSpaceID       string                  `json:"knowledge_space_id"`
+			Permission             string                  `json:"permission"`
+			MinimumRisk            releasecenter.RiskLevel `json:"minimum_risk"`
+			RequiredApprovals      int                     `json:"required_approvals"`
+			ApproverGroupID        string                  `json:"approver_group_id"`
+			AllowRequesterApproval bool                    `json:"allow_requester_approval"`
+			Priority               int                     `json:"priority"`
+			Active                 *bool                   `json:"active"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		policy := releasecenter.ApprovalPolicy{ID: body.ID, TenantID: auth.GetTenantID(r.Context()), KnowledgeSpaceID: body.KnowledgeSpaceID,
+			Permission: body.Permission, MinimumRisk: body.MinimumRisk, RequiredApprovals: body.RequiredApprovals,
+			ApproverGroupID: body.ApproverGroupID, AllowRequesterApproval: body.AllowRequesterApproval, Priority: body.Priority}
+		if body.Active == nil {
+			policy.Active = true
+		} else {
+			policy.Active = *body.Active
+		}
+		if err := manager.PutPolicy(r.Context(), policy); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"policy": policy})
+	}
+}
+
 func handleReleaseCenterOverview(store releasecenter.OverviewStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -113,8 +232,8 @@ func handleReleaseCenterRequests(store releaseRequestLister) http.HandlerFunc {
 	}
 }
 
-func handleReleaseCenterDecision(store releasecenter.Store, workflow releasecenter.PublicationWorkflow) http.HandlerFunc {
-	approval := releasecenter.NewApprovalService(workflow, store)
+func handleReleaseCenterDecision(store releasecenter.Store, workflow releasecenter.PublicationWorkflow, policies ...releasecenter.ApprovalPolicyStore) http.HandlerFunc {
+	approval := releasecenter.NewApprovalService(workflow, store, policies...)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if auth.GetPermission(r.Context()) != "admin" {
 			writeError(w, http.StatusForbidden, "admin role required")

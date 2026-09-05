@@ -60,6 +60,7 @@ type Coordinator struct {
 	documents reviewDocumentReader
 	reviewer  ReviewAdapter
 	store     coordinatorStore
+	policies  ApprovalPolicyStore
 	now       func() time.Time
 }
 
@@ -68,8 +69,12 @@ type PublicationWorkflow interface {
 	PublishApproved(context.Context, publicationworkflow.Actor, publicationworkflow.Candidate, string) (publicationworkflow.PublicationResult, error)
 }
 
-func NewCoordinator(workflow PublicationWorkflow, documents reviewDocumentReader, reviewer ReviewAdapter, store coordinatorStore) *Coordinator {
-	return &Coordinator{workflow: workflow, documents: documents, reviewer: reviewer, store: store, now: time.Now}
+func NewCoordinator(workflow PublicationWorkflow, documents reviewDocumentReader, reviewer ReviewAdapter, store coordinatorStore, policies ...ApprovalPolicyStore) *Coordinator {
+	var policyStore ApprovalPolicyStore
+	if len(policies) > 0 {
+		policyStore = policies[0]
+	}
+	return &Coordinator{workflow: workflow, documents: documents, reviewer: reviewer, store: store, policies: policyStore, now: time.Now}
 }
 
 func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationworkflow.Actor, documentID string) (ReviewReport, ReleaseRequest, error) {
@@ -92,6 +97,10 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 		return ReviewReport{}, ReleaseRequest{}, docstore.ErrNotFound
 	}
 	now := c.now().UTC()
+	requestedBy := strings.TrimSpace(actor.UserID)
+	if requestedBy == "" {
+		requestedBy = "release-center-agent"
+	}
 	reportID := stableID("review", actor.TenantID, candidate)
 	reviewResult, reviewErr := c.reviewer.Review(ctx, actor, documentID)
 	status := strings.ToLower(strings.TrimSpace(reviewResult.Status))
@@ -140,16 +149,32 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 		if report.Recommendation == "manual_review" {
 			state = RequestManualException
 		}
-		request := ReleaseRequest{ID: stableID("request", actor.TenantID, candidate), TenantID: actor.TenantID, DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: state, RequestedBy: "release-center-agent", CreatedAt: now, UpdatedAt: now}
+		request := ReleaseRequest{ID: stableID("request", actor.TenantID, candidate), TenantID: actor.TenantID, DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: state, RequestedBy: requestedBy, CreatedAt: now, UpdatedAt: now}
 		if err := c.store.SaveRequest(ctx, request); err != nil {
 			return ReviewReport{}, ReleaseRequest{}, err
 		}
 		return report, request, nil
 	}
-	policy := EvaluatePolicy(PolicyInput{Permission: doc.Permission, Risk: report.RiskLevel, AgentAvailable: reviewErr == nil})
+	policyDecision := EvaluatePolicy(PolicyInput{Permission: doc.Permission, Risk: report.RiskLevel, AgentAvailable: reviewErr == nil})
+	var configuredPolicy ApprovalPolicy
+	if c.policies != nil && reviewErr == nil {
+		resolved, found, err := c.policies.ResolveApprovalPolicy(ctx, actor.TenantID, doc.KnowledgeSpaceID, doc.Permission, report.RiskLevel)
+		if err != nil {
+			return ReviewReport{}, ReleaseRequest{}, fmt.Errorf("resolve approval policy: %w", err)
+		}
+		if found {
+			configuredPolicy = resolved
+			if resolved.RequiredApprovals > policyDecision.RequiredApprovals {
+				policyDecision.RequiredApprovals = resolved.RequiredApprovals
+			}
+			policyDecision.State = RequestApprovalPending
+		}
+	}
 	request := ReleaseRequest{ID: stableID("request", actor.TenantID, candidate), TenantID: actor.TenantID,
-		DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: policy.RequiredApprovals,
-		State: policy.State, RequestedBy: "release-center-agent", CreatedAt: now, UpdatedAt: now}
+		DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: policyDecision.RequiredApprovals,
+		State: policyDecision.State, RequestedBy: requestedBy, CreatedAt: now, UpdatedAt: now,
+		PolicyID: configuredPolicy.ID, ApproverGroupID: configuredPolicy.ApproverGroupID,
+		AllowRequesterApproval: configuredPolicy.AllowRequesterApproval}
 	if err := c.store.SaveRequest(ctx, request); err != nil {
 		return ReviewReport{}, ReleaseRequest{}, err
 	}
@@ -191,11 +216,16 @@ type ApprovalResult struct {
 type ApprovalService struct {
 	workflow PublicationWorkflow
 	store    coordinatorStore
+	policies ApprovalPolicyStore
 	now      func() time.Time
 }
 
-func NewApprovalService(workflow PublicationWorkflow, store coordinatorStore) *ApprovalService {
-	return &ApprovalService{workflow: workflow, store: store, now: time.Now}
+func NewApprovalService(workflow PublicationWorkflow, store coordinatorStore, policies ...ApprovalPolicyStore) *ApprovalService {
+	var policyStore ApprovalPolicyStore
+	if len(policies) > 0 {
+		policyStore = policies[0]
+	}
+	return &ApprovalService{workflow: workflow, store: store, policies: policyStore, now: time.Now}
 }
 
 func (s *ApprovalService) Decide(ctx context.Context, actor publicationworkflow.Actor, requestID, decision, reason string) (ApprovalResult, error) {
@@ -209,7 +239,14 @@ func (s *ApprovalService) Decide(ctx context.Context, actor publicationworkflow.
 	if err != nil {
 		return ApprovalResult{}, err
 	}
-	if request.RequestedBy == actor.UserID {
+	if request.ApproverGroupID != "" {
+		if s.policies == nil {
+			return ApprovalResult{}, fmt.Errorf("release center approval policy is not configured")
+		}
+		if err := AuthorizeApproval(ctx, s.policies, actor, request); err != nil {
+			return ApprovalResult{}, err
+		}
+	} else if request.RequestedBy == actor.UserID && !request.AllowRequesterApproval {
 		return ApprovalResult{}, fmt.Errorf("approval requires a different administrator")
 	}
 	if request.State != RequestApprovalPending && request.State != RequestManualException {

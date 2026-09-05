@@ -38,10 +38,13 @@ untrusted recommendation: document text is treated as prompt-injection-prone
 input, and no model output grants tools or authority. Agent Run IDs remain
 correlation fields for diagnostics, not durable release state.
 
-The first policy is deliberately small and deterministic: ordinary managed
+The baseline policy is deliberately small and deterministic: ordinary managed
 documents need one administrator decision; confidential or deterministic
-high-risk documents need two distinct administrators. Agent findings can
-escalate a policy but cannot reduce it. If the Agent is unavailable, the
+high-risk documents need two distinct administrators. P2.4-R2 adds tenant-
+scoped approval groups and configurable space/permission/risk rules. The most
+specific active rule wins, but Agent findings and configuration can only
+escalate the baseline. Group membership is rechecked at decision time, and a
+missing policy dependency fails closed. If the Agent is unavailable, the
 document enters an audited manual-exception path rather than being marked
 reviewed. A changed document version or generation invalidates the report and
 all pending decisions.

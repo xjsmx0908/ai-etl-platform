@@ -86,16 +86,19 @@ type Finding struct {
 }
 
 type ReleaseRequest struct {
-	ID                string                        `json:"request_id"`
-	TenantID          string                        `json:"tenant_id"`
-	DocumentID        string                        `json:"document_id"`
-	Candidate         publicationworkflow.Candidate `json:"candidate"`
-	ReviewID          string                        `json:"review_id"`
-	RequiredApprovals int                           `json:"required_approvals"`
-	State             RequestState                  `json:"state"`
-	RequestedBy       string                        `json:"requested_by"`
-	CreatedAt         time.Time                     `json:"created_at"`
-	UpdatedAt         time.Time                     `json:"updated_at"`
+	ID                     string                        `json:"request_id"`
+	TenantID               string                        `json:"tenant_id"`
+	DocumentID             string                        `json:"document_id"`
+	Candidate              publicationworkflow.Candidate `json:"candidate"`
+	ReviewID               string                        `json:"review_id"`
+	PolicyID               string                        `json:"policy_id,omitempty"`
+	ApproverGroupID        string                        `json:"approver_group_id,omitempty"`
+	AllowRequesterApproval bool                          `json:"allow_requester_approval,omitempty"`
+	RequiredApprovals      int                           `json:"required_approvals"`
+	State                  RequestState                  `json:"state"`
+	RequestedBy            string                        `json:"requested_by"`
+	CreatedAt              time.Time                     `json:"created_at"`
+	UpdatedAt              time.Time                     `json:"updated_at"`
 }
 
 // OverviewInput is the authoritative read-side snapshot used to project a

@@ -178,3 +178,54 @@ func TestReleaseCenterReviewReportIsAdminAndTenantScoped(t *testing.T) {
 		t.Fatalf("response=%+v err=%v", body, err)
 	}
 }
+
+type approvalPolicyManagerStub struct {
+	groups                                []releasecenter.ApprovalGroup
+	policies                              []releasecenter.ApprovalPolicy
+	group                                 releasecenter.ApprovalGroup
+	policy                                releasecenter.ApprovalPolicy
+	memberTenant, memberGroup, memberUser string
+}
+
+func (s *approvalPolicyManagerStub) ResolveApprovalPolicy(context.Context, string, string, string, releasecenter.RiskLevel) (releasecenter.ApprovalPolicy, bool, error) {
+	return releasecenter.ApprovalPolicy{}, false, nil
+}
+func (s *approvalPolicyManagerStub) IsApprovalGroupMember(context.Context, string, string, string) (bool, error) {
+	return false, nil
+}
+func (s *approvalPolicyManagerStub) PutGroup(_ context.Context, group releasecenter.ApprovalGroup) error {
+	s.group = group
+	return nil
+}
+func (s *approvalPolicyManagerStub) SetGroupMember(_ context.Context, tenantID, groupID, userID string, _ bool) error {
+	s.memberTenant, s.memberGroup, s.memberUser = tenantID, groupID, userID
+	return nil
+}
+func (s *approvalPolicyManagerStub) PutPolicy(_ context.Context, policy releasecenter.ApprovalPolicy) error {
+	s.policy = policy
+	return nil
+}
+func (s *approvalPolicyManagerStub) ListGroups(context.Context, string) ([]releasecenter.ApprovalGroup, error) {
+	return s.groups, nil
+}
+func (s *approvalPolicyManagerStub) ListPolicies(context.Context, string) ([]releasecenter.ApprovalPolicy, error) {
+	return s.policies, nil
+}
+
+func TestReleaseCenterApprovalPolicyHandlersAreTenantScoped(t *testing.T) {
+	manager := &approvalPolicyManagerStub{}
+	groupsHandler := handleReleaseCenterApprovalGroups(manager)
+	created := doRequest(groupsHandler, http.MethodPost, "/v1/release-center/approval-groups", map[string]any{"group_id": "legal", "name": "Legal"}, ctxWithRole("acme", "admin", "admin"))
+	if created.Code != http.StatusCreated || manager.group.TenantID != "acme" || manager.group.ID != "legal" || !manager.group.Active {
+		t.Fatalf("status=%d group=%+v body=%s", created.Code, manager.group, created.Body.String())
+	}
+	member := doRequest(groupsHandler, http.MethodPost, "/v1/release-center/approval-groups/legal/members", map[string]any{"user_id": "alice"}, ctxWithRole("acme", "admin", "admin"))
+	if member.Code != http.StatusOK || manager.memberTenant != "acme" || manager.memberGroup != "legal" || manager.memberUser != "alice" {
+		t.Fatalf("status=%d tenant=%q group=%q user=%q", member.Code, manager.memberTenant, manager.memberGroup, manager.memberUser)
+	}
+	policiesHandler := handleReleaseCenterApprovalPolicies(manager)
+	policy := doRequest(policiesHandler, http.MethodPost, "/v1/release-center/approval-policies", map[string]any{"policy_id": "legal-policy", "approver_group_id": "legal", "required_approvals": 2}, ctxWithRole("acme", "admin", "admin"))
+	if policy.Code != http.StatusCreated || manager.policy.TenantID != "acme" || manager.policy.RequiredApprovals != 2 {
+		t.Fatalf("status=%d policy=%+v body=%s", policy.Code, manager.policy, policy.Body.String())
+	}
+}

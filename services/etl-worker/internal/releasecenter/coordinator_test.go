@@ -136,6 +136,50 @@ func TestCoordinatorCanonicalizesSuccessfulAgentStatus(t *testing.T) {
 	}
 }
 
+func TestCoordinatorUsesConfiguredApprovalPolicy(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	policyStore := NewMemoryApprovalPolicyStore()
+	if err := policyStore.PutGroup(nil, ApprovalGroup{ID: "legal-reviewers", TenantID: "acme", Name: "Legal reviewers", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := policyStore.PutPolicy(nil, ApprovalPolicy{ID: "legal-policy", TenantID: "acme", KnowledgeSpaceID: "production", Permission: "internal", RequiredApprovals: 2, ApproverGroupID: "legal-reviewers", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryStore()
+	documents := documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "production", UploadedBy: "uploader"}}
+	coordinator := NewCoordinator(workflow, documents, reviewerStub{review: AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: RiskLow}}, store, policyStore)
+	_, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.PolicyID != "legal-policy" || request.ApproverGroupID != "legal-reviewers" || request.RequiredApprovals != 2 {
+		t.Fatalf("request=%+v", request)
+	}
+}
+
+func TestCoordinatorConfiguredPolicyCannotLowerConfidentialApproval(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	policyStore := NewMemoryApprovalPolicyStore()
+	if err := policyStore.PutGroup(nil, ApprovalGroup{ID: "general", TenantID: "acme", Name: "General", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := policyStore.PutPolicy(nil, ApprovalPolicy{ID: "too-permissive", TenantID: "acme", Permission: "confidential", RequiredApprovals: 1, ApproverGroupID: "general", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryStore()
+	documents := documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "confidential", KnowledgeSpaceID: "production", UploadedBy: "uploader"}}
+	coordinator := NewCoordinator(workflow, documents, reviewerStub{review: AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: RiskLow}}, store, policyStore)
+	_, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RequiredApprovals != 2 {
+		t.Fatalf("configured policy lowered confidential requirement: %+v", request)
+	}
+}
+
 func TestCoordinatorEscalatesConfidentialAndAgentFailure(t *testing.T) {
 	candidate := readyCandidate()
 	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
@@ -215,6 +259,20 @@ func TestApprovalPublishesOnlyAfterRequiredDistinctDecisions(t *testing.T) {
 	second, err := approval.Decide(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "admin-2", Role: "admin"}, request.ID, "approved", "")
 	if err != nil || second.Request.State != RequestPublished || workflow.key != request.ID {
 		t.Fatalf("second=%+v key=%q err=%v", second, workflow.key, err)
+	}
+}
+
+func TestApprovalFailsClosedWhenConfiguredGroupStoreUnavailable(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	now := time.Now().UTC()
+	report := ReviewReport{ID: "review-group", TenantID: "acme", DocumentID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, ReleaseRevision: candidate.ReleaseRevision, Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, CreatedAt: now}
+	request := ReleaseRequest{ID: "request-group", TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: report.ID, ApproverGroupID: "legal", RequiredApprovals: 1, State: RequestApprovalPending, RequestedBy: "uploader", CreatedAt: now, UpdatedAt: now}
+	store.reviews[report.ID], store.requests[request.ID] = report, request
+	_, err := NewApprovalService(workflow, store).Decide(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "admin", Role: "admin"}, request.ID, "approved", "")
+	if err == nil || workflow.key != "" {
+		t.Fatalf("group-constrained approval was not failed closed: err=%v key=%q", err, workflow.key)
 	}
 }
 

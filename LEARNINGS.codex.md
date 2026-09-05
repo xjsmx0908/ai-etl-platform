@@ -48,6 +48,13 @@
 - Act: set the durable execution order to P2.4-R2 → P2.4-R1 → P2.4-R5, with P2.4-R3 deferred; marked P1.9, P2.3, P2.5, P2.6, and OCR as non-current unless explicitly reactivated.
 - Refine: synchronized `docs/backlog.md`, `CONTINUATION.md`, and the release-center acceptance document so new sessions have one unambiguous route.
 
+## 2026-09-05 - P2.4-R2 approval groups and configurable policies
+
+- Perceive: release-center approval previously had only a fixed one/two-admin rule and no tenant-owned approver identity model.
+- Reason: policy configuration must be deterministic, tenant-scoped, and unable to weaken confidential/high-risk safety floors; membership must be checked again at decision time.
+- Act: added PostgreSQL and in-memory approval groups, member activation, space/permission/risk policy matching, priority resolution, requester self-approval control, request policy persistence, and authenticated admin management APIs. Added a composite tenant/user foreign key and fail-closed behavior when a group-constrained request lacks its policy store.
+- Refine: focused Go tests, the 10-scenario release-center functional acceptance, and the governance acceptance matrix passed. Enterprise IdP group sync, delegation, timed escalation, revocation workflows, and a dedicated Web policy editor remain explicitly outside this slice.
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。

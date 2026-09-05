@@ -20,10 +20,9 @@
 
 当前唯一主线是“企业级 Agent 审计功能完善”，不是通用生产准入或 OCR 验收。新会话必须按以下顺序推进：
 
-1. **P2.4-R2：企业审批组与可配置策略**（下一项）——定义责任人组、审批身份、双人审批、委托、升级、撤权及空间/文档级策略。
-2. **P2.4-R1：完整语义、隐私和合规审查**——定义模型输入、结构化输出、chunk 证据、提示词注入处理、fail-closed 和模型评测。
-3. **P2.4-R5：企业级编排**——补齐异步审批通知、失败补偿、Saga 和外部工作流接入。
-4. **P2.4-R3：Review report 生命周期**（后置）——最后处理 TTL、过期清理和自动重审。
+1. **P2.4-R1：完整语义、隐私和合规审查**——定义模型输入、结构化输出、chunk 证据、提示词注入处理、fail-closed 和模型评测。
+2. **P2.4-R5：企业级编排**——补齐异步审批通知、失败补偿、Saga 和外部工作流接入。
+3. **P2.4-R3：Review report 生命周期**（后置）——最后处理 TTL、过期清理和自动重审。
 
 当前路线的完成标准是：权限边界、审计证据、失败处理、幂等性、租户隔离和对应业务验收矩阵均已覆盖。不得把当前已实现的受限规则扫描描述为完整合规审查。
 
@@ -31,10 +30,10 @@
 
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
-| P2.4-R2 | 企业审批组与可配置策略 | next | 引入业务责任人/审批组身份模型、空间或文档级策略、委托与升级规则，并完成权限和双人审批验收 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
-| P2.4-R1 | 完整语义、隐私和合规审查 | planned | 定义文档内容输入、结构化输出、证据引用、提示词注入处理和 fail-closed 策略；补充模型评测与业务验收 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
+| P2.4-R2 | 企业审批组与可配置策略 | completed | 已交付租户隔离审批组、成员启停、空间/权限/风险匹配、优先级、双人审批、自审控制、策略持久化和管理 API；企业 IdP 同步、委托和定时升级另行立项 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
+| P2.4-R1 | 完整语义、隐私和合规审查 | next | 定义文档内容输入、结构化输出、证据引用、提示词注入处理和 fail-closed 策略；补充模型评测与业务验收 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
 | P2.4-R5 | Agent 周边编排能力 | planned | 评估多工具 Saga、异步审批通知和外部工作流引擎；每项定义可靠性、审计和失败补偿验收 | [`docs/agent-orchestrator-design.md`](agent-orchestrator-design.md) |
-| P2.4-R3 | Review report 生命周期 | deferred | 暂不实施；待 R2、R1、R5 完成后再决定报告 TTL、过期状态、清理/重审调度和历史审计保留策略 | [`services/etl-worker/internal/releasecenter/releasecenter.go`](../services/etl-worker/internal/releasecenter/releasecenter.go) |
+| P2.4-R3 | Review report 生命周期 | deferred | 暂不实施；待 R1、R5 完成后再决定报告 TTL、过期状态、清理/重审调度和历史审计保留策略 | [`services/etl-worker/internal/releasecenter/releasecenter.go`](../services/etl-worker/internal/releasecenter/releasecenter.go) |
 | P2.4-R4 | `success` 状态数据库兼容 | completed | 已将 `success`（含大小写变体）规范化为 PostgreSQL 允许的 `completed`，并补充协调器回归测试；后续真实 PG 验收随发布中心矩阵执行 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |
 
 ## Completed baseline
@@ -43,9 +42,9 @@
 - P2.3 generation manifest、双索引校验、激活、回滚、修复和观测已完成；仅生产 retention 仍需决策。
 - P2.4 version-bound publication、exact-candidate approval、替换、可恢复删除和治理验收已完成。
 - P2.5-A～D 及个人演示 F1～F6 已实现；企业生产启用仍受外部输入约束。
-- Knowledge Release Center 的发布策略、Agent 预审、内容 findings、HTTP 矩阵和 Web 工作台已完成。
+- Knowledge Release Center 的发布策略、Agent 预审、内容 findings、审批组/策略、HTTP 矩阵和 Web 工作台已完成；审批组与策略管理当前通过管理员 HTTP API 提供。
 - 583 页扫描 PDF 已由用户独立完成验证，不再作为当前 backlog 事项。
-- 上述完成仅指首个版本的受限发布资格预审；P2.4-R1～R5 仍是未完成、未来范围或待修复事项，不得将当前规则扫描描述为完整合规审查。
+- 上述完成仅指首个版本的受限发布资格预审；P2.4-R1、P2.4-R3、P2.4-R5 仍是未完成、未来范围或待修复事项，不得将当前规则扫描描述为完整合规审查。
 - Elasticsearch 只读锁恢复、文档管理优化、OCR 分页恢复和相关反馈项已在历史验收中关闭；若运行环境再次出现，应创建新的带证据条目。
 
 ## Acceptance gates
