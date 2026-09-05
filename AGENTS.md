@@ -44,7 +44,7 @@ decisions. A green build or happy-path test alone is insufficient.
 The Git history uses Conventional Commit-style prefixes such as `feat:`, `fix:`, and `chore:`. Keep commits focused and describe the user-visible or operational impact. Pull requests should include a concise summary, linked issue when applicable, verification commands run, and screenshots or logs for API/operational behavior changes. Branch protection expects one approval and the `Required Checks` CI gate to pass before merge.
 
 ## Automatic Git Commit and Push
-- When the user has explicitly enabled automatic delivery, complete each fully finished task with a Git commit and push it to the configured remote.
+- By default, complete each fully finished task with a Git commit and push it to the configured remote; only skip this when the user explicitly requests no commit or push for that task.
 - Run the affected tests, builds, linters, and `git diff --check` before committing; do not commit when verification fails.
 - Record the task-start baseline with `git status --short`, preserve pre-existing changes, and stage only files changed by the current task.
 - Never use `git add -A` or `git add .`; do not stage secrets, generated artifacts, or unrelated changes.
