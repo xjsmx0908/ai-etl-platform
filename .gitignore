@@ -40,6 +40,7 @@ docs/evals/private/*
 
 # Local full-stack acceptance evidence (may contain environment diagnostics)
 /artifacts/governance-acceptance/
+/artifacts/release-center-functional-acceptance/
 
 # Real enterprise documents supplied for local-only evaluation
 rag_datas/
