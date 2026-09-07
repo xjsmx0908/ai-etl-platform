@@ -62,6 +62,13 @@
 - Act: added a replaceable semantic reviewer interface and OpenAI-compatible client, wired it after exact-candidate deterministic checks, merged only risk escalations/non-publish recommendations, and exposed endpoint/model/prompt settings through environment configuration.
 - Refine: added HTTP-client, input-boundary, evidence-reference, handler-merge, and model-failure tests. Model evaluation datasets, business taxonomy calibration, and deployment acceptance remain before marking R1 complete.
 
+## 2026-09-07 - 预审复用 RAG 模型配置
+
+- Perceive：语义预审已有 OpenAI-compatible 适配器，但独立 endpoint/model/key 为空时未启用，和 RAG Query 的现有模型配置重复。
+- Reason：预审默认应复用 `LLM_ENDPOINT`、`LLM_MODEL` 和 `LLM_API_KEY`/`LLM_API_KEY_FILE`，独立变量只作为专用模型覆盖。
+- Act：更新 API 初始化回退逻辑、示例配置和技术设计，并增加默认复用、专用覆盖及密钥文件回归测试。
+- Refine：通过容器内 Go 相关测试与 Python 验收契约测试；完整 Compose 矩阵待发布中心变更验收时执行。
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。

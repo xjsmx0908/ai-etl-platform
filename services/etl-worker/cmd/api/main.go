@@ -492,20 +492,10 @@ func main() {
 		defer chunkStorer.Close()
 		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorer, qs))
 	}
-	var semanticReviewer releasecenter.SemanticReviewer
-	if endpoint := config.EnvStr("AGENT_SEMANTIC_REVIEW_ENDPOINT", ""); endpoint != "" {
-		configured, reviewerErr := releasecenter.NewHTTPSemanticReviewer(releasecenter.SemanticReviewerOptions{
-			Endpoint: endpoint, APIKey: config.EnvStr("AGENT_SEMANTIC_REVIEW_API_KEY", ""),
-			Model:         config.EnvStr("AGENT_SEMANTIC_REVIEW_MODEL", cfg.AgentPlannerModel),
-			PromptVersion: config.EnvStr("AGENT_SEMANTIC_REVIEW_PROMPT_VERSION", "semantic-review-v1"),
-			MaxTokens:     config.EnvInt("AGENT_SEMANTIC_REVIEW_MAX_TOKENS", 1200),
-			Timeout:       config.EnvDuration("AGENT_SEMANTIC_REVIEW_TIMEOUT", 45*time.Second),
-		})
-		if reviewerErr != nil {
-			slog.Error("failed to configure semantic Agent reviewer", "error", reviewerErr)
-			os.Exit(1)
-		}
-		semanticReviewer = configured
+	semanticReviewer, reviewerErr := configureSemanticReviewer()
+	if reviewerErr != nil {
+		slog.Error("failed to configure semantic Agent reviewer", "error", reviewerErr)
+		os.Exit(1)
 	}
 	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc, documents: docStore, chunks: chunkStorerForReview, semantic: semanticReviewer}, releaseCenterStore, releaseCenterStore)
 	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
@@ -570,6 +560,21 @@ func main() {
 	}
 
 	slog.Info("api server shutdown complete")
+}
+
+func configureSemanticReviewer() (releasecenter.SemanticReviewer, error) {
+	configured, err := releasecenter.NewHTTPSemanticReviewer(releasecenter.SemanticReviewerOptions{
+		Endpoint:      config.EnvStr("AGENT_SEMANTIC_REVIEW_ENDPOINT", config.EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
+		APIKey:        config.EnvSecret("AGENT_SEMANTIC_REVIEW_API_KEY", config.EnvSecret("LLM_API_KEY", "")),
+		Model:         config.EnvStr("AGENT_SEMANTIC_REVIEW_MODEL", config.EnvStr("LLM_MODEL", "deepseek-v4-flash")),
+		PromptVersion: config.EnvStr("AGENT_SEMANTIC_REVIEW_PROMPT_VERSION", "semantic-review-v1"),
+		MaxTokens:     config.EnvInt("AGENT_SEMANTIC_REVIEW_MAX_TOKENS", 1200),
+		Timeout:       config.EnvDuration("AGENT_SEMANTIC_REVIEW_TIMEOUT", 45*time.Second),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return configured, nil
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
