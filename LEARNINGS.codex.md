@@ -76,6 +76,13 @@
 - Act：新增 Agent 预审架构与实施方案，定义状态机、工具 registry、证据链、权限和预算边界、持久化、shadow/canary 迁移以及 R1A～R1E 验收计划。
 - Refine：backlog 主线已改为先确认架构与接口，再实施自主 Agent；现有 semantic reviewer 仅作为可复用 adapter，不再代表 R1 已接近完成。
 
+## 2026-09-07 - 自主预审方案收缩
+
+- Perceive：首版方案同时引入新 runtime、工具守卫、证据账本、五类持久化对象和 shadow/canary，超过最小自主闭环需要。
+- Reason：真正的 Agent 最小条件是模型能够基于 observation 选择下一工具或结束；企业安全可直接复用现有 Orchestrator、Registry、Authorizer、Run/Step、确定性门禁和审批。
+- Act：方案收缩为 Review Planner、四个只读工具、最小 evidence refs 校验和发布中心接入，不新增第二套状态机或证据表。
+- Refine：版本对比、政策库、独立证据生命周期、shadow/canary 自动化和 Saga 全部后置，MVP 以完整发布矩阵和真实模型场景作为完成门禁。
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。
