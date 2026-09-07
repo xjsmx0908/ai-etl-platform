@@ -69,6 +69,13 @@
 - Act：更新 API 初始化回退逻辑、示例配置和技术设计，并增加默认复用、专用覆盖及密钥文件回归测试。
 - Refine：通过容器内 Go 相关测试与 Python 验收契约测试；完整 Compose 矩阵待发布中心变更验收时执行。
 
+## 2026-09-07 - 自主预审 Agent 重新设计
+
+- Perceive：现有 `ReviewPlanner` 固定调用资格工具后结束，semantic reviewer 只是固定流程中的单次模型判断，不满足自主预审目标。
+- Reason：应保留现有编排器、确定性门禁和审批底座，在新的 `ReviewAgent` seam 后集中实现动态规划、只读工具治理、证据账本、报告校验和恢复。
+- Act：新增 Agent 预审架构与实施方案，定义状态机、工具 registry、证据链、权限和预算边界、持久化、shadow/canary 迁移以及 R1A～R1E 验收计划。
+- Refine：backlog 主线已改为先确认架构与接口，再实施自主 Agent；现有 semantic reviewer 仅作为可复用 adapter，不再代表 R1 已接近完成。
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。
