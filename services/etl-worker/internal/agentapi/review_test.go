@@ -136,6 +136,32 @@ func TestReviewToolsFailClosedOnIncompleteExactCandidate(t *testing.T) {
 	}
 }
 
+func TestAutonomousReviewFailsClosedWhenTokenBudgetIsExceeded(t *testing.T) {
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "内容", Index: 0}}}, runStore); err != nil {
+		t.Fatal(err)
+	}
+	planner := &usagePlannerForReview{decision: agent.PlanDecision{Type: agent.DecisionFinal, Final: `{}`}, usage: agent.PlanUsage{PromptTokens: 6, CompletionTokens: 5}}
+	orchestrator, err := agent.NewOrchestrator(runStore, agent.NewMemoryLockManager(), registry, planner, agent.Options{NodeID: "review", MaxSteps: 8, MaxTokenBudget: 10, Authorizer: agent.StaticAuthorizer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Permissions: []string{"agent"}}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "failed" || report.Recommendation != "manual_review" || report.RiskLevel != releasecenter.RiskHigh || !strings.Contains(report.Summary, "token_budget_exceeded") {
+		t.Fatalf("budget exhaustion was not failed closed: %+v", report)
+	}
+}
+
 func TestAutonomousReviewLLMPlannerUsesPersistedObservations(t *testing.T) {
 	candidate := reviewCandidate()
 	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
@@ -258,6 +284,17 @@ func TestValidateAutonomousReviewRejectsCandidateChange(t *testing.T) {
 
 func reviewCandidate() publicationworkflow.Candidate {
 	return publicationworkflow.Candidate{DocumentID: "doc-1", DocumentVersionID: "version-1", GenerationID: "generation-1", ExpectedChunkCount: 1, ExpectedChunkDigest: "sha256:digest", ReleaseRevision: 1}
+}
+
+type usagePlannerForReview struct {
+	decision agent.PlanDecision
+	usage    agent.PlanUsage
+}
+
+func (p *usagePlannerForReview) Plan(context.Context, agent.Run) (agent.PlanDecision, error) {
+	decision := p.decision
+	decision.Usage = p.usage
+	return decision, nil
 }
 
 func reviewStep(index int, toolName string, candidate publicationworkflow.Candidate, extra map[string]interface{}) agent.Step {

@@ -89,12 +89,19 @@ type chatCompletionResponse struct {
 	Choices []struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 type plannerRunSnapshot struct {
-	Task  string                `json:"task"`
-	State agent.RunState        `json:"state"`
-	Steps []plannerStepSnapshot `json:"steps"`
+	Task           string                `json:"task"`
+	State          agent.RunState        `json:"state"`
+	TokensUsed     int64                 `json:"tokens_used,omitempty"`
+	MaxTokenBudget int64                 `json:"max_token_budget,omitempty"`
+	Steps          []plannerStepSnapshot `json:"steps"`
 }
 
 type plannerStepSnapshot struct {
@@ -166,7 +173,11 @@ func NewLLMPlanner(opts LLMPlannerOptions) (*LLMPlanner, error) {
 func (p *LLMPlanner) Plan(ctx context.Context, run agent.Run) (agent.PlanDecision, error) {
 	decision, err := p.planOnce(ctx, run)
 	if err != nil && retryablePlannerError(err) {
-		return p.planOnce(ctx, run)
+		retry, retryErr := p.planOnce(ctx, run)
+		retry.Usage.PromptTokens += decision.Usage.PromptTokens
+		retry.Usage.CompletionTokens += decision.Usage.CompletionTokens
+		retry.Usage.Estimated = retry.Usage.Estimated || decision.Usage.Estimated
+		return retry, retryErr
 	}
 	return decision, err
 }
@@ -179,10 +190,20 @@ func retryablePlannerError(err error) bool {
 }
 
 func (p *LLMPlanner) planOnce(ctx context.Context, run agent.Run) (agent.PlanDecision, error) {
+	maxTokens := p.maxTokens
+	if run.MaxTokenBudget > 0 {
+		remaining := run.MaxTokenBudget - run.TokensUsed
+		if remaining <= 0 {
+			return agent.PlanDecision{}, fmt.Errorf("token_budget_exceeded")
+		}
+		if remaining < int64(maxTokens) {
+			maxTokens = int(remaining)
+		}
+	}
 	body, err := json.Marshal(chatCompletionRequest{
 		Model:       p.model,
 		Temperature: 0,
-		MaxTokens:   p.maxTokens,
+		MaxTokens:   maxTokens,
 		ResponseFormat: map[string]string{
 			"type": "json_object",
 		},
@@ -212,18 +233,19 @@ func (p *LLMPlanner) planOnce(ctx context.Context, run agent.Run) (agent.PlanDec
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return agent.PlanDecision{}, fmt.Errorf("read planner response: %w", err)
+		return agent.PlanDecision{Usage: estimatedPlannerUsage(len(body), len(respBody))}, fmt.Errorf("read planner response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return agent.PlanDecision{}, fmt.Errorf("agent planner returned status %d: %s", resp.StatusCode, string(respBody))
+		return agent.PlanDecision{Usage: estimatedPlannerUsage(len(body), len(respBody))}, fmt.Errorf("agent planner returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var chatResp chatCompletionResponse
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return agent.PlanDecision{}, fmt.Errorf("decode planner response: %w", err)
+		return agent.PlanDecision{Usage: estimatedPlannerUsage(len(body), len(respBody))}, fmt.Errorf("decode planner response: %w", err)
 	}
+	usage := plannerUsage(chatResp, len(body), len(respBody))
 	if len(chatResp.Choices) == 0 {
-		return agent.PlanDecision{}, fmt.Errorf("agent planner returned no choices")
+		return agent.PlanDecision{Usage: usage}, fmt.Errorf("agent planner returned no choices")
 	}
 	message := chatResp.Choices[0].Message
 
@@ -231,14 +253,38 @@ func (p *LLMPlanner) planOnce(ctx context.Context, run agent.Run) (agent.PlanDec
 	// supplied structured arguments directly. Falls back to the JSON-text
 	// protocol when the model ignored the tools field (content only).
 	if len(message.ToolCalls) > 0 {
-		return p.decideFromToolCalls(message.ToolCalls)
+		decision, err := p.decideFromToolCalls(message.ToolCalls)
+		decision.Usage = usage
+		return decision, err
 	}
 
 	content := strings.TrimSpace(message.Content)
 	if content == "" {
-		return agent.PlanDecision{}, fmt.Errorf("agent planner returned empty content")
+		return agent.PlanDecision{Usage: usage}, fmt.Errorf("agent planner returned empty content")
 	}
-	return p.validateDecision([]byte(content))
+	decision, err := p.validateDecision([]byte(content))
+	decision.Usage = usage
+	return decision, err
+}
+
+func plannerUsage(response chatCompletionResponse, requestBytes, responseBytes int) agent.PlanUsage {
+	usage := agent.PlanUsage{PromptTokens: response.Usage.PromptTokens, CompletionTokens: response.Usage.CompletionTokens}
+	if usage.Total() > 0 {
+		return usage
+	}
+	if response.Usage.TotalTokens > 0 {
+		usage.PromptTokens = response.Usage.TotalTokens
+		return usage
+	}
+	return estimatedPlannerUsage(requestBytes, responseBytes)
+}
+
+func estimatedPlannerUsage(requestBytes, responseBytes int) agent.PlanUsage {
+	return agent.PlanUsage{
+		PromptTokens:     int64(requestBytes),
+		CompletionTokens: int64(responseBytes),
+		Estimated:        true,
+	}
 }
 
 // decideFromToolCalls converts native tool_calls into a validated decision.
@@ -331,9 +377,11 @@ func (p *LLMPlanner) systemPrompt() string {
 
 func (p *LLMPlanner) userPrompt(run agent.Run) string {
 	snapshot := plannerRunSnapshot{
-		Task:  run.Task,
-		State: run.State,
-		Steps: make([]plannerStepSnapshot, 0, len(run.Steps)),
+		Task:           run.Task,
+		State:          run.State,
+		TokensUsed:     run.TokensUsed,
+		MaxTokenBudget: run.MaxTokenBudget,
+		Steps:          make([]plannerStepSnapshot, 0, len(run.Steps)),
 	}
 	for _, step := range run.Steps {
 		snapshot.Steps = append(snapshot.Steps, plannerStepSnapshot{

@@ -34,6 +34,7 @@ type Orchestrator struct {
 	lockTTL         time.Duration
 	runTimeout      time.Duration
 	approvalTimeout time.Duration
+	maxTokenBudget  int64
 	now             func() time.Time
 }
 
@@ -44,6 +45,7 @@ type Options struct {
 	LockTTL         time.Duration
 	RunTimeout      time.Duration
 	ApprovalTimeout time.Duration
+	MaxTokenBudget  int64
 	Authorizer      Authorizer
 }
 
@@ -90,6 +92,7 @@ func NewOrchestrator(store Store, locks LockManager, registry *Registry, planner
 		lockTTL:         opts.LockTTL,
 		runTimeout:      opts.RunTimeout,
 		approvalTimeout: opts.ApprovalTimeout,
+		maxTokenBudget:  opts.MaxTokenBudget,
 		now:             time.Now,
 	}, nil
 }
@@ -106,16 +109,17 @@ func (o *Orchestrator) Start(ctx context.Context, actor Actor, task string) (Run
 
 	now := o.now().UTC()
 	run := Run{
-		ID:        newRunID(),
-		TenantID:  actor.TenantID,
-		UserID:    actor.UserID,
-		Version:   1,
-		Task:      task,
-		State:     StateCreated,
-		MaxSteps:  o.maxSteps,
-		Memory:    map[string]interface{}{},
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:             newRunID(),
+		TenantID:       actor.TenantID,
+		UserID:         actor.UserID,
+		Version:        1,
+		Task:           task,
+		State:          StateCreated,
+		MaxSteps:       o.maxSteps,
+		MaxTokenBudget: o.maxTokenBudget,
+		Memory:         map[string]interface{}{},
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := o.store.CreateRun(ctx, run); err != nil {
 		return Run{}, err
@@ -158,6 +162,9 @@ func (o *Orchestrator) ExecuteNext(ctx context.Context, runID string, actor Acto
 	if len(run.Steps) >= run.MaxSteps {
 		return o.failRun(ctx, run, lease, "max_steps_exceeded")
 	}
+	if run.MaxTokenBudget > 0 && run.TokensUsed >= run.MaxTokenBudget {
+		return o.failRun(ctx, run, lease, "token_budget_exceeded")
+	}
 
 	if run.State == StateCreated {
 		run.State = StateRunning
@@ -170,7 +177,12 @@ func (o *Orchestrator) ExecuteNext(ctx context.Context, runID string, actor Acto
 
 	decision, err := o.planner.Plan(ctx, cloneRun(run))
 	if err != nil {
-		return o.failRun(ctx, run, lease, err.Error())
+		run.TokensUsed += decision.Usage.Total()
+		return o.failRunWithUsage(ctx, run, lease, err.Error(), decision.Usage)
+	}
+	run.TokensUsed += decision.Usage.Total()
+	if run.MaxTokenBudget > 0 && run.TokensUsed > run.MaxTokenBudget {
+		return o.failRunWithUsage(ctx, run, lease, "token_budget_exceeded", decision.Usage)
 	}
 
 	switch decision.Type {
@@ -340,6 +352,7 @@ func (o *Orchestrator) executeToolDecision(ctx context.Context, run Run, actor A
 		Type:           StepToolCall,
 		State:          StateWaitingTool,
 		Thought:        decision.Thought,
+		PlannerUsage:   decision.Usage,
 		ToolName:       normalizeToolName(decision.ToolName),
 		ToolArguments:  append([]byte(nil), decision.Arguments...),
 		IdempotencyKey: idempotencyKey(run.ID, stepIndex, decision.ToolName),
@@ -443,13 +456,14 @@ func (o *Orchestrator) executePersistedTool(ctx context.Context, run Run, actor 
 func (o *Orchestrator) completeRun(ctx context.Context, run Run, lease LockLease, decision PlanDecision) (Run, error) {
 	now := o.now().UTC()
 	run.Steps = append(run.Steps, Step{
-		Index:       len(run.Steps) + 1,
-		Type:        StepFinal,
-		State:       StateCompleted,
-		Thought:     decision.Thought,
-		Observation: decision.Final,
-		StartedAt:   now,
-		CompletedAt: now,
+		Index:        len(run.Steps) + 1,
+		Type:         StepFinal,
+		State:        StateCompleted,
+		Thought:      decision.Thought,
+		PlannerUsage: decision.Usage,
+		Observation:  decision.Final,
+		StartedAt:    now,
+		CompletedAt:  now,
 	})
 	run.State = StateCompleted
 	run.Final = decision.Final
@@ -458,14 +472,19 @@ func (o *Orchestrator) completeRun(ctx context.Context, run Run, lease LockLease
 }
 
 func (o *Orchestrator) failRun(ctx context.Context, run Run, lease LockLease, reason string) (Run, error) {
+	return o.failRunWithUsage(ctx, run, lease, reason, PlanUsage{})
+}
+
+func (o *Orchestrator) failRunWithUsage(ctx context.Context, run Run, lease LockLease, reason string, usage PlanUsage) (Run, error) {
 	now := o.now().UTC()
 	run.Steps = append(run.Steps, Step{
-		Index:       len(run.Steps) + 1,
-		Type:        StepError,
-		State:       StateFailed,
-		Error:       reason,
-		StartedAt:   now,
-		CompletedAt: now,
+		Index:        len(run.Steps) + 1,
+		Type:         StepError,
+		State:        StateFailed,
+		Error:        reason,
+		PlannerUsage: usage,
+		StartedAt:    now,
+		CompletedAt:  now,
 	})
 	run.State = StateFailed
 	run.Error = reason

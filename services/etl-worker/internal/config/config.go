@@ -131,18 +131,19 @@ type Config struct {
 	SemanticCacheMaxEntries     int
 
 	// Agent Orchestrator (Module 3)
-	AgentNodeID           string
-	AgentMaxSteps         int
-	AgentLockTTL          time.Duration
-	AgentRunTTL           time.Duration
-	AgentRunTimeout       time.Duration
-	AgentApprovalTimeout  time.Duration
-	AgentPlannerType      string
-	AgentPlannerEndpoint  string
-	AgentPlannerAPIKey    string
-	AgentPlannerModel     string
-	AgentPlannerTimeout   time.Duration
-	AgentPlannerMaxTokens int
+	AgentNodeID               string
+	AgentMaxSteps             int
+	AgentLockTTL              time.Duration
+	AgentRunTTL               time.Duration
+	AgentRunTimeout           time.Duration
+	AgentApprovalTimeout      time.Duration
+	AgentPlannerType          string
+	AgentPlannerEndpoint      string
+	AgentPlannerAPIKey        string
+	AgentPlannerModel         string
+	AgentPlannerTimeout       time.Duration
+	AgentPlannerMaxTokens     int
+	AgentReviewMaxTokenBudget int64
 
 	// Kafka
 	KafkaBrokers             string
@@ -341,18 +342,19 @@ func Load() Config {
 		SemanticCacheMaxEntries:     EnvInt("SEMANTIC_CACHE_MAX_ENTRIES", 128),
 
 		// Agent Orchestrator
-		AgentNodeID:           EnvStr("AGENT_NODE_ID", "agent-api-1"),
-		AgentMaxSteps:         EnvInt("AGENT_MAX_STEPS", 8),
-		AgentLockTTL:          EnvDuration("AGENT_LOCK_TTL", 30*time.Second),
-		AgentRunTTL:           EnvDuration("AGENT_RUN_TTL", 24*time.Hour),
-		AgentRunTimeout:       EnvDuration("AGENT_RUN_TIMEOUT", 30*time.Minute),
-		AgentApprovalTimeout:  EnvDuration("AGENT_APPROVAL_TIMEOUT", 15*time.Minute),
-		AgentPlannerType:      strings.ToLower(strings.TrimSpace(EnvStr("AGENT_PLANNER_TYPE", AgentPlannerAuto))),
-		AgentPlannerEndpoint:  EnvStr("AGENT_PLANNER_ENDPOINT", EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
-		AgentPlannerAPIKey:    EnvSecret("AGENT_PLANNER_API_KEY", EnvSecret("LLM_API_KEY", "")),
-		AgentPlannerModel:     EnvStr("AGENT_PLANNER_MODEL", EnvStr("LLM_MODEL", "deepseek-v4-flash")),
-		AgentPlannerTimeout:   EnvDuration("AGENT_PLANNER_TIMEOUT", 30*time.Second),
-		AgentPlannerMaxTokens: EnvInt("AGENT_PLANNER_MAX_TOKENS", 512),
+		AgentNodeID:               EnvStr("AGENT_NODE_ID", "agent-api-1"),
+		AgentMaxSteps:             EnvInt("AGENT_MAX_STEPS", 8),
+		AgentLockTTL:              EnvDuration("AGENT_LOCK_TTL", 30*time.Second),
+		AgentRunTTL:               EnvDuration("AGENT_RUN_TTL", 24*time.Hour),
+		AgentRunTimeout:           EnvDuration("AGENT_RUN_TIMEOUT", 30*time.Minute),
+		AgentApprovalTimeout:      EnvDuration("AGENT_APPROVAL_TIMEOUT", 15*time.Minute),
+		AgentPlannerType:          strings.ToLower(strings.TrimSpace(EnvStr("AGENT_PLANNER_TYPE", AgentPlannerAuto))),
+		AgentPlannerEndpoint:      EnvStr("AGENT_PLANNER_ENDPOINT", EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
+		AgentPlannerAPIKey:        EnvSecret("AGENT_PLANNER_API_KEY", EnvSecret("LLM_API_KEY", "")),
+		AgentPlannerModel:         EnvStr("AGENT_PLANNER_MODEL", EnvStr("LLM_MODEL", "deepseek-v4-flash")),
+		AgentPlannerTimeout:       EnvDuration("AGENT_PLANNER_TIMEOUT", 30*time.Second),
+		AgentPlannerMaxTokens:     EnvInt("AGENT_PLANNER_MAX_TOKENS", 512),
+		AgentReviewMaxTokenBudget: int64(EnvInt("AGENT_REVIEW_MAX_TOKEN_BUDGET", 32000)),
 
 		// Kafka
 		KafkaBrokers:             EnvStr("KAFKA_BROKERS", "localhost:9092"),
@@ -645,6 +647,9 @@ func (c Config) validateAgentConfig() error {
 	}
 	if c.AgentPlannerMaxTokens < 1 || c.AgentPlannerMaxTokens > 8192 {
 		return fmt.Errorf("AGENT_PLANNER_MAX_TOKENS must be between 1 and 8192, got %d", c.AgentPlannerMaxTokens)
+	}
+	if c.AgentReviewMaxTokenBudget < 1 || c.AgentReviewMaxTokenBudget > 10_000_000 {
+		return fmt.Errorf("AGENT_REVIEW_MAX_TOKEN_BUDGET must be between 1 and 10000000, got %d", c.AgentReviewMaxTokenBudget)
 	}
 	if c.ResolvedAgentPlannerType() == AgentPlannerLLM {
 		if strings.TrimSpace(c.AgentPlannerEndpoint) == "" {

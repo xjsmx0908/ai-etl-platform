@@ -149,6 +149,60 @@ func TestOrchestrator_MaxStepsFailsRun(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_FailsWhenTokenBudgetIsExceeded(t *testing.T) {
+	store := NewMemoryStore()
+	registry := testRegistry(t)
+	planner := &usagePlanner{usage: PlanUsage{PromptTokens: 7, CompletionTokens: 5}, decision: PlanDecision{Type: DecisionFinal, Final: "done"}}
+	orchestrator, err := NewOrchestrator(store, NewMemoryLockManager(), registry, planner, Options{
+		NodeID: "node-a", MaxSteps: 2, MaxTokenBudget: 10, Authorizer: StaticAuthorizer{},
+	})
+	if err != nil {
+		t.Fatalf("new orchestrator: %v", err)
+	}
+	actor := Actor{TenantID: "tenant-a", UserID: "user-a"}
+	run, err := orchestrator.Start(context.Background(), actor, "token budget")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	run, err = orchestrator.RunToCompletion(context.Background(), run.ID, actor)
+	if err != nil {
+		t.Fatalf("run to completion: %v", err)
+	}
+	if run.State != StateFailed || run.Error != "token_budget_exceeded" || run.TokensUsed != 12 || run.MaxTokenBudget != 10 {
+		t.Fatalf("unexpected token budget result: %+v", run)
+	}
+}
+
+func TestOrchestrator_AccumulatesTokenUsageAcrossPlannerCalls(t *testing.T) {
+	store := NewMemoryStore()
+	registry := testRegistry(t)
+	planner := &sequencePlanner{decisions: []PlanDecision{
+		{Type: DecisionToolCall, ToolName: "check_inventory", Arguments: json.RawMessage(`{"sku":"sku-1"}`), Usage: PlanUsage{PromptTokens: 4, CompletionTokens: 2}},
+		{Type: DecisionFinal, Final: "done", Usage: PlanUsage{PromptTokens: 3, CompletionTokens: 2}},
+	}}
+	orchestrator, err := NewOrchestrator(store, NewMemoryLockManager(), registry, planner, Options{
+		NodeID: "node-a", MaxSteps: 3, MaxTokenBudget: 10, Authorizer: StaticAuthorizer{},
+	})
+	if err != nil {
+		t.Fatalf("new orchestrator: %v", err)
+	}
+	actor := Actor{TenantID: "tenant-a", UserID: "user-a", Permissions: []string{"inventory:read"}}
+	run, err := orchestrator.Start(context.Background(), actor, "cumulative token budget")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	run, err = orchestrator.RunToCompletion(context.Background(), run.ID, actor)
+	if err != nil {
+		t.Fatalf("run to completion: %v", err)
+	}
+	if run.State != StateFailed || run.Error != "token_budget_exceeded" || run.TokensUsed != 11 {
+		t.Fatalf("unexpected cumulative token result: %+v", run)
+	}
+	if len(run.Steps) != 2 || run.Steps[0].PlannerUsage.Total() != 6 || run.Steps[1].PlannerUsage.Total() != 5 {
+		t.Fatalf("planner usage was not persisted per step: %+v", run.Steps)
+	}
+}
+
 func TestOrchestrator_WaitsForApprovalThenResumesSameToolStep(t *testing.T) {
 	store := NewMemoryStore()
 	registry := NewRegistry()
@@ -615,4 +669,15 @@ func newTestOrchestratorWithLocks(t *testing.T, store Store, locks LockManager, 
 		t.Fatalf("new orchestrator: %v", err)
 	}
 	return orchestrator
+}
+
+type usagePlanner struct {
+	usage    PlanUsage
+	decision PlanDecision
+}
+
+func (p *usagePlanner) Plan(context.Context, Run) (PlanDecision, error) {
+	decision := p.decision
+	decision.Usage = p.usage
+	return decision, nil
 }

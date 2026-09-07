@@ -97,6 +97,13 @@
 - Act：更新平台架构、Review Agent 工具/模型配置、安全边界、验收命令和 P2.4-R1 状态；不把有限扫描描述为完整合规能力。
 - Refine：后续以 `docs/backlog.md` 为状态源，以 Agent 预审实施方案为范围源，README 只保留可运行入口和最新摘要。
 
+## 2026-09-07 - Review Run 累计 token 预算
+
+- Perceive：预审已有单次 Planner `max_tokens`、步骤数和运行超时，但没有整次 Run 的累计 token 约束与审计字段。
+- Reason：预算必须由通用 Orchestrator 在每轮 Planner 返回后累计，持久化到 Run/Step，并在超限时 fail-closed；模型未返回 usage 时使用保守估算，避免绕过预算。
+- Act：新增 `AGENT_REVIEW_MAX_TOKEN_BUDGET` 配置、Run/Step token 用量、Planner usage 解析与重试累计、超限失败路径、Web 审计展示及回归测试。
+- Refine：Go 全模块、`go vet`、175 项 Python 契约、Web lint/build 和发布中心隔离栈 10 场景矩阵通过；真实模型预算消耗和恢复专项证据仍属于 P2.4-R1 验收项。
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。

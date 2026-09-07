@@ -131,6 +131,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AgentMaxSteps != 8 {
 		t.Errorf("expected AgentMaxSteps=8, got %d", cfg.AgentMaxSteps)
 	}
+	if cfg.AgentReviewMaxTokenBudget != 32000 {
+		t.Errorf("expected AgentReviewMaxTokenBudget=32000, got %d", cfg.AgentReviewMaxTokenBudget)
+	}
 	if cfg.AgentLockTTL != 30*time.Second {
 		t.Errorf("expected AgentLockTTL=30s, got %v", cfg.AgentLockTTL)
 	}
@@ -210,6 +213,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("SEMANTIC_CACHE_MAX_ENTRIES", "64")
 	os.Setenv("AGENT_NODE_ID", "agent-api-test")
 	os.Setenv("AGENT_MAX_STEPS", "12")
+	os.Setenv("AGENT_REVIEW_MAX_TOKEN_BUDGET", "9000")
 	os.Setenv("AGENT_LOCK_TTL", "15s")
 	os.Setenv("AGENT_RUN_TTL", "2h")
 	os.Setenv("AGENT_RUN_TIMEOUT", "20m")
@@ -259,6 +263,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("SEMANTIC_CACHE_MAX_ENTRIES")
 		os.Unsetenv("AGENT_NODE_ID")
 		os.Unsetenv("AGENT_MAX_STEPS")
+		os.Unsetenv("AGENT_REVIEW_MAX_TOKEN_BUDGET")
 		os.Unsetenv("AGENT_LOCK_TTL")
 		os.Unsetenv("AGENT_RUN_TTL")
 		os.Unsetenv("AGENT_RUN_TIMEOUT")
@@ -372,6 +377,9 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.AgentMaxSteps != 12 {
 		t.Errorf("expected AgentMaxSteps=12, got %d", cfg.AgentMaxSteps)
+	}
+	if cfg.AgentReviewMaxTokenBudget != 9000 {
+		t.Errorf("expected AgentReviewMaxTokenBudget=9000, got %d", cfg.AgentReviewMaxTokenBudget)
 	}
 	if cfg.AgentLockTTL != 15*time.Second {
 		t.Errorf("expected AgentLockTTL=15s, got %v", cfg.AgentLockTTL)
@@ -776,6 +784,12 @@ func TestValidateAPI_AgentConfig(t *testing.T) {
 	cfg.AgentPlannerTimeout = 0
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected error for AgentPlannerTimeout <= 0")
+	}
+
+	cfg = Load()
+	cfg.AgentReviewMaxTokenBudget = 0
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for AgentReviewMaxTokenBudget < 1")
 	}
 
 	cfg = Load()

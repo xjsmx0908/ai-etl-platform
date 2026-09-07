@@ -8,6 +8,7 @@ Knowledge Release Center 与自主 Agent 预审。
 - 文档摄取、generation manifest、Qdrant/Elasticsearch 双索引、版本绑定发布、审批和可恢复删除已落地。
 - Agent 预审已从“固定流程 + 单次模型判断”改为基于现有 Orchestrator 的多步自主闭环；模型根据 observation 选择下一只读工具或提交报告。
 - Review Agent 仅拥有 `get_review_context`、`get_exact_candidate_chunks`、`scan_sensitive_data`、`scan_prompt_injection` 四个只读工具；tenant、document 和 exact candidate 均由服务端绑定。
+- 每个 Review Run 受 `AGENT_REVIEW_MAX_TOKEN_BUDGET` 累计 token 上限约束；用量写入 Run/Step，超限 fail-closed 并转人工。
 - 预审直接复用 RAG Query 的 `LLM_ENDPOINT`、`LLM_API_KEY`/`LLM_API_KEY_FILE` 和 `LLM_MODEL`，无需配置 `AGENT_SEMANTIC_REVIEW_*`。
 - Go 全模块、`go vet`、175 项 Python 契约、Web lint/build 和发布中心隔离栈 10 场景矩阵已通过；真实模型场景及 Review Agent 专项恢复/预算验收仍待完成，因此 P2.4-R1 仍为 `in progress`。
 

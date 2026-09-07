@@ -23,7 +23,8 @@ func TestLLMPlannerPlansToolCall(t *testing.T) {
 			t.Fatalf("decode planner request: %v", err)
 		}
 		gotResponseFormat = req.ResponseFormat
-		writePlannerResponse(t, w, `{"type":"tool_call","thought":"need retrieval","tool_name":"rag_query","arguments":{"question":"报销制度是什么","top_k":3}}`)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"type\":\"tool_call\",\"thought\":\"need retrieval\",\"tool_name\":\"rag_query\",\"arguments\":{\"question\":\"报销制度是什么\",\"top_k\":3}}"}}],"usage":{"prompt_tokens":13,"completion_tokens":5}}`))
 	}))
 	defer server.Close()
 
@@ -50,6 +51,9 @@ func TestLLMPlannerPlansToolCall(t *testing.T) {
 	}
 	if gotResponseFormat["type"] != "json_object" {
 		t.Fatalf("expected json_object response format, got %+v", gotResponseFormat)
+	}
+	if decision.Usage.PromptTokens != 13 || decision.Usage.CompletionTokens != 5 {
+		t.Fatalf("unexpected planner usage: %+v", decision.Usage)
 	}
 }
 
@@ -194,6 +198,53 @@ func TestLLMPlannerRejectsInvalidDecision(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestLLMPlannerRetryAccumulatesTokenUsage(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"not-json"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"type\":\"final\",\"final\":\"done\"}"}}],"usage":{"prompt_tokens":7,"completion_tokens":4}}`))
+	}))
+	defer server.Close()
+
+	decision, err := newTestLLMPlanner(t, server.URL, "").Plan(context.Background(), agent.Run{Task: "retry", State: agent.StateRunning})
+	if err != nil || calls != 2 {
+		t.Fatalf("retry failed: calls=%d err=%v", calls, err)
+	}
+	if decision.Usage.PromptTokens != 10 || decision.Usage.CompletionTokens != 6 {
+		t.Fatalf("unexpected accumulated usage: %+v", decision.Usage)
+	}
+}
+
+func TestLLMPlannerCapsCompletionAndEstimatesMissingUsage(t *testing.T) {
+	var requestedMaxTokens int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request chatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		requestedMaxTokens = request.MaxTokens
+		writePlannerResponse(t, w, `{"type":"final","final":"done"}`)
+	}))
+	defer server.Close()
+
+	decision, err := newTestLLMPlanner(t, server.URL, "").Plan(context.Background(), agent.Run{
+		Task: "budget", State: agent.StateRunning, MaxTokenBudget: 100, TokensUsed: 75,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestedMaxTokens != 25 {
+		t.Fatalf("expected remaining completion budget 25, got %d", requestedMaxTokens)
+	}
+	if !decision.Usage.Estimated || decision.Usage.Total() <= 0 {
+		t.Fatalf("expected conservative usage estimate, got %+v", decision.Usage)
 	}
 }
 

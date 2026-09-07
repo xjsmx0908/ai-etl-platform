@@ -186,7 +186,8 @@ func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusSt
 		}
 		reviewOrchestrator, err := agent.NewOrchestrator(store, lockManager, reviewRegistry, reviewPlanner, agent.Options{
 			NodeID: cfg.AgentNodeID + "-review", MaxSteps: cfg.AgentMaxSteps, LockTTL: cfg.AgentLockTTL,
-			RunTimeout: cfg.AgentRunTimeout, ApprovalTimeout: cfg.AgentApprovalTimeout, Authorizer: agent.StaticAuthorizer{},
+			MaxTokenBudget: cfg.AgentReviewMaxTokenBudget,
+			RunTimeout:     cfg.AgentRunTimeout, ApprovalTimeout: cfg.AgentApprovalTimeout, Authorizer: agent.StaticAuthorizer{},
 		})
 		if err != nil {
 			closeAll(closers)

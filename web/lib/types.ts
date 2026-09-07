@@ -224,6 +224,8 @@ export type AgentRun = {
   state: string;
   final?: string;
   error?: string;
+  max_token_budget?: number;
+  tokens_used?: number;
   steps: AgentStep[];
 };
 

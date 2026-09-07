@@ -312,12 +312,19 @@ AGENT_PLANNER_API_KEY
 AGENT_PLANNER_MODEL
 AGENT_PLANNER_TIMEOUT
 AGENT_PLANNER_MAX_TOKENS
+AGENT_REVIEW_MAX_TOKEN_BUDGET
 ```
 
 The LLM can propose a plan, but it cannot bypass the core guardrails. The
 orchestrator still persists the step first, then the Registry validates
 arguments, RBAC, approval, timeout, idempotency, and compensation before
 executing any tool.
+
+`AGENT_REVIEW_MAX_TOKEN_BUDGET` limits the cumulative prompt and completion tokens
+reported by a run's planner calls. Usage is persisted on the Run and each
+Planner step; providers that omit usage are charged a conservative byte-based
+upper-bound estimate. Exceeding the budget fails the run closed and routes publication
+review to manual handling.
 
 ## Document Publication Governance
 

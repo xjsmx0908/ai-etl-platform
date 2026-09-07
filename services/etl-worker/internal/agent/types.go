@@ -39,23 +39,25 @@ type Actor struct {
 
 // Run is the durable execution record for a long-running Agent task.
 type Run struct {
-	ID           string                 `json:"id"`
-	TenantID     string                 `json:"tenant_id"`
-	UserID       string                 `json:"user_id"`
-	Version      int64                  `json:"version"`
-	FencingToken int64                  `json:"fencing_token"`
-	Task         string                 `json:"task"`
-	State        RunState               `json:"state"`
-	MaxSteps     int                    `json:"max_steps"`
-	Steps        []Step                 `json:"steps"`
-	Memory       map[string]interface{} `json:"memory,omitempty"`
-	Final        string                 `json:"final,omitempty"`
-	Error        string                 `json:"error,omitempty"`
-	CancelledBy  string                 `json:"cancelled_by,omitempty"`
-	CancelReason string                 `json:"cancel_reason,omitempty"`
-	CancelledAt  time.Time              `json:"cancelled_at,omitempty"`
-	CreatedAt    time.Time              `json:"created_at"`
-	UpdatedAt    time.Time              `json:"updated_at"`
+	ID             string                 `json:"id"`
+	TenantID       string                 `json:"tenant_id"`
+	UserID         string                 `json:"user_id"`
+	Version        int64                  `json:"version"`
+	FencingToken   int64                  `json:"fencing_token"`
+	Task           string                 `json:"task"`
+	State          RunState               `json:"state"`
+	MaxSteps       int                    `json:"max_steps"`
+	MaxTokenBudget int64                  `json:"max_token_budget,omitempty"`
+	TokensUsed     int64                  `json:"tokens_used,omitempty"`
+	Steps          []Step                 `json:"steps"`
+	Memory         map[string]interface{} `json:"memory,omitempty"`
+	Final          string                 `json:"final,omitempty"`
+	Error          string                 `json:"error,omitempty"`
+	CancelledBy    string                 `json:"cancelled_by,omitempty"`
+	CancelReason   string                 `json:"cancel_reason,omitempty"`
+	CancelledAt    time.Time              `json:"cancelled_at,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
 }
 
 // Step is an append-only record of a state-machine transition.
@@ -64,6 +66,7 @@ type Step struct {
 	Type               StepType        `json:"type"`
 	State              RunState        `json:"state"`
 	Thought            string          `json:"thought,omitempty"`
+	PlannerUsage       PlanUsage       `json:"planner_usage,omitempty"`
 	ToolName           string          `json:"tool_name,omitempty"`
 	ToolArguments      json.RawMessage `json:"tool_arguments,omitempty"`
 	ToolResult         *ToolResult     `json:"tool_result,omitempty"`
@@ -101,7 +104,17 @@ type PlanDecision struct {
 	ToolName  string          `json:"tool_name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Final     string          `json:"final,omitempty"`
+	Usage     PlanUsage       `json:"usage,omitempty"`
 }
+
+// PlanUsage reports provider-reported token usage for one planner call.
+type PlanUsage struct {
+	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
+	CompletionTokens int64 `json:"completion_tokens,omitempty"`
+	Estimated        bool  `json:"estimated,omitempty"`
+}
+
+func (u PlanUsage) Total() int64 { return u.PromptTokens + u.CompletionTokens }
 
 func terminalState(state RunState) bool {
 	switch state {
