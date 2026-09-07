@@ -6,6 +6,15 @@ Turn the current AI ETL/RAG platform into a governed enterprise knowledge
 product where users understand which knowledge space supplied an answer and
 administrators control what is eligible for use.
 
+## Current Delivery Goal
+
+The active milestone is P2.4-R1: finish acceptance of a genuinely autonomous,
+read-only Agent pre-review loop rather than a fixed workflow with one model
+call. The minimum loop is implemented and integrated with Knowledge Release
+Center. Remaining completion gates are real-model behavior and focused
+recovery/budget termination evidence; broader compliance classification,
+external policy retrieval, Saga, and report lifecycle remain later scope.
+
 ## Primary Users
 
 - Readers ask questions inside an authorized knowledge space.
@@ -56,24 +65,21 @@ fields, and the sealed Qdrant/Elasticsearch generation. The Agent produces a
 review recommendation and evidence, but cannot edit metadata, alter access,
 choose the authoritative conflicting document, approve itself, or publish.
 
-In the first release, “Agent pre-review” is a bounded release-eligibility
-review. It receives the deterministic assessment result and the exact active
-candidate's chunks, records an untrusted recommendation/evidence envelope, and
-runs bounded deterministic checks for exposed secrets, obvious personal data,
-and prompt-injection phrases. These checks can escalate risk or block a
-recommendation, but they are not a complete content-semantic, privacy, or
-confidentiality classifier. Any future model-based content review must define
-its own document-content input, structured output schema, evidence references,
-prompt-injection handling, and fail-closed policy before being presented as a
-security or compliance control.
+In the first release, “Agent pre-review” is a bounded autonomous review loop
+on the existing Agent Orchestrator. The model observes persisted tool results,
+chooses the next action from four registered read-only tools, and submits a
+structured recommendation with exact-candidate evidence. Tenant, document,
+candidate, permissions, budgets, approvals, and publication remain controlled
+by the server. Deterministic sensitive-data and prompt-injection findings can
+only be preserved or escalated, never removed or downgraded by the model.
 
-P2.4-R1 is the current implementation milestone for that model-based review.
-Its first slice defines a strict document-content input bound to the exact
-candidate, a JSON result contract for status/recommendation/risk/findings, and
-chunk-ID evidence validation. A configured OpenAI-compatible reviewer is
-fail-closed on transport, schema, risk, recommendation, and unknown-evidence
-errors; deterministic findings and minimum approval requirements remain
-authoritative.
+P2.4-R1 has implemented this minimum autonomous loop, including strict
+status/recommendation/risk/findings validation, chunk evidence checks,
+candidate consistency checks, and fail-closed handling. The Review Agent
+directly reuses the RAG Query model endpoint, credentials, and model. The
+deterministic 10-scenario release-center matrix passes; real-model and
+review-specific recovery/budget acceptance remain before R1 is complete. This
+bounded review is not a complete semantic, privacy, or compliance classifier.
 
 Approval policy is deterministic and risk-based:
 

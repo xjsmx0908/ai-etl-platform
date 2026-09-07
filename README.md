@@ -1,33 +1,40 @@
 # AI-ETL Platform
 
-企业级 AI 知识流水线平台，支持文档解析、向量化、语义检索和 RAG 查询。
+企业级 AI 知识流水线平台，支持文档解析、向量化、混合检索、RAG 查询，以及受控的
+Knowledge Release Center 与自主 Agent 预审。
+
+## 当前进展（2026-09-07）
+
+- 文档摄取、generation manifest、Qdrant/Elasticsearch 双索引、版本绑定发布、审批和可恢复删除已落地。
+- Agent 预审已从“固定流程 + 单次模型判断”改为基于现有 Orchestrator 的多步自主闭环；模型根据 observation 选择下一只读工具或提交报告。
+- Review Agent 仅拥有 `get_review_context`、`get_exact_candidate_chunks`、`scan_sensitive_data`、`scan_prompt_injection` 四个只读工具；tenant、document 和 exact candidate 均由服务端绑定。
+- 预审直接复用 RAG Query 的 `LLM_ENDPOINT`、`LLM_API_KEY`/`LLM_API_KEY_FILE` 和 `LLM_MODEL`，无需配置 `AGENT_SEMANTIC_REVIEW_*`。
+- Go 全模块、`go vet`、175 项 Python 契约、Web lint/build 和发布中心隔离栈 10 场景矩阵已通过；真实模型场景及 Review Agent 专项恢复/预算验收仍待完成，因此 P2.4-R1 仍为 `in progress`。
+
+详细边界见 [`docs/agent-pre-review-architecture-and-implementation-plan.md`](docs/agent-pre-review-architecture-and-implementation-plan.md)，当前执行状态见 [`docs/backlog.md`](docs/backlog.md)。
 
 ## 🏗️ 架构概览
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    AI-ETL Platform                          │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐ │
-│  │ ETL Worker   │───▶│ Parser       │    │  Query API   │ │
-│  │ (Go)         │    │ Service      │    │  (Go)        │ │
-│  │              │    │ (Python)     │    │              │ │
-│  │ - Kafka消费   │    │              │    │ - JWT鉴权    │ │
-│  │ - 任务编排    │    │ - PDF解析    │    │ - 限流       │ │
-│  │ - 向量化调用  │    │ - DOCX解析   │    │ - RAG查询    │ │
-│  │ - 入库       │    │ - 语义切块   │    │ - 文件上传   │ │
-│  └──────┬───────┘    └──────────────┘    └──────┬───────┘ │
-│         │                                        │         │
-└─────────┼────────────────────────────────────────┼─────────┘
-          │                                        │
-          ▼                                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    基础设施层                                 │
-│                                                             │
-│ Kafka │ Redis(Cache+State) │ Qdrant │ MinIO │ Jaeger │ Prometheus │ Grafana │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+```text
+Web / API Client
+      │
+      ▼
+Query API (Go)
+  ├─ Upload / Catalog / Auth / RAG Query
+  ├─ Knowledge Release Center
+  │    └─ Review Agent: Planner → Read-only Tool → Observation → Report
+  └─ Approval / exact-candidate publication
+      │
+      ├──────────────► PostgreSQL（权威元数据、发布、审批、审计）
+      ├──────────────► Redis Cache / Redis State（缓存、Run/Step、锁）
+      ├──────────────► Qdrant + Elasticsearch（向量与全文索引）
+      └──────────────► MinIO（原始文档）
+
+Kafka → ETL Worker (Go) → Parser Service (Python) → Embedding → 双索引
+                                  │
+                                  └─ PDF / OCR / DOC / DOCX / TXT
+
+Prometheus + Alertmanager + Grafana + Jaeger
 ```
 
 ## 📁 项目结构
@@ -49,20 +56,19 @@ ai-etl-platform/
 │       ├── Dockerfile           # Python 服务镜像
 │       └── README.md
 │
-│   └── reranker-service/        # 可选 Cross-Encoder Reranker
+│   ├── reranker-service/        # 可选 Cross-Encoder Reranker
 │       ├── app/                 # FastAPI rerank API
 │       ├── Dockerfile           # CPU 模型服务镜像
 │       └── README.md
 │
 │   └── alert-webhook-service/   # Alertmanager 企业通知适配器
 │
-├── infrastructure/              # 基础设施配置
-│   └── prometheus.yml
+├── web/                         # Next.js 管理与问答前端
+├── infrastructure/              # PostgreSQL/监控/告警等基础设施配置
+├── deploy/                      # 部署覆盖与 Nginx 模板
+├── docs/                        # 需求、架构、实施方案与验收规范
 │
-├── scripts/                     # 部署脚本
-│   ├── start.sh
-│   ├── stop.sh
-│   └── backfill-qdrant-permission.sh  # 历史向量 permission 回填
+├── scripts/                     # 启停、评测、E2E 与治理验收脚本
 │
 ├── docker-compose.yml           # 统一服务编排
 ├── .env.example                 # 环境变量模板
@@ -142,6 +148,17 @@ Kafka、进程及存储依赖中断。结果写入 `artifacts/governance-accepta
 中的无密钥 JSON 报告；完整场景与证据映射见
 [`docs/governance-acceptance.md`](docs/governance-acceptance.md)。此命令是显式
 发布验收，不会部署服务或启用 generation retention。
+
+### Agent 预审与发布中心验收
+
+```bash
+bash scripts/release-center-functional-acceptance.sh
+```
+
+该隔离矩阵覆盖普通单管理员审批、机密/高风险双管理员审批、Agent 异常人工例外、
+敏感信息、提示词注入、确定性阻断、候选过期、拒绝终态和跨租户隔离。默认
+`AGENT_PLANNER_TYPE=auto` 时 Review Agent 使用 RAG Query 的模型配置；`rule` 仅用于显式的
+确定性测试和验收环境。Agent 只产生版本绑定的建议与证据，不能审批或发布。
 
 企业身份仍为默认关闭状态。生产 IdP 验收门槛见
 [`docs/enterprise-identity-production-acceptance.md`](docs/enterprise-identity-production-acceptance.md)，
@@ -313,8 +330,8 @@ python3 scripts/load-corpus.py --api-base http://localhost:8080 --username admin
 前端在 `WEB_HOST_PORT`（默认 3100，3000 被其他项目占用时用 3100）。浏览器只访问前端端口，
 `/api/*` 由 Next route handler 代理到 query-api（`/v1/*`），SSE 流式透传，无跨域。
 功能：问答（SSE 流式 + 引用展开）、文档管理（列表/搜索/删除）、用户管理（admin）、
-数据接入、系统可观测、检索质量、Agent 文档发布治理（受管草稿的精确版本/索引代次
-检查、四眼审批、事务化幂等发布与审计）。
+数据接入、系统可观测、检索质量、Knowledge Release Center（受管草稿的自主 Agent
+预审、精确版本/索引代次检查、风险审批、事务化幂等发布与审计）。
 
 受管文档的替换会先建立新的版本和索引代次，但不会立即影响线上查询；旧的已发布版本
 会持续提供结果，直到新的精确候选通过独立审批并完成原子切换。问答和全文搜索都只读取
@@ -409,7 +426,7 @@ python -m app.main
 - ✅ FastAPI 异步处理
 
 ### Query API (Go)
-- ✅ JWT 鉴权 + RBAC
+- ✅ 本地认证、可选 OIDC/SCIM、RBAC 与租户隔离
 - ✅ 租户级限流
 - ✅ Query Router（精确锚点 / 语义 / 混合意图）
 - ✅ Scatter-Gather 多路召回（Qdrant Dense+Sparse + Elasticsearch BM25）
@@ -419,9 +436,18 @@ python -m app.main
 - ✅ Redis 语义缓存（tenant + permission scope 隔离）
 - ✅ RAG 查询（向量检索 + LLM）
 - ✅ MinIO 文件上传
-- ✅ 文档删除（`DELETE /v1/documents/{doc_id}`，级联清理 Qdrant 向量、ES 文档、MinIO 对象）
+- ✅ 异步可恢复文档删除（Qdrant、Elasticsearch、MinIO 与 PostgreSQL）
 - ✅ API 版本控制
 - ✅ CORS 支持
+
+### Knowledge Release Center / Review Agent
+- ✅ exact-candidate 版本/代次绑定与发布前复验
+- ✅ 基于现有 Orchestrator 的 Planner → Tool → Observation 多步闭环
+- ✅ 四个只读工具及服务端 tenant/document/candidate 强绑定
+- ✅ 敏感信息与提示词注入确定性扫描，模型不得遗漏或降低风险
+- ✅ 单/双管理员审批、审批组/策略、人工例外、幂等与冲突控制
+- ✅ Agent Run/Step、模型、Prompt 版本、findings 和 chunk evidence 可审计
+- ⏳ 真实模型场景与 Review Agent 专项恢复/预算验收
 
 ## 🔐 环境变量
 
@@ -450,12 +476,11 @@ EMBED_DIMENSION=768
 # LLM
 LLM_ENDPOINT=http://host.docker.internal:11434/v1
 LLM_MODEL=qwen2.5:7b
+AGENT_PLANNER_TYPE=auto
 
-# 模型选型（能力/延迟/成本三角，按场景取不同的模型）：
-#   - 在线回答（RAG 生成）：要求低延迟与稳定输出，默认 deepseek-v4-flash 这类轻量模型
-#   - Agent planner：需要工具调用与多步推理，可用更高档模型（AGENT_PLANNER_MODEL）
-#   - LLM-as-a-Judge：离线评测，对质量敏感，可选最强模型（JUDGE_MODEL）
-# 不是「一个模型打天下」；每个角色独立配置，默认值仅作 fallback，生产用环境变量覆盖。
+# Review Agent 直接复用以上 RAG Query 模型配置，不需要独立 endpoint/model/key。
+# AGENT_PLANNER_TYPE=auto 或 llm：启用模型驱动预审；rule：仅用于确定性测试/验收。
+# 通用 Agent planner 仍可通过 AGENT_PLANNER_* 独立配置；LLM-as-a-Judge 使用 JUDGE_MODEL。
 
 # Retrieval Gateway
 RETRIEVAL_TIMEOUT=300ms

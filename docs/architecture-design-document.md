@@ -33,10 +33,21 @@ Agent Run the source of truth:
 4. `publicationworkflow` revalidates the candidate and performs the atomic
    release, release CAS, cache invalidation, and audit.
 
-The Agent is an adapter behind the `DocumentReview` seam. Its output is an
-untrusted recommendation: document text is treated as prompt-injection-prone
-input, and no model output grants tools or authority. Agent Run IDs remain
-correlation fields for diagnostics, not durable release state.
+The Agent is an adapter behind the `DocumentReview` seam. It reuses the
+existing Orchestrator for a persisted plan → tool → observation loop and sees
+only four read-only review tools: context, exact-candidate chunks,
+sensitive-data scan, and prompt-injection scan. Its output is an untrusted
+recommendation: document text is treated as prompt-injection-prone input, and
+no model output grants tools or authority. Tenant/document/candidate binding is
+resolved from the Run on every tool call. Agent Run IDs remain correlation
+fields for diagnostics, not durable release state.
+
+The Review Planner directly uses the RAG Query `LLM_ENDPOINT`, `LLM_API_KEY`,
+and `LLM_MODEL` configuration when planner mode is `auto` or `llm`; only an
+explicit `rule` mode selects the deterministic acceptance planner. Final
+reports are accepted only after required-tool completion, exact-candidate
+consistency, inspected-chunk evidence, deterministic-finding preservation, and
+risk monotonicity checks.
 
 The baseline policy is deliberately small and deterministic: ordinary managed
 documents need one administrator decision; confidential or deterministic

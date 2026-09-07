@@ -1,6 +1,6 @@
 # Backlog
 
-最后核验：2026-09-05。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
+最后核验：2026-09-07。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
 仓库规则维护：已将 `AGENTS.md` 的自然语言指令统一为中文，并明确简洁回答与最小上下文原则。
 已完成的阶段计划、逐次 PRAR 记录和旧路线图保存在
 [`docs/archive/backlog-2026-09-05.md`](archive/backlog-2026-09-05.md)。
@@ -23,8 +23,8 @@
 已从固定流程中的模型审查器调整为受约束的自主预审 Agent，并已将方案收缩为最小
 自主闭环。新会话按以下顺序推进：
 
-1. **P2.4-R1-MVP（当前阶段）：最小自主预审闭环**——复用现有 Orchestrator，实现 Review Planner、四个只读工具、最小证据校验和发布中心接入。
-2. **P2.4-R1-ACCEPT：业务验收**——完成动态续查、安全失败、恢复、完整发布矩阵和真实模型验收。
+1. **P2.4-R1-MVP（代码完成）**——已复用现有 Orchestrator，实现 Review Planner、四个只读工具、最小证据校验和发布中心接入。
+2. **P2.4-R1-ACCEPT（当前阶段）**——确定性发布矩阵已通过；完成真实模型、恢复和预算终止专项验收。
 3. **P2.4-R5：企业级编排**——MVP 稳定后再评估通知、Saga 和外部工作流。
 4. **P2.4-R3：Review report 生命周期**（后置）——最后处理 TTL、过期清理和自动重审。
 
@@ -35,7 +35,7 @@
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
 | P2.4-R2 | 企业审批组与可配置策略 | completed | 已交付租户隔离审批组、成员启停、空间/权限/风险匹配、优先级、双人审批、自审控制、策略持久化和管理 API；企业 IdP 同步、委托和定时升级另行立项 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
-| P2.4-R1 | 自主预审 Agent | in progress | 最小自主闭环已接入代码；完成发布中心功能矩阵、动态续查/恢复和真实模型验收后关闭 | [`docs/agent-pre-review-architecture-and-implementation-plan.md`](agent-pre-review-architecture-and-implementation-plan.md) |
+| P2.4-R1 | 自主预审 Agent | acceptance in progress | 最小自主闭环与发布中心 10 场景矩阵已完成；补齐真实模型、恢复和预算终止证据后关闭 | [`docs/agent-pre-review-architecture-and-implementation-plan.md`](agent-pre-review-architecture-and-implementation-plan.md) |
 | P2.4-R5 | Agent 周边编排能力 | planned | 评估多工具 Saga、异步审批通知和外部工作流引擎；每项定义可靠性、审计和失败补偿验收 | [`docs/agent-orchestrator-design.md`](agent-orchestrator-design.md) |
 | P2.4-R3 | Review report 生命周期 | deferred | 暂不实施；待 R1、R5 完成后再决定报告 TTL、过期状态、清理/重审调度和历史审计保留策略 | [`services/etl-worker/internal/releasecenter/releasecenter.go`](../services/etl-worker/internal/releasecenter/releasecenter.go) |
 | P2.4-R4 | `success` 状态数据库兼容 | completed | 已将 `success`（含大小写变体）规范化为 PostgreSQL 允许的 `completed`，并补充协调器回归测试；后续真实 PG 验收随发布中心矩阵执行 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |
@@ -46,7 +46,7 @@
 - P2.3 generation manifest、双索引校验、激活、回滚、修复和观测已完成；仅生产 retention 仍需决策。
 - P2.4 version-bound publication、exact-candidate approval、替换、可恢复删除和治理验收已完成。
 - P2.5-A～D 及个人演示 F1～F6 已实现；企业生产启用仍受外部输入约束。
-- Knowledge Release Center 的发布策略、Agent 预审、内容 findings、审批组/策略、HTTP 矩阵和 Web 工作台已完成；审批组与策略管理当前通过管理员 HTTP API 提供。
+- Knowledge Release Center 的发布策略、审批组/策略、HTTP 矩阵和 Web 工作台已完成；自主 Agent 预审闭环已实现但仍在 R1 验收中，审批组与策略管理当前通过管理员 HTTP API 提供。
 - 583 页扫描 PDF 已由用户独立完成验证，不再作为当前 backlog 事项。
 - 上述完成仅指首个版本的受限发布资格预审；P2.4-R1 仍在验收中，P2.4-R3、P2.4-R5 属于未来范围或待修复事项，不得将当前 Agent 预审描述为完整合规审查。
 - Elasticsearch 只读锁恢复、文档管理优化、OCR 分页恢复和相关反馈项已在历史验收中关闭；若运行环境再次出现，应创建新的带证据条目。

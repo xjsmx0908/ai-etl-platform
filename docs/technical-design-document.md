@@ -104,12 +104,10 @@ completion appends its audit and deletes the catalog row, whose foreign-key
 cascade removes releases, ingestion state, manifests, and the deletion job.
 Prometheus exposes only fixed state/condition/outcome labels.
 
-## Knowledge Release Center (next implementation baseline)
+## Knowledge Release Center (implemented baseline)
 
-The Web `/agent` route is to be renamed and reshaped as `/release-center` (a
-compatibility redirect may remain). The page is driven by release-center read
-models, not by a manually entered Run ID. Run details are expandable audit
-data only.
+The Web release-center page is driven by release-center read models, not by a
+manually entered Run ID. Run details are expandable audit data only.
 
 The first implementation is split into deep module seams:
 
@@ -168,6 +166,15 @@ separate semantic-review model or credential configuration; production
 enablement must still retain the tenant-approved model evaluation evidence.
 Review Agent uses this model when `AGENT_PLANNER_TYPE=auto` or `llm`; `rule`
 is reserved for explicit deterministic test and acceptance environments.
+
+Implemented in `internal/agentapi/review.go`: a dedicated review registry
+exposes four read-only tools, while a review-specific LLM Planner uses the
+existing Orchestrator, Redis Run/Step store, locking, fencing, timeout, and
+step limits. The production release-center adapter now consumes the validated
+`ReviewPublicationReport` result; the previous fixed handler scan and one-shot
+semantic-review client have been removed. The deterministic release-center
+10-scenario matrix passes. Real-model and review-specific recovery/budget
+evidence remain the final P2.4-R1 acceptance work.
 
 The collector also reconciles pending requests against the current release and
 healthy active generation. A mismatched version, generation, digest, or release

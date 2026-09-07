@@ -90,6 +90,13 @@
 - Act：实现 Review Planner/LLM observation 循环、四个工具、报告校验、发布中心接入；预审统一复用 `LLM_ENDPOINT`、`LLM_API_KEY` 和 `LLM_MODEL`，移除独立 semantic-review 配置及旧适配器。
 - Refine：Go 全模块、175 项 Python 契约、快速发布中心矩阵和隔离栈 10 场景业务矩阵通过；真实模型场景仍是 P2.4-R1 关闭条件。
 
+## 2026-09-07 - 自主预审进展文档同步
+
+- Perceive：README、PRD、SRS、架构/技术设计仍混有固定 semantic reviewer 和“尚未实现”的描述。
+- Reason：对外首页、产品目标、技术事实和执行状态必须共享同一口径，并明确区分代码完成、确定性验收通过和真实模型验收未完成。
+- Act：更新平台架构、Review Agent 工具/模型配置、安全边界、验收命令和 P2.4-R1 状态；不把有限扫描描述为完整合规能力。
+- Refine：后续以 `docs/backlog.md` 为状态源，以 Agent 预审实施方案为范围源，README 只保留可运行入口和最新摘要。
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。
