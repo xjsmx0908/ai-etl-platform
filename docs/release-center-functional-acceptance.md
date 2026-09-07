@@ -18,8 +18,8 @@
 | Agent 证据不完整 | status、recommendation 或 risk 缺失/非法 | fail-closed，标记失败 | 进入人工例外，不能按成功预审审批 | 需人工核对后处理 |
 | 内容级敏感信息 | exact candidate 切块包含密码、API key、身份证号或手机号 | 生成带 chunk 引用的 `sensitive_data_detected` finding；风险升为 high | internal 阻断；confidential 升级双人复核 | 不得静默放行 |
 | 内容级提示词注入 | 切块包含“忽略之前指令/输出系统提示词”等模式 | 生成 `prompt_injection_detected` finding，建议 `needs_info` | 不进入普通可发布审批 | 人工处理 |
-| 模型语义审查成功 | 配置 OpenAI-compatible semantic reviewer，返回合法结构化结果 | 保留模型、Prompt 版本和 exact chunk finding；仅允许风险升级 | 按确定性最低策略审批 | 结果可审计且候选绑定 |
-| 模型语义审查失败 | 超时、HTTP 错误、非法 JSON、非法枚举或未知 chunk 证据 | 预审 `failed`、风险 `high`、建议 `manual_review` | 人工例外；不得按成功预审发布 | fail-closed |
+| 自主 Review Agent 成功 | 配置 RAG Query 同源模型，返回合法结构化结果 | 保留模型、Prompt 版本和 exact chunk finding；仅允许风险升级 | 按确定性最低策略审批 | 结果可审计且候选绑定 |
+| 自主 Review Agent 失败 | 超时、HTTP 错误、非法 JSON、非法枚举或未知 chunk 证据 | 预审 `failed`、风险 `high`、建议 `manual_review` | 人工例外；不得按成功预审发布 | fail-closed |
 | 非管理员或发起人自审 | 普通用户、或请求发起人本人 | 不适用 | 拒绝决定请求 | 不改变发布状态 |
 | 未认证和跨租户访问 | 无凭证或其他租户管理员访问 | 不适用 | 返回 401/租户隔离 | 不泄露记录或证据 |
 
@@ -32,9 +32,9 @@
 4. 确定性门禁失败不能因为 Agent 建议 `publish` 而放行。
 5. 最终批准前必须重新校验同一个 exact candidate；候选变化时拒绝发布。
 6. 同一管理员重复提交相同决定必须幂等，提交不同决定必须冲突失败。
-7. 当前预审只负责受管发布资格和 Agent 证据编排；不得把资格复验结果描述成
-   已完成的内容语义/敏感信息审查。若未来增加内容审查，必须新增独立输入、
-   输出 schema、证据引用和对应功能矩阵。
+7. 当前预审负责受管发布资格、确定性敏感信息/提示词注入扫描和 Agent 证据编排；
+   不得把这组有限规则描述成完整的内容语义、隐私或合规分类审查。未来扩展时必须
+   新增独立输入、输出 schema、证据引用和对应功能矩阵。
 8. 内容 findings 必须引用 exact candidate 的 chunk ID；旧 generation 或旧 version
    的内容不得进入当前 review report。
 9. Web 详情必须展示预审状态、风险、建议、预审时间、Prompt 版本以及每条
@@ -90,10 +90,11 @@ handler 和协调器，只替换上游 `ReviewAdapter`，避免为了验收引�
 
 ## 当前未实现边界
 
-首个版本的 Agent 预审是受限的发布资格审查，不是完整的语义、隐私或合规分类器。
+首个版本的 Agent 预审是受限的发布资格审查，包含确定性内容安全扫描，但不是完整的
+语义、隐私或合规分类器。
 以下事项不属于当前已完成基线，必须单独立项并补充输入、输出、证据和验收定义：
 
-- 完整语义/隐私/合规审查及模型化内容审查；
+- 完整语义/隐私/合规审查及更广泛的模型化内容分类；
 - 企业 IdP 组同步、委托审批、定时升级和审批撤权；本地租户审批组与可配置策略已由 P2.4-R2 实现；
 - review report 的 TTL、过期清理和自动重审；
 - Agent 状态契约的真实 PostgreSQL 集成验收（协调器已将 `success` 规范化为 `completed`）；
@@ -110,7 +111,7 @@ P2.4-R2 的实现边界：管理员可通过 `POST/GET /v1/release-center/approv
 ## 当前实施顺序
 
 当前主线是企业级 Agent 审计功能，不包含通用生产准入、企业身份部署或 OCR 验收。
-实施顺序固定为：P2.4-R1（语义/隐私/合规审查）→ P2.4-R5（通知、补偿和外部编排）→
+实施顺序固定为：P2.4-R1（自主预审 Agent）→ P2.4-R5（通知、补偿和外部编排）→
 P2.4-R3（报告生命周期）。P2.4-R2（审批组与策略）已完成。
 P2.4-R3 已明确后置；P1.9、P2.3、P2.5、P2.6 和 OCR 不得在未得到用户重新指定时
 改变该顺序。

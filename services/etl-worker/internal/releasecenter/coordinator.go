@@ -23,14 +23,15 @@ var (
 
 // AgentReview is the untrusted result returned by the pre-review adapter.
 type AgentReview struct {
-	RunID          string
-	Status         string
-	Recommendation string
-	RiskLevel      RiskLevel
-	Summary        string
-	Findings       []Finding
-	Model          string
-	PromptVersion  string
+	RunID          string                         `json:"run_id,omitempty"`
+	Status         string                         `json:"status"`
+	Recommendation string                         `json:"recommendation"`
+	RiskLevel      RiskLevel                      `json:"risk_level"`
+	Summary        string                         `json:"summary"`
+	Findings       []Finding                      `json:"findings,omitempty"`
+	Model          string                         `json:"model,omitempty"`
+	PromptVersion  string                         `json:"prompt_version,omitempty"`
+	Candidate      *publicationworkflow.Candidate `json:"candidate,omitempty"`
 }
 
 type ReviewAdapter interface {
@@ -103,6 +104,9 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	}
 	reportID := stableID("review", actor.TenantID, candidate)
 	reviewResult, reviewErr := c.reviewer.Review(ctx, actor, documentID)
+	if reviewErr == nil && reviewResult.Candidate != nil && *reviewResult.Candidate != candidate {
+		reviewErr = fmt.Errorf("agent review returned a different exact candidate")
+	}
 	status := strings.ToLower(strings.TrimSpace(reviewResult.Status))
 	if reviewErr == nil && (strings.EqualFold(status, "failed") || strings.EqualFold(status, "error")) {
 		reviewErr = fmt.Errorf("agent review returned status %q", status)

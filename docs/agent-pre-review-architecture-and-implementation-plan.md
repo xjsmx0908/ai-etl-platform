@@ -146,7 +146,7 @@ Review Planner 每轮只能返回两种结构化决定之一：
 | 工具 | 用途 |
 | --- | --- |
 | `get_review_context` | 读取治理字段、权限、知识空间和 eligibility blocker |
-| `get_exact_candidate_chunks` | 分页读取当前 exact candidate 的 chunks |
+| `get_exact_candidate_chunks` | 分页读取当前 exact candidate 的 chunks；模型按需选择页 |
 | `scan_sensitive_data` | 对当前 candidate 执行确定性敏感信息扫描 |
 | `scan_prompt_injection` | 对当前 candidate 执行提示词注入扫描 |
 
@@ -157,6 +157,9 @@ Review Planner 每轮只能返回两种结构化决定之一：
 - 工具输出携带稳定 chunk ID 或 Step ID，供报告引用；
 - 单次返回大小、分页和总调用次数受限；
 - 工具保持只读和幂等。
+
+两项确定性扫描始终覆盖全部 exact-candidate chunks；模型无需在有限上下文中逐页装载
+整篇大文档，但必须读取至少一页内容，并可根据观察继续读取其他页面。
 
 版本对比、企业政策库、外部法规检索、跨文档冲突检查和独立 claim 验证不属于首版。
 
@@ -224,7 +227,7 @@ Review Planner 每轮只能返回两种结构化决定之一：
 
 ### 步骤 3：接入发布中心
 
-- 让 `ReviewPublication` 返回经验证的 ReviewReport，而不是只取 eligibility assessment；
+- 让 `ReviewPublicationReport` 返回经验证的 ReviewReport，而不是只取 eligibility assessment；
 - 删除发布适配器中的单次 semantic reviewer 固定调用；
 - 保留 deterministic eligibility、风险下限和现有审批逻辑；
 - 继续使用现有 exact-candidate stale 检查。

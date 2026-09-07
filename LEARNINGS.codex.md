@@ -83,6 +83,13 @@
 - Act：方案收缩为 Review Planner、四个只读工具、最小 evidence refs 校验和发布中心接入，不新增第二套状态机或证据表。
 - Refine：版本对比、政策库、独立证据生命周期、shadow/canary 自动化和 Saga 全部后置，MVP 以完整发布矩阵和真实模型场景作为完成门禁。
 
+## 2026-09-07 - 最小自主预审闭环实施
+
+- Perceive：旧发布 handler 仍依赖固定内容扫描和单次 semantic reviewer，上一轮执行在测试迁移前中断且未及时反馈。
+- Reason：直接复用现有 Orchestrator、Run/Step、Registry、Authorizer 和发布中心门禁；Review Agent 仅允许四个只读工具，并由服务端校验 exact candidate、证据和确定性 findings。
+- Act：实现 Review Planner/LLM observation 循环、四个工具、报告校验、发布中心接入；预审统一复用 `LLM_ENDPOINT`、`LLM_API_KEY` 和 `LLM_MODEL`，移除独立 semantic-review 配置及旧适配器。
+- Refine：Go 全模块、175 项 Python 契约、快速发布中心矩阵和隔离栈 10 场景业务矩阵通过；真实模型场景仍是 P2.4-R1 关闭条件。
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。

@@ -14,9 +14,11 @@ import (
 	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/model"
-	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/query"
+	"ai-etl-pipeline/internal/releasecenter"
+	"ai-etl-pipeline/internal/store"
 )
 
 const (
@@ -39,17 +41,23 @@ type Observer interface {
 
 // Service owns the HTTP adapter for Agent runs.
 type Service struct {
-	orchestrator  *agent.Orchestrator
-	store         agent.Store
-	approvalStore agent.ApprovalStore
-	observer      Observer
-	closers       []io.Closer
+	orchestrator       *agent.Orchestrator
+	reviewOrchestrator *agent.Orchestrator
+	reviewModel        string
+	store              agent.Store
+	approvalStore      agent.ApprovalStore
+	observer           Observer
+	closers            []io.Closer
 }
 
 // Dependencies are optional durable adapters used by bounded production workflows.
 type Dependencies struct {
 	ApprovalStore       agent.ApprovalStore
 	PublicationWorkflow PublicationWorkflow
+	ReviewDocuments     docstore.Store
+	ReviewChunks        interface {
+		ListChunksByDoc(context.Context, string, string, []string) ([]store.StoredChunk, error)
+	}
 }
 
 type createRunRequest struct {
@@ -150,7 +158,7 @@ func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusSt
 		return nil, err
 	}
 	if dependencies.PublicationWorkflow != nil {
-		planner = routingPlanner{fallback: planner, governance: GovernancePlanner{}, review: ReviewPlanner{}}
+		planner = routingPlanner{fallback: planner, governance: GovernancePlanner{}}
 	}
 	orchestrator, err := agent.NewOrchestrator(store, lockManager, registry, planner, agent.Options{
 		NodeID:          cfg.AgentNodeID,
@@ -164,38 +172,64 @@ func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusSt
 		closeAll(closers)
 		return nil, err
 	}
-	return &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, observer: observerOrNoop(observer), closers: closers}, nil
+	service := &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, observer: observerOrNoop(observer), closers: closers}
+	if dependencies.PublicationWorkflow != nil && dependencies.ReviewDocuments != nil && dependencies.ReviewChunks != nil {
+		reviewRegistry := agent.NewRegistry()
+		if err := registerReviewTools(reviewRegistry, dependencies.PublicationWorkflow, dependencies.ReviewDocuments, dependencies.ReviewChunks, store); err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+		reviewPlanner, err := newReviewPlanner(cfg, reviewRegistry)
+		if err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+		reviewOrchestrator, err := agent.NewOrchestrator(store, lockManager, reviewRegistry, reviewPlanner, agent.Options{
+			NodeID: cfg.AgentNodeID + "-review", MaxSteps: cfg.AgentMaxSteps, LockTTL: cfg.AgentLockTTL,
+			RunTimeout: cfg.AgentRunTimeout, ApprovalTimeout: cfg.AgentApprovalTimeout, Authorizer: agent.StaticAuthorizer{},
+		})
+		if err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+		service.reviewOrchestrator = reviewOrchestrator
+		if cfg.AgentPlannerType != config.AgentPlannerRule {
+			service.reviewModel = configuredReviewModel()
+		}
+	}
+	return service, nil
 }
 
-// ReviewPublication executes a bounded Agent pre-review without granting or
-// planning publication authority. The returned run ID is diagnostic only.
-func (s *Service) ReviewPublication(ctx context.Context, actor agent.Actor, documentID string) (string, publicationworkflow.Assessment, error) {
-	if s == nil || s.orchestrator == nil {
-		return "", publicationworkflow.Assessment{}, fmt.Errorf("agent service is not configured")
+// ReviewPublicationReport runs the autonomous, read-only review Agent and
+// returns its validated business report.
+func (s *Service) ReviewPublicationReport(ctx context.Context, actor agent.Actor, documentID string) (releasecenter.AgentReview, error) {
+	if s == nil || s.reviewOrchestrator == nil {
+		return releasecenter.AgentReview{}, fmt.Errorf("review agent is not configured")
 	}
-	run, err := s.orchestrator.Start(ctx, actor, documentReviewTaskPrefix+strings.TrimSpace(documentID))
+	run, err := s.reviewOrchestrator.Start(ctx, actor, documentReviewTaskPrefix+strings.TrimSpace(documentID))
 	if err != nil {
-		return "", publicationworkflow.Assessment{}, err
+		return releasecenter.AgentReview{}, err
 	}
-	run, err = s.orchestrator.RunToCompletion(ctx, run.ID, actor)
+	run, err = s.reviewOrchestrator.RunToCompletion(ctx, run.ID, actor)
 	if err != nil {
-		return run.ID, publicationworkflow.Assessment{}, err
+		return releasecenter.AgentReview{RunID: run.ID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: err.Error()}, nil
 	}
-	for _, step := range run.Steps {
-		if step.ToolName != assessPublicationToolName || step.ToolResult == nil {
-			continue
-		}
-		payload, marshalErr := json.Marshal(step.ToolResult.Data)
-		if marshalErr != nil {
-			return run.ID, publicationworkflow.Assessment{}, marshalErr
-		}
-		var assessment publicationworkflow.Assessment
-		if unmarshalErr := json.Unmarshal(payload, &assessment); unmarshalErr != nil {
-			return run.ID, publicationworkflow.Assessment{}, unmarshalErr
-		}
-		return run.ID, assessment, nil
+	if run.State != agent.StateCompleted {
+		return releasecenter.AgentReview{RunID: run.ID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: run.Error}, nil
 	}
-	return run.ID, publicationworkflow.Assessment{}, fmt.Errorf("agent review produced no assessment")
+	var report releasecenter.AgentReview
+	if err := json.Unmarshal([]byte(run.Final), &report); err != nil {
+		return releasecenter.AgentReview{RunID: run.ID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: "invalid review report: " + err.Error()}, nil
+	}
+	candidate, err := validateAutonomousReview(run, report)
+	if err != nil {
+		return releasecenter.AgentReview{RunID: run.ID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: err.Error()}, nil
+	}
+	report.RunID = run.ID
+	report.Candidate = candidate
+	report.Model = s.reviewModel
+	report.PromptVersion = reviewPromptVersion
+	return report, nil
 }
 
 func newServiceWithComponents(orchestrator *agent.Orchestrator, store agent.Store) *Service {
@@ -229,6 +263,24 @@ func newPlanner(cfg config.Config, registry *agent.Registry) (agent.Planner, err
 	default:
 		return nil, fmt.Errorf("unsupported agent planner type %q", cfg.ResolvedAgentPlannerType())
 	}
+}
+
+func newReviewPlanner(cfg config.Config, registry *agent.Registry) (agent.Planner, error) {
+	if cfg.AgentPlannerType == config.AgentPlannerRule {
+		return ReviewRulePlanner{}, nil
+	}
+	return NewLLMPlanner(LLMPlannerOptions{
+		Endpoint:  config.EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions"),
+		APIKey:    config.EnvSecret("LLM_API_KEY", ""),
+		Model:     config.EnvStr("LLM_MODEL", "deepseek-v4-flash"),
+		MaxTokens: config.EnvInt("AGENT_PLANNER_MAX_TOKENS", 1200),
+		Timeout:   config.EnvDuration("AGENT_PLANNER_TIMEOUT", 45*time.Second), Tools: registry.Definitions(),
+		SystemPrompt: reviewPlannerSystemPrompt,
+	})
+}
+
+func configuredReviewModel() string {
+	return config.EnvStr("LLM_MODEL", "deepseek-v4-flash")
 }
 
 // Close releases resources owned by the service.

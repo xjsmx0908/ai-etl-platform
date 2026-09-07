@@ -401,9 +401,18 @@ func main() {
 	publicationWorkflow := publicationworkflow.New(docStore, exactPublication).
 		WithPublisher(exactPublication)
 	releaseCenterStore := releasecenter.NewPostgresStore(pgPool)
+	var chunkStorerForReview *store.QdrantStorer
+	if chunkStorer, chunkErr := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension); chunkErr != nil {
+		slog.Warn("qdrant storer for review Agent unavailable", "error", chunkErr)
+	} else {
+		chunkStorerForReview = chunkStorer
+		defer chunkStorer.Close()
+	}
 	agentSvc, err := agentapi.NewServiceWithDependencies(cfg, qs, taskStatusStore, prom, agentapi.Dependencies{
 		ApprovalStore:       agent.NewPostgresApprovalStore(pgPool),
 		PublicationWorkflow: publicationWorkflow,
+		ReviewDocuments:     docStore,
+		ReviewChunks:        chunkStorerForReview,
 	})
 	if err != nil {
 		slog.Error("failed to create agent api service", "error", err)
@@ -481,23 +490,15 @@ func main() {
 	esRetriever := retrieval.NewElasticRetriever(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, &http.Client{Timeout: 15 * time.Second})
 	apiV1.Handle("/v1/documents/search", http.HandlerFunc(handleDocumentSearch(cfg, docStore, esRetriever, qs, releaseVisibility)))
 	var chunksHandler http.Handler
-	var chunkStorerForReview *store.QdrantStorer
-	if chunkStorer, err := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension); err != nil {
-		slog.Warn("qdrant storer for chunk detail failed", "error", err)
+	if chunkStorerForHandler := chunkStorerForReview; chunkStorerForHandler == nil {
+		slog.Warn("qdrant storer for chunk detail unavailable")
 		chunksHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "vector store unavailable")
 		})
 	} else {
-		chunkStorerForReview = chunkStorer
-		defer chunkStorer.Close()
-		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorer, qs))
+		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorerForHandler, qs))
 	}
-	semanticReviewer, reviewerErr := configureSemanticReviewer()
-	if reviewerErr != nil {
-		slog.Error("failed to configure semantic Agent reviewer", "error", reviewerErr)
-		os.Exit(1)
-	}
-	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc, documents: docStore, chunks: chunkStorerForReview, semantic: semanticReviewer}, releaseCenterStore, releaseCenterStore)
+	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc}, releaseCenterStore, releaseCenterStore)
 	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
 	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	apiV1.Handle("/v1/release-center/review-reports/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReviewReport(releaseCenterStore)))
@@ -560,21 +561,6 @@ func main() {
 	}
 
 	slog.Info("api server shutdown complete")
-}
-
-func configureSemanticReviewer() (releasecenter.SemanticReviewer, error) {
-	configured, err := releasecenter.NewHTTPSemanticReviewer(releasecenter.SemanticReviewerOptions{
-		Endpoint:      config.EnvStr("AGENT_SEMANTIC_REVIEW_ENDPOINT", config.EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions")),
-		APIKey:        config.EnvSecret("AGENT_SEMANTIC_REVIEW_API_KEY", config.EnvSecret("LLM_API_KEY", "")),
-		Model:         config.EnvStr("AGENT_SEMANTIC_REVIEW_MODEL", config.EnvStr("LLM_MODEL", "deepseek-v4-flash")),
-		PromptVersion: config.EnvStr("AGENT_SEMANTIC_REVIEW_PROMPT_VERSION", "semantic-review-v1"),
-		MaxTokens:     config.EnvInt("AGENT_SEMANTIC_REVIEW_MAX_TOKENS", 1200),
-		Timeout:       config.EnvDuration("AGENT_SEMANTIC_REVIEW_TIMEOUT", 45*time.Second),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return configured, nil
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {

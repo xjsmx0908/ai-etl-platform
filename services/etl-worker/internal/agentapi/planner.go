@@ -16,24 +16,26 @@ import (
 
 // LLMPlannerOptions configures an OpenAI-compatible planner client.
 type LLMPlannerOptions struct {
-	Endpoint  string
-	APIKey    string
-	Model     string
-	MaxTokens int
-	Timeout   time.Duration
-	Tools     []agent.ToolDefinition
-	Client    *http.Client
+	Endpoint     string
+	APIKey       string
+	Model        string
+	MaxTokens    int
+	Timeout      time.Duration
+	Tools        []agent.ToolDefinition
+	Client       *http.Client
+	SystemPrompt string
 }
 
 // LLMPlanner asks a chat-completions model for the next structured Agent decision.
 type LLMPlanner struct {
-	endpoint  string
-	apiKey    string
-	model     string
-	maxTokens int
-	client    *http.Client
-	tools     map[string]agent.ToolDefinition
-	toolList  []plannerTool
+	endpoint             string
+	apiKey               string
+	model                string
+	maxTokens            int
+	client               *http.Client
+	tools                map[string]agent.ToolDefinition
+	toolList             []plannerTool
+	systemPromptOverride string
 }
 
 // plannerTool is the OpenAI function-calling shape the provider expects:
@@ -147,13 +149,14 @@ func NewLLMPlanner(opts LLMPlannerOptions) (*LLMPlanner, error) {
 	}
 
 	return &LLMPlanner{
-		endpoint:  endpoint,
-		apiKey:    opts.APIKey,
-		model:     model,
-		maxTokens: opts.MaxTokens,
-		client:    client,
-		tools:     tools,
-		toolList:  toolList,
+		endpoint:             endpoint,
+		apiKey:               opts.APIKey,
+		model:                model,
+		maxTokens:            opts.MaxTokens,
+		client:               client,
+		tools:                tools,
+		toolList:             toolList,
+		systemPromptOverride: strings.TrimSpace(opts.SystemPrompt),
 	}, nil
 }
 
@@ -308,6 +311,10 @@ func (p *LLMPlanner) validateDecision(raw []byte) (agent.PlanDecision, error) {
 }
 
 func (p *LLMPlanner) systemPrompt() string {
+	if p.systemPromptOverride != "" {
+		tools, _ := json.Marshal(p.toolList)
+		return p.systemPromptOverride + " Registered tools JSON: " + string(tools)
+	}
 	tools, _ := json.Marshal(p.toolList)
 	return "You are a stateful enterprise Agent planner. Return exactly one JSON object and no markdown. " +
 		"Allowed decisions: " +
