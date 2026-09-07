@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/config"
@@ -45,6 +47,7 @@ func TestAutonomousReviewRulePlannerCompletesEvidenceLoop(t *testing.T) {
 	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
 	service := newServiceWithComponents(orchestrator, runStore)
 	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
 
 	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
 	if err != nil {
@@ -68,6 +71,170 @@ func TestAutonomousReviewRulePlannerCompletesEvidenceLoop(t *testing.T) {
 	}
 }
 
+func TestAutonomousReviewResumesPersistedRunWithoutDuplicatingSteps(t *testing.T) {
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}, runStore); err != nil {
+		t.Fatal(err)
+	}
+	actor := agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
+	first := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	started, err := first.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err = first.ExecuteNext(context.Background(), started.ID, actor)
+	if err != nil || len(started.Steps) != 1 || started.Steps[0].ToolName != getReviewContextToolName {
+		t.Fatalf("expected one persisted review step before restart: run=%+v err=%v", started, err)
+	}
+
+	second := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	service := newServiceWithComponents(second, runStore)
+	service.reviewOrchestrator = second
+	service.reviewWorkflow = workflow
+	report, err := service.ReviewPublicationReport(context.Background(), actor, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || report.RunID != started.ID || report.Candidate == nil || *report.Candidate != candidate {
+		t.Fatalf("resumed report=%+v", report)
+	}
+	resumed, err := runStore.LoadRun(context.Background(), started.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Steps) != 5 {
+		t.Fatalf("expected four tools plus final step, got %d steps", len(resumed.Steps))
+	}
+	if resumed.Steps[0].ToolName != getReviewContextToolName || resumed.Steps[1].ToolName != getExactCandidateChunksToolName {
+		t.Fatalf("resume changed persisted step order: %+v", resumed.Steps)
+	}
+}
+
+func TestAutonomousReviewRejectsCandidateDriftDuringResume(t *testing.T) {
+	candidate := reviewCandidate()
+	changed := candidate
+	changed.GenerationID = "generation-2"
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}, runStore); err != nil {
+		t.Fatal(err)
+	}
+	actor := agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
+	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	started, err := orchestrator.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err = orchestrator.ExecuteNext(context.Background(), started.ID, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow.assessment.Candidate = &changed
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
+	report, err := service.ResumePublicationReport(context.Background(), actor, started.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "failed" || report.Recommendation != "manual_review" || !strings.Contains(report.Summary, "exact candidate changed") {
+		t.Fatalf("candidate drift was not failed closed: %+v", report)
+	}
+}
+
+func TestAutonomousReviewRedisRestartResumesSameRun(t *testing.T) {
+	addr := os.Getenv("AGENT_REDIS_REVIEW_TEST_ADDR")
+	if addr == "" {
+		t.Skip("set AGENT_REDIS_REVIEW_TEST_ADDR to run Redis review restart integration test")
+	}
+	candidate := reviewCandidate()
+	candidate.DocumentID = "redis-" + strings.ReplaceAll(t.Name(), "/", "-")
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	documents := reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}}
+	chunks := reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}
+	actor := agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
+	firstStore, err := agent.NewRedisStore(addr, os.Getenv("AGENT_REDIS_REVIEW_TEST_PASSWORD"), 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLocks, err := agent.NewRedisLockManager(addr, os.Getenv("AGENT_REDIS_REVIEW_TEST_PASSWORD"), 0, time.Hour)
+	if err != nil {
+		_ = firstStore.Close()
+		t.Fatal(err)
+	}
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow, documents, chunks, firstStore); err != nil {
+		_ = firstStore.Close()
+		_ = firstLocks.Close()
+		t.Fatal(err)
+	}
+	first, err := agent.NewOrchestrator(firstStore, firstLocks, registry, ReviewRulePlanner{}, agent.Options{NodeID: "redis-review-a", MaxSteps: 8, LockTTL: time.Second, MaxTokenBudget: 32000, Authorizer: agent.StaticAuthorizer{}})
+	if err != nil {
+		_ = firstStore.Close()
+		_ = firstLocks.Close()
+		t.Fatal(err)
+	}
+	runID := reviewRunID(actor.TenantID, candidate)
+	run, err := first.StartOrResume(context.Background(), actor, runID, documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
+	if err != nil {
+		_ = firstStore.Close()
+		_ = firstLocks.Close()
+		t.Fatal(err)
+	}
+	run, err = first.ExecuteNext(context.Background(), run.ID, actor)
+	if err != nil || len(run.Steps) != 1 {
+		_ = firstStore.Close()
+		_ = firstLocks.Close()
+		t.Fatalf("first instance did not persist resumable step: run=%+v err=%v", run, err)
+	}
+	_ = firstStore.Close()
+	_ = firstLocks.Close()
+
+	secondStore, err := agent.NewRedisStore(addr, os.Getenv("AGENT_REDIS_REVIEW_TEST_PASSWORD"), 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondStore.Close()
+	secondLocks, err := agent.NewRedisLockManager(addr, os.Getenv("AGENT_REDIS_REVIEW_TEST_PASSWORD"), 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondLocks.Close()
+	secondRegistry := agent.NewRegistry()
+	if err := registerReviewTools(secondRegistry, workflow, documents, chunks, secondStore); err != nil {
+		t.Fatal(err)
+	}
+	second, err := agent.NewOrchestrator(secondStore, secondLocks, secondRegistry, ReviewRulePlanner{}, agent.Options{NodeID: "redis-review-b", MaxSteps: 8, LockTTL: time.Second, MaxTokenBudget: 32000, Authorizer: agent.StaticAuthorizer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newServiceWithComponents(second, secondStore)
+	service.reviewOrchestrator = second
+	service.reviewWorkflow = workflow
+	report, err := service.ReviewPublicationReport(context.Background(), actor, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RunID != runID || report.Status != "completed" {
+		t.Fatalf("redis restart did not resume same review run: %+v", report)
+	}
+	resumed, err := secondStore.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Steps) != 5 || resumed.Steps[0].IdempotencyKey != "agent:"+runID+":1:"+getReviewContextToolName {
+		t.Fatalf("redis restart changed review audit chain: %+v", resumed)
+	}
+}
+
 func TestAutonomousReviewPreservesDeterministicSensitiveFinding(t *testing.T) {
 	candidate := reviewCandidate()
 	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
@@ -81,6 +248,7 @@ func TestAutonomousReviewPreservesDeterministicSensitiveFinding(t *testing.T) {
 	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
 	service := newServiceWithComponents(orchestrator, runStore)
 	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
 
 	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
 	if err != nil {
@@ -104,6 +272,7 @@ func TestAutonomousReviewEscalatesConfidentialSensitiveFindingWithoutBlocking(t 
 	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
 	service := newServiceWithComponents(orchestrator, runStore)
 	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
 
 	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
 	if err != nil {
@@ -127,6 +296,7 @@ func TestReviewToolsFailClosedOnIncompleteExactCandidate(t *testing.T) {
 	}
 	service := newServiceWithComponents(newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8), runStore)
 	service.reviewOrchestrator = service.orchestrator
+	service.reviewWorkflow = workflow
 	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
 	if err != nil {
 		t.Fatal(err)
@@ -153,6 +323,7 @@ func TestAutonomousReviewFailsClosedWhenTokenBudgetIsExceeded(t *testing.T) {
 	}
 	service := newServiceWithComponents(orchestrator, runStore)
 	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
 	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Permissions: []string{"agent"}}, candidate.DocumentID)
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +374,7 @@ func TestAutonomousReviewLLMPlannerUsesPersistedObservations(t *testing.T) {
 	orchestrator := newTestOrchestrator(t, runStore, registry, planner, 8)
 	service := newServiceWithComponents(orchestrator, runStore)
 	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
 	service.reviewModel = "review-model"
 
 	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)

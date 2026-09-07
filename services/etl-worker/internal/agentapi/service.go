@@ -16,6 +16,7 @@ import (
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/releasecenter"
 	"ai-etl-pipeline/internal/store"
@@ -43,6 +44,7 @@ type Observer interface {
 type Service struct {
 	orchestrator       *agent.Orchestrator
 	reviewOrchestrator *agent.Orchestrator
+	reviewWorkflow     PublicationWorkflow
 	reviewModel        string
 	store              agent.Store
 	approvalStore      agent.ApprovalStore
@@ -194,6 +196,7 @@ func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusSt
 			return nil, err
 		}
 		service.reviewOrchestrator = reviewOrchestrator
+		service.reviewWorkflow = dependencies.PublicationWorkflow
 		if cfg.AgentPlannerType != config.AgentPlannerRule {
 			service.reviewModel = configuredReviewModel()
 		}
@@ -207,11 +210,42 @@ func (s *Service) ReviewPublicationReport(ctx context.Context, actor agent.Actor
 	if s == nil || s.reviewOrchestrator == nil {
 		return releasecenter.AgentReview{}, fmt.Errorf("review agent is not configured")
 	}
-	run, err := s.reviewOrchestrator.Start(ctx, actor, documentReviewTaskPrefix+strings.TrimSpace(documentID))
+	if s.reviewWorkflow == nil {
+		return releasecenter.AgentReview{}, fmt.Errorf("review publication workflow is not configured")
+	}
+	documentID = strings.TrimSpace(documentID)
+	assessment, err := s.reviewWorkflow.Assess(ctx, publicationworkflow.Actor{TenantID: actor.TenantID, UserID: actor.UserID, Role: actor.Role}, documentID)
 	if err != nil {
 		return releasecenter.AgentReview{}, err
 	}
-	run, err = s.reviewOrchestrator.RunToCompletion(ctx, run.ID, actor)
+	if !assessment.Ready || assessment.Candidate == nil {
+		return releasecenter.AgentReview{}, publicationworkflow.ErrNotReady
+	}
+	candidate := *assessment.Candidate
+	run, err := s.reviewOrchestrator.StartOrResume(ctx, actor, reviewRunID(actor.TenantID, candidate), documentReviewTaskPrefix+documentID, map[string]interface{}{
+		"review_candidate": structMap(candidate),
+	})
+	if err != nil {
+		return releasecenter.AgentReview{}, err
+	}
+	return s.resumePublicationReview(ctx, actor, run.ID)
+}
+
+// ResumePublicationReport continues a previously persisted Review Agent run.
+// It is used after a worker restart or lock handoff and never creates a new
+// run, preserving the existing observations and idempotency keys.
+func (s *Service) ResumePublicationReport(ctx context.Context, actor agent.Actor, runID string) (releasecenter.AgentReview, error) {
+	if s == nil || s.reviewOrchestrator == nil {
+		return releasecenter.AgentReview{}, fmt.Errorf("review agent is not configured")
+	}
+	return s.resumePublicationReview(ctx, actor, strings.TrimSpace(runID))
+}
+
+func (s *Service) resumePublicationReview(ctx context.Context, actor agent.Actor, runID string) (releasecenter.AgentReview, error) {
+	if strings.TrimSpace(runID) == "" {
+		return releasecenter.AgentReview{}, fmt.Errorf("review run id is required")
+	}
+	run, err := s.reviewOrchestrator.RunToCompletion(ctx, runID, actor)
 	if err != nil {
 		return releasecenter.AgentReview{RunID: run.ID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: err.Error()}, nil
 	}

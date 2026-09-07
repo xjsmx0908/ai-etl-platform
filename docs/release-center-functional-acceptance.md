@@ -80,6 +80,13 @@ docker run --rm \
   sh -c 'go test ./cmd/api -run "TestReleaseCenterHTTP" -count=1'
 ```
 
+Review Agent 重启/幂等专项验收由 `internal/agentapi` 的
+`TestAutonomousReviewResumesPersistedRunWithoutDuplicatingSteps` 覆盖：先持久化
+一个已完成的 review tool step，再由新的 Service/Orchestrator 通过生产预审入口自动继续同一 Run，验证 Run ID、
+观察证据、工具顺序和稳定幂等键不变，不新建第二条预审链。
+同一专项还验证 `TestAutonomousReviewRejectsCandidateDriftDuringResume`：恢复期间
+generation/version 改变时必须 fail-closed，不能切换到新候选继续审查。
+
 该层注入 error、显式 `failed/error`、缺失 status、非法 recommendation/risk，
 并验证 internal high-risk 双管理员策略和请求发起人自审拒绝。它使用生产 HTTP
 handler 和协调器，只替换上游 `ReviewAdapter`，避免为了验收引入生产测试后门。

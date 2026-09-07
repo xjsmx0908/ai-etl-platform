@@ -2,6 +2,8 @@ package agentapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -156,6 +158,13 @@ func loadReviewBinding(ctx context.Context, inv agent.ToolInvocation, workflow P
 	if !assessment.Ready || assessment.Candidate == nil {
 		return reviewBinding{}, fmt.Errorf("exact candidate is not ready")
 	}
+	expected, err := reviewRunCandidate(run)
+	if err != nil {
+		return reviewBinding{}, err
+	}
+	if expected != *assessment.Candidate {
+		return reviewBinding{}, fmt.Errorf("exact candidate changed during review")
+	}
 	document, found, err := documents.Get(ctx, inv.TenantID, documentID)
 	if err != nil {
 		return reviewBinding{}, err
@@ -189,6 +198,27 @@ func loadReviewBinding(ctx context.Context, inv agent.ToolInvocation, workflow P
 		return reviewBinding{}, fmt.Errorf("exact candidate chunk count mismatch: got %d want %d", len(exactChunks), assessment.Candidate.ExpectedChunkCount)
 	}
 	return reviewBinding{assessment: assessment, candidate: *assessment.Candidate, document: document, chunks: exactChunks}, nil
+}
+
+func reviewRunCandidate(run agent.Run) (publicationworkflow.Candidate, error) {
+	values, ok := run.Memory["review_candidate"].(map[string]interface{})
+	if !ok {
+		return publicationworkflow.Candidate{}, fmt.Errorf("review run has no exact candidate binding")
+	}
+	candidate, err := candidateFromMap(values)
+	if err != nil || candidate.DocumentID == "" {
+		return publicationworkflow.Candidate{}, fmt.Errorf("review run has invalid exact candidate binding")
+	}
+	return candidate, nil
+}
+
+func reviewRunID(tenantID string, candidate publicationworkflow.Candidate) string {
+	payload, _ := json.Marshal(struct {
+		TenantID  string                        `json:"tenant_id"`
+		Candidate publicationworkflow.Candidate `json:"candidate"`
+	}{TenantID: strings.TrimSpace(tenantID), Candidate: candidate})
+	digest := sha256.Sum256(payload)
+	return "review-run-" + hex.EncodeToString(digest[:16])
 }
 
 func reviewPage(arguments map[string]interface{}) (int, int, error) {

@@ -104,6 +104,13 @@
 - Act：新增 `AGENT_REVIEW_MAX_TOKEN_BUDGET` 配置、Run/Step token 用量、Planner usage 解析与重试累计、超限失败路径、Web 审计展示及回归测试。
 - Refine：Go 全模块、`go vet`、175 项 Python 契约、Web lint/build 和发布中心隔离栈 10 场景矩阵通过；真实模型预算消耗和恢复专项证据仍属于 P2.4-R1 验收项。
 
+## 2026-09-07 - Review Agent 恢复与 exact candidate 绑定
+
+- Perceive：通用 Orchestrator 已能恢复 waiting tool，但 Review Agent 入口每次重试都会新建随机 Run，且恢复时重新 Assess 可能切换到新候选。
+- Reason：预审审计链必须按 tenant + exact candidate 使用稳定 Run ID；Run Memory 保存候选快照，恢复时候选漂移立即 fail-closed。
+- Act：新增 `StartOrResume`、稳定 review Run ID、`ResumePublicationReport`，并在 Review 工具加载时强制校验持久化候选；补充恢复不重复步骤与候选漂移测试。
+- Refine：`internal/agent`、`internal/agentapi` 聚焦测试和临时 Redis 跨实例重启测试通过；发布隔离栈的 Redis/Compose 故障注入仍需作为部署专项证据保留。
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。

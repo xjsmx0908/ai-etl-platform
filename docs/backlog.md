@@ -33,7 +33,7 @@
 ### Agent 预审剩余工作排序（按整体功能完整度）
 
 1. **累计 token 预算控制**（中等，代码已完成）：按整个 Review Run 累计模型 token，超限时持久化失败并转人工；真实模型终止证据仍随 R1 验收补齐。
-2. **预审恢复与幂等专项验收**（中等）：验证崩溃/锁中断后的断点恢复、审计连续性和工具不重复执行。
+2. **预审恢复与幂等专项验收**（中等，代码、单测与临时 Redis 验证已完成）：验证崩溃/锁中断后的断点恢复、审计连续性和工具不重复执行；发布隔离栈的 Redis/Compose 故障证据仍待作为部署门禁保留。
 3. **真实模型四场景验收**（中等）：验证普通、敏感信息、提示词注入、证据不足，并记录延迟、token 和人工转交。
 4. **Review Report 生命周期**（中到大）：实现 TTL、过期状态、候选变化重审、清理调度和历史证据保留。
 5. **完整语义/隐私/合规审查**（大）：扩展政策库、结构化分类、版本差异和跨文档冲突审查。
@@ -44,7 +44,7 @@
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
 | P2.4-R2 | 企业审批组与可配置策略 | completed | 已交付租户隔离审批组、成员启停、空间/权限/风险匹配、优先级、双人审批、自审控制、策略持久化和管理 API；企业 IdP 同步、委托和定时升级另行立项 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
-| P2.4-R1 | 自主预审 Agent | acceptance in progress | 最小自主闭环、累计 token 预算和发布中心 10 场景矩阵已完成；补齐真实模型、恢复和预算终止证据后关闭 | [`docs/agent-pre-review-architecture-and-implementation-plan.md`](agent-pre-review-architecture-and-implementation-plan.md) |
+| P2.4-R1 | 自主预审 Agent | acceptance in progress | 最小自主闭环、累计 token 预算、Review Run 恢复/幂等和发布中心 10 场景矩阵已完成；补齐真实模型及部署故障证据后关闭 | [`docs/agent-pre-review-architecture-and-implementation-plan.md`](agent-pre-review-architecture-and-implementation-plan.md) |
 | P2.4-R5 | Agent 周边编排能力 | planned | 评估多工具 Saga、异步审批通知和外部工作流引擎；每项定义可靠性、审计和失败补偿验收 | [`docs/agent-orchestrator-design.md`](agent-orchestrator-design.md) |
 | P2.4-R3 | Review report 生命周期 | deferred | 暂不实施；待 R1、R5 完成后再决定报告 TTL、过期状态、清理/重审调度和历史审计保留策略 | [`services/etl-worker/internal/releasecenter/releasecenter.go`](../services/etl-worker/internal/releasecenter/releasecenter.go) |
 | P2.4-R4 | `success` 状态数据库兼容 | completed | 已将 `success`（含大小写变体）规范化为 PostgreSQL 允许的 `completed`，并补充协调器回归测试；后续真实 PG 验收随发布中心矩阵执行 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |

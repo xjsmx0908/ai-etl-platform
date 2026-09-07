@@ -99,6 +99,16 @@ func NewOrchestrator(store Store, locks LockManager, registry *Registry, planner
 
 // Start creates a new durable Agent run.
 func (o *Orchestrator) Start(ctx context.Context, actor Actor, task string) (Run, error) {
+	return o.StartOrResume(ctx, actor, newRunID(), task, nil)
+}
+
+// StartOrResume creates a durably identified run or returns the matching
+// existing run after a retry, process restart, or lock handoff.
+func (o *Orchestrator) StartOrResume(ctx context.Context, actor Actor, runID, task string, memory map[string]interface{}) (Run, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return Run{}, fmt.Errorf("agent run id is required")
+	}
 	task = strings.TrimSpace(task)
 	if task == "" {
 		return Run{}, fmt.Errorf("agent task is required")
@@ -109,7 +119,7 @@ func (o *Orchestrator) Start(ctx context.Context, actor Actor, task string) (Run
 
 	now := o.now().UTC()
 	run := Run{
-		ID:             newRunID(),
+		ID:             runID,
 		TenantID:       actor.TenantID,
 		UserID:         actor.UserID,
 		Version:        1,
@@ -117,12 +127,19 @@ func (o *Orchestrator) Start(ctx context.Context, actor Actor, task string) (Run
 		State:          StateCreated,
 		MaxSteps:       o.maxSteps,
 		MaxTokenBudget: o.maxTokenBudget,
-		Memory:         map[string]interface{}{},
+		Memory:         cloneMap(memory),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
 	if err := o.store.CreateRun(ctx, run); err != nil {
-		return Run{}, err
+		existing, loadErr := o.store.LoadRun(ctx, runID)
+		if loadErr != nil {
+			return Run{}, err
+		}
+		if existing.TenantID != actor.TenantID || existing.UserID != actor.UserID || existing.Task != task {
+			return Run{}, fmt.Errorf("run %q binding conflict", runID)
+		}
+		return existing, nil
 	}
 	return run, nil
 }
