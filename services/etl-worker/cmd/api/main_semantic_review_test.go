@@ -72,6 +72,7 @@ func setSemanticReviewEnv(t *testing.T, endpoint, model, apiKey string) {
 	t.Setenv("AGENT_SEMANTIC_REVIEW_ENDPOINT", "")
 	t.Setenv("AGENT_SEMANTIC_REVIEW_MODEL", "")
 	t.Setenv("AGENT_SEMANTIC_REVIEW_API_KEY", "")
+	t.Setenv("AGENT_SEMANTIC_REVIEW_API_KEY_FILE", "")
 }
 
 func semanticReviewTestServer(t *testing.T, expectedModel, expectedKey string) *httptest.Server {

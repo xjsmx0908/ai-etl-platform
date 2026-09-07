@@ -161,7 +161,7 @@ Group membership is checked again for every decision; one or two distinct
 decisions are enforced from server-side policy. The final approval re-assesses
 the exact candidate and calls `publicationworkflow.PublishApproved`.
 
-The optional model-backed R1 reviewer is configured with
+The model-backed R1 reviewer is configured with
 `AGENT_SEMANTIC_REVIEW_ENDPOINT`, `AGENT_SEMANTIC_REVIEW_API_KEY`, and
 `AGENT_SEMANTIC_REVIEW_MODEL` optionally override the RAG query's
 `LLM_ENDPOINT`, `LLM_API_KEY` (including `LLM_API_KEY_FILE`), and `LLM_MODEL`.
