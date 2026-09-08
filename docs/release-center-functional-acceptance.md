@@ -77,12 +77,25 @@ Token 预算专项验收（真实模型、独立隔离栈）:
 bash scripts/release-center-token-budget-acceptance.sh
 ```
 
+Review Agent 部署恢复专项验收（隔离栈 Redis/Compose 故障）:
+
+```bash
+bash scripts/release-center-review-recovery-acceptance.sh
+```
+
 该专项强制 `AGENT_PLANNER_TYPE=auto` 和显式真实 `LLM_ENDPOINT`/`LLM_MODEL`，通过公共
 HTTP 上传受管文档并观察发布请求、只读 review report 和 Agent Run。验收必须证明累计
 `tokens_used` 超过 `max_token_budget` 时 Run 以 `token_budget_exceeded` 失败、请求进入
 `manual_exception`、报告建议 `manual_review` 且每个 Planner step 的 usage 可加总回 Run
 累计值。报告默认保存在 `artifacts/release-center-token-budget-acceptance/`，内容经过
 凭据和敏感字段脱敏。
+
+恢复专项在隔离栈中用可暂停的 Review Planner 替身制造“已持久化至少一个工具步骤”的窗口，
+然后通过 Compose 控制面 `kill query-api` 并停止/恢复 `redis-state`。业务输入和终态仍通过
+认证 HTTP 观察。验收必须证明恢复后仍是同一条 Review Run、首个工具步骤的幂等键不变、
+四个只读工具不重复执行，并且最终进入可审批状态。报告默认保存在
+`artifacts/release-center-review-recovery-acceptance/`，不得写入文档正文、完整 prompt
+或凭据。该门禁验证崩溃恢复，不替代真实模型四场景验收。
 
 生产适配器不会自然生成的上游异常证据由真实 HTTP handler 功能测试覆盖：
 
@@ -93,12 +106,13 @@ docker run --rm \
   sh -c 'go test ./cmd/api -run "TestReleaseCenterHTTP" -count=1'
 ```
 
-Review Agent 重启/幂等专项验收由 `internal/agentapi` 的
+Review Agent 重启/幂等代码路径由 `internal/agentapi` 的
 `TestAutonomousReviewResumesPersistedRunWithoutDuplicatingSteps` 覆盖：先持久化
 一个已完成的 review tool step，再由新的 Service/Orchestrator 通过生产预审入口自动继续同一 Run，验证 Run ID、
 观察证据、工具顺序和稳定幂等键不变，不新建第二条预审链。
 同一专项还验证 `TestAutonomousReviewRejectsCandidateDriftDuringResume`：恢复期间
 generation/version 改变时必须 fail-closed，不能切换到新候选继续审查。
+部署故障证据必须另外运行 `scripts/release-center-review-recovery-acceptance.sh`，不能只靠这些单测关闭 R1。
 
 该层注入 error、显式 `failed/error`、缺失 status、非法 recommendation/risk，
 并验证 internal high-risk 双管理员策略和请求发起人自审拒绝。它使用生产 HTTP

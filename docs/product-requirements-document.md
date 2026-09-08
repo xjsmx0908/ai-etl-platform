@@ -11,9 +11,9 @@ administrators control what is eligible for use.
 The active milestone is P2.4-R1: finish acceptance of a genuinely autonomous,
 read-only Agent pre-review loop rather than a fixed workflow with one model
 call. The minimum loop is implemented and integrated with Knowledge Release
-Center. Remaining completion gates are real-model behavior and focused
-recovery/budget termination evidence; broader compliance classification,
-external policy retrieval, Saga, and report lifecycle remain later scope.
+Center. Remaining completion gates are the remaining real-model scenarios.
+Broader compliance classification, external policy retrieval, Saga, and report
+lifecycle remain later scope.
 
 ## Primary Users
 
@@ -77,8 +77,9 @@ P2.4-R1 has implemented this minimum autonomous loop, including strict
 status/recommendation/risk/findings validation, chunk evidence checks,
 candidate consistency checks, and fail-closed handling. The Review Agent
 directly reuses the RAG Query model endpoint, credentials, and model. The
-deterministic 10-scenario release-center matrix passes; real-model and
-review-specific recovery/budget acceptance remain before R1 is complete. This
+deterministic 10-scenario release-center matrix, token-budget termination, and
+Review Agent recovery evidence pass; the remaining real-model scenarios remain
+before R1 is complete. This
 bounded review is not a complete semantic, privacy, or compliance classifier.
 
 Approval policy is deterministic and risk-based:

@@ -54,5 +54,4 @@ production space. A catalog failure returns 503 and does not call the LLM.
 The deterministic release-center matrix must cover ordinary and confidential
 approval, Agent failure, sensitive-data and prompt-injection findings, stale
 exact candidates, rejection, idempotency/conflict, and tenant isolation. R1 is
-complete only after real-model scenarios and review-specific recovery/budget
-termination have also passed.
+complete only after the remaining real-model scenarios have also passed.

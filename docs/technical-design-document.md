@@ -173,8 +173,9 @@ existing Orchestrator, Redis Run/Step store, locking, fencing, timeout, and
 step limits. The production release-center adapter now consumes the validated
 `ReviewPublicationReport` result; the previous fixed handler scan and one-shot
 semantic-review client have been removed. The deterministic release-center
-10-scenario matrix passes. Real-model and review-specific recovery/budget
-evidence remain the final P2.4-R1 acceptance work.
+10-scenario matrix passes. Real-model token-budget termination evidence and
+Review Agent Redis/Compose recovery evidence are retained. The remaining
+real-model scenarios are the final P2.4-R1 acceptance work.
 
 The collector also reconciles pending requests against the current release and
 healthy active generation. A mismatched version, generation, digest, or release

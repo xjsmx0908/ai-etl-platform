@@ -42,6 +42,7 @@ docs/evals/private/*
 /artifacts/governance-acceptance/
 /artifacts/release-center-functional-acceptance/
 /artifacts/release-center-token-budget-acceptance/
+/artifacts/release-center-review-recovery-acceptance/
 
 # Real enterprise documents supplied for local-only evaluation
 rag_datas/

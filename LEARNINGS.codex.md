@@ -130,3 +130,10 @@
 - Reason：技术标识符保留英文有利于准确执行，但自然语言统一为中文可减少歧义和重复解释。
 - Act：统一 `AGENTS.md` 的自然语言规则，明确先给结论、限制要点数量、不输出内部思考过程和完整日志，并要求限定读取范围。
 - Refine：同步 `docs/backlog.md` 维护记录；后续任务继续使用 `CONTINUATION.md` 进行阶段续接。
+
+## 2026-09-08 - Review Agent 部署恢复验收
+
+- Perceive：恢复代码和临时 Redis 单测已有，但缺少隔离栈中 query-api 崩溃与 redis-state 往返后的部署证据。
+- Reason：必须先持久化至少一个只读工具步骤，再通过 Compose 强制中断接口并恢复 Redis；恢复后只能继续同一 Run，且不得重复执行已完成工具。预审替身需要监听 `0.0.0.0`，否则容器无法连到宿主机回环地址。
+- Act：新增可暂停 Planner 替身、隔离栈恢复脚本和脱敏报告；故障序列为 `kill query-api` → 停止/启动 `redis-state` → 再启动 query-api。
+- Refine：隔离栈验收通过，同一 `review-run` 在故障前后保持，首个工具幂等键不变，四个只读工具加最终报告共 5 步，请求进入 `approval_pending`。
