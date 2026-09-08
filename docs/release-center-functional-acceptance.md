@@ -15,6 +15,7 @@
 | Agent 失败状态 | Agent 无 error 但返回 `status=failed/error` | 必须按失败处理 | 不得进入普通成功预审 | `manual_exception` |
 | 确定性门禁阻塞 | 缺责任人、无生效日期、非受管空间、ETL 未完成或无精确候选 | 不应触发成功预审/发布 | 不生成可发布审批任务 | `needs_info` 或 `review_blocked` |
 | 版本在审批期间变化 | generation/version/revision/digest 任一变化 | 旧报告失效 | 旧审批不可发布 | `needs_info`，保留审计记录 |
+| 预审报告过期 | 待审批/待补齐报告超过 `RELEASE_REVIEW_TTL` | 报告 `expired`，请求 `needs_info` | 不得用过期报告批准 | 同一精确候选自动重审；已发布/已拒绝证据不改写 |
 | Agent 证据不完整 | status、recommendation 或 risk 缺失/非法 | fail-closed，标记失败 | 进入人工例外，不能按成功预审审批 | 需人工核对后处理 |
 | 内容级敏感信息 | exact candidate 切块包含密码、API key、身份证号或手机号 | 生成带 chunk 引用的 `sensitive_data_detected` finding；风险升为 high | internal 阻断；confidential 升级双人复核 | 不得静默放行 |
 | 内容级提示词注入 | 切块包含“忽略之前指令/输出系统提示词”等模式 | 生成 `prompt_injection_detected` finding，建议 `needs_info` | 不进入普通可发布审批 | 人工处理 |
@@ -144,7 +145,6 @@ handler 和协调器，只替换上游 `ReviewAdapter`，避免为了验收引�
 
 - 完整语义/隐私/合规审查及更广泛的模型化内容分类；
 - 企业 IdP 组同步、委托审批、定时升级和审批撤权；本地租户审批组与可配置策略已由 P2.4-R2 实现；
-- review report 的 TTL、过期清理和自动重审；
 - Agent 状态契约的真实 PostgreSQL 集成验收（协调器已将 `success` 规范化为 `completed`）；
 - 不内嵌 Camunda/Temporal 等 BPM 引擎。外部引擎通过治理通知 webhook 收事件，并通过
   `POST /v1/release-center/workflow/decision` 回写到现有幂等 `Decide`。
@@ -152,6 +152,9 @@ handler 和协调器，只替换上游 `ReviewAdapter`，避免为了验收引�
   P2.4-R5 交付，验收以单测和快速矩阵为准。
 
 在这些事项完成前，不得把当前规则扫描、风险升级或管理员审批结果描述为完整安全或合规结论。
+
+P2.4-R3 的实现边界：预审报告默认 7 天过期；过期待审批/待补齐记录进入 `needs_info` 并自动重审同一精确候选。
+已发布或已拒绝记录保留原报告。过期报告不得用于批准。Web 以 `review_expired` 提示等待重审。
 
 P2.4-R2 的实现边界：管理员可通过 `POST/GET /v1/release-center/approval-groups`、
 `POST /v1/release-center/approval-groups/{id}/members` 和
@@ -163,6 +166,5 @@ P2.4-R2 的实现边界：管理员可通过 `POST/GET /v1/release-center/approv
 
 当前主线是企业级 Agent 审计功能，不包含通用生产准入、企业身份部署或 OCR 验收。
 实施顺序固定为：P2.4-R1（自主预审 Agent，已完成）→ P2.4-R5（通知、补偿和外部编排，已完成）→
-P2.4-R3（报告生命周期）。P2.4-R2（审批组与策略）已完成。
-P2.4-R3 已明确后置；P1.9、P2.3、P2.5、P2.6 和 OCR 不得在未得到用户重新指定时
-改变该顺序。
+P2.4-R3（报告生命周期，已完成）。P2.4-R2（审批组与策略）已完成。
+P1.9、P2.3、P2.5、P2.6 和 OCR 不得在未得到用户重新指定时改变该顺序。

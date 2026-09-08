@@ -59,13 +59,15 @@ type ReviewJob struct {
 }
 
 type Coordinator struct {
-	workflow  PublicationWorkflow
-	documents reviewDocumentReader
-	reviewer  ReviewAdapter
-	store     coordinatorStore
-	policies  ApprovalPolicyStore
-	notify    notification.Enqueuer
-	now       func() time.Time
+	workflow        PublicationWorkflow
+	documents       reviewDocumentReader
+	reviewer        ReviewAdapter
+	store           coordinatorStore
+	policies        ApprovalPolicyStore
+	notify          notification.Enqueuer
+	now             func() time.Time
+	reviewTTL       time.Duration
+	reviewRetention time.Duration
 }
 
 type PublicationWorkflow interface {
@@ -84,6 +86,20 @@ func NewCoordinator(workflow PublicationWorkflow, documents reviewDocumentReader
 func (c *Coordinator) WithNotifier(n notification.Enqueuer) *Coordinator {
 	if c != nil {
 		c.notify = n
+	}
+	return c
+}
+
+func (c *Coordinator) WithReviewTTL(d time.Duration) *Coordinator {
+	if c != nil {
+		c.reviewTTL = d
+	}
+	return c
+}
+
+func (c *Coordinator) WithReviewRetention(d time.Duration) *Coordinator {
+	if c != nil {
+		c.reviewRetention = d
 	}
 	return c
 }
@@ -112,7 +128,36 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	if requestedBy == "" {
 		requestedBy = "release-center-agent"
 	}
+	requestID := stableID("request", actor.TenantID, candidate)
+	existing, existingErr := c.store.GetRequest(ctx, actor.TenantID, requestID)
+	if existingErr != nil && !errors.Is(existingErr, ErrRequestNotFound) {
+		return ReviewReport{}, ReleaseRequest{}, existingErr
+	}
+	if existingErr == nil {
+		switch existing.State {
+		case RequestPublished, RequestRejected:
+			report, err := c.store.GetReview(ctx, actor.TenantID, existing.ReviewID)
+			if err != nil {
+				return ReviewReport{}, ReleaseRequest{}, err
+			}
+			return report, existing, nil
+		}
+		if strings.TrimSpace(existing.RequestedBy) != "" {
+			requestedBy = existing.RequestedBy
+		}
+	}
 	reportID := stableID("review", actor.TenantID, candidate)
+	rereview := false
+	if existingErr == nil {
+		previous, err := c.store.GetReview(ctx, actor.TenantID, existing.ReviewID)
+		if err != nil && !errors.Is(err, ErrReviewNotFound) {
+			return ReviewReport{}, ReleaseRequest{}, err
+		}
+		if err == nil && ReviewIsExpired(previous, now) {
+			reportID = nextReviewID(previous.ID)
+			rereview = true
+		}
+	}
 	reviewResult, reviewErr := c.reviewer.Review(ctx, actor, documentID)
 	if reviewErr == nil && reviewResult.Candidate != nil && *reviewResult.Candidate != candidate {
 		reviewErr = fmt.Errorf("agent review returned a different exact candidate")
@@ -155,16 +200,32 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 		Recommendation: reviewResult.Recommendation, RiskLevel: reviewResult.RiskLevel,
 		Summary: reviewResult.Summary, Findings: reviewResult.Findings, Model: reviewResult.Model,
 		PromptVersion: reviewResult.PromptVersion, CreatedAt: now}
+	if c.reviewTTL > 0 {
+		report.ExpiresAt = now.Add(c.reviewTTL)
+	}
 	if err := c.store.SaveReview(ctx, report); err != nil {
 		return ReviewReport{}, ReleaseRequest{}, err
+	}
+	if rereview {
+		if err := c.store.ResetDecisions(ctx, actor.TenantID, requestID); err != nil {
+			return ReviewReport{}, ReleaseRequest{}, err
+		}
+	}
+	eventType := notification.EventRequestOpened
+	if rereview {
+		eventType = notification.EventRequestStateChanged
+	}
+	createdAt := now
+	if existingErr == nil && !existing.CreatedAt.IsZero() {
+		createdAt = existing.CreatedAt
 	}
 	if reviewErr == nil && report.Recommendation != "publish" {
 		state := RequestNeedsInfo
 		if report.Recommendation == "manual_review" {
 			state = RequestManualException
 		}
-		request := ReleaseRequest{ID: stableID("request", actor.TenantID, candidate), TenantID: actor.TenantID, DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: state, RequestedBy: requestedBy, CreatedAt: now, UpdatedAt: now}
-		if err := c.persistRequest(ctx, request, map[string]string{
+		request := ReleaseRequest{ID: requestID, TenantID: actor.TenantID, DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: state, RequestedBy: requestedBy, CreatedAt: createdAt, UpdatedAt: now}
+		if err := c.persistRequest(ctx, request, eventType, map[string]string{
 			"recommendation": report.Recommendation,
 			"risk_level":     string(report.RiskLevel),
 		}); err != nil {
@@ -187,12 +248,12 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 			policyDecision.State = RequestApprovalPending
 		}
 	}
-	request := ReleaseRequest{ID: stableID("request", actor.TenantID, candidate), TenantID: actor.TenantID,
+	request := ReleaseRequest{ID: requestID, TenantID: actor.TenantID,
 		DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: policyDecision.RequiredApprovals,
-		State: policyDecision.State, RequestedBy: requestedBy, CreatedAt: now, UpdatedAt: now,
+		State: policyDecision.State, RequestedBy: requestedBy, CreatedAt: createdAt, UpdatedAt: now,
 		PolicyID: configuredPolicy.ID, ApproverGroupID: configuredPolicy.ApproverGroupID,
 		AllowRequesterApproval: configuredPolicy.AllowRequesterApproval}
-	if err := c.persistRequest(ctx, request, map[string]string{
+	if err := c.persistRequest(ctx, request, eventType, map[string]string{
 		"recommendation": report.Recommendation,
 		"risk_level":     string(report.RiskLevel),
 	}); err != nil {
@@ -201,11 +262,14 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	return report, request, nil
 }
 
-func (c *Coordinator) persistRequest(ctx context.Context, request ReleaseRequest, extra map[string]string) error {
+func (c *Coordinator) persistRequest(ctx context.Context, request ReleaseRequest, eventType string, extra map[string]string) error {
 	if err := c.store.SaveRequest(ctx, request); err != nil {
 		return err
 	}
-	notifyRelease(ctx, c.notify, request, notification.EventRequestOpened, extra)
+	if eventType == "" {
+		eventType = notification.EventRequestOpened
+	}
+	notifyRelease(ctx, c.notify, request, eventType, extra)
 	return nil
 }
 
@@ -213,6 +277,11 @@ func stableID(prefix, tenant string, candidate publicationworkflow.Candidate) st
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%d\x00%s\x00%d", tenant, candidate.DocumentID, candidate.DocumentVersionID, candidate.GenerationID, candidate.ExpectedChunkCount, candidate.ExpectedChunkDigest, candidate.ReleaseRevision)
 	return prefix + "-" + hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+func nextReviewID(previousID string) string {
+	sum := sha256.Sum256([]byte(previousID + "\x00rereview"))
+	return "review-" + hex.EncodeToString(sum[:])[:16]
 }
 
 // RunPendingReviews retries durable jobs after crashes or temporary Agent outages.
@@ -224,6 +293,16 @@ func (c *Coordinator) RunPendingReviews(ctx context.Context, actor publicationwo
 	for _, request := range stale {
 		notifyRelease(ctx, c.notify, request, notification.EventRequestStateChanged, nil)
 	}
+	now := c.now().UTC()
+	expired, err := c.store.ExpireDueReviews(ctx, now, limit)
+	if err != nil {
+		return err
+	}
+	for _, request := range expired {
+		notifyRelease(ctx, c.notify, request, notification.EventRequestStateChanged, map[string]string{
+			"reason": "review_expired",
+		})
+	}
 	jobs, err := c.store.ListReviewJobs(ctx, limit)
 	if err != nil {
 		return err
@@ -234,6 +313,11 @@ func (c *Coordinator) RunPendingReviews(ctx context.Context, actor publicationwo
 			requestedBy = actor.UserID
 		}
 		if _, _, err := c.StartManagedReview(ctx, publicationworkflow.Actor{TenantID: job.TenantID, UserID: requestedBy, Role: actor.Role}, job.DocumentID); err != nil {
+			return err
+		}
+	}
+	if c.reviewRetention > 0 {
+		if _, err := c.store.PurgeExpiredReviews(ctx, now, c.reviewRetention, limit); err != nil {
 			return err
 		}
 	}

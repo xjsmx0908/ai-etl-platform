@@ -197,6 +197,14 @@ revision moves the old request to `needs_info` while preserving all review and
 decision rows. `manual_exception` remains publishable only through the same
 exact-candidate revalidation and requires an administrator-supplied reason.
 
+P2.4-R3 adds review-report TTL via `RELEASE_REVIEW_TTL` (default 168h) and
+retention via `RELEASE_REVIEW_RETENTION` (default 2160h). The collector expires
+due `completed`/`failed` reports whose requests are still pending, then
+rereviews the same exact candidate with a deterministic new report ID, resets
+prior decisions, and keeps the expired row. Published or rejected requests are
+not rewritten. Unreferenced expired reports older than the retention window are
+purged. `ValidateReviewBinding` rejects expired status or elapsed `expires_at`.
+
 ## P2.4 governance acceptance harness
 
 The governance overlay exposes worker metrics on loopback and replaces only its

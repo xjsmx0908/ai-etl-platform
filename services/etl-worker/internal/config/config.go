@@ -144,6 +144,8 @@ type Config struct {
 	AgentPlannerTimeout       time.Duration
 	AgentPlannerMaxTokens     int
 	AgentReviewMaxTokenBudget int64
+	ReleaseReviewTTL          time.Duration
+	ReleaseReviewRetention    time.Duration
 
 	// Kafka
 	KafkaBrokers               string
@@ -359,6 +361,8 @@ func Load() Config {
 		AgentPlannerTimeout:       EnvDuration("AGENT_PLANNER_TIMEOUT", 30*time.Second),
 		AgentPlannerMaxTokens:     EnvInt("AGENT_PLANNER_MAX_TOKENS", 512),
 		AgentReviewMaxTokenBudget: int64(EnvInt("AGENT_REVIEW_MAX_TOKEN_BUDGET", 32000)),
+		ReleaseReviewTTL:          EnvDuration("RELEASE_REVIEW_TTL", 168*time.Hour),
+		ReleaseReviewRetention:    EnvDuration("RELEASE_REVIEW_RETENTION", 2160*time.Hour),
 
 		// Kafka
 		KafkaBrokers:               EnvStr("KAFKA_BROKERS", "localhost:9092"),
@@ -661,6 +665,12 @@ func (c Config) validateAgentConfig() error {
 	}
 	if c.AgentReviewMaxTokenBudget < 1 || c.AgentReviewMaxTokenBudget > 10_000_000 {
 		return fmt.Errorf("AGENT_REVIEW_MAX_TOKEN_BUDGET must be between 1 and 10000000, got %d", c.AgentReviewMaxTokenBudget)
+	}
+	if c.ReleaseReviewTTL < 0 {
+		return fmt.Errorf("RELEASE_REVIEW_TTL must be >= 0, got %s", c.ReleaseReviewTTL)
+	}
+	if c.ReleaseReviewRetention < 0 {
+		return fmt.Errorf("RELEASE_REVIEW_RETENTION must be >= 0, got %s", c.ReleaseReviewRetention)
 	}
 	if c.ResolvedAgentPlannerType() == AgentPlannerLLM {
 		if strings.TrimSpace(c.AgentPlannerEndpoint) == "" {

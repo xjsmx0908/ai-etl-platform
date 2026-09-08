@@ -146,6 +146,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AgentApprovalTimeout != 15*time.Minute {
 		t.Errorf("expected AgentApprovalTimeout=15m, got %v", cfg.AgentApprovalTimeout)
 	}
+	if cfg.ReleaseReviewTTL != 168*time.Hour {
+		t.Errorf("expected ReleaseReviewTTL=168h, got %v", cfg.ReleaseReviewTTL)
+	}
+	if cfg.ReleaseReviewRetention != 2160*time.Hour {
+		t.Errorf("expected ReleaseReviewRetention=2160h, got %v", cfg.ReleaseReviewRetention)
+	}
 	if cfg.AgentPlannerType != AgentPlannerAuto {
 		t.Errorf("expected AgentPlannerType=auto, got %s", cfg.AgentPlannerType)
 	}
@@ -218,6 +224,8 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("AGENT_RUN_TTL", "2h")
 	os.Setenv("AGENT_RUN_TIMEOUT", "20m")
 	os.Setenv("AGENT_APPROVAL_TIMEOUT", "5m")
+	os.Setenv("RELEASE_REVIEW_TTL", "24h")
+	os.Setenv("RELEASE_REVIEW_RETENTION", "72h")
 	os.Setenv("AGENT_PLANNER_TYPE", "llm")
 	os.Setenv("AGENT_PLANNER_ENDPOINT", "http://planner:8080/v1/chat/completions")
 	os.Setenv("AGENT_PLANNER_API_KEY", "planner-key")
@@ -268,6 +276,8 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("AGENT_RUN_TTL")
 		os.Unsetenv("AGENT_RUN_TIMEOUT")
 		os.Unsetenv("AGENT_APPROVAL_TIMEOUT")
+		os.Unsetenv("RELEASE_REVIEW_TTL")
+		os.Unsetenv("RELEASE_REVIEW_RETENTION")
 		os.Unsetenv("AGENT_PLANNER_TYPE")
 		os.Unsetenv("AGENT_PLANNER_ENDPOINT")
 		os.Unsetenv("AGENT_PLANNER_API_KEY")
@@ -392,6 +402,12 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.AgentApprovalTimeout != 5*time.Minute {
 		t.Errorf("expected AgentApprovalTimeout=5m, got %v", cfg.AgentApprovalTimeout)
+	}
+	if cfg.ReleaseReviewTTL != 24*time.Hour {
+		t.Errorf("expected ReleaseReviewTTL=24h, got %v", cfg.ReleaseReviewTTL)
+	}
+	if cfg.ReleaseReviewRetention != 72*time.Hour {
+		t.Errorf("expected ReleaseReviewRetention=72h, got %v", cfg.ReleaseReviewRetention)
 	}
 	if cfg.AgentPlannerType != AgentPlannerLLM {
 		t.Errorf("expected AgentPlannerType=llm, got %s", cfg.AgentPlannerType)
@@ -790,6 +806,18 @@ func TestValidateAPI_AgentConfig(t *testing.T) {
 	cfg.AgentReviewMaxTokenBudget = 0
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Error("expected error for AgentReviewMaxTokenBudget < 1")
+	}
+
+	cfg = Load()
+	cfg.ReleaseReviewTTL = -time.Hour
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for ReleaseReviewTTL < 0")
+	}
+
+	cfg = Load()
+	cfg.ReleaseReviewRetention = -time.Hour
+	if err := cfg.ValidateAPI(); err == nil {
+		t.Error("expected error for ReleaseReviewRetention < 0")
 	}
 
 	cfg = Load()

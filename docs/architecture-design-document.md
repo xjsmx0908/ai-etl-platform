@@ -58,7 +58,9 @@ escalate the baseline. Group membership is rechecked at decision time, and a
 missing policy dependency fails closed. If the Agent is unavailable, the
 document enters an audited manual-exception path rather than being marked
 reviewed. A changed document version or generation invalidates the report and
-all pending decisions.
+all pending decisions. P2.4-R3 expires pending reports after a configured TTL
+and automatically rereviews the same exact candidate; published or rejected
+evidence is left unchanged.
 
 P2.4-R5 keeps publication and approval in the existing modules. A separate
 notification outbox records identifier-only governance events and delivers them

@@ -13,7 +13,8 @@ implemented, integrated with Knowledge Release Center, and accepted with the
 deterministic matrix plus real-model scenarios. P2.4-R5 is complete: durable approval notifications can reach WeCom/DingTalk and
 an optional external workflow webhook, and reverse compensation covers
 side-effecting Agent tools. Broader compliance classification, external policy
-retrieval, embedded BPM engines, and report lifecycle remain later scope.
+retrieval, and embedded BPM engines remain later scope. Report TTL, expiry,
+automatic rereview, and retention cleanup are delivered by P2.4-R3.
 
 ## Primary Users
 
@@ -119,3 +120,13 @@ same webhook contract and submit decisions through
 `POST /v1/release-center/workflow/decision`, which resolves an active tenant
 administrator and reuses the existing idempotent approval API. The platform
 does not embed a BPM engine.
+
+### P2.4-R3 review report lifecycle
+
+P2.4-R3 assigns a server-side TTL to stored review reports (default 7 days;
+`RELEASE_REVIEW_TTL=0` disables expiry). Expired pending reports move to
+`needs_info` and cannot be used to approve publication. The same exact
+candidate is automatically rereviewed with a new report ID while the expired
+row remains as audit evidence. Published or rejected requests keep their
+original report status. Expired unreferenced reports may be purged after
+`RELEASE_REVIEW_RETENTION` (default 90 days).

@@ -12,6 +12,7 @@ Knowledge Release Center 与自主 Agent 预审。
 - 预审直接复用 RAG Query 的 `LLM_ENDPOINT`、`LLM_API_KEY`/`LLM_API_KEY_FILE` 和 `LLM_MODEL`，无需配置 `AGENT_SEMANTIC_REVIEW_*`。
 - Go 全模块、`go vet`、Python 契约、Web lint/build、发布中心隔离栈 10 场景矩阵、真实模型预算终止、Review Agent 部署恢复和真实模型四场景验收已通过；P2.4-R1 MVP 已完成。
 - P2.4-R5 已完成：审批通知写入 outbox 后投递到企业微信/钉钉，并可转发外部工作流引擎；外部引擎通过 callback 回写现有审批决定。Agent 失败时对已完成的副作用工具做反向补偿。
+- P2.4-R3 已完成：预审报告默认 7 天有效；过期后同一文档版本会自动重审，已发布或已拒绝的记录保留当时证据。
 
 详细边界见 [`docs/agent-pre-review-architecture-and-implementation-plan.md`](docs/agent-pre-review-architecture-and-implementation-plan.md)，当前执行状态见 [`docs/backlog.md`](docs/backlog.md)。
 

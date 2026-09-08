@@ -521,7 +521,7 @@ func main() {
 	} else {
 		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorerForHandler, qs))
 	}
-	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc}, releaseCenterStore, releaseCenterStore).WithNotifier(notificationStore)
+	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc}, releaseCenterStore, releaseCenterStore).WithNotifier(notificationStore).WithReviewTTL(cfg.ReleaseReviewTTL).WithReviewRetention(cfg.ReleaseReviewRetention)
 	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
 	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	apiV1.Handle("/v1/release-center/review-reports/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReviewReport(releaseCenterStore)))

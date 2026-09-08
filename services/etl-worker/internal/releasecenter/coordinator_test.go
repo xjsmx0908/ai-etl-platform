@@ -3,6 +3,7 @@ package releasecenter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -46,10 +47,11 @@ type memoryStore struct {
 	reviews   map[string]ReviewReport
 	requests  map[string]ReleaseRequest
 	decisions map[string][]Decision
+	stale     map[string]bool
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{map[string]ReviewReport{}, map[string]ReleaseRequest{}, map[string][]Decision{}}
+	return &memoryStore{map[string]ReviewReport{}, map[string]ReleaseRequest{}, map[string][]Decision{}, map[string]bool{}}
 }
 
 func (s *memoryStore) SaveReview(_ context.Context, report ReviewReport) error {
@@ -64,6 +66,14 @@ func (s *memoryStore) GetReview(_ context.Context, _, id string) (ReviewReport, 
 	return report, nil
 }
 func (s *memoryStore) SaveRequest(_ context.Context, request ReleaseRequest) error {
+	if existing, ok := s.requests[request.ID]; ok {
+		if existing.State == RequestPublished || existing.State == RequestRejected {
+			return fmt.Errorf("release request cannot be updated")
+		}
+		if existing.Candidate != request.Candidate {
+			return fmt.Errorf("release request cannot be updated")
+		}
+	}
 	s.requests[request.ID] = request
 	return nil
 }
@@ -77,7 +87,23 @@ func (s *memoryStore) GetRequest(_ context.Context, _, id string) (ReleaseReques
 func (s *memoryStore) ListRequests(context.Context, string, int) ([]ReleaseRequest, error) {
 	return nil, nil
 }
-func (s *memoryStore) ListReviewJobs(context.Context, int) ([]ReviewJob, error) { return nil, nil }
+func (s *memoryStore) ListReviewJobs(context.Context, int) ([]ReviewJob, error) {
+	var jobs []ReviewJob
+	for _, request := range s.requests {
+		if request.State != RequestNeedsInfo {
+			continue
+		}
+		report := s.reviews[request.ReviewID]
+		if report.Status != "expired" {
+			continue
+		}
+		jobs = append(jobs, ReviewJob{
+			TenantID: request.TenantID, DocumentID: request.DocumentID,
+			RequestedBy: request.RequestedBy, Candidate: request.Candidate,
+		})
+	}
+	return jobs, nil
+}
 func (s *memoryStore) RecordDecision(_ context.Context, decision Decision) error {
 	for _, existing := range s.decisions[decision.RequestID] {
 		if existing.DecidedBy == decision.DecidedBy {
@@ -102,6 +128,9 @@ func (s *memoryStore) SetRequestState(_ context.Context, _, id string, state Req
 func (s *memoryStore) ReconcileStaleRequests(context.Context, int) ([]ReleaseRequest, error) {
 	var out []ReleaseRequest
 	for id, request := range s.requests {
+		if !s.stale[id] {
+			continue
+		}
 		if request.State != RequestApprovalPending && request.State != RequestManualException {
 			continue
 		}
@@ -110,6 +139,57 @@ func (s *memoryStore) ReconcileStaleRequests(context.Context, int) ([]ReleaseReq
 		out = append(out, request)
 	}
 	return out, nil
+}
+
+func (s *memoryStore) ExpireDueReviews(_ context.Context, now time.Time, _ int) ([]ReleaseRequest, error) {
+	var out []ReleaseRequest
+	for id, request := range s.requests {
+		if request.State != RequestApprovalPending && request.State != RequestManualException && request.State != RequestNeedsInfo {
+			continue
+		}
+		report, ok := s.reviews[request.ReviewID]
+		if !ok || (report.Status != "completed" && report.Status != "failed") {
+			continue
+		}
+		if report.ExpiresAt.IsZero() || now.Before(report.ExpiresAt) {
+			continue
+		}
+		report.Status = "expired"
+		s.reviews[report.ID] = report
+		request.State = RequestNeedsInfo
+		request.UpdatedAt = now
+		s.requests[id] = request
+		out = append(out, request)
+	}
+	return out, nil
+}
+
+func (s *memoryStore) PurgeExpiredReviews(_ context.Context, now time.Time, retention time.Duration, _ int) (int, error) {
+	if retention <= 0 {
+		return 0, nil
+	}
+	cutoff := now.Add(-retention)
+	referenced := map[string]struct{}{}
+	for _, request := range s.requests {
+		referenced[request.ReviewID] = struct{}{}
+	}
+	deleted := 0
+	for id, report := range s.reviews {
+		if report.Status != "expired" || report.ExpiresAt.IsZero() || report.ExpiresAt.After(cutoff) {
+			continue
+		}
+		if _, ok := referenced[id]; ok {
+			continue
+		}
+		delete(s.reviews, id)
+		deleted++
+	}
+	return deleted, nil
+}
+
+func (s *memoryStore) ResetDecisions(_ context.Context, _, requestID string) error {
+	delete(s.decisions, requestID)
+	return nil
 }
 
 func readyCandidate() publicationworkflow.Candidate {
@@ -393,6 +473,7 @@ func TestCoordinatorNotifiesStaleRequestReconciliation(t *testing.T) {
 	notes := notification.NewMemoryStore()
 	candidate := readyCandidate()
 	now := time.Now().UTC()
+	store.stale["request-stale"] = true
 	store.requests["request-stale"] = ReleaseRequest{ID: "request-stale", TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: "review-1", RequiredApprovals: 1, State: RequestApprovalPending, CreatedAt: now, UpdatedAt: now}
 	coordinator := NewCoordinator(&workflowStub{}, documentStub{}, reviewerStub{}, store).WithNotifier(notes)
 	if err := coordinator.RunPendingReviews(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "system", Role: "admin"}, 10); err != nil {
@@ -422,4 +503,219 @@ func containsEvent(types []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type callReviewer struct {
+	reviews []AgentReview
+	calls   int
+}
+
+func (s *callReviewer) Review(context.Context, publicationworkflow.Actor, string) (AgentReview, error) {
+	if len(s.reviews) == 0 {
+		return AgentReview{}, fmt.Errorf("no review configured")
+	}
+	idx := s.calls
+	if idx >= len(s.reviews) {
+		idx = len(s.reviews) - 1
+	}
+	s.calls++
+	return s.reviews[idx], nil
+}
+
+func TestCoordinatorSetsReviewExpiryWhenTTLConfigured(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: RiskLow}}, store).WithReviewTTL(168 * time.Hour)
+	coordinator.now = func() time.Time { return now }
+	report, _, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ExpiresAt.IsZero() || !report.ExpiresAt.Equal(now.Add(168*time.Hour)) {
+		t.Fatalf("expires_at=%v", report.ExpiresAt)
+	}
+}
+
+func TestCoordinatorOmitsExpiryWhenTTLDisabled(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: RiskLow}}, store)
+	report, _, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.ExpiresAt.IsZero() {
+		t.Fatalf("expires_at=%v", report.ExpiresAt)
+	}
+}
+
+func TestCoordinatorExpiresDueReviewsAndLeavesPublishedEvidence(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	candidate := readyCandidate()
+	pending := ReviewReport{ID: "review-pending", TenantID: "acme", DocumentID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, ReleaseRevision: candidate.ReleaseRevision, Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Minute)}
+	published := ReviewReport{ID: "review-published", TenantID: "acme", DocumentID: "doc-published", DocumentVersionID: "job-p", GenerationID: "gen-p", ReleaseRevision: 1, Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Minute)}
+	store.reviews[pending.ID] = pending
+	store.reviews[published.ID] = published
+	store.requests["request-pending"] = ReleaseRequest{ID: "request-pending", TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: pending.ID, RequiredApprovals: 1, State: RequestApprovalPending, RequestedBy: "uploader", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour)}
+	store.requests["request-published"] = ReleaseRequest{ID: "request-published", TenantID: "acme", DocumentID: "doc-published", Candidate: publicationworkflow.Candidate{DocumentID: "doc-published", DocumentVersionID: "job-p", GenerationID: "gen-p", ExpectedChunkCount: 1, ExpectedChunkDigest: "sha256:p", ReleaseRevision: 1}, ReviewID: published.ID, RequiredApprovals: 1, State: RequestPublished, RequestedBy: "uploader", CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-time.Hour)}
+	expired, err := store.ExpireDueReviews(context.Background(), now, 10)
+	if err != nil || len(expired) != 1 || expired[0].ID != "request-pending" {
+		t.Fatalf("expired=%+v err=%v", expired, err)
+	}
+	if store.reviews[pending.ID].Status != "expired" {
+		t.Fatalf("pending status=%s", store.reviews[pending.ID].Status)
+	}
+	if store.requests["request-pending"].State != RequestNeedsInfo {
+		t.Fatalf("pending state=%s", store.requests["request-pending"].State)
+	}
+	if store.reviews[published.ID].Status != "completed" || store.requests["request-published"].State != RequestPublished {
+		t.Fatalf("published was mutated: report=%+v request=%+v", store.reviews[published.ID], store.requests["request-published"])
+	}
+}
+
+func TestCoordinatorRereviewsExpiredCandidate(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	reviewer := &callReviewer{reviews: []AgentReview{
+		{Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, Summary: "first"},
+		{Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, Summary: "second"},
+	}}
+	notes := notification.NewMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewer, store).WithNotifier(notes).WithReviewTTL(time.Hour)
+	coordinator.now = func() time.Time { return now }
+	report, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID := report.ID
+	if err := store.RecordDecision(context.Background(), Decision{ID: "d1", TenantID: "acme", RequestID: request.ID, DecidedBy: "admin-1", Decision: "approved", DecidedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Hour)
+	if err := coordinator.RunPendingReviews(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "system", Role: "admin"}, 10); err != nil {
+		t.Fatal(err)
+	}
+	if store.reviews[firstID].Status != "expired" {
+		t.Fatalf("old status=%s", store.reviews[firstID].Status)
+	}
+	updated := store.requests[request.ID]
+	if updated.ReviewID == firstID || updated.State != RequestApprovalPending {
+		t.Fatalf("updated request=%+v", updated)
+	}
+	if _, ok := store.reviews[updated.ReviewID]; !ok || len(store.reviews) != 2 {
+		t.Fatalf("reviews=%v", store.reviews)
+	}
+	if updated.ReviewID != nextReviewID(firstID) {
+		t.Fatalf("review id=%s want %s", updated.ReviewID, nextReviewID(firstID))
+	}
+	if len(store.decisions[request.ID]) != 0 {
+		t.Fatalf("decisions=%v", store.decisions[request.ID])
+	}
+	if reviewer.calls != 2 {
+		t.Fatalf("reviewer calls=%d", reviewer.calls)
+	}
+	if store.reviews[updated.ReviewID].Summary != "second" {
+		t.Fatalf("new report=%+v", store.reviews[updated.ReviewID])
+	}
+	types := eventTypes(notes)
+	if !containsEvent(types, notification.EventRequestOpened) || !containsEvent(types, notification.EventRequestStateChanged) {
+		t.Fatalf("events=%v", types)
+	}
+}
+
+func TestCoordinatorDoesNotRereviewActiveNeedsInfo(t *testing.T) {
+	candidate := readyCandidate()
+	store := newMemoryStore()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	report := ReviewReport{ID: "review-info", TenantID: "acme", DocumentID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, ReleaseRevision: candidate.ReleaseRevision, Status: "completed", Recommendation: "needs_info", RiskLevel: RiskMedium, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	store.reviews[report.ID] = report
+	store.requests[stableID("request", "acme", candidate)] = ReleaseRequest{ID: stableID("request", "acme", candidate), TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: RequestNeedsInfo, RequestedBy: "uploader", CreatedAt: now, UpdatedAt: now}
+	reviewer := &callReviewer{reviews: []AgentReview{{Status: "completed", Recommendation: "publish", RiskLevel: RiskLow}}}
+	coordinator := NewCoordinator(&workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal"}}, reviewer, store)
+	coordinator.now = func() time.Time { return now }
+	if err := coordinator.RunPendingReviews(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "system", Role: "admin"}, 10); err != nil {
+		t.Fatal(err)
+	}
+	if reviewer.calls != 0 {
+		t.Fatalf("auto rereviewed active needs_info: calls=%d", reviewer.calls)
+	}
+	if store.requests[stableID("request", "acme", candidate)].ReviewID != report.ID {
+		t.Fatalf("review id changed")
+	}
+}
+
+func TestCoordinatorDoesNotReopenPublishedRequest(t *testing.T) {
+	candidate := readyCandidate()
+	store := newMemoryStore()
+	now := time.Now().UTC()
+	report := ReviewReport{ID: "review-pub", TenantID: "acme", DocumentID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, ReleaseRevision: candidate.ReleaseRevision, Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, CreatedAt: now}
+	requestID := stableID("request", "acme", candidate)
+	store.reviews[report.ID] = report
+	store.requests[requestID] = ReleaseRequest{ID: requestID, TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: RequestPublished, RequestedBy: "uploader", CreatedAt: now, UpdatedAt: now}
+	reviewer := &callReviewer{reviews: []AgentReview{{Status: "completed", Recommendation: "publish", RiskLevel: RiskLow}}}
+	coordinator := NewCoordinator(&workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal"}}, reviewer, store)
+	gotReport, gotRequest, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewer.calls != 0 || gotReport.ID != report.ID || gotRequest.State != RequestPublished {
+		t.Fatalf("published request was reopened: calls=%d report=%+v request=%+v", reviewer.calls, gotReport, gotRequest)
+	}
+}
+
+func TestApprovalRejectsExpiredReview(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	now := time.Now().UTC()
+	report := ReviewReport{ID: "review-expired", TenantID: "acme", DocumentID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, ReleaseRevision: candidate.ReleaseRevision, Status: "expired", Recommendation: "publish", RiskLevel: RiskLow, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)}
+	store.reviews[report.ID] = report
+	store.requests["request-1"] = ReleaseRequest{ID: "request-1", TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: RequestApprovalPending, RequestedBy: "uploader"}
+	approval := NewApprovalService(workflow, store)
+	if _, err := approval.Decide(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "admin", Role: "admin"}, "request-1", "approved", ""); !errors.Is(err, ErrStaleReview) {
+		t.Fatalf("expired error=%v", err)
+	}
+}
+
+func TestValidateReviewBindingRejectsExpiredStatusAndTime(t *testing.T) {
+	candidate := readyCandidate()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	base := ReviewReport{ID: "review-1", Status: "completed", Recommendation: "publish", DocumentID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, ReleaseRevision: candidate.ReleaseRevision}
+	expiredStatus := base
+	expiredStatus.Status = "expired"
+	if err := ValidateReviewBinding(expiredStatus, candidate, now); !errors.Is(err, ErrStaleReview) {
+		t.Fatalf("status error=%v", err)
+	}
+	expiredTime := base
+	expiredTime.ExpiresAt = now
+	if err := ValidateReviewBinding(expiredTime, candidate, now); !errors.Is(err, ErrStaleReview) {
+		t.Fatalf("time error=%v", err)
+	}
+}
+
+func TestCoordinatorPurgesUnreferencedExpiredReviews(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	old := ReviewReport{ID: "review-old", TenantID: "acme", DocumentID: "doc-1", Status: "expired", Recommendation: "publish", RiskLevel: RiskLow, CreatedAt: now.Add(-200 * time.Hour), ExpiresAt: now.Add(-48 * time.Hour)}
+	kept := ReviewReport{ID: "review-kept", TenantID: "acme", DocumentID: "doc-2", Status: "expired", Recommendation: "publish", RiskLevel: RiskLow, CreatedAt: now.Add(-200 * time.Hour), ExpiresAt: now.Add(-48 * time.Hour)}
+	store.reviews[old.ID] = old
+	store.reviews[kept.ID] = kept
+	store.requests["request-kept"] = ReleaseRequest{ID: "request-kept", TenantID: "acme", DocumentID: "doc-2", ReviewID: kept.ID, State: RequestPublished, Candidate: publicationworkflow.Candidate{DocumentID: "doc-2", DocumentVersionID: "job-2", GenerationID: "gen-2", ExpectedChunkCount: 1, ExpectedChunkDigest: "sha256:x", ReleaseRevision: 1}}
+	coordinator := NewCoordinator(&workflowStub{}, documentStub{}, reviewerStub{}, store).WithReviewRetention(24 * time.Hour)
+	coordinator.now = func() time.Time { return now }
+	if err := coordinator.RunPendingReviews(context.Background(), publicationworkflow.Actor{UserID: "system", Role: "admin"}, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.reviews[old.ID]; ok {
+		t.Fatal("unreferenced expired review was retained")
+	}
+	if _, ok := store.reviews[kept.ID]; !ok {
+		t.Fatal("referenced expired review was purged")
+	}
 }

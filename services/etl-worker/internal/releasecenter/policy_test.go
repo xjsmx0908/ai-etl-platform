@@ -117,6 +117,7 @@ func TestProjectOverviewUsesDeterministicBusinessStates(t *testing.T) {
 		{"review blocked", OverviewInput{IngestionStatus: "completed", ReviewStatus: "failed"}, "review_blocked", "agent_review_unavailable"},
 		{"approval", OverviewInput{IngestionStatus: "completed", RequestState: RequestApprovalPending}, "approval_pending", ""},
 		{"needs info", OverviewInput{IngestionStatus: "completed", KnowledgeSpaceID: "production", EffectiveDatePresent: true}, "needs_info", "owner_required"},
+		{"expired review", OverviewInput{IngestionStatus: "completed", RequestState: RequestNeedsInfo, ReviewStatus: "expired"}, "needs_info", "review_expired"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

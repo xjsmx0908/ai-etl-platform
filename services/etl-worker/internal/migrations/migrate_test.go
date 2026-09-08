@@ -479,3 +479,21 @@ func TestMigration0026GovernanceNotificationOutbox(t *testing.T) {
 		}
 	}
 }
+
+func TestMigration0027ReviewReportLifecycleIndexes(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0027_release_center_review_lifecycle.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	source := string(body)
+	for _, expected := range []string{
+		"CREATE INDEX IF NOT EXISTS release_center_reviews_due_idx",
+		"CREATE INDEX IF NOT EXISTS release_center_reviews_purge_idx",
+		"status IN ('completed','failed')",
+		"status = 'expired'",
+	} {
+		if !strings.Contains(source, expected) {
+			t.Errorf("migration missing %q", expected)
+		}
+	}
+}

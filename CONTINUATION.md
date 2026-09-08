@@ -47,6 +47,7 @@
 
 - P2.4-R1 已关闭：自主预审闭环、累计 token 预算、部署恢复和真实模型四场景验收均已通过，并已写入 backlog/README/设计与验收文档。
 - P2.4-R5 已关闭：审批通知可投递到企业微信/钉钉，外部工作流可通过 webhook 收事件并用 callback 回写现有审批。
+- P2.4-R3 已关闭：预审报告默认 7 天过期，过期后自动重审同一版本，已发布记录保留原证据。
 - 583 页扫描 PDF 已由用户独立验证，OCR 全流程不再是当前工作项。
 - 当前唯一主线是企业级 Agent 审计功能完善；不得从历史 OCR、生产准入或身份部署记录自动推导下一项。
 - P2.4-R2 已完成：租户隔离审批组、成员启停、空间/权限/风险策略、双人审批、自审控制和策略持久化/API 已交付；审批存储不可用时 fail-closed。
@@ -114,7 +115,8 @@
 
 1. **P2.4-R1（已完成）**：自主预审闭环、累计 token 预算、部署恢复和真实模型四场景验收已通过。
 2. **P2.4-R5（已完成）**：审批通知 outbox、企业通道投递、外部工作流 webhook/callback 与反向补偿已落地。
-3. **P2.4-R3（当前后置项）**：Review report TTL、过期清理和自动重审。
+3. **P2.4-R3（已完成）**：Review report TTL、过期状态、同一候选自动重审和过期清理已交付。
+4. **完整语义/隐私/合规审查（后续项）**：不在当前已关闭的受限预审范围内。
 
 P2.4-R2 的企业 IdP 组同步、委托、定时升级和审批撤权不在本次本地策略切片内；
 它们需要独立的身份/编排决策，不得在新会话中被假设为已实现或自动扩展。
@@ -132,7 +134,7 @@ P2.3、P2.5、P2.6、P1.9 属于生产准入或外部决策，不是当前 Agent
 ## 6. 继续当前任务必须知道的上下文
 
 - 工作目录：`/home/ubuntu/ai-projects/ai-etl-platform`；分支：`master`；远程：`origin`。
-- 当前分支 `master` 跟踪 `origin/master`；P2.4-R5 关闭项为审批通知真实通道与外部工作流 callback。
+- 当前分支 `master` 跟踪 `origin/master`；P2.4-R3 关闭项为预审报告过期与自动重审。
 - 本地入口：Web `http://localhost:3100`，Query API `http://localhost:8080`，Parser `http://127.0.0.1:8000`。
 - 当前关键运行配置：`PARSER_MAX_CHUNK_SIZE=600`、`PARSER_CHUNK_OVERLAP=50`、`OCR_PAGE_BATCH_SIZE=25`、`EMBED_CONCURRENCY=1`、`EMBED_TIMEOUT=180s`、`PIPELINE_STAGE_TIMEOUT=180s`、`PIPELINE_TIMEOUT=4h`、`PIPELINE_MAX_RETRIES=1`、`INGESTION_JOB_LEASE=12h`。
 - 当前模型端点是本机 Ollama：`http://host.docker.internal:11434/api/embeddings`，模型 `bge-m3`，维度 1024；CPU 推理是整本任务耗时的主要因素。

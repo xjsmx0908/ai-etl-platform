@@ -30,7 +30,7 @@
 - 私有业务 Gold 仍需要授权责任人的签名批准，不能用技术候选替代。
 - 扫描 PDF 的 583 页真实文件已由用户独立完成验证，不再作为当前执行事项。
 - 内容级预审目前是确定性首个切片，不代表完整的语义合规或敏感信息分类能力。
-- 预审报告的 `expires_at` 字段和过期校验已存在，但当前协调器不设置 TTL，也没有过期清理或自动重审调度。
+- 预审报告生命周期已由 P2.4-R3 补齐：创建时写入 TTL，到期后标记 expired 并自动重审同一候选；已发布/已拒绝证据不改写。
 - 协调器曾接受 Agent `status=success`，但 PostgreSQL 只允许 `completed/failed/expired`；现已将 `success`（含大小写变体）规范化为 `completed`，仍需在真实发布中心矩阵中保留 PG 验收证据。
 - Agent 编排的完整 Saga、异步审批通知和外部工作流引擎仍属于 MVP 范围外。
 
@@ -165,3 +165,10 @@
 - Reason：不内嵌 BPM。出站继续用同一内容安全事件；入站用服务令牌解析在职管理员后复用 `Decide`，不得绕过审批组、自审和精确候选。
 - Act：通知增加发布中心深链和 `decision_path`；alert-webhook 投递中文企业通道并可选转发工作流 webhook；新增 `POST /v1/release-center/workflow/decision`。
 - Refine：通道故障不得改变审批结果。未配置企业通道或 callback token 时跳过/关闭适配器。
+
+## 2026-09-08 - P2.4-R3 预审报告过期与自动重审
+
+- Perceive：报告已有 `expires_at` 和过期拒绝，但创建时不写 TTL，采集器也不会过期或重审同一候选。
+- Reason：过期只能影响未完成审批。已发布/已拒绝要保留当时证据。同一候选重审必须换新报告 ID、作废旧票，且不能把 Agent 的 `needs_info` 当成过期重审。
+- Act：默认 TTL 7 天、保留 90 天；到期后请求进入 `needs_info` 并自动重审；幂等新 ID；无引用的过期报告才清理。
+- Refine：过期不得绕过审批人数、自审限制和精确候选。`RELEASE_REVIEW_TTL=0` 可关闭过期，现有单测默认不启用 TTL。

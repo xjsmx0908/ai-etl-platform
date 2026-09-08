@@ -167,7 +167,11 @@ func ProjectOverview(in OverviewInput) OverviewItem {
 	}
 	if in.RequestState == RequestNeedsInfo {
 		item.State = "needs_info"
-		item.Blockers = []string{"exact_candidate_unavailable"}
+		if in.ReviewStatus == "expired" {
+			item.Blockers = []string{"review_expired"}
+		} else {
+			item.Blockers = []string{"exact_candidate_unavailable"}
+		}
 		return item
 	}
 	if in.ReviewStatus == "failed" {
@@ -217,8 +221,17 @@ func ValidateReviewBinding(report ReviewReport, candidate publicationworkflow.Ca
 	if report.ID == "" || report.Status == "" || report.Recommendation == "" {
 		return ErrInvalidReview
 	}
-	if !report.ExpiresAt.IsZero() && !now.Before(report.ExpiresAt) {
+	if ReviewIsExpired(report, now) {
 		return ErrStaleReview
 	}
 	return nil
+}
+
+// ReviewIsExpired reports whether a stored review is past its TTL or already
+// marked expired. Published evidence may still retain the original status.
+func ReviewIsExpired(report ReviewReport, now time.Time) bool {
+	if strings.EqualFold(strings.TrimSpace(report.Status), "expired") {
+		return true
+	}
+	return !report.ExpiresAt.IsZero() && !now.Before(report.ExpiresAt)
 }

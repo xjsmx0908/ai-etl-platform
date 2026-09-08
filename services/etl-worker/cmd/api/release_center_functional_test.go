@@ -128,6 +128,23 @@ func (s *functionalReleaseStore) ReconcileStaleRequests(context.Context, int) ([
 	return nil, nil
 }
 
+func (s *functionalReleaseStore) ExpireDueReviews(context.Context, time.Time, int) ([]releasecenter.ReleaseRequest, error) {
+	return nil, nil
+}
+
+func (s *functionalReleaseStore) PurgeExpiredReviews(context.Context, time.Time, time.Duration, int) (int, error) {
+	return 0, nil
+}
+
+func (s *functionalReleaseStore) ResetDecisions(_ context.Context, tenantID, requestID string) error {
+	request, ok := s.requests[requestID]
+	if !ok || request.TenantID != tenantID {
+		return nil
+	}
+	delete(s.decisions, requestID)
+	return nil
+}
+
 func functionalCandidate() publicationworkflow.Candidate {
 	return publicationworkflow.Candidate{
 		DocumentID:          "doc-functional",

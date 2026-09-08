@@ -28,6 +28,9 @@ type Store interface {
 	ListDecisions(context.Context, string, string) ([]Decision, error)
 	SetRequestState(context.Context, string, string, RequestState) error
 	ReconcileStaleRequests(context.Context, int) ([]ReleaseRequest, error)
+	ExpireDueReviews(context.Context, time.Time, int) ([]ReleaseRequest, error)
+	PurgeExpiredReviews(context.Context, time.Time, time.Duration, int) (int, error)
+	ResetDecisions(context.Context, string, string) error
 }
 
 type Decision struct {
@@ -207,6 +210,7 @@ func (s *PostgresStore) SaveRequest(ctx context.Context, request ReleaseRequest)
 		policy_id,approver_group_id,allow_requester_approval,required_approvals,state,requested_by,created_at,updated_at
 	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 	ON CONFLICT (request_id) DO UPDATE SET state=EXCLUDED.state,
+		review_id=EXCLUDED.review_id,
 		policy_id=EXCLUDED.policy_id, approver_group_id=EXCLUDED.approver_group_id,
 		allow_requester_approval=EXCLUDED.allow_requester_approval,
 		required_approvals=EXCLUDED.required_approvals,updated_at=EXCLUDED.updated_at
@@ -217,7 +221,7 @@ func (s *PostgresStore) SaveRequest(ctx context.Context, request ReleaseRequest)
 		  AND release_center_requests.expected_chunk_count=EXCLUDED.expected_chunk_count
 		  AND release_center_requests.expected_chunk_digest=EXCLUDED.expected_chunk_digest
 		  AND release_center_requests.release_revision=EXCLUDED.release_revision
-		  AND release_center_requests.review_id=EXCLUDED.review_id`,
+		  AND release_center_requests.state NOT IN ('published','rejected')`,
 		request.ID, request.TenantID, request.DocumentID, request.Candidate.DocumentVersionID,
 		request.Candidate.GenerationID, request.Candidate.ExpectedChunkCount,
 		request.Candidate.ExpectedChunkDigest, request.Candidate.ReleaseRevision,
@@ -227,7 +231,7 @@ func (s *PostgresStore) SaveRequest(ctx context.Context, request ReleaseRequest)
 		return fmt.Errorf("save release request: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("release request id is bound to a different exact candidate")
+		return fmt.Errorf("release request cannot be updated")
 	}
 	return nil
 }
@@ -276,7 +280,10 @@ func (s *PostgresStore) ListReviewJobs(ctx context.Context, limit int) ([]Review
 		  AND m.qdrant_count=m.expected_chunk_count AND m.qdrant_digest=m.expected_chunk_digest
 		  AND m.elasticsearch_count=m.expected_chunk_count AND m.elasticsearch_digest=m.expected_chunk_digest
 		  AND NOT EXISTS (SELECT 1 FROM release_center_requests q WHERE q.tenant_id=d.tenant_id AND q.document_id=d.doc_id
-		    AND q.document_version_id=r.current_version_id AND q.generation_id=m.generation_id AND q.release_revision=r.revision)
+		    AND q.document_version_id=r.current_version_id AND q.generation_id=m.generation_id AND q.release_revision=r.revision
+		    AND NOT (q.state='needs_info' AND EXISTS (
+		      SELECT 1 FROM release_center_reviews rv
+		      WHERE rv.tenant_id=q.tenant_id AND rv.review_id=q.review_id AND rv.status='expired')))
 		ORDER BY d.completed_at ASC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list release review jobs: %w", err)
@@ -454,6 +461,106 @@ func (s *PostgresStore) ReconcileStaleRequests(ctx context.Context, limit int) (
 		return nil, fmt.Errorf("iterate stale release requests: %w", err)
 	}
 	return out, nil
+}
+
+func (s *PostgresStore) ExpireDueReviews(ctx context.Context, now time.Time, limit int) ([]ReleaseRequest, error) {
+	if s == nil || s.q == nil {
+		return nil, fmt.Errorf("release center store is not configured")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.q.Query(ctx, `WITH due AS (
+		SELECT q.request_id, q.tenant_id, q.review_id
+		FROM release_center_requests q
+		JOIN release_center_reviews rv ON rv.tenant_id=q.tenant_id AND rv.review_id=q.review_id
+		WHERE q.state IN ('approval_pending','manual_exception','needs_info')
+		  AND rv.status IN ('completed','failed')
+		  AND rv.expires_at IS NOT NULL
+		  AND rv.expires_at <= $1
+		ORDER BY rv.expires_at ASC, q.updated_at ASC
+		LIMIT $2
+	), expire_reviews AS (
+		UPDATE release_center_reviews rv
+		SET status='expired'
+		FROM due
+		WHERE rv.tenant_id=due.tenant_id AND rv.review_id=due.review_id
+		RETURNING rv.review_id
+	)
+	UPDATE release_center_requests q
+	SET state='needs_info', updated_at=now()
+	FROM due
+	WHERE q.request_id=due.request_id
+	  AND EXISTS (SELECT 1 FROM expire_reviews)
+	RETURNING q.request_id,q.tenant_id,q.document_id,q.document_version_id,q.generation_id,
+		q.expected_chunk_count,q.expected_chunk_digest,q.release_revision,q.review_id,
+		COALESCE(q.policy_id,''),COALESCE(q.approver_group_id,''),q.allow_requester_approval,
+		q.required_approvals,q.state,q.requested_by,q.created_at,q.updated_at`, now.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("expire due release reviews: %w", err)
+	}
+	defer rows.Close()
+	var out []ReleaseRequest
+	for rows.Next() {
+		var request ReleaseRequest
+		if err := rows.Scan(&request.ID, &request.TenantID, &request.DocumentID,
+			&request.Candidate.DocumentVersionID, &request.Candidate.GenerationID,
+			&request.Candidate.ExpectedChunkCount, &request.Candidate.ExpectedChunkDigest,
+			&request.Candidate.ReleaseRevision, &request.ReviewID, &request.PolicyID, &request.ApproverGroupID,
+			&request.AllowRequesterApproval, &request.RequiredApprovals,
+			&request.State, &request.RequestedBy, &request.CreatedAt, &request.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan expired release request: %w", err)
+		}
+		request.Candidate.DocumentID = request.DocumentID
+		out = append(out, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate expired release requests: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) PurgeExpiredReviews(ctx context.Context, now time.Time, retention time.Duration, limit int) (int, error) {
+	if s == nil || s.q == nil {
+		return 0, fmt.Errorf("release center store is not configured")
+	}
+	if retention <= 0 {
+		return 0, nil
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	cutoff := now.UTC().Add(-retention)
+	tag, err := s.q.Exec(ctx, `WITH doomed AS (
+		SELECT rv.review_id
+		FROM release_center_reviews rv
+		WHERE rv.status='expired'
+		  AND rv.expires_at IS NOT NULL
+		  AND rv.expires_at <= $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM release_center_requests q
+			WHERE q.tenant_id=rv.tenant_id AND q.review_id=rv.review_id
+		  )
+		ORDER BY rv.expires_at ASC
+		LIMIT $2
+	)
+	DELETE FROM release_center_reviews rv
+	USING doomed
+	WHERE rv.review_id=doomed.review_id`, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("purge expired release reviews: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (s *PostgresStore) ResetDecisions(ctx context.Context, tenantID, requestID string) error {
+	if s == nil || s.q == nil {
+		return fmt.Errorf("release center store is not configured")
+	}
+	if _, err := s.q.Exec(ctx, `DELETE FROM release_center_decisions WHERE tenant_id=$1 AND request_id=$2`, tenantID, requestID); err != nil {
+		return fmt.Errorf("reset release decisions: %w", err)
+	}
+	return nil
 }
 
 func nullableTime(value time.Time) any {

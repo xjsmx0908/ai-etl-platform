@@ -38,6 +38,9 @@ classification, and publication controls are enforced before generation.
   through a token-authenticated callback that resolves an active tenant
   administrator and reuses the existing approval path. The callback must not
   bypass group membership, self-approval, or exact-candidate checks.
+- Review reports expire after a configured TTL. Expired pending reports cannot
+  authorize publication; the same exact candidate is automatically rereviewed.
+  Published or rejected evidence is retained unchanged.
 - Completed side-effecting Agent tools that register compensation must be
   reversed after a later run failure, cancellation, or timeout.
 
