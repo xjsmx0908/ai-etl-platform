@@ -144,3 +144,10 @@
 - Reason：真实小模型会提前交卷、漏工具、省略确定性 finding，或在无证据时给出 needs_info。服务端必须在必做工具完成前拦截 final，补齐确定性 finding/风险下限，并禁止无证据阻断发布。
 - Act：新增隔离栈验收脚本；Planner 兼容 markdown/`<think>`/对象 final/无 type 决策；Review 增加占位稿 `insufficient_evidence` 扫描；提前结束会被重定向到缺失的只读工具。
 - Refine：本机 Ollama `qwen2.5:1.5b` 四场景通过。普通文档 `approval_pending/publish/low`；敏感信息和提示词注入 `needs_info/high` 且 finding 绑定 chunk；占位稿 `needs_info/medium`。证据保存在 `artifacts/release-center-real-model-scenarios-acceptance/`。P2.4-R1 MVP 关闭。
+
+## 2026-09-08 - 续接文档口径对齐
+
+- Perceive：R1 已关闭，但 CONTINUATION.md 仍禁止将 R1 标记为 completed。
+- Reason：续接文档必须与 backlog/README 同一口径，同时保留“不是完整合规审查”边界。
+- Act：删除过期限制，改为 R1 MVP 已完成，并更新当前分支/关闭提交说明。
+- Refine：仅文档口径修复，不改变代码或验收门禁。

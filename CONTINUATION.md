@@ -118,8 +118,8 @@
 P2.4-R2 的企业 IdP 组同步、委托、定时升级和审批撤权不在本次本地策略切片内；
 它们需要独立的身份/编排决策，不得在新会话中被假设为已实现或自动扩展。
 
-R1 当前已完成严格语义审查输入/输出契约、模型客户端和 exact-candidate 接入；
-在模型评测与部署验收完成前，不得将 R1 标记为 completed，也不得把规则扫描称为完整合规审查。
+R1 MVP 已完成：自主预审闭环、累计 token 预算、部署恢复和真实模型四场景验收均已通过。
+当前预审仍是受限发布资格预审，不得把规则扫描称为完整语义/隐私/合规审查。
 
 P2.3、P2.5、P2.6、P1.9 属于生产准入或外部决策，不是当前 Agent 审计开发路线；OCR 已验证并移出路线。除非用户明确重新指定，不得把这些事项列为下一步。
 
@@ -131,7 +131,7 @@ P2.3、P2.5、P2.6、P1.9 属于生产准入或外部决策，不是当前 Agent
 ## 6. 继续当前任务必须知道的上下文
 
 - 工作目录：`/home/ubuntu/ai-projects/ai-etl-platform`；分支：`master`；远程：`origin`。
-- 当前 HEAD 与远程同步：`dc5f10f feat: add configurable release approval policies`。
+- 当前分支 `master` 跟踪 `origin/master`；P2.4-R1 关闭提交为 `b2852c8 feat: verify review agent real-model scenarios`。
 - 本地入口：Web `http://localhost:3100`，Query API `http://localhost:8080`，Parser `http://127.0.0.1:8000`。
 - 当前关键运行配置：`PARSER_MAX_CHUNK_SIZE=600`、`PARSER_CHUNK_OVERLAP=50`、`OCR_PAGE_BATCH_SIZE=25`、`EMBED_CONCURRENCY=1`、`EMBED_TIMEOUT=180s`、`PIPELINE_STAGE_TIMEOUT=180s`、`PIPELINE_TIMEOUT=4h`、`PIPELINE_MAX_RETRIES=1`、`INGESTION_JOB_LEASE=12h`。
 - 当前模型端点是本机 Ollama：`http://host.docker.internal:11434/api/embeddings`，模型 `bge-m3`，维度 1024；CPU 推理是整本任务耗时的主要因素。
