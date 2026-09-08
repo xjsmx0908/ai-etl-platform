@@ -111,6 +111,13 @@
 - Act：新增 `StartOrResume`、稳定 review Run ID、`ResumePublicationReport`，并在 Review 工具加载时强制校验持久化候选；补充恢复不重复步骤与候选漂移测试。
 - Refine：`internal/agent`、`internal/agentapi` 聚焦测试和临时 Redis 跨实例重启测试通过；发布隔离栈的 Redis/Compose 故障注入仍需作为部署专项证据保留。
 
+## 2026-09-08 - 真实模型累计 token 预算验收
+
+- Perceive：代码已有 Run 级累计 token 预算和失败转人工，但缺少通过生产 HTTP 入口的真实模型终止证据。
+- Reason：验收必须同时观察发布请求、只读 review report 和 Agent Run，并核对每个 Planner step 的 usage 与 Run 累计值；报告不得保存提示词、文档内容或凭据。
+- Act：新增真实模型专项脚本和脱敏报告；发现模型在超预算同时返回非法决策时错误原因会覆盖预算原因，调整 Orchestrator 使 `token_budget_exceeded` 优先并加入回归测试。
+- Refine：本机 Ollama `qwen2.5:1.5b` 真实 Compose 验收通过：预算 64、累计 706，Run 为 `failed/token_budget_exceeded`，发布请求为 `manual_exception`，报告建议 `manual_review`。
+
 ## 维护约定
 
 - 新条目按 `## YYYY-MM-DD - 主题` 追加，包含 Perceive、Reason、Act、Refine 四个要点。

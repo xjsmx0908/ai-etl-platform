@@ -195,7 +195,11 @@ func (o *Orchestrator) ExecuteNext(ctx context.Context, runID string, actor Acto
 	decision, err := o.planner.Plan(ctx, cloneRun(run))
 	if err != nil {
 		run.TokensUsed += decision.Usage.Total()
-		return o.failRunWithUsage(ctx, run, lease, err.Error(), decision.Usage)
+		reason := err.Error()
+		if run.MaxTokenBudget > 0 && run.TokensUsed > run.MaxTokenBudget {
+			reason = "token_budget_exceeded"
+		}
+		return o.failRunWithUsage(ctx, run, lease, reason, decision.Usage)
 	}
 	run.TokensUsed += decision.Usage.Total()
 	if run.MaxTokenBudget > 0 && run.TokensUsed > run.MaxTokenBudget {

@@ -71,6 +71,19 @@ Agent 状态依赖故障与两票人工例外、internal 敏感阻断、提示�
 只通过 Compose 控制面停止并恢复隔离栈 `redis-state`；业务输入和结果仍通过认证
 HTTP API 写入及观察，不向生产服务加入测试端点或测试模式。
 
+Token 预算专项验收（真实模型、独立隔离栈）:
+
+```bash
+bash scripts/release-center-token-budget-acceptance.sh
+```
+
+该专项强制 `AGENT_PLANNER_TYPE=auto` 和显式真实 `LLM_ENDPOINT`/`LLM_MODEL`，通过公共
+HTTP 上传受管文档并观察发布请求、只读 review report 和 Agent Run。验收必须证明累计
+`tokens_used` 超过 `max_token_budget` 时 Run 以 `token_budget_exceeded` 失败、请求进入
+`manual_exception`、报告建议 `manual_review` 且每个 Planner step 的 usage 可加总回 Run
+累计值。报告默认保存在 `artifacts/release-center-token-budget-acceptance/`，内容经过
+凭据和敏感字段脱敏。
+
 生产适配器不会自然生成的上游异常证据由真实 HTTP handler 功能测试覆盖：
 
 ```bash

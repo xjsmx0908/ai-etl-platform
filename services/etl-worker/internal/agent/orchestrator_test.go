@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,12 @@ func (p *sequencePlanner) Plan(_ context.Context, run Run) (PlanDecision, error)
 }
 
 type loopingPlanner struct{}
+
+type plannerFunc func(context.Context, Run) (PlanDecision, error)
+
+func (f plannerFunc) Plan(ctx context.Context, run Run) (PlanDecision, error) {
+	return f(ctx, run)
+}
 
 func (loopingPlanner) Plan(context.Context, Run) (PlanDecision, error) {
 	return PlanDecision{
@@ -170,6 +177,31 @@ func TestOrchestrator_FailsWhenTokenBudgetIsExceeded(t *testing.T) {
 	}
 	if run.State != StateFailed || run.Error != "token_budget_exceeded" || run.TokensUsed != 12 || run.MaxTokenBudget != 10 {
 		t.Fatalf("unexpected token budget result: %+v", run)
+	}
+}
+
+func TestOrchestrator_TokenBudgetTakesPrecedenceOverPlannerError(t *testing.T) {
+	store := NewMemoryStore()
+	registry := testRegistry(t)
+	planner := plannerFunc(func(context.Context, Run) (PlanDecision, error) {
+		return PlanDecision{Usage: PlanUsage{PromptTokens: 11, CompletionTokens: 2}}, fmt.Errorf("invalid planner decision")
+	})
+	orchestrator, err := NewOrchestrator(store, NewMemoryLockManager(), registry, planner, Options{
+		NodeID: "node-a", MaxSteps: 2, MaxTokenBudget: 10, Authorizer: StaticAuthorizer{},
+	})
+	if err != nil {
+		t.Fatalf("new orchestrator: %v", err)
+	}
+	run, err := orchestrator.Start(context.Background(), Actor{TenantID: "tenant-a", UserID: "user-a"}, "invalid decision over budget")
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	run, err = orchestrator.RunToCompletion(context.Background(), run.ID, Actor{TenantID: "tenant-a", UserID: "user-a"})
+	if err != nil {
+		t.Fatalf("run to completion: %v", err)
+	}
+	if run.State != StateFailed || run.Error != "token_budget_exceeded" || run.TokensUsed != 13 {
+		t.Fatalf("token budget did not take precedence: %+v", run)
 	}
 }
 
