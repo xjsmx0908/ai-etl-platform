@@ -38,6 +38,7 @@ var allowedPayloadKeys = map[string]struct{}{
 	"decision_id":        {},
 	"decided_by":         {},
 	"public_path":        {},
+	"decision_path":      {},
 }
 
 // Event is one durable notification. Payload values are identifiers and enums

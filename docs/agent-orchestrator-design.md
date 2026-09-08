@@ -37,8 +37,9 @@ P2.4-R5 adds the previously deferred control-plane edges:
 - asynchronous approval notification outbox for Knowledge Release Center
 - a webhook contract for external workflow engines, without embedding one
 
-External BPM adapters remain later work; inbound decisions continue to use the
-existing idempotent approval API.
+External engines are not embedded. They receive the same content-safe webhook
+event and submit decisions through `POST /v1/release-center/workflow/decision`
+or the existing idempotent approval API.
 
 ## Package
 

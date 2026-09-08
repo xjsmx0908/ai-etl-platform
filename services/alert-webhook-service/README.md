@@ -19,8 +19,13 @@ returns `503`, so Alertmanager retains and retries the failed notification
 instead of silently discarding it.
 
 `POST /notifications` accepts content-safe governance events from Query API.
-If no WeCom/DingTalk channel is configured, it returns `202` and skips
-delivery so the durable outbox can close the event instead of retrying forever.
+It formats a Chinese markdown message for WeCom/DingTalk and, when
+`WORKFLOW_ENGINE_WEBHOOK_URL` is set, also forwards the original JSON event to
+an external workflow engine. If no human channel and no workflow URL are
+configured, it returns `202` and skips delivery so the durable outbox can close
+the event instead of retrying forever. Workflow engines submit decisions back
+through `POST /v1/release-center/workflow/decision` or the existing admin
+`Decide` API.
 
 ## Test
 

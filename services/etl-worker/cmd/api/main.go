@@ -471,6 +471,12 @@ func main() {
 		mux.Handle("/scim/v2/Users/", wrappedSCIM)
 	}
 
+	// External workflow engines authenticate with a service token, not a user JWT.
+	mux.Handle("/v1/release-center/workflow/decision", middleware.CORS(cfg.CORSAllowedOrigins)(
+		middleware.Timeout(30*time.Second)(handleReleaseCenterWorkflowDecision(
+			releaseCenterStore, publicationWorkflow, userStore, notificationStore, cfg.WorkflowCallbackToken, releaseCenterStore,
+		))))
+
 	// API v1 routes (auth required)
 	apiV1 := http.NewServeMux()
 	apiV1.Handle("/v1/auth/session", handleCurrentSession(userStore))

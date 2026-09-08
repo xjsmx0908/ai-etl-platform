@@ -62,8 +62,11 @@ all pending decisions.
 
 P2.4-R5 keeps publication and approval in the existing modules. A separate
 notification outbox records identifier-only governance events and delivers them
-asynchronously. Agent side-effect compensation stays inside the Orchestrator;
-read-only Review tools are unchanged.
+asynchronously to WeCom/DingTalk and an optional external workflow webhook.
+Inbound workflow decisions reuse `ApprovalService.Decide` after resolving an
+active tenant administrator. Agent side-effect compensation stays inside the
+Orchestrator; read-only Review tools are unchanged. The platform does not embed
+a BPM engine.
 
 ## Query Flow
 

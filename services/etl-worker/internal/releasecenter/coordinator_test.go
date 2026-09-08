@@ -3,6 +3,7 @@ package releasecenter
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -346,6 +347,12 @@ func TestCoordinatorEnqueuesContentSafeApprovalNotification(t *testing.T) {
 	}
 	if events[0].Payload["summary"] != "" || events[0].Payload["findings"] != "" || events[0].Payload["state"] != string(RequestApprovalPending) {
 		t.Fatalf("payload leaked or missing state: %+v", events[0].Payload)
+	}
+	if events[0].Payload["decision_path"] != "/v1/release-center/workflow/decision" {
+		t.Fatalf("missing decision path: %+v", events[0].Payload)
+	}
+	if !strings.Contains(events[0].Payload["public_path"], "document="+candidate.DocumentID) || !strings.Contains(events[0].Payload["public_path"], "request="+request.ID) {
+		t.Fatalf("public path missing deep link: %+v", events[0].Payload)
 	}
 }
 

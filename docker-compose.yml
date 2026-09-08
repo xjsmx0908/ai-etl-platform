@@ -215,6 +215,8 @@ services:
       - WECOM_WEBHOOK_URL_FILE=/run/secrets/wecom_webhook_url
       - DINGTALK_WEBHOOK_URL_FILE=/run/secrets/dingtalk_webhook_url
       - DINGTALK_SECRET_FILE=/run/secrets/dingtalk_secret
+      - WORKFLOW_ENGINE_WEBHOOK_URL=${WORKFLOW_ENGINE_WEBHOOK_URL:-}
+      - WORKFLOW_ENGINE_WEBHOOK_TOKEN=${WORKFLOW_ENGINE_WEBHOOK_TOKEN:-}
     secrets:
       - alert_webhook_token
       - wecom_webhook_url
@@ -516,6 +518,8 @@ services:
       - NOTIFICATION_WEBHOOK_URL=${NOTIFICATION_WEBHOOK_URL:-http://alert-webhook-service:8092/notifications}
       - NOTIFICATION_WEBHOOK_TOKEN_FILE=/run/secrets/alert_webhook_token
       - NOTIFICATION_WEBHOOK_TIMEOUT=${NOTIFICATION_WEBHOOK_TIMEOUT:-5s}
+      - WORKFLOW_CALLBACK_TOKEN=${WORKFLOW_CALLBACK_TOKEN:-}
+      - WORKFLOW_CALLBACK_TOKEN_FILE=${WORKFLOW_CALLBACK_TOKEN_FILE:-}
       - S3_ENDPOINT=minio:9000
       - S3_ACCESS_KEY=${S3_ACCESS_KEY:-}
       - S3_ACCESS_KEY_FILE=/run/secrets/s3_access_key

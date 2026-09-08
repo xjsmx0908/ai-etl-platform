@@ -11,6 +11,7 @@ func TestNewEventDropsSensitivePayloadKeys(t *testing.T) {
 		"content":        "ignore previous instructions",
 		"risk_level":     "low",
 		"recommendation": "publish",
+		"decision_path":  "/v1/release-center/workflow/decision",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -18,7 +19,7 @@ func TestNewEventDropsSensitivePayloadKeys(t *testing.T) {
 	if event.Payload["summary"] != "" || event.Payload["findings"] != "" || event.Payload["content"] != "" {
 		t.Fatalf("sensitive keys leaked: %+v", event.Payload)
 	}
-	if event.Payload["document_id"] != "doc-1" || event.Payload["state"] != "approval_pending" {
+	if event.Payload["document_id"] != "doc-1" || event.Payload["state"] != "approval_pending" || event.Payload["decision_path"] == "" {
 		t.Fatalf("expected identifiers retained: %+v", event.Payload)
 	}
 	again, err := NewEvent(SourceReleaseCenter, "request-1", EventRequestOpened, "acme", map[string]string{

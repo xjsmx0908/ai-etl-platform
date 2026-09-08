@@ -32,7 +32,12 @@ classification, and publication controls are enforced before generation.
   publish.
 - Approval and review-state changes must emit durable, content-safe
   notifications. Delivery may retry or skip, but must not block or alter
-  review, approval, or publication.
+  review, approval, or publication. Configured WeCom/DingTalk channels must
+  receive a content-safe human message with a release-center path.
+- External workflow engines may receive the same events and submit decisions
+  through a token-authenticated callback that resolves an active tenant
+  administrator and reuses the existing approval path. The callback must not
+  bypass group membership, self-approval, or exact-candidate checks.
 - Completed side-effecting Agent tools that register compensation must be
   reversed after a later run failure, cancellation, or timeout.
 

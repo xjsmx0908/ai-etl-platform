@@ -158,3 +158,10 @@
 - Reason：通知必须与业务状态分开、内容脱敏、幂等且 fail-open。Saga 只补偿注册了 compensator 的副作用工具，只读预审和幂等发布不自动撤销。
 - Act：新增 `governance_notification_outbox` 与 `internal/notification`，在打开请求、记录决定、拒绝/发布和候选失效时入队；Query API relay 投递到 `/notifications`。Orchestrator 在失败/取消/超时后反向补偿已完成副作用步骤。
 - Refine：通知故障不得改变审批或发布结果；未配置企业通道时跳过外发。外部 BPM 引擎仍不内嵌，只复用 webhook 与现有 `Decide` API。
+
+## 2026-09-08 - P2.4-R5 外部工作流适配与真实通道通知
+
+- Perceive：R5 已有 outbox 和补偿，但企业微信/钉钉消息不可读，外部审批引擎也没有稳定回写入口。
+- Reason：不内嵌 BPM。出站继续用同一内容安全事件；入站用服务令牌解析在职管理员后复用 `Decide`，不得绕过审批组、自审和精确候选。
+- Act：通知增加发布中心深链和 `decision_path`；alert-webhook 投递中文企业通道并可选转发工作流 webhook；新增 `POST /v1/release-center/workflow/decision`。
+- Refine：通道故障不得改变审批结果。未配置企业通道或 callback token 时跳过/关闭适配器。

@@ -101,6 +101,13 @@ export default function AgentPage() {
     const timer = window.setInterval(() => void refreshReleaseCenter(true), 8000);
     return () => window.clearInterval(timer);
   }, [refreshReleaseCenter]);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const documentID = params.get("document")?.trim() || "";
+    const requestID = params.get("request")?.trim() || "";
+    if (documentID) setSelectedOverviewID(documentID);
+    if (requestID) setSelectedRequestID(requestID);
+  }, []);
   const byDocument = useMemo(() => new Map(overview.map((item) => [item.document_id, item])), [overview]);
   useEffect(() => {
     const selected = requests.find((item) => item.request_id === selectedRequestID)
@@ -125,6 +132,12 @@ export default function AgentPage() {
   const overviewSorted = visible;
   const pageCount = Math.max(1, Math.ceil(overviewSorted.length / overviewPageSize));
   const pageItems = overviewSorted.slice((overviewPage - 1) * overviewPageSize, overviewPage * overviewPageSize);
+  useEffect(() => {
+    const index = visible.findIndex((item) => item.document_id === selectedOverviewID);
+    if (index < 0) return;
+    const nextPage = Math.floor(index / overviewPageSize) + 1;
+    setOverviewPage((page) => (page === nextPage ? page : nextPage));
+  }, [visible, overviewPageSize, selectedOverviewID]);
   const selectedOverview = byDocument.get(selectedOverviewID);
   const selectedRequest = requests.find((item) => item.request_id === selectedRequestID) || (selectedOverview?.request_id ? requests.find((item) => item.request_id === selectedOverview.request_id) : undefined);
   const selectedDocument = documents.find((item) => item.doc_id === (selectedOverviewID || selectedRequest?.document_id));

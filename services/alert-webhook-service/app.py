@@ -38,6 +38,8 @@ class RelayConfig:
     wecom_webhook_url: str = ""
     dingtalk_webhook_url: str = ""
     dingtalk_secret: str = ""
+    workflow_engine_webhook_url: str = ""
+    workflow_engine_webhook_token: str = ""
     request_timeout_seconds: float = 5.0
 
     @classmethod
@@ -47,6 +49,8 @@ class RelayConfig:
             wecom_webhook_url=read_secret("WECOM_WEBHOOK_URL"),
             dingtalk_webhook_url=read_secret("DINGTALK_WEBHOOK_URL"),
             dingtalk_secret=read_secret("DINGTALK_SECRET"),
+            workflow_engine_webhook_url=read_secret("WORKFLOW_ENGINE_WEBHOOK_URL"),
+            workflow_engine_webhook_token=read_secret("WORKFLOW_ENGINE_WEBHOOK_TOKEN"),
             request_timeout_seconds=float(os.getenv("ALERT_DELIVERY_TIMEOUT_SECONDS", "5")),
         )
 
@@ -59,7 +63,32 @@ class AlertRelay:
         self._deliver_markdown(format_alerts(payload), alert_title(payload))
 
     def deliver_notification(self, payload: dict[str, Any]) -> None:
-        self._deliver_markdown(format_notification(payload), notification_title(payload), allow_skip=True)
+        failures = []
+        try:
+            self._deliver_markdown(format_notification(payload), notification_title(payload), allow_skip=True)
+        except RelayError as exc:
+            failures.append(str(exc))
+        try:
+            self._deliver_workflow(payload)
+        except RelayError as exc:
+            failures.append(str(exc))
+        if failures:
+            raise RelayError("; ".join(failures))
+
+    def _deliver_workflow(self, payload: dict[str, Any]) -> None:
+        url = self.config.workflow_engine_webhook_url
+        if not url:
+            return
+        try:
+            send_json(
+                url,
+                payload,
+                self.config.request_timeout_seconds,
+                self.config.workflow_engine_webhook_token,
+            )
+        except Exception as exc:
+            LOGGER.error("workflow engine delivery failed", extra={"error": str(exc)})
+            raise RelayError(f"workflow: {exc}") from exc
 
     def _deliver_markdown(self, content: str, title: str, allow_skip: bool = False) -> None:
         deliveries = []
@@ -84,7 +113,8 @@ class AlertRelay:
             )
         if not deliveries:
             if allow_skip:
-                LOGGER.warning("no enterprise notification channel is configured; skipping governance notification")
+                if not self.config.workflow_engine_webhook_url:
+                    LOGGER.warning("no enterprise notification channel is configured; skipping governance notification")
                 return
             raise RelayError("no enterprise notification channel is configured")
 
@@ -140,25 +170,53 @@ NOTIFICATION_PAYLOAD_KEYS = (
     "public_path",
 )
 
+EVENT_TITLES = {
+    "release.request.opened": "知识发布待审批",
+    "release.decision.recorded": "知识发布已记录决定",
+    "release.request.state_changed": "知识发布状态更新",
+}
+
+STATE_LABELS = {
+    "approval_pending": "待审批",
+    "manual_exception": "人工例外",
+    "needs_info": "需补齐",
+    "rejected": "已拒绝",
+    "published": "已发布",
+}
+
+FIELD_LABELS = {
+    "document_id": "文档",
+    "request_id": "请求",
+    "state": "状态",
+    "risk_level": "风险",
+    "recommendation": "建议",
+    "required_approvals": "所需批准数",
+    "approved_decisions": "已批准数",
+    "approver_group_id": "审批组",
+    "decision": "决定",
+    "decided_by": "决定人",
+    "public_path": "处理入口",
+}
+
 
 def notification_title(payload: dict[str, Any]) -> str:
     event_type = str(payload.get("event_type") or "governance.notification")
-    return f"AI ETL {event_type}"
+    return EVENT_TITLES.get(event_type, f"AI ETL {event_type}")
 
 
 def format_notification(payload: dict[str, Any]) -> str:
-    event_type = str(payload.get("event_type") or "governance.notification")
     tenant_id = str(payload.get("tenant_id") or "unknown")
     fields = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
     lines = [
-        f"### [GOVERNANCE] {event_type}",
-        f"- Tenant: {tenant_id}",
-        f"- Event: {payload.get('event_id', 'unknown')}",
+        f"### {notification_title(payload)}",
+        f"- 租户：{tenant_id}",
     ]
     for key in NOTIFICATION_PAYLOAD_KEYS:
         value = fields.get(key)
-        if value:
-            lines.append(f"- {key}: {value}")
+        if not value:
+            continue
+        display = STATE_LABELS.get(str(value), value) if key == "state" else value
+        lines.append(f"- {FIELD_LABELS.get(key, key)}：{display}")
     return "\n".join(lines)[:3500]
 
 
@@ -176,11 +234,14 @@ def dingtalk_webhook_url(url: str, secret: str, timestamp_ms: int | None = None)
     return f"{url}{separator}{urllib.parse.urlencode({'timestamp': timestamp_ms, 'sign': signature})}"
 
 
-def send_json(url: str, body: dict[str, Any], timeout_seconds: float) -> None:
+def send_json(url: str, body: dict[str, Any], timeout_seconds: float, authorization: str = "") -> None:
+    headers = {"Content-Type": "application/json", "User-Agent": "ai-etl-alert-relay/1.0"}
+    if authorization:
+        headers["Authorization"] = f"Bearer {authorization}"
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "User-Agent": "ai-etl-alert-relay/1.0"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:

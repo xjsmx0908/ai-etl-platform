@@ -10,10 +10,10 @@ administrators control what is eligible for use.
 
 P2.4-R1 is complete: a genuinely autonomous, read-only Agent pre-review loop is
 implemented, integrated with Knowledge Release Center, and accepted with the
-deterministic matrix plus real-model scenarios. P2.4-R5 now adds durable
-approval notifications and reverse compensation for side-effecting Agent tools.
-Broader compliance classification, external policy retrieval, embedded workflow
-engines, and report lifecycle remain later scope.
+deterministic matrix plus real-model scenarios. P2.4-R5 is complete: durable approval notifications can reach WeCom/DingTalk and
+an optional external workflow webhook, and reverse compensation covers
+side-effecting Agent tools. Broader compliance classification, external policy
+retrieval, embedded BPM engines, and report lifecycle remain later scope.
 
 ## Primary Users
 
@@ -115,5 +115,7 @@ events write a tenant-scoped notification outbox. Payloads contain identifiers
 and enums only. Delivery is asynchronous, idempotent, and fail-open. Agent runs
 compensate completed side-effecting steps in reverse when a later tool, timeout,
 cancellation, or rejection fails the run. External workflow engines consume the
-same webhook contract and submit decisions through the existing idempotent
-approval API; the platform does not embed a BPM engine in this slice.
+same webhook contract and submit decisions through
+`POST /v1/release-center/workflow/decision`, which resolves an active tenant
+administrator and reuses the existing idempotent approval API. The platform
+does not embed a BPM engine.

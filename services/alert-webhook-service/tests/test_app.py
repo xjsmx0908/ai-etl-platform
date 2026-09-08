@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from app import AlertRelay, RelayConfig, build_handler, dingtalk_webhook_url, format_notification
+from app import AlertRelay, RelayConfig, RelayError, build_handler, dingtalk_webhook_url, format_notification
 
 
 ALERT_PAYLOAD = {
@@ -30,17 +30,22 @@ ALERT_PAYLOAD = {
 
 
 class RecordingServer:
-    def __init__(self):
+    def __init__(self, status=200, response_body=b'{"errcode":0}'):
         self.requests = []
+        self.auths = []
         requests = self.requests
+        auths = self.auths
+        status_code = status
+        body_bytes = response_body
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 body = self.rfile.read(int(self.headers["Content-Length"]))
                 requests.append((self.path, json.loads(body)))
-                self.send_response(200)
+                auths.append(self.headers.get("Authorization"))
+                self.send_response(status_code)
                 self.end_headers()
-                self.wfile.write(b'{"errcode":0}')
+                self.wfile.write(body_bytes)
 
             def log_message(self, *_args):
                 pass
@@ -138,13 +143,66 @@ class GovernanceNotificationTests(unittest.TestCase):
                 "state": "approval_pending",
                 "summary": "身份证泄露",
                 "findings": "secret",
+                "public_path": "/agent?document=doc-1",
+                "decision_path": "/v1/release-center/workflow/decision",
             },
         })
         self.assertIn("doc-1", content)
-        self.assertIn("approval_pending", content)
+        self.assertIn("待审批", content)
+        self.assertIn("处理入口", content)
+        self.assertIn("知识发布待审批", content)
         self.assertNotIn("身份证", content)
         self.assertNotIn("secret", content)
         self.assertNotIn("findings", content)
+        self.assertNotIn("decision_path", content)
+
+    def test_delivers_wecom_and_workflow_engine(self):
+        payload = {
+            "event_id": "ntf-1",
+            "event_type": "release.request.opened",
+            "tenant_id": "acme",
+            "payload": {
+                "document_id": "doc-1",
+                "state": "approval_pending",
+                "decision_path": "/v1/release-center/workflow/decision",
+                "summary": "身份证泄露",
+            },
+        }
+        with RecordingServer() as wecom, RecordingServer() as workflow:
+            relay = AlertRelay(
+                RelayConfig(
+                    token="relay-token",
+                    wecom_webhook_url=wecom.url,
+                    workflow_engine_webhook_url=workflow.url,
+                    workflow_engine_webhook_token="engine-token",
+                )
+            )
+            relay.deliver_notification(payload)
+            self.assertIn("待审批", wecom.requests[0][1]["markdown"]["content"])
+            self.assertNotIn("身份证", wecom.requests[0][1]["markdown"]["content"])
+            self.assertEqual(workflow.requests[0][1]["event_type"], "release.request.opened")
+            self.assertEqual(workflow.requests[0][1]["payload"]["decision_path"], "/v1/release-center/workflow/decision")
+            self.assertEqual(workflow.auths[0], "Bearer engine-token")
+
+    def test_workflow_failure_still_attempts_wecom(self):
+        payload = {
+            "event_id": "ntf-2",
+            "event_type": "release.request.opened",
+            "tenant_id": "acme",
+            "payload": {"document_id": "doc-2", "state": "approval_pending"},
+        }
+        with RecordingServer() as wecom, RecordingServer(status=500) as workflow:
+            relay = AlertRelay(
+                RelayConfig(
+                    token="relay-token",
+                    wecom_webhook_url=wecom.url,
+                    workflow_engine_webhook_url=workflow.url,
+                )
+            )
+            with self.assertRaises(RelayError):
+                relay.deliver_notification(payload)
+            self.assertEqual(len(wecom.requests), 1)
+            self.assertEqual(len(workflow.requests), 1)
 
     def test_notifications_endpoint_skips_when_no_channel(self):
         relay = AlertRelay(RelayConfig(token="relay-token"))

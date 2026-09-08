@@ -3,15 +3,29 @@ package releasecenter
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 
 	"ai-etl-pipeline/internal/notification"
 )
 
+const workflowDecisionPath = "/v1/release-center/workflow/decision"
+
 func notifyRelease(ctx context.Context, enqueuer notification.Enqueuer, request ReleaseRequest, eventType string, extra map[string]string) {
 	if enqueuer == nil {
 		return
+	}
+	query := url.Values{}
+	if strings.TrimSpace(request.DocumentID) != "" {
+		query.Set("document", request.DocumentID)
+	}
+	if strings.TrimSpace(request.ID) != "" {
+		query.Set("request", request.ID)
+	}
+	publicPath := "/agent"
+	if encoded := query.Encode(); encoded != "" {
+		publicPath += "?" + encoded
 	}
 	payload := map[string]string{
 		"tenant_id":          request.TenantID,
@@ -22,7 +36,8 @@ func notifyRelease(ctx context.Context, enqueuer notification.Enqueuer, request 
 		"required_approvals": strconv.Itoa(request.RequiredApprovals),
 		"approver_group_id":  request.ApproverGroupID,
 		"policy_id":          request.PolicyID,
-		"public_path":        "/agent",
+		"public_path":        publicPath,
+		"decision_path":      workflowDecisionPath,
 	}
 	for key, value := range extra {
 		if strings.TrimSpace(value) == "" {

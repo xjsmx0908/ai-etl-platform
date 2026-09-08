@@ -158,6 +158,7 @@ type Config struct {
 	NotificationWebhookURL     string
 	NotificationWebhookToken   string
 	NotificationWebhookTimeout time.Duration
+	WorkflowCallbackToken      string
 	IngestionJobLease          time.Duration
 	IngestionMetricsInterval   time.Duration
 	OrphanCleanupInterval      time.Duration
@@ -372,6 +373,7 @@ func Load() Config {
 		NotificationWebhookURL:     EnvStr("NOTIFICATION_WEBHOOK_URL", ""),
 		NotificationWebhookToken:   EnvSecret("NOTIFICATION_WEBHOOK_TOKEN", EnvSecret("ALERT_WEBHOOK_TOKEN", "")),
 		NotificationWebhookTimeout: EnvDuration("NOTIFICATION_WEBHOOK_TIMEOUT", 5*time.Second),
+		WorkflowCallbackToken:      EnvSecret("WORKFLOW_CALLBACK_TOKEN", ""),
 		IngestionJobLease:          EnvDuration("INGESTION_JOB_LEASE", 30*time.Minute),
 		IngestionMetricsInterval:   EnvDuration("INGESTION_METRICS_INTERVAL", 15*time.Second),
 		OrphanCleanupInterval:      EnvDuration("ORPHAN_CLEANUP_INTERVAL", 15*time.Minute),

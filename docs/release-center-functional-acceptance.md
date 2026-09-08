@@ -146,8 +146,10 @@ handler 和协调器，只替换上游 `ReviewAdapter`，避免为了验收引�
 - 企业 IdP 组同步、委托审批、定时升级和审批撤权；本地租户审批组与可配置策略已由 P2.4-R2 实现；
 - review report 的 TTL、过期清理和自动重审；
 - Agent 状态契约的真实 PostgreSQL 集成验收（协调器已将 `success` 规范化为 `completed`）；
-- 外部 BPM/工作流引擎内嵌；当前通过治理通知 webhook 与现有幂等 `Decide` API 对接。
-  审批通知 outbox 与副作用反向补偿已由 P2.4-R5 交付，验收以单测和快速矩阵为准。
+- 不内嵌 Camunda/Temporal 等 BPM 引擎。外部引擎通过治理通知 webhook 收事件，并通过
+  `POST /v1/release-center/workflow/decision` 回写到现有幂等 `Decide`。
+  审批通知 outbox、企业微信/钉钉投递、workflow callback 与副作用反向补偿已由
+  P2.4-R5 交付，验收以单测和快速矩阵为准。
 
 在这些事项完成前，不得把当前规则扫描、风险升级或管理员审批结果描述为完整安全或合规结论。
 
@@ -160,7 +162,7 @@ P2.4-R2 的实现边界：管理员可通过 `POST/GET /v1/release-center/approv
 ## 当前实施顺序
 
 当前主线是企业级 Agent 审计功能，不包含通用生产准入、企业身份部署或 OCR 验收。
-实施顺序固定为：P2.4-R1（自主预审 Agent，已完成）→ P2.4-R5（通知、补偿和外部编排）→
+实施顺序固定为：P2.4-R1（自主预审 Agent，已完成）→ P2.4-R5（通知、补偿和外部编排，已完成）→
 P2.4-R3（报告生命周期）。P2.4-R2（审批组与策略）已完成。
 P2.4-R3 已明确后置；P1.9、P2.3、P2.5、P2.6 和 OCR 不得在未得到用户重新指定时
 改变该顺序。
