@@ -151,3 +151,10 @@
 - Reason：续接文档必须与 backlog/README 同一口径，同时保留“不是完整合规审查”边界。
 - Act：删除过期限制，改为 R1 MVP 已完成，并更新当前分支/关闭提交说明。
 - Refine：仅文档口径修复，不改变代码或验收门禁。
+
+## 2026-09-08 - P2.4-R5 通知 outbox 与反向补偿
+
+- Perceive：R1/R2 已能产生待审批和人工例外，但管理员只能轮询页面；Orchestrator 只补偿当前失败工具，不能回滚已经成功的副作用步骤。
+- Reason：通知必须与业务状态分开、内容脱敏、幂等且 fail-open。Saga 只补偿注册了 compensator 的副作用工具，只读预审和幂等发布不自动撤销。
+- Act：新增 `governance_notification_outbox` 与 `internal/notification`，在打开请求、记录决定、拒绝/发布和候选失效时入队；Query API relay 投递到 `/notifications`。Orchestrator 在失败/取消/超时后反向补偿已完成副作用步骤。
+- Refine：通知故障不得改变审批或发布结果；未配置企业通道时跳过外发。外部 BPM 引擎仍不内嵌，只复用 webhook 与现有 `Decide` API。

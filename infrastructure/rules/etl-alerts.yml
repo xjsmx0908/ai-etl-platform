@@ -179,6 +179,14 @@ groups:
         annotations:
           summary: LLM request p95 latency is above 10s
 
+      - alert: GovernanceNotificationOutboxStalled
+        expr: max(ai_etl_notification_outbox_oldest_age_seconds) > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Governance notification outbox has been stalled for 10 minutes
+
       - alert: AgentRunFailures
         expr: increase(ai_etl_agent_run_completions_total{state="failed"}[15m]) > 3
         for: 5m

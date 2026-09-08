@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/notification"
 	"ai-etl-pipeline/internal/publicationworkflow"
 
 	"github.com/google/uuid"
@@ -62,6 +64,7 @@ type Coordinator struct {
 	reviewer  ReviewAdapter
 	store     coordinatorStore
 	policies  ApprovalPolicyStore
+	notify    notification.Enqueuer
 	now       func() time.Time
 }
 
@@ -76,6 +79,13 @@ func NewCoordinator(workflow PublicationWorkflow, documents reviewDocumentReader
 		policyStore = policies[0]
 	}
 	return &Coordinator{workflow: workflow, documents: documents, reviewer: reviewer, store: store, policies: policyStore, now: time.Now}
+}
+
+func (c *Coordinator) WithNotifier(n notification.Enqueuer) *Coordinator {
+	if c != nil {
+		c.notify = n
+	}
+	return c
 }
 
 func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationworkflow.Actor, documentID string) (ReviewReport, ReleaseRequest, error) {
@@ -154,7 +164,10 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 			state = RequestManualException
 		}
 		request := ReleaseRequest{ID: stableID("request", actor.TenantID, candidate), TenantID: actor.TenantID, DocumentID: documentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: state, RequestedBy: requestedBy, CreatedAt: now, UpdatedAt: now}
-		if err := c.store.SaveRequest(ctx, request); err != nil {
+		if err := c.persistRequest(ctx, request, map[string]string{
+			"recommendation": report.Recommendation,
+			"risk_level":     string(report.RiskLevel),
+		}); err != nil {
 			return ReviewReport{}, ReleaseRequest{}, err
 		}
 		return report, request, nil
@@ -179,10 +192,21 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 		State: policyDecision.State, RequestedBy: requestedBy, CreatedAt: now, UpdatedAt: now,
 		PolicyID: configuredPolicy.ID, ApproverGroupID: configuredPolicy.ApproverGroupID,
 		AllowRequesterApproval: configuredPolicy.AllowRequesterApproval}
-	if err := c.store.SaveRequest(ctx, request); err != nil {
+	if err := c.persistRequest(ctx, request, map[string]string{
+		"recommendation": report.Recommendation,
+		"risk_level":     string(report.RiskLevel),
+	}); err != nil {
 		return ReviewReport{}, ReleaseRequest{}, err
 	}
 	return report, request, nil
+}
+
+func (c *Coordinator) persistRequest(ctx context.Context, request ReleaseRequest, extra map[string]string) error {
+	if err := c.store.SaveRequest(ctx, request); err != nil {
+		return err
+	}
+	notifyRelease(ctx, c.notify, request, notification.EventRequestOpened, extra)
+	return nil
 }
 
 func stableID(prefix, tenant string, candidate publicationworkflow.Candidate) string {
@@ -193,8 +217,12 @@ func stableID(prefix, tenant string, candidate publicationworkflow.Candidate) st
 
 // RunPendingReviews retries durable jobs after crashes or temporary Agent outages.
 func (c *Coordinator) RunPendingReviews(ctx context.Context, actor publicationworkflow.Actor, limit int) error {
-	if _, err := c.store.ReconcileStaleRequests(ctx, limit); err != nil {
+	stale, err := c.store.ReconcileStaleRequests(ctx, limit)
+	if err != nil {
 		return err
+	}
+	for _, request := range stale {
+		notifyRelease(ctx, c.notify, request, notification.EventRequestStateChanged, nil)
 	}
 	jobs, err := c.store.ListReviewJobs(ctx, limit)
 	if err != nil {
@@ -221,6 +249,7 @@ type ApprovalService struct {
 	workflow PublicationWorkflow
 	store    coordinatorStore
 	policies ApprovalPolicyStore
+	notify   notification.Enqueuer
 	now      func() time.Time
 }
 
@@ -230,6 +259,13 @@ func NewApprovalService(workflow PublicationWorkflow, store coordinatorStore, po
 		policyStore = policies[0]
 	}
 	return &ApprovalService{workflow: workflow, store: store, policies: policyStore, now: time.Now}
+}
+
+func (s *ApprovalService) WithNotifier(n notification.Enqueuer) *ApprovalService {
+	if s != nil {
+		s.notify = n
+	}
+	return s
 }
 
 func (s *ApprovalService) Decide(ctx context.Context, actor publicationworkflow.Actor, requestID, decision, reason string) (ApprovalResult, error) {
@@ -284,24 +320,37 @@ func (s *ApprovalService) Decide(ctx context.Context, actor publicationworkflow.
 		}
 		foundExisting = true
 	}
+	entryID := ""
 	if !foundExisting {
 		entry := Decision{ID: uuid.NewString(), TenantID: actor.TenantID, RequestID: requestID, DecidedBy: actor.UserID, Decision: decision, Reason: strings.TrimSpace(reason), DecidedAt: s.now().UTC()}
 		if err := s.store.RecordDecision(ctx, entry); err != nil {
 			return ApprovalResult{}, err
 		}
 		decisions = append(decisions, entry)
+		entryID = entry.ID
+	} else {
+		for _, existing := range decisions {
+			if existing.DecidedBy == actor.UserID {
+				entryID = existing.ID
+				break
+			}
+		}
 	}
+	notifyRelease(ctx, s.notify, request, notification.EventDecisionRecorded, map[string]string{
+		"decision":           decision,
+		"decision_id":        entryID,
+		"decided_by":         actor.UserID,
+		"approved_decisions": strconv.Itoa(countApproved(decisions)),
+	})
 	if decision == "rejected" {
 		request.State = RequestRejected
 		_ = s.store.SetRequestState(ctx, actor.TenantID, requestID, request.State)
+		notifyRelease(ctx, s.notify, request, notification.EventRequestStateChanged, map[string]string{
+			"decision": decision, "decided_by": actor.UserID,
+		})
 		return ApprovalResult{request, decisions}, nil
 	}
-	approved := 0
-	for _, d := range decisions {
-		if d.Decision == "approved" {
-			approved++
-		}
-	}
+	approved := countApproved(decisions)
 	if approved < request.RequiredApprovals {
 		return ApprovalResult{request, decisions}, nil
 	}
@@ -319,5 +368,20 @@ func (s *ApprovalService) Decide(ctx context.Context, actor publicationworkflow.
 	if err := s.store.SetRequestState(ctx, actor.TenantID, requestID, request.State); err != nil {
 		return ApprovalResult{}, err
 	}
+	notifyRelease(ctx, s.notify, request, notification.EventRequestStateChanged, map[string]string{
+		"decision":           "approved",
+		"decided_by":         actor.UserID,
+		"approved_decisions": strconv.Itoa(approved),
+	})
 	return ApprovalResult{request, decisions}, nil
+}
+
+func countApproved(decisions []Decision) int {
+	approved := 0
+	for _, item := range decisions {
+		if item.Decision == "approved" {
+			approved++
+		}
+	}
+	return approved
 }

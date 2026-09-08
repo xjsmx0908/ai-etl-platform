@@ -656,7 +656,68 @@ func TestOrchestrator_CompensatesFailedSideEffect(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_CompensatesCompletedSideEffectsInReverse(t *testing.T) {
+	store := NewMemoryStore()
+	registry := NewRegistry()
+	var order []string
+	register := func(name string, fail bool) {
+		t.Helper()
+		err := registry.RegisterWithCompensation(ToolDefinition{
+			Name:                name,
+			RequiredPermissions: []string{"order:write"},
+			SideEffect:          true,
+			Idempotent:          false,
+			Parameters: JSONSchema{
+				Type:       "object",
+				Required:   []string{"id"},
+				Properties: map[string]SchemaProperty{"id": {Type: "string"}},
+			},
+		}, func(context.Context, ToolInvocation) (ToolResult, error) {
+			if fail {
+				return ToolResult{Content: name + " failed", CompensationRequired: true}, errors.New(name + " failed")
+			}
+			return ToolResult{Content: name + " ok"}, nil
+		}, func(_ context.Context, inv ToolInvocation, _ ToolResult) (ToolResult, error) {
+			order = append(order, inv.ToolName)
+			return ToolResult{Content: name + " undone"}, nil
+		})
+		if err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	register("reserve_stock", false)
+	register("charge_card", false)
+	register("ship_order", true)
+	planner := &sequencePlanner{decisions: []PlanDecision{
+		{Type: DecisionToolCall, ToolName: "reserve_stock", Arguments: json.RawMessage(`{"id":"1"}`)},
+		{Type: DecisionToolCall, ToolName: "charge_card", Arguments: json.RawMessage(`{"id":"1"}`)},
+		{Type: DecisionToolCall, ToolName: "ship_order", Arguments: json.RawMessage(`{"id":"1"}`)},
+	}}
+	orchestrator := newTestOrchestrator(t, store, registry, planner, 8, "node-a")
+	actor := Actor{TenantID: "tenant-a", UserID: "user-a", Permissions: []string{"order:write"}}
+	run, err := orchestrator.Start(context.Background(), actor, "fulfill order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		run, err = orchestrator.ExecuteNext(context.Background(), run.ID, actor)
+		if err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	if run.State != StateFailed {
+		t.Fatalf("expected failed run, got %+v", run)
+	}
+	if got := strings.Join(order, ","); got != "ship_order,charge_card,reserve_stock" {
+		t.Fatalf("compensation order=%q steps=%+v", got, run.Steps)
+	}
+	if !run.Steps[0].Compensated || !run.Steps[1].Compensated {
+		t.Fatalf("completed tools were not compensated: %+v", run.Steps)
+	}
+}
+
 func testRegistry(t *testing.T) *Registry {
+
 	t.Helper()
 	registry := NewRegistry()
 	err := registry.Register(ToolDefinition{

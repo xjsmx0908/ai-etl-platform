@@ -31,13 +31,14 @@ The MVP focuses on the enterprise control plane:
 - Prometheus metrics for Agent run outcomes, tool steps, approval decisions, and lifecycle latency
 - bounded managed-document publication workflow with deterministic routing
 
-Out of scope for this cut:
+P2.4-R5 adds the previously deferred control-plane edges:
 
-- full Saga workflow across multiple tools
-- asynchronous approval notification channels
-- external workflow engine integration
+- reverse compensation of completed side-effecting tools when a run fails
+- asynchronous approval notification outbox for Knowledge Release Center
+- a webhook contract for external workflow engines, without embedding one
 
-Those should be added after the core state machine is stable and tested.
+External BPM adapters remain later work; inbound decisions continue to use the
+existing idempotent approval API.
 
 ## Package
 

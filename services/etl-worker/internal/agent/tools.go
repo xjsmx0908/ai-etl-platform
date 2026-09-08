@@ -101,6 +101,12 @@ func (r *Registry) Definition(name string) (ToolDefinition, bool) {
 	return tool.def, true
 }
 
+// HasCompensation reports whether a registered tool can undo a completed side effect.
+func (r *Registry) HasCompensation(name string) bool {
+	tool, ok := r.lookup(name)
+	return ok && tool.compensator != nil
+}
+
 // Definitions returns registered tool definitions sorted by name.
 func (r *Registry) Definitions() []ToolDefinition {
 	r.mu.RLock()

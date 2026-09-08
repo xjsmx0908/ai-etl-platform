@@ -294,6 +294,7 @@ func (o *Orchestrator) Cancel(ctx context.Context, runID string, actor Actor, re
 		run.Steps[idx].CompletedAt = now
 		run.Steps[idx].Duration = now.Sub(run.Steps[idx].StartedAt)
 	}
+	run = o.compensateCompletedSideEffects(ctx, run, Actor{TenantID: run.TenantID, UserID: run.UserID})
 	return o.saveRun(ctx, run, lease)
 }
 
@@ -331,6 +332,7 @@ func (o *Orchestrator) RejectApproval(ctx context.Context, runID string, actor A
 	run.State = StateFailed
 	run.Error = message
 	run.UpdatedAt = now
+	run = o.compensateCompletedSideEffects(ctx, run, Actor{TenantID: run.TenantID, UserID: run.UserID})
 	return o.saveRun(ctx, run, lease)
 }
 
@@ -338,6 +340,7 @@ func (o *Orchestrator) expireRunIfNeeded(ctx context.Context, run Run, lease Loc
 	now := o.now().UTC()
 	if o.runTimeout > 0 && !run.CreatedAt.IsZero() && !now.Before(run.CreatedAt.Add(o.runTimeout)) {
 		run = o.failActiveRun(run, now, "run_timeout_exceeded")
+		run = o.compensateCompletedSideEffects(ctx, run, Actor{TenantID: run.TenantID, UserID: run.UserID})
 		saved, err := o.saveRun(ctx, run, lease)
 		return saved, true, err
 	}
@@ -345,6 +348,7 @@ func (o *Orchestrator) expireRunIfNeeded(ctx context.Context, run Run, lease Loc
 		idx := pendingApprovalStepIndex(run)
 		if idx >= 0 && !run.Steps[idx].StartedAt.IsZero() && !now.Before(run.Steps[idx].StartedAt.Add(o.approvalTimeout)) {
 			run = o.failActiveRun(run, now, "approval_timeout_exceeded")
+			run = o.compensateCompletedSideEffects(ctx, run, Actor{TenantID: run.TenantID, UserID: run.UserID})
 			saved, err := o.saveRun(ctx, run, lease)
 			return saved, true, err
 		}
@@ -463,6 +467,7 @@ func (o *Orchestrator) executePersistedTool(ctx context.Context, run Run, actor 
 		run.State = StateFailed
 		run.Error = err.Error()
 		run.UpdatedAt = completedAt
+		run = o.compensateCompletedSideEffects(ctx, run, actor)
 		return o.saveRun(ctx, run, lease)
 	}
 
@@ -510,7 +515,32 @@ func (o *Orchestrator) failRunWithUsage(ctx context.Context, run Run, lease Lock
 	run.State = StateFailed
 	run.Error = reason
 	run.UpdatedAt = now
+	run = o.compensateCompletedSideEffects(ctx, run, Actor{TenantID: run.TenantID, UserID: run.UserID})
 	return o.saveRun(ctx, run, lease)
+}
+
+func (o *Orchestrator) compensateCompletedSideEffects(ctx context.Context, run Run, actor Actor) Run {
+	if o.registry == nil {
+		return run
+	}
+	for i := len(run.Steps) - 1; i >= 0; i-- {
+		step := &run.Steps[i]
+		if step.Type != StepToolCall || step.State != StateCompleted || step.Compensated || !o.registry.HasCompensation(step.ToolName) {
+			continue
+		}
+		prior := ToolResult{}
+		if step.ToolResult != nil {
+			prior = *step.ToolResult
+		}
+		compensation, err := o.registry.compensate(ctx, actor, run.ID, step.Index, step.ToolName, step.ToolArguments, prior, nil)
+		if err != nil {
+			step.CompensationError = err.Error()
+			continue
+		}
+		step.CompensationResult = &compensation
+		step.Compensated = true
+	}
+	return run
 }
 
 func (o *Orchestrator) claimRun(ctx context.Context, run Run, lease LockLease) (Run, error) {

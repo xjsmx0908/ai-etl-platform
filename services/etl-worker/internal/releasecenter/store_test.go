@@ -16,10 +16,18 @@ func TestReconcileStaleRequestsPreservesAuditRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-	mock.ExpectExec("WITH stale AS").WithArgs(25).WillReturnResult(pgxmock.NewResult("UPDATE", 3))
-	count, err := NewPostgresStore(mock).ReconcileStaleRequests(context.Background(), 25)
-	if err != nil || count != 3 {
-		t.Fatalf("count=%d err=%v", count, err)
+	now := time.Now().UTC()
+	rows := pgxmock.NewRows([]string{
+		"request_id", "tenant_id", "document_id", "document_version_id", "generation_id",
+		"expected_chunk_count", "expected_chunk_digest", "release_revision", "review_id",
+		"policy_id", "approver_group_id", "allow_requester_approval", "required_approvals",
+		"state", "requested_by", "created_at", "updated_at",
+	}).AddRow("request-1", "acme", "doc-1", "job-1", "gen-1", 3, "sha256:ready", int64(1), "review-1",
+		"", "", false, 1, RequestNeedsInfo, "admin-1", now, now)
+	mock.ExpectQuery("WITH stale AS").WithArgs(25).WillReturnRows(rows)
+	updated, err := NewPostgresStore(mock).ReconcileStaleRequests(context.Background(), 25)
+	if err != nil || len(updated) != 1 || updated[0].State != RequestNeedsInfo {
+		t.Fatalf("updated=%+v err=%v", updated, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

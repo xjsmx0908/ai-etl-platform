@@ -12,6 +12,7 @@ import (
 
 	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/auth"
+	"ai-etl-pipeline/internal/notification"
 	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/releasecenter"
 )
@@ -230,8 +231,8 @@ func handleReleaseCenterRequests(store releaseRequestLister) http.HandlerFunc {
 	}
 }
 
-func handleReleaseCenterDecision(store releasecenter.Store, workflow releasecenter.PublicationWorkflow, policies ...releasecenter.ApprovalPolicyStore) http.HandlerFunc {
-	approval := releasecenter.NewApprovalService(workflow, store, policies...)
+func handleReleaseCenterDecision(store releasecenter.Store, workflow releasecenter.PublicationWorkflow, notifier notification.Enqueuer, policies ...releasecenter.ApprovalPolicyStore) http.HandlerFunc {
+	approval := releasecenter.NewApprovalService(workflow, store, policies...).WithNotifier(notifier)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if auth.GetPermission(r.Context()) != "admin" {
 			writeError(w, http.StatusForbidden, "admin role required")

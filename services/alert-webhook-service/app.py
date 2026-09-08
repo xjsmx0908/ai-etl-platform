@@ -56,7 +56,12 @@ class AlertRelay:
         self.config = config
 
     def deliver(self, payload: dict[str, Any]) -> None:
-        content = format_alerts(payload)
+        self._deliver_markdown(format_alerts(payload), alert_title(payload))
+
+    def deliver_notification(self, payload: dict[str, Any]) -> None:
+        self._deliver_markdown(format_notification(payload), notification_title(payload), allow_skip=True)
+
+    def _deliver_markdown(self, content: str, title: str, allow_skip: bool = False) -> None:
         deliveries = []
         if self.config.wecom_webhook_url:
             deliveries.append(
@@ -67,7 +72,6 @@ class AlertRelay:
                 )
             )
         if self.config.dingtalk_webhook_url:
-            title = alert_title(payload)
             deliveries.append(
                 (
                     "dingtalk",
@@ -79,6 +83,9 @@ class AlertRelay:
                 )
             )
         if not deliveries:
+            if allow_skip:
+                LOGGER.warning("no enterprise notification channel is configured; skipping governance notification")
+                return
             raise RelayError("no enterprise notification channel is configured")
 
         failures = []
@@ -116,6 +123,45 @@ def format_alerts(payload: dict[str, Any]) -> str:
             ]
         )
     return "\n\n".join(lines)[:3500]
+
+
+
+NOTIFICATION_PAYLOAD_KEYS = (
+    "document_id",
+    "request_id",
+    "state",
+    "risk_level",
+    "recommendation",
+    "required_approvals",
+    "approved_decisions",
+    "approver_group_id",
+    "decision",
+    "decided_by",
+    "public_path",
+)
+
+
+def notification_title(payload: dict[str, Any]) -> str:
+    event_type = str(payload.get("event_type") or "governance.notification")
+    return f"AI ETL {event_type}"
+
+
+def format_notification(payload: dict[str, Any]) -> str:
+    event_type = str(payload.get("event_type") or "governance.notification")
+    tenant_id = str(payload.get("tenant_id") or "unknown")
+    fields = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    lines = [
+        f"### [GOVERNANCE] {event_type}",
+        f"- Tenant: {tenant_id}",
+        f"- Event: {payload.get('event_id', 'unknown')}",
+    ]
+    for key in NOTIFICATION_PAYLOAD_KEYS:
+        value = fields.get(key)
+        if value:
+            lines.append(f"- {key}: {value}")
+    return "\n".join(lines)[:3500]
+
+
 
 
 def dingtalk_webhook_url(url: str, secret: str, timestamp_ms: int | None = None) -> str:
@@ -158,7 +204,7 @@ def build_handler(relay: AlertRelay):
             self._write_json(200, {"status": "ok"})
 
         def do_POST(self):
-            if self.path != "/alerts":
+            if self.path not in {"/alerts", "/notifications"}:
                 self.send_error(404)
                 return
             if not authorized(self.headers.get("Authorization", ""), relay.config.token):
@@ -176,6 +222,18 @@ def build_handler(relay: AlertRelay):
                 payload = json.loads(self.rfile.read(content_length))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self._write_json(400, {"error": "invalid JSON"})
+                return
+            if self.path == "/notifications":
+                if not isinstance(payload, dict):
+                    self._write_json(400, {"error": "invalid notification payload"})
+                    return
+                try:
+                    relay.deliver_notification(payload)
+                except RelayError as exc:
+                    LOGGER.error("notification relay failed", extra={"error": str(exc)})
+                    self._write_json(503, {"error": "notification delivery failed"})
+                    return
+                self._write_json(202, {"status": "accepted"})
                 return
             if not isinstance(payload, dict) or not isinstance(payload.get("alerts"), list):
                 self._write_json(400, {"error": "invalid Alertmanager payload"})

@@ -25,7 +25,7 @@
 
 1. **P2.4-R1-MVP（代码完成）**——已复用现有 Orchestrator，实现 Review Planner、四个只读工具、最小证据校验、发布中心接入和累计 token 预算控制。
 2. **P2.4-R1-ACCEPT（已完成，2026-09-08）**——确定性发布矩阵、真实预算终止、Review Agent 部署恢复和真实模型四场景验收已通过。
-3. **P2.4-R5：企业级编排（当前阶段）**——评估通知、Saga 和外部工作流。
+3. **P2.4-R5：企业级编排（当前阶段）**——已落地审批通知 outbox 与反向补偿；外部工作流引擎适配后置。
 4. **P2.4-R3：Review report 生命周期**（后置）——最后处理 TTL、过期清理和自动重审。
 
 当前路线的完成标准是：权限边界、审计证据、失败处理、幂等性、租户隔离和对应业务验收矩阵均已覆盖。不得把当前已实现的受限规则扫描描述为完整合规审查。
@@ -37,7 +37,7 @@
 3. **真实模型四场景验收**（已完成，2026-09-08）：普通、敏感信息、提示词注入、证据不足已通过真实模型隔离栈验收；证据保存在 `artifacts/release-center-real-model-scenarios-acceptance/`。
 4. **Review Report 生命周期**（中到大）：实现 TTL、过期状态、候选变化重审、清理调度和历史证据保留。
 5. **完整语义/隐私/合规审查**（大）：扩展政策库、结构化分类、版本差异和跨文档冲突审查。
-6. **通知、Saga 与外部工作流**（当前项，大）：补齐异步通知、失败补偿和企业审批工作流集成。
+6. **通知、Saga 与外部工作流**（进行中）：审批通知 outbox 与反向补偿已交付；外部 BPM/工作流引擎适配仍后置。
 
 ## Agent pre-review remaining
 
@@ -45,7 +45,7 @@
 | --- | --- | --- | --- | --- |
 | P2.4-R2 | 企业审批组与可配置策略 | completed | 已交付租户隔离审批组、成员启停、空间/权限/风险匹配、优先级、双人审批、自审控制、策略持久化和管理 API；企业 IdP 同步、委托和定时升级另行立项 | [`docs/product-requirements-document.md`](product-requirements-document.md) |
 | P2.4-R1 | 自主预审 Agent | completed | 最小自主闭环、累计 token 预算、真实预算终止、部署恢复和真实模型四场景验收已完成 | [`docs/agent-pre-review-architecture-and-implementation-plan.md`](agent-pre-review-architecture-and-implementation-plan.md) |
-| P2.4-R5 | Agent 周边编排能力 | planned | 评估多工具 Saga、异步审批通知和外部工作流引擎；每项定义可靠性、审计和失败补偿验收 | [`docs/agent-orchestrator-design.md`](agent-orchestrator-design.md) |
+| P2.4-R5 | Agent 周边编排能力 | in progress | 审批通知 outbox、失败重试和反向补偿已交付；外部工作流引擎仍使用 webhook/`Decide` 契约，不内嵌引擎 | [`docs/agent-orchestration-r5-design.md`](agent-orchestration-r5-design.md) |
 | P2.4-R3 | Review report 生命周期 | deferred | 暂不实施；待 R1、R5 完成后再决定报告 TTL、过期状态、清理/重审调度和历史审计保留策略 | [`services/etl-worker/internal/releasecenter/releasecenter.go`](../services/etl-worker/internal/releasecenter/releasecenter.go) |
 | P2.4-R4 | `success` 状态数据库兼容 | completed | 已将 `success`（含大小写变体）规范化为 PostgreSQL 允许的 `completed`，并补充协调器回归测试；后续真实 PG 验收随发布中心矩阵执行 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |
 
@@ -57,7 +57,7 @@
 - P2.5-A～D 及个人演示 F1～F6 已实现；企业生产启用仍受外部输入约束。
 - Knowledge Release Center 的发布策略、审批组/策略、HTTP 矩阵和 Web 工作台已完成；自主 Agent 预审闭环、真实模型四场景和部署恢复验收已完成；审批组与策略管理当前通过管理员 HTTP API 提供。
 - 583 页扫描 PDF 已由用户独立完成验证，不再作为当前 backlog 事项。
-- 上述完成仅指首个版本的受限发布资格预审；P2.4-R1 MVP 已关闭，P2.4-R3、P2.4-R5 属于未来范围，不得将当前 Agent 预审描述为完整合规审查。
+- 上述完成仅指首个版本的受限发布资格预审；P2.4-R1 MVP 已关闭。P2.4-R5 正在交付通知与补偿，P2.4-R3 仍后置。不得将当前 Agent 预审描述为完整合规审查。
 - Elasticsearch 只读锁恢复、文档管理优化、OCR 分页恢复和相关反馈项已在历史验收中关闭；若运行环境再次出现，应创建新的带证据条目。
 
 ## Acceptance gates

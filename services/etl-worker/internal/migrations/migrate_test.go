@@ -460,3 +460,22 @@ func TestMigration0025ReleaseCenterApprovalPolicies(t *testing.T) {
 		}
 	}
 }
+
+func TestMigration0026GovernanceNotificationOutbox(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0026_governance_notification_outbox.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	source := string(body)
+	for _, expected := range []string{
+		"CREATE TABLE governance_notification_outbox",
+		"dedupe_key   TEXT NOT NULL UNIQUE",
+		"jsonb_typeof(payload) = 'object'",
+		"WHERE published_at IS NULL",
+		"REFERENCES tenants(id) ON DELETE CASCADE",
+	} {
+		if !strings.Contains(source, expected) {
+			t.Errorf("migration missing %q", expected)
+		}
+	}
+}

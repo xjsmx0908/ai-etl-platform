@@ -513,6 +513,9 @@ services:
       - AGENT_PLANNER_MODEL=${AGENT_PLANNER_MODEL:-}
       - AGENT_PLANNER_TIMEOUT=${AGENT_PLANNER_TIMEOUT:-30s}
       - AGENT_PLANNER_MAX_TOKENS=${AGENT_PLANNER_MAX_TOKENS:-512}
+      - NOTIFICATION_WEBHOOK_URL=${NOTIFICATION_WEBHOOK_URL:-http://alert-webhook-service:8092/notifications}
+      - NOTIFICATION_WEBHOOK_TOKEN_FILE=/run/secrets/alert_webhook_token
+      - NOTIFICATION_WEBHOOK_TIMEOUT=${NOTIFICATION_WEBHOOK_TIMEOUT:-5s}
       - S3_ENDPOINT=minio:9000
       - S3_ACCESS_KEY=${S3_ACCESS_KEY:-}
       - S3_ACCESS_KEY_FILE=/run/secrets/s3_access_key
@@ -539,6 +542,7 @@ services:
       - s3_access_key
       - s3_secret_key
       - pg_dsn
+      - alert_webhook_token
     depends_on:
       kafka:
         condition: service_healthy

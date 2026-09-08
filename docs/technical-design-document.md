@@ -178,6 +178,14 @@ Review Agent Redis/Compose recovery evidence are retained. Real-model four-scena
 `scripts/release-center-real-model-scenarios-acceptance.sh`. P2.4-R1 MVP
 acceptance is complete.
 
+P2.4-R5 adds `governance_notification_outbox` and `internal/notification`.
+The coordinator and approval service enqueue content-safe events after request
+open, decision, reject, publish, and stale reconciliation. Query API relays
+those events to `alert-webhook-service /notifications`. Notification failure
+retries in the outbox and never changes approval counts or publication. The
+Agent orchestrator now walks completed side-effecting steps in reverse when a
+run fails, is cancelled, or times out, calling registered compensators only.
+
 The collector also reconciles pending requests against the current release and
 healthy active generation. A mismatched version, generation, digest, or release
 revision moves the old request to `needs_info` while preserving all review and

@@ -146,34 +146,37 @@ type Config struct {
 	AgentReviewMaxTokenBudget int64
 
 	// Kafka
-	KafkaBrokers             string
-	KafkaTopic               string
-	KafkaGroupID             string
-	KafkaDLQTopic            string
-	OCRKafkaTopic            string
-	OCRKafkaDLQTopic         string
-	OutboxRelayBatchSize     int
-	OutboxRelayPollInterval  time.Duration
-	OutboxRelayLease         time.Duration
-	IngestionJobLease        time.Duration
-	IngestionMetricsInterval time.Duration
-	OrphanCleanupInterval    time.Duration
-	OrphanCleanupGracePeriod time.Duration
-	OrphanCleanupBatchSize   int
-	IndexReconcileEnabled    bool
-	IndexReconcileInterval   time.Duration
-	IndexReconcileLease      time.Duration
-	IndexReconcileBatchSize  int
-	IndexReconcileMaxRepairs int
-	IndexRetentionEnabled    bool
-	IndexRetentionWindow     time.Duration
-	IndexRetentionInterval   time.Duration
-	IndexRetentionLease      time.Duration
-	IndexRetentionBatchSize  int
-	DeletionInterval         time.Duration
-	DeletionLease            time.Duration
-	DeletionBatchSize        int
-	DeletionRetryBackoff     time.Duration
+	KafkaBrokers               string
+	KafkaTopic                 string
+	KafkaGroupID               string
+	KafkaDLQTopic              string
+	OCRKafkaTopic              string
+	OCRKafkaDLQTopic           string
+	OutboxRelayBatchSize       int
+	OutboxRelayPollInterval    time.Duration
+	OutboxRelayLease           time.Duration
+	NotificationWebhookURL     string
+	NotificationWebhookToken   string
+	NotificationWebhookTimeout time.Duration
+	IngestionJobLease          time.Duration
+	IngestionMetricsInterval   time.Duration
+	OrphanCleanupInterval      time.Duration
+	OrphanCleanupGracePeriod   time.Duration
+	OrphanCleanupBatchSize     int
+	IndexReconcileEnabled      bool
+	IndexReconcileInterval     time.Duration
+	IndexReconcileLease        time.Duration
+	IndexReconcileBatchSize    int
+	IndexReconcileMaxRepairs   int
+	IndexRetentionEnabled      bool
+	IndexRetentionWindow       time.Duration
+	IndexRetentionInterval     time.Duration
+	IndexRetentionLease        time.Duration
+	IndexRetentionBatchSize    int
+	DeletionInterval           time.Duration
+	DeletionLease              time.Duration
+	DeletionBatchSize          int
+	DeletionRetryBackoff       time.Duration
 
 	// Redis (shared default; used as fallback for cache/state below)
 	RedisAddr     string
@@ -357,34 +360,37 @@ func Load() Config {
 		AgentReviewMaxTokenBudget: int64(EnvInt("AGENT_REVIEW_MAX_TOKEN_BUDGET", 32000)),
 
 		// Kafka
-		KafkaBrokers:             EnvStr("KAFKA_BROKERS", "localhost:9092"),
-		KafkaTopic:               EnvStr("KAFKA_TOPIC", "doc-processing"),
-		KafkaGroupID:             EnvStr("KAFKA_GROUP_ID", "etl-pipeline"),
-		KafkaDLQTopic:            EnvStr("KAFKA_DLQ_TOPIC", "doc-processing-dlq"),
-		OCRKafkaTopic:            EnvStr("OCR_KAFKA_TOPIC", "doc-processing-ocr"),
-		OCRKafkaDLQTopic:         EnvStr("OCR_KAFKA_DLQ_TOPIC", "doc-processing-ocr-dlq"),
-		OutboxRelayBatchSize:     EnvInt("OUTBOX_RELAY_BATCH_SIZE", 50),
-		OutboxRelayPollInterval:  EnvDuration("OUTBOX_RELAY_POLL_INTERVAL", 500*time.Millisecond),
-		OutboxRelayLease:         EnvDuration("OUTBOX_RELAY_LEASE", 30*time.Second),
-		IngestionJobLease:        EnvDuration("INGESTION_JOB_LEASE", 30*time.Minute),
-		IngestionMetricsInterval: EnvDuration("INGESTION_METRICS_INTERVAL", 15*time.Second),
-		OrphanCleanupInterval:    EnvDuration("ORPHAN_CLEANUP_INTERVAL", 15*time.Minute),
-		OrphanCleanupGracePeriod: EnvDuration("ORPHAN_CLEANUP_GRACE_PERIOD", 24*time.Hour),
-		OrphanCleanupBatchSize:   EnvInt("ORPHAN_CLEANUP_BATCH_SIZE", 100),
-		IndexReconcileEnabled:    EnvBool("INDEX_RECONCILE_ENABLED", true),
-		IndexReconcileInterval:   EnvDuration("INDEX_RECONCILE_INTERVAL", 5*time.Minute),
-		IndexReconcileLease:      EnvDuration("INDEX_RECONCILE_LEASE", 30*time.Minute),
-		IndexReconcileBatchSize:  EnvInt("INDEX_RECONCILE_BATCH_SIZE", 20),
-		IndexReconcileMaxRepairs: EnvInt("INDEX_RECONCILE_MAX_REPAIRS", 3),
-		IndexRetentionEnabled:    EnvBool("INDEX_RETENTION_ENABLED", false),
-		IndexRetentionWindow:     EnvDuration("INDEX_RETENTION_WINDOW", 0),
-		IndexRetentionInterval:   EnvDuration("INDEX_RETENTION_INTERVAL", time.Hour),
-		IndexRetentionLease:      EnvDuration("INDEX_RETENTION_LEASE", 30*time.Minute),
-		IndexRetentionBatchSize:  EnvInt("INDEX_RETENTION_BATCH_SIZE", 20),
-		DeletionInterval:         EnvDuration("DELETION_INTERVAL", time.Minute),
-		DeletionLease:            EnvDuration("DELETION_LEASE", 30*time.Minute),
-		DeletionBatchSize:        EnvInt("DELETION_BATCH_SIZE", 20),
-		DeletionRetryBackoff:     EnvDuration("DELETION_RETRY_BACKOFF", 5*time.Minute),
+		KafkaBrokers:               EnvStr("KAFKA_BROKERS", "localhost:9092"),
+		KafkaTopic:                 EnvStr("KAFKA_TOPIC", "doc-processing"),
+		KafkaGroupID:               EnvStr("KAFKA_GROUP_ID", "etl-pipeline"),
+		KafkaDLQTopic:              EnvStr("KAFKA_DLQ_TOPIC", "doc-processing-dlq"),
+		OCRKafkaTopic:              EnvStr("OCR_KAFKA_TOPIC", "doc-processing-ocr"),
+		OCRKafkaDLQTopic:           EnvStr("OCR_KAFKA_DLQ_TOPIC", "doc-processing-ocr-dlq"),
+		OutboxRelayBatchSize:       EnvInt("OUTBOX_RELAY_BATCH_SIZE", 50),
+		OutboxRelayPollInterval:    EnvDuration("OUTBOX_RELAY_POLL_INTERVAL", 500*time.Millisecond),
+		OutboxRelayLease:           EnvDuration("OUTBOX_RELAY_LEASE", 30*time.Second),
+		NotificationWebhookURL:     EnvStr("NOTIFICATION_WEBHOOK_URL", ""),
+		NotificationWebhookToken:   EnvSecret("NOTIFICATION_WEBHOOK_TOKEN", EnvSecret("ALERT_WEBHOOK_TOKEN", "")),
+		NotificationWebhookTimeout: EnvDuration("NOTIFICATION_WEBHOOK_TIMEOUT", 5*time.Second),
+		IngestionJobLease:          EnvDuration("INGESTION_JOB_LEASE", 30*time.Minute),
+		IngestionMetricsInterval:   EnvDuration("INGESTION_METRICS_INTERVAL", 15*time.Second),
+		OrphanCleanupInterval:      EnvDuration("ORPHAN_CLEANUP_INTERVAL", 15*time.Minute),
+		OrphanCleanupGracePeriod:   EnvDuration("ORPHAN_CLEANUP_GRACE_PERIOD", 24*time.Hour),
+		OrphanCleanupBatchSize:     EnvInt("ORPHAN_CLEANUP_BATCH_SIZE", 100),
+		IndexReconcileEnabled:      EnvBool("INDEX_RECONCILE_ENABLED", true),
+		IndexReconcileInterval:     EnvDuration("INDEX_RECONCILE_INTERVAL", 5*time.Minute),
+		IndexReconcileLease:        EnvDuration("INDEX_RECONCILE_LEASE", 30*time.Minute),
+		IndexReconcileBatchSize:    EnvInt("INDEX_RECONCILE_BATCH_SIZE", 20),
+		IndexReconcileMaxRepairs:   EnvInt("INDEX_RECONCILE_MAX_REPAIRS", 3),
+		IndexRetentionEnabled:      EnvBool("INDEX_RETENTION_ENABLED", false),
+		IndexRetentionWindow:       EnvDuration("INDEX_RETENTION_WINDOW", 0),
+		IndexRetentionInterval:     EnvDuration("INDEX_RETENTION_INTERVAL", time.Hour),
+		IndexRetentionLease:        EnvDuration("INDEX_RETENTION_LEASE", 30*time.Minute),
+		IndexRetentionBatchSize:    EnvInt("INDEX_RETENTION_BATCH_SIZE", 20),
+		DeletionInterval:           EnvDuration("DELETION_INTERVAL", time.Minute),
+		DeletionLease:              EnvDuration("DELETION_LEASE", 30*time.Minute),
+		DeletionBatchSize:          EnvInt("DELETION_BATCH_SIZE", 20),
+		DeletionRetryBackoff:       EnvDuration("DELETION_RETRY_BACKOFF", 5*time.Minute),
 
 		// Redis: REDIS_* is the shared default; REDIS_CACHE_*/REDIS_STATE_*
 		// override it so evictable cache and durable state can be separated.
@@ -580,6 +586,9 @@ func (c Config) Validate() error {
 	}
 	if c.OutboxRelayBatchSize <= 0 || c.OutboxRelayPollInterval <= 0 || c.OutboxRelayLease <= 0 || c.IngestionJobLease <= 0 || c.IngestionMetricsInterval <= 0 {
 		return fmt.Errorf("outbox relay settings and ingestion job lease must be > 0")
+	}
+	if c.NotificationWebhookTimeout <= 0 {
+		return fmt.Errorf("NOTIFICATION_WEBHOOK_TIMEOUT must be > 0, got %s", c.NotificationWebhookTimeout)
 	}
 	if c.OrphanCleanupInterval <= 0 || c.OrphanCleanupGracePeriod <= 0 || c.OrphanCleanupBatchSize < 1 || c.OrphanCleanupBatchSize > 1000 {
 		return fmt.Errorf("orphan cleanup interval/grace must be > 0 and batch size between 1 and 1000")

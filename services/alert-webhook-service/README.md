@@ -18,6 +18,10 @@ At least one downstream webhook must be configured. Otherwise `/alerts`
 returns `503`, so Alertmanager retains and retries the failed notification
 instead of silently discarding it.
 
+`POST /notifications` accepts content-safe governance events from Query API.
+If no WeCom/DingTalk channel is configured, it returns `202` and skips
+delivery so the durable outbox can close the event instead of retrying forever.
+
 ## Test
 
 ```bash

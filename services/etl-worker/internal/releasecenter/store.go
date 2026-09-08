@@ -27,7 +27,7 @@ type Store interface {
 	RecordDecision(context.Context, Decision) error
 	ListDecisions(context.Context, string, string) ([]Decision, error)
 	SetRequestState(context.Context, string, string, RequestState) error
-	ReconcileStaleRequests(context.Context, int) (int, error)
+	ReconcileStaleRequests(context.Context, int) ([]ReleaseRequest, error)
 }
 
 type Decision struct {
@@ -400,14 +400,14 @@ func (s *PostgresStore) SetRequestState(ctx context.Context, tenantID, requestID
 // ReconcileStaleRequests moves pending requests whose exact release candidate
 // is no longer current into needs_info. The request and its decisions remain
 // immutable audit records; a new candidate will receive a new stable request.
-func (s *PostgresStore) ReconcileStaleRequests(ctx context.Context, limit int) (int, error) {
+func (s *PostgresStore) ReconcileStaleRequests(ctx context.Context, limit int) ([]ReleaseRequest, error) {
 	if s == nil || s.q == nil {
-		return 0, fmt.Errorf("release center store is not configured")
+		return nil, fmt.Errorf("release center store is not configured")
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	tag, err := s.q.Exec(ctx, `WITH stale AS (
+	rows, err := s.q.Query(ctx, `WITH stale AS (
 		SELECT q.request_id
 		FROM release_center_requests q
 		LEFT JOIN document_releases r ON r.tenant_id=q.tenant_id AND r.document_id=q.document_id
@@ -427,11 +427,33 @@ func (s *PostgresStore) ReconcileStaleRequests(ctx context.Context, limit int) (
 		LIMIT $1
 	)
 	UPDATE release_center_requests q SET state='needs_info', updated_at=now()
-	FROM stale WHERE q.request_id=stale.request_id`, limit)
+	FROM stale WHERE q.request_id=stale.request_id
+	RETURNING q.request_id,q.tenant_id,q.document_id,q.document_version_id,q.generation_id,
+		q.expected_chunk_count,q.expected_chunk_digest,q.release_revision,q.review_id,
+		COALESCE(q.policy_id,''),COALESCE(q.approver_group_id,''),q.allow_requester_approval,
+		q.required_approvals,q.state,q.requested_by,q.created_at,q.updated_at`, limit)
 	if err != nil {
-		return 0, fmt.Errorf("reconcile stale release requests: %w", err)
+		return nil, fmt.Errorf("reconcile stale release requests: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	defer rows.Close()
+	var out []ReleaseRequest
+	for rows.Next() {
+		var request ReleaseRequest
+		if err := rows.Scan(&request.ID, &request.TenantID, &request.DocumentID,
+			&request.Candidate.DocumentVersionID, &request.Candidate.GenerationID,
+			&request.Candidate.ExpectedChunkCount, &request.Candidate.ExpectedChunkDigest,
+			&request.Candidate.ReleaseRevision, &request.ReviewID, &request.PolicyID, &request.ApproverGroupID,
+			&request.AllowRequesterApproval, &request.RequiredApprovals,
+			&request.State, &request.RequestedBy, &request.CreatedAt, &request.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan stale release request: %w", err)
+		}
+		request.Candidate.DocumentID = request.DocumentID
+		out = append(out, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate stale release requests: %w", err)
+	}
+	return out, nil
 }
 
 func nullableTime(value time.Time) any {

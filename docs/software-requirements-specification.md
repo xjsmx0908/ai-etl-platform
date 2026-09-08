@@ -30,6 +30,11 @@ classification, and publication controls are enforced before generation.
 - Model, tool, evidence, candidate-consistency, timeout, and budget failures
   must fail closed into a manual-review path. The Agent cannot approve or
   publish.
+- Approval and review-state changes must emit durable, content-safe
+  notifications. Delivery may retry or skip, but must not block or alter
+  review, approval, or publication.
+- Completed side-effecting Agent tools that register compensation must be
+  reversed after a later run failure, cancellation, or timeout.
 
 ## Non-Functional Requirements
 

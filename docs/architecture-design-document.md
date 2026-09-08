@@ -60,6 +60,11 @@ document enters an audited manual-exception path rather than being marked
 reviewed. A changed document version or generation invalidates the report and
 all pending decisions.
 
+P2.4-R5 keeps publication and approval in the existing modules. A separate
+notification outbox records identifier-only governance events and delivers them
+asynchronously. Agent side-effect compensation stays inside the Orchestrator;
+read-only Review tools are unchanged.
+
 ## Query Flow
 
 1. Authenticate the principal.

@@ -10,9 +10,10 @@ administrators control what is eligible for use.
 
 P2.4-R1 is complete: a genuinely autonomous, read-only Agent pre-review loop is
 implemented, integrated with Knowledge Release Center, and accepted with the
-deterministic matrix plus real-model scenarios. Broader compliance
-classification, external policy retrieval, Saga, and report lifecycle remain
-later scope.
+deterministic matrix plus real-model scenarios. P2.4-R5 now adds durable
+approval notifications and reverse compensation for side-effecting Agent tools.
+Broader compliance classification, external policy retrieval, embedded workflow
+engines, and report lifecycle remain later scope.
 
 ## Primary Users
 
@@ -106,3 +107,13 @@ policy management. The existing roles remain `admin`, `user`, and `readonly`;
 an `owner` is document metadata, not an approval identity. Enterprise IdP group
 sync, delegated approval, timed escalation, and approval revocation are not
 silently inferred from local groups and remain separate follow-up work.
+
+### P2.4-R5 orchestration around Agent review
+
+Release-center request open, decision, reject, publish, and stale-candidate
+events write a tenant-scoped notification outbox. Payloads contain identifiers
+and enums only. Delivery is asynchronous, idempotent, and fail-open. Agent runs
+compensate completed side-effecting steps in reverse when a later tool, timeout,
+cancellation, or rejection fails the run. External workflow engines consume the
+same webhook contract and submit decisions through the existing idempotent
+approval API; the platform does not embed a BPM engine in this slice.

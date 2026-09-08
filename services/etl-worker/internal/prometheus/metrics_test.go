@@ -203,6 +203,20 @@ func TestHandlerForUsesProvidedGatherer(t *testing.T) {
 	}
 }
 
+func TestSetNotificationOperationsExposesDurableBacklogSnapshot(t *testing.T) {
+	m := New("ai_etl")
+	m.SetNotificationOperations(4, 2, 70*time.Second)
+	if got := gaugeValue(t, m.NotificationOutboxPending); got != 4 {
+		t.Fatalf("pending notifications = %v, want 4", got)
+	}
+	if got := gaugeValue(t, m.NotificationOutboxRetried); got != 2 {
+		t.Fatalf("retried notifications = %v, want 2", got)
+	}
+	if got := gaugeValue(t, m.NotificationOutboxOldestAge); got != 70 {
+		t.Fatalf("oldest notification age = %v, want 70", got)
+	}
+}
+
 func TestSetIngestionOperationsExposesDurableBacklogSnapshot(t *testing.T) {
 	m := New("test_ai_etl_ingestion")
 

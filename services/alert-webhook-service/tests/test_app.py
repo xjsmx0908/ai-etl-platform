@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from app import AlertRelay, RelayConfig, build_handler, dingtalk_webhook_url
+from app import AlertRelay, RelayConfig, build_handler, dingtalk_webhook_url, format_notification
 
 
 ALERT_PAYLOAD = {
@@ -125,3 +125,51 @@ class AlertRelayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GovernanceNotificationTests(unittest.TestCase):
+    def test_format_notification_omits_findings_and_summary(self):
+        content = format_notification({
+            "event_id": "ntf-1",
+            "event_type": "release.request.opened",
+            "tenant_id": "acme",
+            "payload": {
+                "document_id": "doc-1",
+                "state": "approval_pending",
+                "summary": "身份证泄露",
+                "findings": "secret",
+            },
+        })
+        self.assertIn("doc-1", content)
+        self.assertIn("approval_pending", content)
+        self.assertNotIn("身份证", content)
+        self.assertNotIn("secret", content)
+        self.assertNotIn("findings", content)
+
+    def test_notifications_endpoint_skips_when_no_channel(self):
+        relay = AlertRelay(RelayConfig(token="relay-token"))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), build_handler(relay))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address
+        request = urllib.request.Request(
+            f"http://{host}:{port}/notifications",
+            data=json.dumps({
+                "event_id": "ntf-1",
+                "event_type": "release.request.opened",
+                "tenant_id": "acme",
+                "payload": {"document_id": "doc-1", "state": "approval_pending"},
+            }).encode(),
+            headers={
+                "Authorization": "Bearer relay-token",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                self.assertEqual(response.status, 202)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()

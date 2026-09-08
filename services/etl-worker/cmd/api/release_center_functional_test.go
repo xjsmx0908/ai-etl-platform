@@ -124,8 +124,8 @@ func (s *functionalReleaseStore) SetRequestState(_ context.Context, tenantID, re
 	return nil
 }
 
-func (s *functionalReleaseStore) ReconcileStaleRequests(context.Context, int) (int, error) {
-	return 0, nil
+func (s *functionalReleaseStore) ReconcileStaleRequests(context.Context, int) ([]releasecenter.ReleaseRequest, error) {
+	return nil, nil
 }
 
 func functionalCandidate() publicationworkflow.Candidate {
@@ -210,7 +210,7 @@ func TestReleaseCenterHTTPInternalHighRiskRequiresTwoAdmins(t *testing.T) {
 		t.Fatalf("request=%+v", created.Request)
 	}
 
-	decisionHandler := handleReleaseCenterDecision(store, workflow)
+	decisionHandler := handleReleaseCenterDecision(store, workflow, nil)
 	first := doRequest(decisionHandler, http.MethodPost, "/v1/release-center/requests/"+created.Request.ID+"/decision", map[string]string{"decision": "approved"}, functionalAdminContext("admin-1"))
 	if first.Code != http.StatusOK || workflow.published != 0 {
 		t.Fatalf("first status=%d published=%d body=%s", first.Code, workflow.published, first.Body.String())
@@ -242,7 +242,7 @@ func TestReleaseCenterHTTPSelfReviewIsRejected(t *testing.T) {
 	store.reviews[review.ID] = review
 	store.requests[request.ID] = request
 
-	response := doRequest(handleReleaseCenterDecision(store, workflow), http.MethodPost, "/v1/release-center/requests/"+request.ID+"/decision", map[string]string{"decision": "approved"}, functionalAdminContext("admin-self"))
+	response := doRequest(handleReleaseCenterDecision(store, workflow, nil), http.MethodPost, "/v1/release-center/requests/"+request.ID+"/decision", map[string]string{"decision": "approved"}, functionalAdminContext("admin-self"))
 	if response.Code != http.StatusConflict || workflow.published != 0 || len(store.decisions[request.ID]) != 0 {
 		t.Fatalf("status=%d published=%d decisions=%d body=%s", response.Code, workflow.published, len(store.decisions[request.ID]), response.Body.String())
 	}

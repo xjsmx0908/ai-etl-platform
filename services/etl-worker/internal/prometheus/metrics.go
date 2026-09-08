@@ -97,6 +97,10 @@ type Metrics struct {
 	AgentToolSteps         *prometheus.CounterVec
 	AgentToolStepDuration  *prometheus.HistogramVec
 	AgentApprovalDecisions *prometheus.CounterVec
+
+	NotificationOutboxPending   prometheus.Gauge
+	NotificationOutboxRetried   prometheus.Gauge
+	NotificationOutboxOldestAge prometheus.Gauge
 }
 
 // New creates a new Metrics instance with all counters registered.
@@ -400,6 +404,18 @@ func New(namespace string) *Metrics {
 			},
 			[]string{"decision", "tool_name"},
 		),
+		NotificationOutboxPending: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "notification", Name: "outbox_pending",
+			Help: "Committed governance notification events not yet delivered",
+		}),
+		NotificationOutboxRetried: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "notification", Name: "outbox_retried",
+			Help: "Pending governance notification events with at least one delivery attempt",
+		}),
+		NotificationOutboxOldestAge: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace, Subsystem: "notification", Name: "outbox_oldest_age_seconds",
+			Help: "Age in seconds of the oldest pending governance notification event",
+		}),
 	}
 
 	prometheus.MustRegister(
@@ -446,6 +462,9 @@ func New(namespace string) *Metrics {
 		m.AgentToolSteps,
 		m.AgentToolStepDuration,
 		m.AgentApprovalDecisions,
+		m.NotificationOutboxPending,
+		m.NotificationOutboxRetried,
+		m.NotificationOutboxOldestAge,
 	)
 
 	return m
@@ -480,6 +499,15 @@ func (m *Metrics) SCIMMiddleware(connector string, next http.Handler) http.Handl
 
 // SetIngestionOperations publishes one bounded-cardinality snapshot of durable
 // admission and worker state. Callers should refresh it from PostgreSQL.
+func (m *Metrics) SetNotificationOperations(pending, retried int, oldestAge time.Duration) {
+	if m == nil {
+		return
+	}
+	m.NotificationOutboxPending.Set(float64(pending))
+	m.NotificationOutboxRetried.Set(float64(retried))
+	m.NotificationOutboxOldestAge.Set(nonNegativeDuration(oldestAge).Seconds())
+}
+
 func (m *Metrics) SetIngestionOperations(pending, retried int, oldestAge time.Duration, jobs map[string]int, expiredLeases int) {
 	m.IngestionOutboxPending.Set(float64(pending))
 	m.IngestionOutboxRetried.Set(float64(retried))

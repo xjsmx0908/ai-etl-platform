@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/notification"
 	"ai-etl-pipeline/internal/publicationworkflow"
 )
 
@@ -97,7 +98,18 @@ func (s *memoryStore) SetRequestState(_ context.Context, _, id string, state Req
 	s.requests[id] = request
 	return nil
 }
-func (s *memoryStore) ReconcileStaleRequests(context.Context, int) (int, error) { return 0, nil }
+func (s *memoryStore) ReconcileStaleRequests(context.Context, int) ([]ReleaseRequest, error) {
+	var out []ReleaseRequest
+	for id, request := range s.requests {
+		if request.State != RequestApprovalPending && request.State != RequestManualException {
+			continue
+		}
+		request.State = RequestNeedsInfo
+		s.requests[id] = request
+		out = append(out, request)
+	}
+	return out, nil
+}
 
 func readyCandidate() publicationworkflow.Candidate {
 	return publicationworkflow.Candidate{DocumentID: "doc-1", DocumentVersionID: "job-1", GenerationID: "gen-1", ExpectedChunkCount: 3, ExpectedChunkDigest: "sha256:ready", ReleaseRevision: 1}
@@ -312,4 +324,95 @@ func TestManualExceptionRequiresAuditedReason(t *testing.T) {
 	if err != nil || result.Request.State != RequestPublished {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
+}
+
+func TestCoordinatorEnqueuesContentSafeApprovalNotification(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	notes := notification.NewMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{
+		RunID: "run-1", Status: "completed", Recommendation: "publish", RiskLevel: RiskLow,
+		Summary: "正文含身份证 110101199001011234", Findings: []Finding{{Code: "sensitive_data_detected", Severity: "high", Summary: "secret finding", EvidenceRef: "chunk:1"}},
+		Model: "governance-agent", PromptVersion: "document-review-v1",
+	}}, store).WithNotifier(notes)
+	_, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := notes.Events()
+	if len(events) != 1 || events[0].Type != notification.EventRequestOpened || events[0].SourceID != request.ID {
+		t.Fatalf("events=%+v request=%+v", events, request)
+	}
+	if events[0].Payload["summary"] != "" || events[0].Payload["findings"] != "" || events[0].Payload["state"] != string(RequestApprovalPending) {
+		t.Fatalf("payload leaked or missing state: %+v", events[0].Payload)
+	}
+}
+
+func TestApprovalServiceNotifiesRejectAndPublish(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	now := time.Now().UTC()
+	report := ReviewReport{ID: "review-1", TenantID: "acme", DocumentID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, ReleaseRevision: candidate.ReleaseRevision, Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, CreatedAt: now}
+	store.reviews[report.ID] = report
+	store.requests["request-1"] = ReleaseRequest{ID: "request-1", TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: RequestApprovalPending, RequestedBy: "uploader", CreatedAt: now, UpdatedAt: now}
+	notes := notification.NewMemoryStore()
+	approval := NewApprovalService(workflow, store).WithNotifier(notes)
+	rejected, err := approval.Decide(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "admin-1", Role: "admin"}, "request-1", "rejected", "not ready")
+	if err != nil || rejected.Request.State != RequestRejected {
+		t.Fatalf("rejected=%+v err=%v", rejected, err)
+	}
+	types := eventTypes(notes)
+	if !containsEvent(types, notification.EventDecisionRecorded) || !containsEvent(types, notification.EventRequestStateChanged) {
+		t.Fatalf("reject events=%v", types)
+	}
+
+	store.requests["request-2"] = ReleaseRequest{ID: "request-2", TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: report.ID, RequiredApprovals: 1, State: RequestApprovalPending, RequestedBy: "uploader", CreatedAt: now, UpdatedAt: now}
+	notes = notification.NewMemoryStore()
+	approval = NewApprovalService(workflow, store).WithNotifier(notes)
+	published, err := approval.Decide(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "admin-1", Role: "admin"}, "request-2", "approved", "")
+	if err != nil || published.Request.State != RequestPublished {
+		t.Fatalf("published=%+v err=%v", published, err)
+	}
+	types = eventTypes(notes)
+	if !containsEvent(types, notification.EventDecisionRecorded) || !containsEvent(types, notification.EventRequestStateChanged) {
+		t.Fatalf("publish events=%v", types)
+	}
+}
+
+func TestCoordinatorNotifiesStaleRequestReconciliation(t *testing.T) {
+	store := newMemoryStore()
+	notes := notification.NewMemoryStore()
+	candidate := readyCandidate()
+	now := time.Now().UTC()
+	store.requests["request-stale"] = ReleaseRequest{ID: "request-stale", TenantID: "acme", DocumentID: candidate.DocumentID, Candidate: candidate, ReviewID: "review-1", RequiredApprovals: 1, State: RequestApprovalPending, CreatedAt: now, UpdatedAt: now}
+	coordinator := NewCoordinator(&workflowStub{}, documentStub{}, reviewerStub{}, store).WithNotifier(notes)
+	if err := coordinator.RunPendingReviews(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "system", Role: "admin"}, 10); err != nil {
+		t.Fatal(err)
+	}
+	if store.requests["request-stale"].State != RequestNeedsInfo {
+		t.Fatalf("state=%s", store.requests["request-stale"].State)
+	}
+	events := notes.Events()
+	if len(events) != 1 || events[0].Type != notification.EventRequestStateChanged || events[0].Payload["state"] != string(RequestNeedsInfo) {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func eventTypes(store *notification.MemoryStore) []string {
+	var out []string
+	for _, event := range store.Events() {
+		out = append(out, event.Type)
+	}
+	return out
+}
+
+func containsEvent(types []string, want string) bool {
+	for _, item := range types {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }

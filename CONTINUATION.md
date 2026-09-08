@@ -45,7 +45,8 @@
 
 ## 2. 当前正在处理的工作
 
-- 当前没有正在运行的代码实现任务。
+- P2.4-R1 已关闭：自主预审闭环、累计 token 预算、部署恢复和真实模型四场景验收均已通过，并已写入 backlog/README/设计与验收文档。
+- 当前实现项是 P2.4-R5：发布中心审批通知 outbox、异步投递和 Agent 副作用反向补偿。
 - 583 页扫描 PDF 已由用户独立验证，OCR 全流程不再是当前工作项。
 - 当前唯一主线是企业级 Agent 审计功能完善；不得从历史 OCR、生产准入或身份部署记录自动推导下一项。
 - P2.4-R2 已完成：租户隔离审批组、成员启停、空间/权限/风险策略、双人审批、自审控制和策略持久化/API 已交付；审批存储不可用时 fail-closed。
@@ -112,7 +113,7 @@
 目标：完善企业级 Agent 审计功能。新会话只按以下顺序推进：
 
 1. **P2.4-R1（已完成）**：自主预审闭环、累计 token 预算、部署恢复和真实模型四场景验收已通过。
-2. **P2.4-R5（当前）**：异步审批通知、失败补偿、Saga 和外部工作流集成。
+2. **P2.4-R5（当前）**：审批通知 outbox 与反向补偿已落地；外部工作流引擎适配后置。
 3. **P2.4-R3（后置）**：Review report TTL、过期清理和自动重审。
 
 P2.4-R2 的企业 IdP 组同步、委托、定时升级和审批撤权不在本次本地策略切片内；
@@ -131,7 +132,7 @@ P2.3、P2.5、P2.6、P1.9 属于生产准入或外部决策，不是当前 Agent
 ## 6. 继续当前任务必须知道的上下文
 
 - 工作目录：`/home/ubuntu/ai-projects/ai-etl-platform`；分支：`master`；远程：`origin`。
-- 当前分支 `master` 跟踪 `origin/master`；P2.4-R1 关闭提交为 `b2852c8 feat: verify review agent real-model scenarios`。
+- 当前分支 `master` 跟踪 `origin/master`；P2.4-R1 关闭提交为 `b2852c8 feat: verify review agent real-model scenarios`，口径对齐提交为 `1886578 docs: align continuation status with R1 closeout`。
 - 本地入口：Web `http://localhost:3100`，Query API `http://localhost:8080`，Parser `http://127.0.0.1:8000`。
 - 当前关键运行配置：`PARSER_MAX_CHUNK_SIZE=600`、`PARSER_CHUNK_OVERLAP=50`、`OCR_PAGE_BATCH_SIZE=25`、`EMBED_CONCURRENCY=1`、`EMBED_TIMEOUT=180s`、`PIPELINE_STAGE_TIMEOUT=180s`、`PIPELINE_TIMEOUT=4h`、`PIPELINE_MAX_RETRIES=1`、`INGESTION_JOB_LEASE=12h`。
 - 当前模型端点是本机 Ollama：`http://host.docker.internal:11434/api/embeddings`，模型 `bge-m3`，维度 1024；CPU 推理是整本任务耗时的主要因素。

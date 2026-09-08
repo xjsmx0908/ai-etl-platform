@@ -41,6 +41,7 @@ import (
 	"ai-etl-pipeline/internal/metrics"
 	"ai-etl-pipeline/internal/middleware"
 	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/notification"
 	"ai-etl-pipeline/internal/oidcauth"
 	"ai-etl-pipeline/internal/prometheus"
 	"ai-etl-pipeline/internal/publicationrelease"
@@ -401,6 +402,22 @@ func main() {
 	publicationWorkflow := publicationworkflow.New(docStore, exactPublication).
 		WithPublisher(exactPublication)
 	releaseCenterStore := releasecenter.NewPostgresStore(pgPool)
+	notificationStore := notification.NewPostgresStore(pgPool)
+	var notificationDispatcher notification.Dispatcher = notification.SkipDispatcher{}
+	if strings.TrimSpace(cfg.NotificationWebhookURL) != "" {
+		notificationDispatcher = notification.WebhookDispatcher{
+			URL: cfg.NotificationWebhookURL, Token: cfg.NotificationWebhookToken, Timeout: cfg.NotificationWebhookTimeout,
+		}
+	}
+	go func() {
+		runNotificationRelay(relayCtx, notification.Relay{
+			Store: notificationStore, Dispatcher: notificationDispatcher,
+			BatchSize: cfg.OutboxRelayBatchSize, Lease: cfg.OutboxRelayLease,
+		}, cfg.OutboxRelayPollInterval)
+	}()
+	go func() {
+		runNotificationOperationsMonitor(metricsCtx, notificationStore, prom, cfg.IngestionMetricsInterval)
+	}()
 	var chunkStorerForReview *store.QdrantStorer
 	if chunkStorer, chunkErr := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension); chunkErr != nil {
 		slog.Warn("qdrant storer for review Agent unavailable", "error", chunkErr)
@@ -475,7 +492,7 @@ func main() {
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
 	apiV1.Handle("/v1/release-center/requests", requireScopes(auth.ScopeAdmin)(handleReleaseCenterRequests(releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/overview", requireScopes(auth.ScopeAdmin)(handleReleaseCenterOverview(releaseCenterStore)))
-	apiV1.Handle("/v1/release-center/requests/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterDecision(releaseCenterStore, publicationWorkflow, releaseCenterStore)))
+	apiV1.Handle("/v1/release-center/requests/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterDecision(releaseCenterStore, publicationWorkflow, notificationStore, releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/approval-groups", requireScopes(auth.ScopeAdmin)(handleReleaseCenterApprovalGroups(releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/approval-groups/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterApprovalGroups(releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/approval-policies", requireScopes(auth.ScopeAdmin)(handleReleaseCenterApprovalPolicies(releaseCenterStore)))
@@ -498,7 +515,7 @@ func main() {
 	} else {
 		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorerForHandler, qs))
 	}
-	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc}, releaseCenterStore, releaseCenterStore)
+	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc}, releaseCenterStore, releaseCenterStore).WithNotifier(notificationStore)
 	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
 	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	apiV1.Handle("/v1/release-center/review-reports/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReviewReport(releaseCenterStore)))
@@ -580,6 +597,55 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		"build_time": buildTime,
 		"service":    "query-api",
 	})
+}
+
+func runNotificationRelay(ctx context.Context, relay notification.Relay, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if _, err := relay.RunOnce(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("governance notification relay pass failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+type notificationSnapshotReader interface {
+	Snapshot(context.Context) (notification.Snapshot, error)
+}
+
+type notificationOperationsObserver interface {
+	SetNotificationOperations(int, int, time.Duration)
+}
+
+func runNotificationOperationsMonitor(ctx context.Context, reader notificationSnapshotReader, observer notificationOperationsObserver, interval time.Duration) {
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		snapshot, err := reader.Snapshot(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("governance notification snapshot failed", "error", err)
+			}
+		} else if observer != nil {
+			observer.SetNotificationOperations(snapshot.Pending, snapshot.Retried, snapshot.OldestAge)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func runOutboxRelay(ctx context.Context, relay ingestion.Relay, interval time.Duration) {
