@@ -54,7 +54,7 @@ type plannerDecisionPayload struct {
 	Thought   string             `json:"thought,omitempty"`
 	ToolName  string             `json:"tool_name,omitempty"`
 	Arguments json.RawMessage    `json:"arguments,omitempty"`
-	Final     string             `json:"final,omitempty"`
+	Final     json.RawMessage    `json:"final,omitempty"`
 }
 
 type chatCompletionRequest struct {
@@ -186,7 +186,7 @@ func (p *LLMPlanner) Plan(ctx context.Context, run agent.Run) (agent.PlanDecisio
 // output problem worth one retry, as opposed to a real validation failure.
 func retryablePlannerError(err error) bool {
 	msg := err.Error()
-	return strings.Contains(msg, "empty content") || strings.Contains(msg, "invalid JSON decision")
+	return strings.Contains(msg, "empty content") || strings.Contains(msg, "invalid JSON decision") || strings.Contains(msg, "unregistered tool") || strings.Contains(msg, "unsupported decision type")
 }
 
 func (p *LLMPlanner) planOnce(ctx context.Context, run agent.Run) (agent.PlanDecision, error) {
@@ -262,7 +262,7 @@ func (p *LLMPlanner) planOnce(ctx context.Context, run agent.Run) (agent.PlanDec
 	if content == "" {
 		return agent.PlanDecision{Usage: usage}, fmt.Errorf("agent planner returned empty content")
 	}
-	decision, err := p.validateDecision([]byte(content))
+	decision, err := p.validateDecision(extractJSONDecision(content))
 	decision.Usage = usage
 	return decision, err
 }
@@ -321,16 +321,20 @@ func (p *LLMPlanner) validateDecision(raw []byte) (agent.PlanDecision, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return agent.PlanDecision{}, fmt.Errorf("agent planner returned invalid JSON decision: %w", err)
 	}
+	if payload.Type == "" {
+		payload = inferPlannerDecision(raw, payload, p.tools)
+	}
 
 	switch payload.Type {
 	case agent.DecisionFinal:
-		if strings.TrimSpace(payload.Final) == "" {
-			return agent.PlanDecision{}, fmt.Errorf("agent planner final decision requires final")
+		final, err := finalDecisionText(payload.Final)
+		if err != nil {
+			return agent.PlanDecision{}, err
 		}
 		return agent.PlanDecision{
 			Type:    agent.DecisionFinal,
 			Thought: payload.Thought,
-			Final:   payload.Final,
+			Final:   final,
 		}, nil
 	case agent.DecisionToolCall:
 		toolName := strings.ToLower(strings.TrimSpace(payload.ToolName))
@@ -354,6 +358,104 @@ func (p *LLMPlanner) validateDecision(raw []byte) (agent.PlanDecision, error) {
 	default:
 		return agent.PlanDecision{}, fmt.Errorf("agent planner returned unsupported decision type %q", payload.Type)
 	}
+}
+
+func inferPlannerDecision(raw []byte, payload plannerDecisionPayload, tools map[string]agent.ToolDefinition) plannerDecisionPayload {
+	var generic map[string]json.RawMessage
+	if json.Unmarshal(raw, &generic) != nil {
+		return payload
+	}
+	name := strings.ToLower(strings.TrimSpace(payload.ToolName))
+	if name == "" {
+		for _, key := range []string{"tool_name", "name"} {
+			if value, ok := generic[key]; ok {
+				var text string
+				if json.Unmarshal(value, &text) == nil {
+					name = strings.ToLower(strings.TrimSpace(text))
+					break
+				}
+			}
+		}
+	}
+	if name != "" {
+		if _, ok := tools[name]; ok {
+			payload.Type = agent.DecisionToolCall
+			payload.ToolName = name
+			if len(payload.Arguments) == 0 {
+				if args, ok := generic["arguments"]; ok {
+					payload.Arguments = args
+				}
+			}
+			return payload
+		}
+	}
+	if _, hasStatus := generic["status"]; hasStatus {
+		if _, hasRecommendation := generic["recommendation"]; hasRecommendation {
+			payload.Type = agent.DecisionFinal
+			if len(payload.Final) == 0 {
+				payload.Final = json.RawMessage(raw)
+			}
+		}
+	}
+	return payload
+}
+
+func extractJSONDecision(content string) []byte {
+	content = stripThinkBlocks(content)
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimPrefix(content, "```JSON")
+		content = strings.TrimPrefix(content, "```")
+		if idx := strings.LastIndex(content, "```"); idx >= 0 {
+			content = content[:idx]
+		}
+		content = strings.TrimSpace(content)
+	}
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start >= 0 && end > start {
+		return []byte(content[start : end+1])
+	}
+	return []byte(content)
+}
+
+func stripThinkBlocks(content string) string {
+	for {
+		start := strings.Index(content, "<think>")
+		if start < 0 {
+			return content
+		}
+		rest := content[start+len("<think>"):]
+		end := strings.Index(rest, "</think>")
+		if end < 0 {
+			return strings.TrimSpace(content[:start])
+		}
+		content = content[:start] + rest[end+len("</think>"):]
+	}
+}
+
+func finalDecisionText(raw json.RawMessage) (string, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", fmt.Errorf("agent planner final decision requires final")
+	}
+	raw = json.RawMessage(trimmed)
+	if raw[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return "", fmt.Errorf("agent planner final decision requires final")
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return "", fmt.Errorf("agent planner final decision requires final")
+		}
+		return text, nil
+	}
+	if json.Valid(raw) && (raw[0] == '{' || raw[0] == '[') {
+		return trimmed, nil
+	}
+	return "", fmt.Errorf("agent planner final decision requires final")
 }
 
 func (p *LLMPlanner) systemPrompt() string {

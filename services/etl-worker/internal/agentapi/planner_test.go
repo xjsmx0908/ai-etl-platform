@@ -131,6 +131,44 @@ func TestLLMPlannerPlansFinalFromObservation(t *testing.T) {
 	}
 }
 
+func TestLLMPlannerAcceptsMarkdownThinkAndObjectFinal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writePlannerResponse(t, w, "<think>ignore</think>\n```json\n{\"type\":\"final\",\"final\":{\"status\":\"completed\",\"recommendation\":\"publish\",\"risk_level\":\"low\",\"summary\":\"ok\",\"findings\":[]}}\n```")
+	}))
+	defer server.Close()
+
+	decision, err := newTestLLMPlanner(t, server.URL, "").Plan(context.Background(), agent.Run{Task: "review", State: agent.StateRunning})
+	if err != nil {
+		t.Fatalf("plan wrapped final: %v", err)
+	}
+	if decision.Type != agent.DecisionFinal || !strings.Contains(decision.Final, `"recommendation":"publish"`) {
+		t.Fatalf("unexpected wrapped final: %+v", decision)
+	}
+}
+
+func TestLLMPlannerInfersToolCallAndFinalWithoutType(t *testing.T) {
+	t.Run("tool name only", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writePlannerResponse(t, w, `{"name":"rag_query","arguments":{"question":"报销制度"}}`)
+		}))
+		defer server.Close()
+		decision, err := newTestLLMPlanner(t, server.URL, "").Plan(context.Background(), agent.Run{Task: "q", State: agent.StateRunning})
+		if err != nil || decision.Type != agent.DecisionToolCall || decision.ToolName != ragQueryToolName {
+			t.Fatalf("infer tool call: %+v err=%v", decision, err)
+		}
+	})
+	t.Run("report object", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writePlannerResponse(t, w, `{"status":"completed","recommendation":"publish","risk_level":"low","summary":"ok","findings":[]}`)
+		}))
+		defer server.Close()
+		decision, err := newTestLLMPlanner(t, server.URL, "").Plan(context.Background(), agent.Run{Task: "q", State: agent.StateRunning})
+		if err != nil || decision.Type != agent.DecisionFinal || !strings.Contains(decision.Final, `"status":"completed"`) {
+			t.Fatalf("infer final: %+v err=%v", decision, err)
+		}
+	})
+}
+
 func TestLLMPlannerPlansTaskStatusToolCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writePlannerResponse(t, w, `{"type":"tool_call","thought":"need task status","tool_name":"etl_task_status","arguments":{"task_id":"doc-123"}}`)

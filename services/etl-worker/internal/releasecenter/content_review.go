@@ -21,11 +21,14 @@ type ContentReviewResult struct {
 	Findings       []Finding
 }
 
+const insufficientEvidenceCode = "insufficient_evidence"
+
 var (
-	secretPattern    = regexp.MustCompile(`(?i)(password|passwd|secret|api[_ -]?key)\s*[:=]`)
-	idPattern        = regexp.MustCompile(`\b\d{17}[0-9Xx]\b`)
-	phonePattern     = regexp.MustCompile(`\b1[3-9]\d{9}\b`)
-	injectionPattern = regexp.MustCompile(`(?i)(忽略|无视|ignore)\s*(之前|先前|previous|prior)?\s*(的)?\s*(指令|instructions?|提示词|system prompt)`)
+	secretPattern       = regexp.MustCompile(`(?i)(password|passwd|secret|api[_ -]?key)\s*[:=]`)
+	idPattern           = regexp.MustCompile(`\b\d{17}[0-9Xx]\b`)
+	phonePattern        = regexp.MustCompile(`\b1[3-9]\d{9}\b`)
+	injectionPattern    = regexp.MustCompile(`(?i)(忽略|无视|ignore)\s*(之前|先前|previous|prior)?\s*(的)?\s*(指令|instructions?|提示词|system prompt)`)
+	insufficientPattern = regexp.MustCompile(`(?i)(待补充|占位稿|尚未提供|正文尚未|to be (determined|provided)|\btbd\b|placeholder)`)
 )
 
 // AnalyzeContent applies bounded, deterministic content checks. It is an
@@ -62,10 +65,37 @@ func AnalyzeContent(permission string, chunks []ContentChunk) ContentReviewResul
 	if usableChunks == 0 {
 		return ContentReviewResult{Failed: true, Risk: RiskHigh, Recommendation: "manual_review", Summary: "无法读取文档内容，已转人工复核"}
 	}
+	if len(result.Findings) == 0 {
+		if finding, ok := insufficientEvidenceFinding(chunks); ok {
+			result.Risk = RiskMedium
+			result.Recommendation = "needs_info"
+			result.Findings = append(result.Findings, finding)
+		}
+	}
 	if len(result.Findings) > 0 {
 		result.Summary = "内容检查发现 " + strings.TrimSpace(strings.Join(findingCodes(result.Findings), "、"))
 	}
 	return result
+}
+
+func insufficientEvidenceFinding(chunks []ContentChunk) (Finding, bool) {
+	var evidence string
+	var builder strings.Builder
+	for _, chunk := range chunks {
+		content := strings.TrimSpace(chunk.Content)
+		if content == "" {
+			continue
+		}
+		if evidence == "" {
+			evidence = chunk.ChunkID
+		}
+		builder.WriteString(content)
+		builder.WriteByte('\n')
+	}
+	if evidence == "" || !insufficientPattern.MatchString(builder.String()) {
+		return Finding{}, false
+	}
+	return Finding{Code: insufficientEvidenceCode, Severity: "medium", Summary: "文档内容不足，无法支持发布", EvidenceRef: evidence}, true
 }
 
 func riskRank(risk RiskLevel) int {

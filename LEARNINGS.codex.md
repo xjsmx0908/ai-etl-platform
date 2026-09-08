@@ -137,3 +137,10 @@
 - Reason：必须先持久化至少一个只读工具步骤，再通过 Compose 强制中断接口并恢复 Redis；恢复后只能继续同一 Run，且不得重复执行已完成工具。预审替身需要监听 `0.0.0.0`，否则容器无法连到宿主机回环地址。
 - Act：新增可暂停 Planner 替身、隔离栈恢复脚本和脱敏报告；故障序列为 `kill query-api` → 停止/启动 `redis-state` → 再启动 query-api。
 - Refine：隔离栈验收通过，同一 `review-run` 在故障前后保持，首个工具幂等键不变，四个只读工具加最终报告共 5 步，请求进入 `approval_pending`。
+
+## 2026-09-08 - 真实模型四场景验收
+
+- Perceive：P2.4-R1 剩余关闭条件是用真实模型验证普通、敏感信息、提示词注入和证据不足四类文档，并记录延迟、token 和人工转交。
+- Reason：真实小模型会提前交卷、漏工具、省略确定性 finding，或在无证据时给出 needs_info。服务端必须在必做工具完成前拦截 final，补齐确定性 finding/风险下限，并禁止无证据阻断发布。
+- Act：新增隔离栈验收脚本；Planner 兼容 markdown/`<think>`/对象 final/无 type 决策；Review 增加占位稿 `insufficient_evidence` 扫描；提前结束会被重定向到缺失的只读工具。
+- Refine：本机 Ollama `qwen2.5:1.5b` 四场景通过。普通文档 `approval_pending/publish/low`；敏感信息和提示词注入 `needs_info/high` 且 finding 绑定 chunk；占位稿 `needs_info/medium`。证据保存在 `artifacts/release-center-real-model-scenarios-acceptance/`。P2.4-R1 MVP 关闭。

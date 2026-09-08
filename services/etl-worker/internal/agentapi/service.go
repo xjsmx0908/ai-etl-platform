@@ -256,7 +256,7 @@ func (s *Service) resumePublicationReview(ctx context.Context, actor agent.Actor
 	if err := json.Unmarshal([]byte(run.Final), &report); err != nil {
 		return releasecenter.AgentReview{RunID: run.ID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: "invalid review report: " + err.Error()}, nil
 	}
-	candidate, err := validateAutonomousReview(run, report)
+	report, candidate, err := validateAutonomousReview(run, report)
 	if err != nil {
 		return releasecenter.AgentReview{RunID: run.ID, Status: "failed", Recommendation: "manual_review", RiskLevel: releasecenter.RiskHigh, Summary: err.Error()}, nil
 	}
@@ -304,7 +304,7 @@ func newReviewPlanner(cfg config.Config, registry *agent.Registry) (agent.Planne
 	if cfg.AgentPlannerType == config.AgentPlannerRule {
 		return ReviewRulePlanner{}, nil
 	}
-	return NewLLMPlanner(LLMPlannerOptions{
+	inner, err := NewLLMPlanner(LLMPlannerOptions{
 		Endpoint:  config.EnvStr("LLM_ENDPOINT", "https://api.openai.com/v1/chat/completions"),
 		APIKey:    config.EnvSecret("LLM_API_KEY", ""),
 		Model:     config.EnvStr("LLM_MODEL", "deepseek-v4-flash"),
@@ -312,6 +312,10 @@ func newReviewPlanner(cfg config.Config, registry *agent.Registry) (agent.Planne
 		Timeout:   config.EnvDuration("AGENT_PLANNER_TIMEOUT", 45*time.Second), Tools: registry.Definitions(),
 		SystemPrompt: reviewPlannerSystemPrompt,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return constrainedReviewPlanner{inner: inner}, nil
 }
 
 func configuredReviewModel() string {

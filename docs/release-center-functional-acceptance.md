@@ -97,6 +97,20 @@ HTTP 上传受管文档并观察发布请求、只读 review report 和 Agent Ru
 `artifacts/release-center-review-recovery-acceptance/`，不得写入文档正文、完整 prompt
 或凭据。该门禁验证崩溃恢复，不替代真实模型四场景验收。
 
+真实模型四场景验收（独立隔离栈）:
+
+```bash
+bash scripts/release-center-real-model-scenarios-acceptance.sh
+```
+
+该专项强制 `AGENT_PLANNER_TYPE=auto` 和显式真实 `LLM_ENDPOINT`/`LLM_MODEL`，通过公共
+HTTP 上传四类受管文档：普通、敏感信息、提示词注入、证据不足。验收必须证明真实模型
+完成四个只读工具，记录延迟和累计 token，并且：普通文档进入 `approval_pending`/`publish`；
+敏感信息和提示词注入保留带 chunk 引用的确定性 finding 并转 `needs_info`；占位/证据不足
+文档不得建议 `publish`。报告默认保存在
+`artifacts/release-center-real-model-scenarios-acceptance/`，不得写入文档正文、完整 prompt
+或凭据。
+
 生产适配器不会自然生成的上游异常证据由真实 HTTP handler 功能测试覆盖：
 
 ```bash
@@ -145,7 +159,7 @@ P2.4-R2 的实现边界：管理员可通过 `POST/GET /v1/release-center/approv
 ## 当前实施顺序
 
 当前主线是企业级 Agent 审计功能，不包含通用生产准入、企业身份部署或 OCR 验收。
-实施顺序固定为：P2.4-R1（自主预审 Agent）→ P2.4-R5（通知、补偿和外部编排）→
+实施顺序固定为：P2.4-R1（自主预审 Agent，已完成）→ P2.4-R5（通知、补偿和外部编排）→
 P2.4-R3（报告生命周期）。P2.4-R2（审批组与策略）已完成。
 P2.4-R3 已明确后置；P1.9、P2.3、P2.5、P2.6 和 OCR 不得在未得到用户重新指定时
 改变该顺序。

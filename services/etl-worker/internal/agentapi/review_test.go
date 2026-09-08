@@ -400,7 +400,11 @@ func TestNewReviewPlannerReusesRAGModelConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	llmPlanner, ok := planner.(*LLMPlanner)
+	constrained, ok := planner.(constrainedReviewPlanner)
+	if !ok {
+		t.Fatalf("planner=%T", planner)
+	}
+	llmPlanner, ok := constrained.inner.(*LLMPlanner)
 	if !ok || llmPlanner.endpoint != "http://rag.example/v1/chat/completions" || llmPlanner.model != "rag-model" || llmPlanner.apiKey != "rag-key" {
 		t.Fatalf("planner=%+v", planner)
 	}
@@ -414,13 +418,58 @@ func TestValidateAutonomousReviewRejectsMissingToolAndUnknownEvidence(t *testing
 		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}}),
 	}}
 	report := releasecenter.AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: releasecenter.RiskLow, Summary: "ok"}
-	if _, err := validateAutonomousReview(run, report); err == nil {
+	if _, _, err := validateAutonomousReview(run, report); err == nil {
 		t.Fatal("expected missing prompt-injection scan to fail")
 	}
 	run.Steps = append(run.Steps, reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}}))
 	report.Findings = []releasecenter.Finding{{Code: "invented", Severity: "high", Summary: "invented", EvidenceRef: "unknown"}}
-	if _, err := validateAutonomousReview(run, report); err == nil {
-		t.Fatal("expected unknown evidence to fail")
+	normalized, _, err := validateAutonomousReview(run, report)
+	if err != nil {
+		t.Fatalf("unknown evidence should be dropped, got %v", err)
+	}
+	if len(normalized.Findings) != 0 {
+		t.Fatalf("unknown evidence leaked into report: %+v", normalized.Findings)
+	}
+}
+
+func TestValidateAutonomousReviewRestoresOmittedDeterministicFinding(t *testing.T) {
+	candidate := reviewCandidate()
+	finding := releasecenter.Finding{Code: "sensitive_data_detected", Severity: "high", Summary: "sensitive", EvidenceRef: "chunk-1"}
+	run := agent.Run{Steps: []agent.Step{
+		reviewStep(1, getReviewContextToolName, candidate, nil),
+		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{"chunk_ids": []string{"chunk-1"}, "total": 1}),
+		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{finding}, "risk_level": releasecenter.RiskHigh, "recommendation": "needs_info"}),
+		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+	}}
+	report, _, err := validateAutonomousReview(run, releasecenter.AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: releasecenter.RiskLow, Summary: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Recommendation != "needs_info" || report.RiskLevel != releasecenter.RiskHigh || len(report.Findings) != 1 || report.Findings[0].Code != "sensitive_data_detected" {
+		t.Fatalf("deterministic floor was not restored: %+v", report)
+	}
+}
+
+func TestAutonomousReviewFlagsInsufficientEvidenceContent(t *testing.T) {
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-draft", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "本页为占位稿，正式制度正文尚未提供。", Index: 0}}}, runStore); err != nil {
+		t.Fatal(err)
+	}
+	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
+	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || report.Recommendation != "needs_info" || report.RiskLevel != releasecenter.RiskMedium || len(report.Findings) != 1 || report.Findings[0].Code != "insufficient_evidence" {
+		t.Fatalf("insufficient evidence was not flagged: %+v", report)
 	}
 }
 
@@ -434,7 +483,7 @@ func TestValidateAutonomousReviewRequiresAnInspectedChunk(t *testing.T) {
 		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
 	}}
 	report := releasecenter.AgentReview{Status: "completed", Recommendation: "needs_info", RiskLevel: releasecenter.RiskHigh, Summary: "reviewed", Findings: []releasecenter.Finding{finding}}
-	if _, err := validateAutonomousReview(run, report); err == nil {
+	if _, _, err := validateAutonomousReview(run, report); err == nil {
 		t.Fatal("expected review without an inspected chunk to fail")
 	}
 }
@@ -449,8 +498,62 @@ func TestValidateAutonomousReviewRejectsCandidateChange(t *testing.T) {
 		reviewStep(3, scanSensitiveDataToolName, changed, map[string]interface{}{"findings": []releasecenter.Finding{}}),
 		reviewStep(4, scanPromptInjectionToolName, changed, map[string]interface{}{"findings": []releasecenter.Finding{}}),
 	}}
-	if _, err := validateAutonomousReview(run, releasecenter.AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: releasecenter.RiskLow, Summary: "ok"}); err == nil {
+	if _, _, err := validateAutonomousReview(run, releasecenter.AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: releasecenter.RiskLow, Summary: "ok"}); err == nil {
 		t.Fatal("expected candidate change to fail")
+	}
+}
+
+type reviewPlannerFunc func(context.Context, agent.Run) (agent.PlanDecision, error)
+
+func (f reviewPlannerFunc) Plan(ctx context.Context, run agent.Run) (agent.PlanDecision, error) {
+	return f(ctx, run)
+}
+
+func TestValidateAutonomousReviewRejectsUngroundedBlockWithoutFindings(t *testing.T) {
+	candidate := reviewCandidate()
+	run := agent.Run{Steps: []agent.Step{
+		reviewStep(1, getReviewContextToolName, candidate, nil),
+		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{"chunk_ids": []string{"chunk-1"}, "total": 1}),
+		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+	}}
+	report, _, err := validateAutonomousReview(run, releasecenter.AgentReview{Status: "completed", Recommendation: "needs_info", RiskLevel: releasecenter.RiskMedium, Summary: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Recommendation != "publish" || report.RiskLevel != releasecenter.RiskLow || len(report.Findings) != 0 {
+		t.Fatalf("ungrounded block was not cleared: %+v", report)
+	}
+}
+
+func TestConstrainedReviewPlannerRedirectsPrematureFinal(t *testing.T) {
+	inner := reviewPlannerFunc(func(context.Context, agent.Run) (agent.PlanDecision, error) {
+		return agent.PlanDecision{Type: agent.DecisionFinal, Final: `{"status":"completed","recommendation":"publish","risk_level":"low","summary":"ok","findings":[]}`, Usage: agent.PlanUsage{PromptTokens: 4, CompletionTokens: 2}}, nil
+	})
+	decision, err := constrainedReviewPlanner{inner: inner}.Plan(context.Background(), agent.Run{Steps: []agent.Step{
+		reviewStep(1, getExactCandidateChunksToolName, reviewCandidate(), map[string]interface{}{"chunk_ids": []string{"chunk-1"}}),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Type != agent.DecisionToolCall || decision.ToolName != getReviewContextToolName || decision.Usage.PromptTokens != 4 {
+		t.Fatalf("premature final was not redirected: %+v", decision)
+	}
+}
+
+func TestConstrainedReviewPlannerKeepsRemainingRequiredToolChoice(t *testing.T) {
+	inner := reviewPlannerFunc(func(context.Context, agent.Run) (agent.PlanDecision, error) {
+		return agent.PlanDecision{Type: agent.DecisionToolCall, ToolName: scanSensitiveDataToolName, Arguments: json.RawMessage(`{}`)}, nil
+	})
+	decision, err := constrainedReviewPlanner{inner: inner}.Plan(context.Background(), agent.Run{Steps: []agent.Step{
+		reviewStep(1, getReviewContextToolName, reviewCandidate(), nil),
+		reviewStep(2, getExactCandidateChunksToolName, reviewCandidate(), map[string]interface{}{"chunk_ids": []string{"chunk-1"}}),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Type != agent.DecisionToolCall || decision.ToolName != scanSensitiveDataToolName {
+		t.Fatalf("remaining tool choice was overwritten: %+v", decision)
 	}
 }
 

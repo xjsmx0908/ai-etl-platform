@@ -10,7 +10,7 @@ Knowledge Release Center 与自主 Agent 预审。
 - Review Agent 仅拥有 `get_review_context`、`get_exact_candidate_chunks`、`scan_sensitive_data`、`scan_prompt_injection` 四个只读工具；tenant、document 和 exact candidate 均由服务端绑定。
 - 每个 Review Run 受 `AGENT_REVIEW_MAX_TOKEN_BUDGET` 累计 token 上限约束；用量写入 Run/Step，超限 fail-closed 并转人工。
 - 预审直接复用 RAG Query 的 `LLM_ENDPOINT`、`LLM_API_KEY`/`LLM_API_KEY_FILE` 和 `LLM_MODEL`，无需配置 `AGENT_SEMANTIC_REVIEW_*`。
-- Go 全模块、`go vet`、Python 契约、Web lint/build、发布中心隔离栈 10 场景矩阵、真实模型预算终止和 Review Agent 部署恢复专项已通过；真实模型其余场景仍待完成，因此 P2.4-R1 仍为 `in progress`。
+- Go 全模块、`go vet`、Python 契约、Web lint/build、发布中心隔离栈 10 场景矩阵、真实模型预算终止、Review Agent 部署恢复和真实模型四场景验收已通过；P2.4-R1 MVP 已完成。
 
 详细边界见 [`docs/agent-pre-review-architecture-and-implementation-plan.md`](docs/agent-pre-review-architecture-and-implementation-plan.md)，当前执行状态见 [`docs/backlog.md`](docs/backlog.md)。
 
@@ -156,6 +156,7 @@ Kafka、进程及存储依赖中断。结果写入 `artifacts/governance-accepta
 bash scripts/release-center-functional-acceptance.sh
 bash scripts/release-center-token-budget-acceptance.sh
 bash scripts/release-center-review-recovery-acceptance.sh
+bash scripts/release-center-real-model-scenarios-acceptance.sh
 ```
 
 该隔离矩阵覆盖普通单管理员审批、机密/高风险双管理员审批、Agent 异常人工例外、
@@ -451,7 +452,7 @@ python -m app.main
 - ✅ 单/双管理员审批、审批组/策略、人工例外、幂等与冲突控制
 - ✅ Agent Run/Step、模型、Prompt 版本、findings 和 chunk evidence 可审计
 - ✅ Review Agent 部署恢复与幂等故障证据
-- ⏳ 真实模型其余场景（普通、敏感信息、提示词注入、证据不足）
+- ✅ 真实模型四场景验收（普通、敏感信息、提示词注入、证据不足）
 
 ## 🔐 环境变量
 
