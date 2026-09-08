@@ -25,15 +25,18 @@ var (
 
 // AgentReview is the untrusted result returned by the pre-review adapter.
 type AgentReview struct {
-	RunID          string                         `json:"run_id,omitempty"`
-	Status         string                         `json:"status"`
-	Recommendation string                         `json:"recommendation"`
-	RiskLevel      RiskLevel                      `json:"risk_level"`
-	Summary        string                         `json:"summary"`
-	Findings       []Finding                      `json:"findings,omitempty"`
-	Model          string                         `json:"model,omitempty"`
-	PromptVersion  string                         `json:"prompt_version,omitempty"`
-	Candidate      *publicationworkflow.Candidate `json:"candidate,omitempty"`
+	RunID           string                         `json:"run_id,omitempty"`
+	Status          string                         `json:"status"`
+	Recommendation  string                         `json:"recommendation"`
+	RiskLevel       RiskLevel                      `json:"risk_level"`
+	Summary         string                         `json:"summary"`
+	Findings        []Finding                      `json:"findings,omitempty"`
+	SpaceFit        string                         `json:"space_fit,omitempty"`
+	KnowledgeUsable string                         `json:"knowledge_usable,omitempty"`
+	KindLabel       string                         `json:"kind_label,omitempty"`
+	Model           string                         `json:"model,omitempty"`
+	PromptVersion   string                         `json:"prompt_version,omitempty"`
+	Candidate       *publicationworkflow.Candidate `json:"candidate,omitempty"`
 }
 
 type ReviewAdapter interface {
@@ -198,8 +201,9 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 		DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID,
 		ReleaseRevision: candidate.ReleaseRevision, RunID: reviewResult.RunID, Status: status,
 		Recommendation: reviewResult.Recommendation, RiskLevel: reviewResult.RiskLevel,
-		Summary: reviewResult.Summary, Findings: reviewResult.Findings, Model: reviewResult.Model,
-		PromptVersion: reviewResult.PromptVersion, CreatedAt: now}
+		Summary: reviewResult.Summary, Findings: reviewResult.Findings,
+		SpaceFit: reviewResult.SpaceFit, KnowledgeUsable: reviewResult.KnowledgeUsable, KindLabel: reviewResult.KindLabel,
+		Model: reviewResult.Model, PromptVersion: reviewResult.PromptVersion, CreatedAt: now}
 	if c.reviewTTL > 0 {
 		report.ExpiresAt = now.Add(c.reviewTTL)
 	}

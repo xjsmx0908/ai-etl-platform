@@ -92,8 +92,20 @@ func (s *MemoryStore) CreateSpace(_ context.Context, space Space, creatorUserID 
 	if _, exists := s.spaces[space.ID]; exists {
 		return Space{}, ErrConflict
 	}
+	space.Slug = space.ID
 	s.spaces[space.ID] = space
 	s.memberships[space.ID+"\x00"+creatorUserID] = Membership{TenantID: space.TenantID, SpaceID: space.ID, UserID: creatorUserID, Role: MemberManager}
+	return space, nil
+}
+
+func (s *MemoryStore) UpdateSpacePurpose(_ context.Context, tenantID, spaceID, purpose string) (Space, error) {
+	space, ok := s.spaces[spaceID]
+	if !ok || space.TenantID != tenantID || !space.Active {
+		return Space{}, ErrNotFound
+	}
+	space.Purpose = purpose
+	space.Slug = space.ID
+	s.spaces[spaceID] = space
 	return space, nil
 }
 

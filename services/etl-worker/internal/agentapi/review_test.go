@@ -13,6 +13,7 @@ import (
 	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/knowledgecatalog"
 	"ai-etl-pipeline/internal/publicationworkflow"
 	"ai-etl-pipeline/internal/releasecenter"
 	"ai-etl-pipeline/internal/store"
@@ -60,10 +61,10 @@ func TestAutonomousReviewRulePlannerCompletesEvidenceLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(run.Steps) != 5 {
+	if len(run.Steps) != 6 {
 		t.Fatalf("steps=%+v", run.Steps)
 	}
-	wantTools := []string{getReviewContextToolName, getExactCandidateChunksToolName, scanSensitiveDataToolName, scanPromptInjectionToolName}
+	wantTools := []string{getReviewContextToolName, getExactCandidateChunksToolName, scanSensitiveDataToolName, scanPromptInjectionToolName, assessKnowledgeFitnessToolName}
 	for index, toolName := range wantTools {
 		if run.Steps[index].ToolName != toolName || run.Steps[index].Observation == "" {
 			t.Fatalf("step %d=%+v", index, run.Steps[index])
@@ -107,8 +108,8 @@ func TestAutonomousReviewResumesPersistedRunWithoutDuplicatingSteps(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resumed.Steps) != 5 {
-		t.Fatalf("expected four tools plus final step, got %d steps", len(resumed.Steps))
+	if len(resumed.Steps) != 6 {
+		t.Fatalf("expected five tools plus final step, got %d steps", len(resumed.Steps))
 	}
 	if resumed.Steps[0].ToolName != getReviewContextToolName || resumed.Steps[1].ToolName != getExactCandidateChunksToolName {
 		t.Fatalf("resume changed persisted step order: %+v", resumed.Steps)
@@ -230,7 +231,7 @@ func TestAutonomousReviewRedisRestartResumesSameRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resumed.Steps) != 5 || resumed.Steps[0].IdempotencyKey != "agent:"+runID+":1:"+getReviewContextToolName {
+	if len(resumed.Steps) != 6 || resumed.Steps[0].IdempotencyKey != "agent:"+runID+":1:"+getReviewContextToolName {
 		t.Fatalf("redis restart changed review audit chain: %+v", resumed)
 	}
 }
@@ -343,7 +344,7 @@ func TestAutonomousReviewLLMPlannerUsesPersistedObservations(t *testing.T) {
 		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}, runStore); err != nil {
 		t.Fatal(err)
 	}
-	toolSequence := []string{getReviewContextToolName, getExactCandidateChunksToolName, scanSensitiveDataToolName, scanPromptInjectionToolName}
+	toolSequence := []string{getReviewContextToolName, getExactCandidateChunksToolName, scanSensitiveDataToolName, scanPromptInjectionToolName, assessKnowledgeFitnessToolName}
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request chatCompletionRequest
@@ -381,7 +382,7 @@ func TestAutonomousReviewLLMPlannerUsesPersistedObservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 5 || report.Status != "completed" || report.Recommendation != "publish" || report.Model != "review-model" || report.PromptVersion != reviewPromptVersion {
+	if calls != 6 || report.Status != "completed" || report.Recommendation != "publish" || report.Model != "review-model" || report.PromptVersion != reviewPromptVersion {
 		t.Fatalf("calls=%d report=%+v", calls, report)
 	}
 }
@@ -422,6 +423,7 @@ func TestValidateAutonomousReviewRejectsMissingToolAndUnknownEvidence(t *testing
 		t.Fatal("expected missing prompt-injection scan to fail")
 	}
 	run.Steps = append(run.Steps, reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}}))
+	run.Steps = append(run.Steps, reviewStep(5, assessKnowledgeFitnessToolName, candidate, reviewFitnessPublishExtra("chunk-1")))
 	report.Findings = []releasecenter.Finding{{Code: "invented", Severity: "high", Summary: "invented", EvidenceRef: "unknown"}}
 	normalized, _, err := validateAutonomousReview(run, report)
 	if err != nil {
@@ -440,6 +442,7 @@ func TestValidateAutonomousReviewRestoresOmittedDeterministicFinding(t *testing.
 		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{"chunk_ids": []string{"chunk-1"}, "total": 1}),
 		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{finding}, "risk_level": releasecenter.RiskHigh, "recommendation": "needs_info"}),
 		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+		reviewStep(5, assessKnowledgeFitnessToolName, candidate, reviewFitnessPublishExtra("chunk-1")),
 	}}
 	report, _, err := validateAutonomousReview(run, releasecenter.AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: releasecenter.RiskLow, Summary: "ok"})
 	if err != nil {
@@ -481,6 +484,7 @@ func TestValidateAutonomousReviewRequiresAnInspectedChunk(t *testing.T) {
 		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{"chunk_ids": []string{}, "total": 1}),
 		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{finding}, "risk_level": releasecenter.RiskHigh, "recommendation": "needs_info"}),
 		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+		reviewStep(5, assessKnowledgeFitnessToolName, candidate, reviewFitnessPublishExtra("chunk-1")),
 	}}
 	report := releasecenter.AgentReview{Status: "completed", Recommendation: "needs_info", RiskLevel: releasecenter.RiskHigh, Summary: "reviewed", Findings: []releasecenter.Finding{finding}}
 	if _, _, err := validateAutonomousReview(run, report); err == nil {
@@ -516,6 +520,7 @@ func TestValidateAutonomousReviewRejectsUngroundedBlockWithoutFindings(t *testin
 		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{"chunk_ids": []string{"chunk-1"}, "total": 1}),
 		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
 		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+		reviewStep(5, assessKnowledgeFitnessToolName, candidate, reviewFitnessPublishExtra("chunk-1")),
 	}}
 	report, _, err := validateAutonomousReview(run, releasecenter.AgentReview{Status: "completed", Recommendation: "needs_info", RiskLevel: releasecenter.RiskMedium, Summary: "ok"})
 	if err != nil {
@@ -557,7 +562,28 @@ func TestConstrainedReviewPlannerKeepsRemainingRequiredToolChoice(t *testing.T) 
 	}
 }
 
+func reviewFitnessPublishExtra(chunkID string) map[string]interface{} {
+	if chunkID == "" {
+		chunkID = "chunk-1"
+	}
+	return map[string]interface{}{
+		"space_fit": "", "knowledge_usable": releasecenter.KnowledgeUseUsable,
+		"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow,
+		"recommendation": "publish", "chunk_ids": []string{chunkID},
+	}
+}
+
+type reviewSpaceStub struct {
+	space knowledgecatalog.Space
+	found bool
+}
+
+func (s reviewSpaceStub) Space(context.Context, string, string) (knowledgecatalog.Space, bool, error) {
+	return s.space, s.found, nil
+}
+
 func reviewCandidate() publicationworkflow.Candidate {
+
 	return publicationworkflow.Candidate{DocumentID: "doc-1", DocumentVersionID: "version-1", GenerationID: "generation-1", ExpectedChunkCount: 1, ExpectedChunkDigest: "sha256:digest", ReleaseRevision: 1}
 }
 
@@ -579,4 +605,116 @@ func reviewStep(index int, toolName string, candidate publicationworkflow.Candid
 	}
 	encoded, _ := json.Marshal(data)
 	return agent.Step{Index: index, Type: agent.StepToolCall, State: agent.StateCompleted, ToolName: toolName, Observation: string(encoded), ToolResult: &agent.ToolResult{Content: string(encoded), Data: data}}
+}
+
+func TestConstrainedReviewPlannerRedirectsFinalUntilFitness(t *testing.T) {
+	inner := reviewPlannerFunc(func(context.Context, agent.Run) (agent.PlanDecision, error) {
+		return agent.PlanDecision{Type: agent.DecisionFinal, Final: `{"status":"completed","recommendation":"publish","risk_level":"low","summary":"ok","findings":[]}`}, nil
+	})
+	candidate := reviewCandidate()
+	decision, err := constrainedReviewPlanner{inner: inner}.Plan(context.Background(), agent.Run{Steps: []agent.Step{
+		reviewStep(1, getReviewContextToolName, candidate, nil),
+		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{"chunk_ids": []string{"chunk-1"}}),
+		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}}),
+		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}}),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Type != agent.DecisionToolCall || decision.ToolName != assessKnowledgeFitnessToolName {
+		t.Fatalf("fitness check was skipped: %+v", decision)
+	}
+}
+
+func TestValidateAutonomousReviewFloorsPublishWhenSpaceMismatches(t *testing.T) {
+	candidate := reviewCandidate()
+	finding := releasecenter.Finding{Code: "space_mismatch", Severity: "medium", Summary: "材料不适合进入当前知识空间", EvidenceRef: "chunk-1"}
+	run := agent.Run{Steps: []agent.Step{
+		reviewStep(1, getReviewContextToolName, candidate, nil),
+		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{"chunk_ids": []string{"chunk-1"}, "total": 1}),
+		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+		reviewStep(5, assessKnowledgeFitnessToolName, candidate, map[string]interface{}{
+			"space_fit": releasecenter.SpaceFitMismatch, "knowledge_usable": releasecenter.KnowledgeUseUsable,
+			"findings": []releasecenter.Finding{finding}, "risk_level": releasecenter.RiskMedium, "recommendation": "needs_info",
+			"chunk_ids": []string{"chunk-1"},
+		}),
+	}}
+	report, _, err := validateAutonomousReview(run, releasecenter.AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: releasecenter.RiskLow, Summary: "ok", KindLabel: "制度"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Recommendation != "needs_info" || report.RiskLevel != releasecenter.RiskMedium || report.SpaceFit != releasecenter.SpaceFitMismatch || len(report.Findings) != 1 || report.Findings[0].Code != "space_mismatch" {
+		t.Fatalf("space mismatch was not floored: %+v", report)
+	}
+}
+
+func TestValidateAutonomousReviewKeepsSensitiveFloorWhenFitnessMatches(t *testing.T) {
+	candidate := reviewCandidate()
+	finding := releasecenter.Finding{Code: "sensitive_data_detected", Severity: "high", Summary: "sensitive", EvidenceRef: "chunk-1"}
+	run := agent.Run{Steps: []agent.Step{
+		reviewStep(1, getReviewContextToolName, candidate, nil),
+		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{"chunk_ids": []string{"chunk-1"}, "total": 1}),
+		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{finding}, "risk_level": releasecenter.RiskHigh, "recommendation": "needs_info"}),
+		reviewStep(4, scanPromptInjectionToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish"}),
+		reviewStep(5, assessKnowledgeFitnessToolName, candidate, map[string]interface{}{
+			"space_fit": releasecenter.SpaceFitMatch, "knowledge_usable": releasecenter.KnowledgeUseUsable,
+			"kind_label": "制度", "findings": []releasecenter.Finding{}, "risk_level": releasecenter.RiskLow, "recommendation": "publish",
+			"chunk_ids": []string{"chunk-1"},
+		}),
+	}}
+	report, _, err := validateAutonomousReview(run, releasecenter.AgentReview{Status: "completed", Recommendation: "publish", RiskLevel: releasecenter.RiskLow, Summary: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Recommendation != "needs_info" || report.RiskLevel != releasecenter.RiskHigh || report.SpaceFit != releasecenter.SpaceFitMatch || report.KindLabel != "制度" || len(report.Findings) != 1 || report.Findings[0].Code != "sensitive_data_detected" {
+		t.Fatalf("sensitive floor was weakened by fitness: %+v", report)
+	}
+}
+
+func TestAutonomousReviewRulePlannerBlocksConfiguredSpaceWithoutFit(t *testing.T) {
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	spaces := reviewSpaceStub{found: true, space: knowledgecatalog.Space{ID: "policies", TenantID: "tenant-a", Name: "制度库", Purpose: "只放已生效的人事制度", Kind: knowledgecatalog.SpaceKindProduction, Active: true}}
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}, runStore, spaces); err != nil {
+		t.Fatal(err)
+	}
+	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
+	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || report.Recommendation != "needs_info" || report.SpaceFit != releasecenter.SpaceFitUncertain || len(report.Findings) == 0 || report.Findings[0].Code != "space_fit_uncertain" {
+		t.Fatalf("configured space should not publish without a fit judgment: %+v", report)
+	}
+}
+
+func TestAutonomousReviewRulePlannerAllowsPublishWhenPurposeMissing(t *testing.T) {
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}, runStore); err != nil {
+		t.Fatal(err)
+	}
+	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
+	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || report.Recommendation != "publish" || report.KnowledgeUsable != releasecenter.KnowledgeUseUsable {
+		t.Fatalf("unconfigured space should keep existing publish path: %+v", report)
+	}
 }

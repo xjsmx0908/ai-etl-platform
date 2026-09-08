@@ -136,16 +136,17 @@ func (s *PostgresStore) SaveReview(ctx context.Context, report ReviewReport) err
 	tag, err := s.q.Exec(ctx, `INSERT INTO release_center_reviews (
 		review_id, tenant_id, document_id, document_version_id, generation_id,
 		release_revision, agent_run_id, status, recommendation, risk_level,
-		summary, findings, model, prompt_version, created_at, expires_at
-	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		summary, findings, space_fit, knowledge_usable, kind_label, model, prompt_version, created_at, expires_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 	ON CONFLICT (review_id) DO UPDATE SET
 		tenant_id=EXCLUDED.tenant_id, document_id=EXCLUDED.document_id,
 		document_version_id=EXCLUDED.document_version_id, generation_id=EXCLUDED.generation_id,
 		release_revision=EXCLUDED.release_revision, agent_run_id=EXCLUDED.agent_run_id,
 		status=EXCLUDED.status, recommendation=EXCLUDED.recommendation,
 		risk_level=EXCLUDED.risk_level, summary=EXCLUDED.summary,
-		findings=EXCLUDED.findings, model=EXCLUDED.model,
-		prompt_version=EXCLUDED.prompt_version, expires_at=EXCLUDED.expires_at
+		findings=EXCLUDED.findings, space_fit=EXCLUDED.space_fit,
+		knowledge_usable=EXCLUDED.knowledge_usable, kind_label=EXCLUDED.kind_label,
+		model=EXCLUDED.model, prompt_version=EXCLUDED.prompt_version, expires_at=EXCLUDED.expires_at
 		WHERE release_center_reviews.tenant_id=EXCLUDED.tenant_id
 		  AND release_center_reviews.document_id=EXCLUDED.document_id
 		  AND release_center_reviews.document_version_id=EXCLUDED.document_version_id
@@ -154,6 +155,7 @@ func (s *PostgresStore) SaveReview(ctx context.Context, report ReviewReport) err
 		report.ID, report.TenantID, report.DocumentID, report.DocumentVersionID,
 		report.GenerationID, report.ReleaseRevision, report.RunID, report.Status,
 		report.Recommendation, report.RiskLevel, report.Summary, findings,
+		report.SpaceFit, report.KnowledgeUsable, report.KindLabel,
 		report.Model, report.PromptVersion, report.CreatedAt, nullableTime(report.ExpiresAt))
 	if err != nil {
 		return fmt.Errorf("save release review: %w", err)
@@ -173,11 +175,12 @@ func (s *PostgresStore) GetReview(ctx context.Context, tenantID, reviewID string
 	var expires pgtype.Timestamptz
 	err := s.q.QueryRow(ctx, `SELECT review_id,tenant_id,document_id,document_version_id,
 		generation_id,release_revision,agent_run_id,status,recommendation,risk_level,
-		summary,findings,model,prompt_version,created_at,expires_at
+		summary,findings,space_fit,knowledge_usable,kind_label,model,prompt_version,created_at,expires_at
 		FROM release_center_reviews WHERE tenant_id=$1 AND review_id=$2`, tenantID, reviewID).Scan(
 		&report.ID, &report.TenantID, &report.DocumentID, &report.DocumentVersionID,
 		&report.GenerationID, &report.ReleaseRevision, &report.RunID, &report.Status,
 		&report.Recommendation, &report.RiskLevel, &report.Summary, &findings,
+		&report.SpaceFit, &report.KnowledgeUsable, &report.KindLabel,
 		&report.Model, &report.PromptVersion, &report.CreatedAt, &expires)
 	if err != nil {
 		if err == pgx.ErrNoRows {

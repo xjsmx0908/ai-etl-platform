@@ -60,6 +60,7 @@ type Dependencies struct {
 	ReviewChunks        interface {
 		ListChunksByDoc(context.Context, string, string, []string) ([]store.StoredChunk, error)
 	}
+	ReviewSpaces reviewSpaceReader
 }
 
 type createRunRequest struct {
@@ -177,7 +178,7 @@ func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusSt
 	service := &Service{orchestrator: orchestrator, store: store, approvalStore: approvalStore, observer: observerOrNoop(observer), closers: closers}
 	if dependencies.PublicationWorkflow != nil && dependencies.ReviewDocuments != nil && dependencies.ReviewChunks != nil {
 		reviewRegistry := agent.NewRegistry()
-		if err := registerReviewTools(reviewRegistry, dependencies.PublicationWorkflow, dependencies.ReviewDocuments, dependencies.ReviewChunks, store); err != nil {
+		if err := registerReviewTools(reviewRegistry, dependencies.PublicationWorkflow, dependencies.ReviewDocuments, dependencies.ReviewChunks, store, dependencies.ReviewSpaces); err != nil {
 			closeAll(closers)
 			return nil, err
 		}

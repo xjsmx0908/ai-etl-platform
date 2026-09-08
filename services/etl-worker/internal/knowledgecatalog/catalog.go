@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 type SpaceKind string
@@ -52,6 +53,7 @@ type Space struct {
 	Slug      string    `json:"slug"`
 	Name      string    `json:"name"`
 	Kind      SpaceKind `json:"kind"`
+	Purpose   string    `json:"purpose,omitempty"`
 	IsDefault bool      `json:"is_default"`
 	Active    bool      `json:"active"`
 }
@@ -85,6 +87,7 @@ type Store interface {
 	ListSpaces(ctx context.Context, tenantID, userID string, admin bool) ([]Space, error)
 	DocumentPolicies(ctx context.Context, tenantID string, docIDs []string) (map[string]DocumentPolicy, error)
 	CreateSpace(ctx context.Context, space Space, creatorUserID string) (Space, error)
+	UpdateSpacePurpose(ctx context.Context, tenantID, spaceID, purpose string) (Space, error)
 }
 
 var validSpaceID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$`)
@@ -106,6 +109,11 @@ func (c *Catalog) Create(ctx context.Context, principal Principal, space Space) 
 	if space.Kind != SpaceKindProduction && space.Kind != SpaceKindDemo {
 		return Space{}, ErrNotFound
 	}
+	purpose, err := normalizePurpose(space.Purpose)
+	if err != nil {
+		return Space{}, err
+	}
+	space.Purpose = purpose
 	space.TenantID = principal.TenantID
 	space.Slug = space.ID
 	space.Active = true
@@ -127,6 +135,50 @@ type Catalog struct {
 
 func New(store Store) *Catalog {
 	return &Catalog{store: store}
+}
+
+// Space returns a tenant-local knowledge space without capability checks.
+// Review tools use this to read the owner-written purpose.
+func (c *Catalog) Space(ctx context.Context, tenantID, spaceID string) (Space, bool, error) {
+	if c == nil || c.store == nil {
+		return Space{}, false, ErrUnavailable
+	}
+	return c.store.Space(ctx, tenantID, spaceID)
+}
+
+// UpdatePurpose lets a tenant admin rewrite the owner-facing purpose used by
+// pre-review fitness checks. An empty purpose disables space matching.
+func (c *Catalog) UpdatePurpose(ctx context.Context, principal Principal, spaceID, purpose string) (Space, error) {
+	if c == nil || c.store == nil {
+		return Space{}, ErrUnavailable
+	}
+	if principal.Role != "admin" {
+		return Space{}, ErrForbidden
+	}
+	normalized, err := normalizePurpose(purpose)
+	if err != nil {
+		return Space{}, err
+	}
+	spaceID = strings.TrimSpace(spaceID)
+	if !validSpaceID.MatchString(spaceID) {
+		return Space{}, ErrNotFound
+	}
+	space, err := c.store.UpdateSpacePurpose(ctx, principal.TenantID, spaceID, normalized)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) {
+			return Space{}, err
+		}
+		return Space{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return space, nil
+}
+
+func normalizePurpose(purpose string) (string, error) {
+	purpose = strings.TrimSpace(purpose)
+	if utf8.RuneCountInString(purpose) > 500 {
+		return "", ErrNotFound
+	}
+	return purpose, nil
 }
 
 // Resolve chooses an explicit space or the caller's authorized default before

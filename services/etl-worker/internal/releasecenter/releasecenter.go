@@ -72,6 +72,9 @@ type ReviewReport struct {
 	RiskLevel         RiskLevel `json:"risk_level"`
 	Summary           string    `json:"summary"`
 	Findings          []Finding `json:"findings,omitempty"`
+	SpaceFit          string    `json:"space_fit,omitempty"`
+	KnowledgeUsable   string    `json:"knowledge_usable,omitempty"`
+	KindLabel         string    `json:"kind_label,omitempty"`
 	Model             string    `json:"model,omitempty"`
 	PromptVersion     string    `json:"prompt_version,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`

@@ -27,7 +27,8 @@
 2. **P2.4-R1-ACCEPT（已完成，2026-09-08）**——确定性发布矩阵、真实预算终止、Review Agent 部署恢复和真实模型四场景验收已通过。
 3. **P2.4-R5：企业级编排（已完成，2026-09-08）**——审批通知 outbox、企业微信/钉钉投递、外部工作流 webhook 与 callback 适配、反向补偿已交付；不内嵌 BPM 引擎。
 4. **P2.4-R3：Review report 生命周期**（已完成，2026-09-08）——TTL、过期状态、自动重审和过期清理已交付。
-5. **完整语义/隐私/合规审查**（后续项）——扩展政策库、结构化分类、版本差异和跨文档冲突审查。
+5. **完整语义/隐私/合规审查**（后续项）——扩展政策库、版本差异和跨文档冲突审查；结构化材料分类不再作为发布开关。
+6. **P2.4-R6 知识空间适配预审**（已完成）——空间用途 + 适不适合/能不能当知识用。
 
 当前路线的完成标准是：权限边界、审计证据、失败处理、幂等性、租户隔离和对应业务验收矩阵均已覆盖。不得把当前已实现的受限规则扫描描述为完整合规审查。
 
@@ -38,7 +39,8 @@
 3. **真实模型四场景验收**（已完成，2026-09-08）：普通、敏感信息、提示词注入、证据不足已通过真实模型隔离栈验收；证据保存在 `artifacts/release-center-real-model-scenarios-acceptance/`。
 4. **通知、Saga 与外部工作流**（已完成，2026-09-08）：审批通知可投递到企业微信/钉钉，外部引擎可通过 webhook 收事件并用 callback 回写 Decide。
 5. **Review Report 生命周期**（已完成，2026-09-08）：TTL 默认 7 天，过期后自动重审同一候选并保留旧报告；已发布/已拒绝证据不改写；超保留期且无引用的过期报告可清理。
-6. **完整语义/隐私/合规审查**（大）：扩展政策库、结构化分类、版本差异和跨文档冲突审查。
+6. **P2.4-R6 知识空间适配预审**（已完成，2026-09-08）：管理员为知识空间填写用途；预审判断是否适合该空间、能否作为正式知识，类型只作备注。
+7. **完整语义/隐私/合规审查**（大，暂缓）：扩展政策库、版本差异和跨文档冲突审查。不做材料类型分类器。
 
 ## Agent pre-review remaining
 
@@ -49,6 +51,7 @@
 | P2.4-R5 | Agent 周边编排能力 | completed | 审批通知 outbox、企业微信/钉钉投递、外部工作流 webhook/callback 和反向补偿已交付；不内嵌 BPM 引擎 | [`docs/agent-orchestration-r5-design.md`](agent-orchestration-r5-design.md) |
 | P2.4-R3 | Review report 生命周期 | completed | 已交付报告 TTL（默认 168h）、过期状态、同一候选自动重审、保留期清理（默认 90 天）和 `review_expired` 业务提示；`RELEASE_REVIEW_TTL=0` 可关闭过期 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |
 | P2.4-R4 | `success` 状态数据库兼容 | completed | 已将 `success`（含大小写变体）规范化为 PostgreSQL 允许的 `completed`，并补充协调器回归测试；后续真实 PG 验收随发布中心矩阵执行 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |
+| P2.4-R6 | 知识空间适配预审 | completed | 已交付空间用途、适配/知识可用性观察、类型备注和服务端发布下限；版本对比、政策库和冲突检查仍暂缓 | [`docs/agent-pre-review-architecture-and-implementation-plan.md`](agent-pre-review-architecture-and-implementation-plan.md) |
 
 ## Completed baseline
 

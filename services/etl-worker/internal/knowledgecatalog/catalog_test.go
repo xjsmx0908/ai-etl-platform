@@ -95,3 +95,37 @@ func TestResolveFailsClosedWhenStoreUnavailable(t *testing.T) {
 		t.Fatal("expected catalog outage error")
 	}
 }
+
+func TestCreatePersistsOwnerPurpose(t *testing.T) {
+	store := knowledgecatalog.NewMemoryStore(nil, nil, nil)
+	catalog := knowledgecatalog.New(store)
+	space, err := catalog.Create(context.Background(), knowledgecatalog.Principal{TenantID: "acme", UserID: "admin-1", Role: "admin"}, knowledgecatalog.Space{
+		ID: "hr", Name: "人事制度", Kind: knowledgecatalog.SpaceKindProduction, Purpose: "  只放已生效的人事制度  ",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if space.Purpose != "只放已生效的人事制度" {
+		t.Fatalf("purpose=%q", space.Purpose)
+	}
+	loaded, found, err := catalog.Space(context.Background(), "acme", "hr")
+	if err != nil || !found || loaded.Purpose != "只放已生效的人事制度" {
+		t.Fatalf("Space=%+v found=%v err=%v", loaded, found, err)
+	}
+}
+
+func TestUpdatePurposeRejectsNonAdmin(t *testing.T) {
+	store := knowledgecatalog.NewMemoryStore([]knowledgecatalog.Space{{ID: "hr", TenantID: "acme", Name: "人事", Kind: knowledgecatalog.SpaceKindProduction, Active: true}}, nil, nil)
+	_, err := knowledgecatalog.New(store).UpdatePurpose(context.Background(), knowledgecatalog.Principal{TenantID: "acme", UserID: "alice", Role: "user"}, "hr", "只放制度")
+	if !errors.Is(err, knowledgecatalog.ErrForbidden) {
+		t.Fatalf("expected forbidden, got %v", err)
+	}
+}
+
+func TestUpdatePurposeRewritesMatchingStandard(t *testing.T) {
+	store := knowledgecatalog.NewMemoryStore([]knowledgecatalog.Space{{ID: "hr", TenantID: "acme", Name: "人事", Kind: knowledgecatalog.SpaceKindProduction, Active: true}}, nil, nil)
+	space, err := knowledgecatalog.New(store).UpdatePurpose(context.Background(), knowledgecatalog.Principal{TenantID: "acme", UserID: "admin-1", Role: "admin"}, "hr", "只放已生效的人事制度")
+	if err != nil || space.Purpose != "只放已生效的人事制度" {
+		t.Fatalf("UpdatePurpose=%+v err=%v", space, err)
+	}
+}

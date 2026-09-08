@@ -81,6 +81,10 @@ directly reuses the RAG Query model endpoint, credentials, and model. The
 deterministic 10-scenario release-center matrix, token-budget termination,
 Review Agent recovery evidence, and real-model four-scenario acceptance pass.
 This bounded review is not a complete semantic, privacy, or compliance classifier.
+P2.4-R6 adds knowledge-space purpose and a fitness observation: whether the
+document belongs in this space and can be used as formal knowledge. Optional
+kind labels are human notes only and never a publish switch. Version diff,
+policy libraries, and cross-document conflict checks remain out of scope.
 
 Approval policy is deterministic and risk-based:
 

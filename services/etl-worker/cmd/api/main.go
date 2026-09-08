@@ -430,6 +430,7 @@ func main() {
 		PublicationWorkflow: publicationWorkflow,
 		ReviewDocuments:     docStore,
 		ReviewChunks:        chunkStorerForReview,
+		ReviewSpaces:        knowledgeCatalog,
 	})
 	if err != nil {
 		slog.Error("failed to create agent api service", "error", err)
@@ -506,6 +507,7 @@ func main() {
 	// the role→permission matrix); DELETE checks upload scope in-handler.
 	apiV1.Handle("/v1/documents", http.HandlerFunc(handleDocuments(docStore, qs)))
 	apiV1.Handle("/v1/knowledge-spaces", http.HandlerFunc(handleKnowledgeSpaces(knowledgeCatalog)))
+	apiV1.Handle("/v1/knowledge-spaces/", http.HandlerFunc(handleKnowledgeSpace(knowledgeCatalog)))
 	apiV1.Handle("/v1/documents/", http.HandlerFunc(handleDocument(cfg, qs, s3Client, docStore, auditStore, deletionStore)))
 	// Document content search (ES BM25) and chunk-level detail (Qdrant). Both use
 	// long-lived clients: a per-request storer would re-run ensureCollection on

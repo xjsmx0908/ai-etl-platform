@@ -173,10 +173,17 @@ export async function listKnowledgeSpaces(): Promise<{ items: KnowledgeSpace[] }
   return request<{ items: KnowledgeSpace[] }>("/knowledge-spaces");
 }
 
-export async function createKnowledgeSpace(params: { id: string; name: string; kind?: "production" | "demo" }): Promise<KnowledgeSpace> {
+export async function createKnowledgeSpace(params: { id: string; name: string; kind?: "production" | "demo"; purpose?: string }): Promise<KnowledgeSpace> {
   return request<KnowledgeSpace>("/knowledge-spaces", {
     method: "POST",
-    body: JSON.stringify({ id: params.id, name: params.name, kind: params.kind || "production" }),
+    body: JSON.stringify({ id: params.id, name: params.name, kind: params.kind || "production", purpose: params.purpose || "" }),
+  });
+}
+
+export async function updateKnowledgeSpace(id: string, params: { purpose: string }): Promise<KnowledgeSpace> {
+  return request<KnowledgeSpace>(`/knowledge-spaces/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ purpose: params.purpose }),
   });
 }
 
@@ -447,6 +454,7 @@ export const apiClient = {
 	updateDocumentGovernance,
   listKnowledgeSpaces,
   createKnowledgeSpace,
+  updateKnowledgeSpace,
   uploadDocument,
   getTaskStatus,
   cancelTask,

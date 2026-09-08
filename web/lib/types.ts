@@ -53,6 +53,7 @@ export type KnowledgeSpace = {
   id: string;
   name: string;
   kind: "production" | "demo";
+  purpose?: string;
   is_default: boolean;
   active: boolean;
 };
@@ -300,6 +301,9 @@ export type ReleaseReview = {
   risk_level: string;
   summary: string;
   findings?: { code: string; severity: string; summary: string; evidence_ref?: string }[];
+  space_fit?: string;
+  knowledge_usable?: string;
+  kind_label?: string;
   model?: string;
   prompt_version?: string;
   created_at: string;

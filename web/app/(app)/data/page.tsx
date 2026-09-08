@@ -32,8 +32,9 @@ export default function DataPage() {
   const [knowledgeSpace, setKnowledgeSpace] = useState("");
   const [knowledgeSpaces, setKnowledgeSpaces] = useState<KnowledgeSpace[]>([]);
   const [showCreateSpace, setShowCreateSpace] = useState(false);
-  const [newSpace, setNewSpace] = useState({ id: "", name: "" });
+  const [newSpace, setNewSpace] = useState({ id: "", name: "", purpose: "" });
   const [spaceBusy, setSpaceBusy] = useState(false);
+  const [spacePurposeDraft, setSpacePurposeDraft] = useState("");
   const [owner, setOwner] = useState("");
   const [effectiveDate, setEffectiveDate] = useState("");
   const [docStatus, setDocStatus] = useState<"active" | "superseded" | "archived">("active");
@@ -59,21 +60,39 @@ export default function DataPage() {
   const selectedSpace = knowledgeSpaces.find((space) => space.id === knowledgeSpace);
   const managedUpload = selectedSpace && selectedSpace.id !== "user-uploads";
   const governanceComplete = !managedUpload || !isAdmin || (owner.trim() !== "" && effectiveDate !== "");
+  useEffect(() => {
+    setSpacePurposeDraft(selectedSpace?.purpose || "");
+  }, [selectedSpace?.id, selectedSpace?.purpose]);
 
   const createSpace = async () => {
     const id = newSpace.id.trim();
     const name = newSpace.name.trim();
-    if (!id || !name) return;
+    const purpose = newSpace.purpose.trim();
+    if (!id || !name || !purpose) return;
     setSpaceBusy(true);
     setError("");
     try {
-      const created = await apiClient.createKnowledgeSpace({ id, name, kind: "production" });
+      const created = await apiClient.createKnowledgeSpace({ id, name, kind: "production", purpose });
       setKnowledgeSpaces((items) => [...items, created]);
       setKnowledgeSpace(created.id);
-      setNewSpace({ id: "", name: "" });
+      setNewSpace({ id: "", name: "", purpose: "" });
       setShowCreateSpace(false);
     } catch (e: unknown) {
       setError((e as Error).message || "创建知识空间失败");
+    } finally {
+      setSpaceBusy(false);
+    }
+  };
+
+  const saveSpacePurpose = async () => {
+    if (!selectedSpace || selectedSpace.id === "user-uploads") return;
+    setSpaceBusy(true);
+    setError("");
+    try {
+      const updated = await apiClient.updateKnowledgeSpace(selectedSpace.id, { purpose: spacePurposeDraft.trim() });
+      setKnowledgeSpaces((items) => items.map((space) => space.id === updated.id ? updated : space));
+    } catch (e: unknown) {
+      setError((e as Error).message || "保存空间用途失败");
     } finally {
       setSpaceBusy(false);
     }
@@ -232,7 +251,19 @@ export default function DataPage() {
           <div className="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-blue-100 bg-blue-50/50 p-3">
             <label className="text-xs text-slate-600">空间 ID<input value={newSpace.id} onChange={(e) => setNewSpace((v) => ({ ...v, id: e.target.value }))} placeholder="managed-demo" className="mt-1 block rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <label className="text-xs text-slate-600">空间名称<input value={newSpace.name} onChange={(e) => setNewSpace((v) => ({ ...v, name: e.target.value }))} placeholder="受管测试知识库" className="mt-1 block rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <button type="button" onClick={() => void createSpace()} disabled={spaceBusy || !newSpace.id.trim() || !newSpace.name.trim()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{spaceBusy ? "创建中…" : "创建 production 受管空间"}</button>
+            <label className="text-xs text-slate-600 sm:col-span-2">这个空间用来放什么？<textarea value={newSpace.purpose} onChange={(e) => setNewSpace((v) => ({ ...v, purpose: e.target.value }))} placeholder="例如：只放已生效的人事制度" rows={2} className="mt-1 block w-full min-w-[240px] rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="button" onClick={() => void createSpace()} disabled={spaceBusy || !newSpace.id.trim() || !newSpace.name.trim() || !newSpace.purpose.trim()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{spaceBusy ? "创建中…" : "创建受管空间"}</button>
+          </div>
+        )}
+        {isAdmin && selectedSpace && selectedSpace.id !== "user-uploads" && (
+          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <label className="text-xs text-slate-600">这个空间用来放什么？
+              <textarea value={spacePurposeDraft} onChange={(e) => setSpacePurposeDraft(e.target.value)} placeholder="写清用途后，预审会按这句话判断材料适不适合进这个空间。" rows={2} className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" />
+            </label>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <button type="button" onClick={() => void saveSpacePurpose()} disabled={spaceBusy || spacePurposeDraft.trim() === (selectedSpace.purpose || "").trim()} className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">{spaceBusy ? "保存中…" : "保存用途"}</button>
+              <p className="text-xs text-slate-500">预审只对照这句话，不会把材料类型写进文档。</p>
+            </div>
           </div>
         )}
         {managedUpload && isAdmin && file && (

@@ -20,10 +20,10 @@ func NewPostgresStore(q db.Querier) *PostgresStore {
 }
 
 func (s *PostgresStore) Space(ctx context.Context, tenantID, spaceID string) (Space, bool, error) {
-	row := s.q.QueryRow(ctx, `SELECT id, tenant_id, name, kind, is_default, active
+	row := s.q.QueryRow(ctx, `SELECT id, tenant_id, name, kind, is_default, active, purpose
 		FROM knowledge_spaces WHERE tenant_id=$1 AND id=$2`, tenantID, spaceID)
 	var space Space
-	if err := row.Scan(&space.ID, &space.TenantID, &space.Name, &space.Kind, &space.IsDefault, &space.Active); err != nil {
+	if err := row.Scan(&space.ID, &space.TenantID, &space.Name, &space.Kind, &space.IsDefault, &space.Active, &space.Purpose); err != nil {
 		return scanSpaceError(err)
 	}
 	space.Slug = space.ID
@@ -31,7 +31,7 @@ func (s *PostgresStore) Space(ctx context.Context, tenantID, spaceID string) (Sp
 }
 
 func (s *PostgresStore) DefaultSpace(ctx context.Context, tenantID, userID string, admin bool) (Space, bool, error) {
-	query := `SELECT s.id, s.tenant_id, s.name, s.kind, s.is_default, s.active
+	query := `SELECT s.id, s.tenant_id, s.name, s.kind, s.is_default, s.active, s.purpose
 		FROM knowledge_spaces s`
 	args := []any{tenantID}
 	if !admin {
@@ -42,7 +42,7 @@ func (s *PostgresStore) DefaultSpace(ctx context.Context, tenantID, userID strin
 	query += ` WHERE s.tenant_id=$1 AND s.is_default AND s.active AND s.kind='production' LIMIT 1`
 	row := s.q.QueryRow(ctx, query, args...)
 	var space Space
-	if err := row.Scan(&space.ID, &space.TenantID, &space.Name, &space.Kind, &space.IsDefault, &space.Active); err != nil {
+	if err := row.Scan(&space.ID, &space.TenantID, &space.Name, &space.Kind, &space.IsDefault, &space.Active, &space.Purpose); err != nil {
 		return scanSpaceError(err)
 	}
 	space.Slug = space.ID
@@ -63,7 +63,7 @@ func (s *PostgresStore) Membership(ctx context.Context, tenantID, spaceID, userI
 }
 
 func (s *PostgresStore) ListSpaces(ctx context.Context, tenantID, userID string, admin bool) ([]Space, error) {
-	query := `SELECT DISTINCT s.id, s.tenant_id, s.name, s.kind, s.is_default, s.active
+	query := `SELECT DISTINCT s.id, s.tenant_id, s.name, s.kind, s.is_default, s.active, s.purpose
 		FROM knowledge_spaces s`
 	args := []any{tenantID}
 	if !admin {
@@ -80,7 +80,7 @@ func (s *PostgresStore) ListSpaces(ctx context.Context, tenantID, userID string,
 	spaces := []Space{}
 	for rows.Next() {
 		var space Space
-		if err := rows.Scan(&space.ID, &space.TenantID, &space.Name, &space.Kind, &space.IsDefault, &space.Active); err != nil {
+		if err := rows.Scan(&space.ID, &space.TenantID, &space.Name, &space.Kind, &space.IsDefault, &space.Active, &space.Purpose); err != nil {
 			return nil, err
 		}
 		space.Slug = space.ID
@@ -117,8 +117,8 @@ func (s *PostgresStore) CreateSpace(ctx context.Context, space Space, creatorUse
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	_, err = tx.Exec(ctx, `INSERT INTO knowledge_spaces
-		(tenant_id,id,name,kind,is_default,active) VALUES ($1,$2,$3,$4,false,true)`,
-		space.TenantID, space.ID, space.Name, space.Kind)
+		(tenant_id,id,name,kind,is_default,active,purpose) VALUES ($1,$2,$3,$4,false,true,$5)`,
+		space.TenantID, space.ID, space.Name, space.Kind, space.Purpose)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -147,6 +147,27 @@ func scanSpaceError(err error) (Space, bool, error) {
 
 func isNoRows(err error) bool {
 	return errors.Is(err, pgx.ErrNoRows)
+}
+
+func (s *PostgresStore) UpdateSpacePurpose(ctx context.Context, tenantID, spaceID, purpose string) (Space, error) {
+	row := s.q.QueryRow(ctx, `UPDATE knowledge_spaces
+		SET purpose=$3, updated_at=now()
+		WHERE tenant_id=$1 AND id=$2 AND active
+		RETURNING id, tenant_id, name, kind, is_default, active, purpose`,
+		tenantID, spaceID, purpose)
+	var space Space
+	if err := row.Scan(&space.ID, &space.TenantID, &space.Name, &space.Kind, &space.IsDefault, &space.Active, &space.Purpose); err != nil {
+		space, ok, scanErr := scanSpaceError(err)
+		if scanErr != nil {
+			return Space{}, scanErr
+		}
+		if !ok {
+			return Space{}, ErrNotFound
+		}
+		return space, nil
+	}
+	space.Slug = space.ID
+	return space, nil
 }
 
 var _ Store = (*PostgresStore)(nil)

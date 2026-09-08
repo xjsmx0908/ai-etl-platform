@@ -20,6 +20,9 @@
 | 内容级敏感信息 | exact candidate 切块包含密码、API key、身份证号或手机号 | 生成带 chunk 引用的 `sensitive_data_detected` finding；风险升为 high | internal 阻断；confidential 升级双人复核 | 不得静默放行 |
 | 内容级提示词注入 | 切块包含“忽略之前指令/输出系统提示词”等模式 | 生成 `prompt_injection_detected` finding，建议 `needs_info` | 不进入普通可发布审批 | 人工处理 |
 | 自主 Review Agent 成功 | 配置 RAG Query 同源模型，返回合法结构化结果 | 保留模型、Prompt 版本和 exact chunk finding；仅允许风险升级 | 按确定性最低策略审批 | 结果可审计且候选绑定 |
+| 知识空间用途缺失 | 受管空间未填写用途，内容完整且无敏感/注入 | 可建议 `publish`；`space_fit` 为空 | 仍需管理员审批 | 不把缺用途当成适配通过 |
+| 知识空间不适配 | 空间用途明确，材料明显不属于该空间 | `space_mismatch` 或 `space_fit_uncertain`，不得建议 `publish` | 不得按普通成功预审发布 | 类型备注不得放行 |
+| 不能作为正式知识 | 聊天记录、草稿或残缺材料 | `not_knowledge` 或 `incomplete_knowledge`，不得建议 `publish` | 不得按普通成功预审发布 | 不得写入文档类型元数据 |
 | 自主 Review Agent 失败 | 超时、HTTP 错误、非法 JSON、非法枚举或未知 chunk 证据 | 预审 `failed`、风险 `high`、建议 `manual_review` | 人工例外；不得按成功预审发布 | fail-closed |
 | 非管理员或发起人自审 | 普通用户、或请求发起人本人 | 不适用 | 拒绝决定请求 | 不改变发布状态 |
 | 未认证和跨租户访问 | 无凭证或其他租户管理员访问 | 不适用 | 返回 401/租户隔离 | 不泄露记录或证据 |
@@ -33,13 +36,10 @@
 4. 确定性门禁失败不能因为 Agent 建议 `publish` 而放行。
 5. 最终批准前必须重新校验同一个 exact candidate；候选变化时拒绝发布。
 6. 同一管理员重复提交相同决定必须幂等，提交不同决定必须冲突失败。
-7. 当前预审负责受管发布资格、确定性敏感信息/提示词注入扫描和 Agent 证据编排；
-   不得把这组有限规则描述成完整的内容语义、隐私或合规分类审查。未来扩展时必须
-   新增独立输入、输出 schema、证据引用和对应功能矩阵。
+7. 当前预审负责受管发布资格、确定性敏感信息/提示词注入扫描、知识空间适配/知识可用性和 Agent 证据编排；不得把这组有限规则描述成完整合规审查。材料类型备注不是发布开关。未来扩展时必须新增独立输入、输出 schema、证据引用和对应功能矩阵。
 8. 内容 findings 必须引用 exact candidate 的 chunk ID；旧 generation 或旧 version
    的内容不得进入当前 review report。
-9. Web 详情必须展示预审状态、风险、建议、预审时间、Prompt 版本以及每条
-   finding 的类型、严重度和 chunk 证据引用；机密敏感内容必须明确提示仍需双人审批。
+9. Web 详情必须展示预审状态、风险、建议、预审时间、Prompt 版本、适合性/知识可用性（如有）以及每条 finding 的类型、严重度和 chunk 证据引用；机密敏感内容必须明确提示仍需双人审批。
 10. 没有 durable release request 的历史业务记录仍必须通过只读、租户隔离的
     review report seam 查看预审证据；该 seam 不提供审批或发布动作。
 

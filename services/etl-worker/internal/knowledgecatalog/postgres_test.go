@@ -15,10 +15,10 @@ func TestPostgresCatalogResolvesExplicitMemberSpace(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-	mock.ExpectQuery("SELECT id, tenant_id, name, kind, is_default, active").
+	mock.ExpectQuery("SELECT id, tenant_id, name, kind, is_default, active, purpose").
 		WithArgs("acme", "hr").
-		WillReturnRows(pgxmock.NewRows([]string{"id", "tenant_id", "name", "kind", "is_default", "active"}).
-			AddRow("hr", "acme", "人事制度", "production", false, true))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "tenant_id", "name", "kind", "is_default", "active", "purpose"}).
+			AddRow("hr", "acme", "人事制度", "production", false, true, "只放已生效的人事制度"))
 	mock.ExpectQuery("SELECT tenant_id, space_id, user_id::text, role").
 		WithArgs("acme", "hr", "00000000-0000-0000-0000-000000000001").
 		WillReturnRows(pgxmock.NewRows([]string{"tenant_id", "space_id", "user_id", "role"}).
