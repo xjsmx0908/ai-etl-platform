@@ -66,9 +66,10 @@ Agent 预审业务矩阵（独立隔离栈，验证文档属性到审批终态�
 bash scripts/release-center-functional-acceptance.sh
 ```
 
-隔离栈当前执行 10 个真实业务场景：普通单审、机密双审、机密敏感双审、
+隔离栈当前执行 13 个真实业务场景：普通单审、机密双审、机密敏感双审、
 Agent 状态依赖故障与两票人工例外、internal 敏感阻断、提示词注入阻断、
-确定性门禁、版本替换失效与旧 finding 隔离、拒绝终态、双租户隔离。故障场景
+确定性门禁、版本替换失效与旧 finding 隔离、拒绝终态、双租户隔离、
+用途匹配可发布、知识空间不适配、不能作为正式知识。故障场景
 只通过 Compose 控制面停止并恢复隔离栈 `redis-state`；业务输入和结果仍通过认证
 HTTP API 写入及观察，不向生产服务加入测试端点或测试模式。
 
@@ -94,21 +95,23 @@ HTTP 上传受管文档并观察发布请求、只读 review report 和 Agent Ru
 恢复专项在隔离栈中用可暂停的 Review Planner 替身制造“已持久化至少一个工具步骤”的窗口，
 然后通过 Compose 控制面 `kill query-api` 并停止/恢复 `redis-state`。业务输入和终态仍通过
 认证 HTTP 观察。验收必须证明恢复后仍是同一条 Review Run、首个工具步骤的幂等键不变、
-四个只读工具不重复执行，并且最终进入可审批状态。报告默认保存在
+五个只读工具不重复执行，并且最终进入可审批状态。报告默认保存在
 `artifacts/release-center-review-recovery-acceptance/`，不得写入文档正文、完整 prompt
-或凭据。该门禁验证崩溃恢复，不替代真实模型四场景验收。
+或凭据。该门禁验证崩溃恢复，不替代真实模型场景验收。
 
-真实模型四场景验收（独立隔离栈）:
+真实模型场景验收（独立隔离栈）:
 
 ```bash
 bash scripts/release-center-real-model-scenarios-acceptance.sh
 ```
 
 该专项强制 `AGENT_PLANNER_TYPE=auto` 和显式真实 `LLM_ENDPOINT`/`LLM_MODEL`，通过公共
-HTTP 上传四类受管文档：普通、敏感信息、提示词注入、证据不足。验收必须证明真实模型
-完成四个只读工具，记录延迟和累计 token，并且：普通文档进入 `approval_pending`/`publish`；
-敏感信息和提示词注入保留带 chunk 引用的确定性 finding 并转 `needs_info`；占位/证据不足
-文档不得建议 `publish`。报告默认保存在
+HTTP 上传七类受管文档：普通、敏感信息、提示词注入、证据不足、用途匹配、空间不适配、
+不能作为正式知识。验收必须证明真实模型完成五个只读工具（含 `assess_knowledge_fitness`），
+记录延迟和累计 token，并且：普通文档在未填用途时进入 `approval_pending`/`publish` 且
+`space_fit` 为空；敏感信息和提示词注入保留带 chunk 引用的确定性 finding 并转 `needs_info`；
+占位/证据不足文档不得建议 `publish`；用途匹配材料可建议 `publish`；放错空间或不能当知识用
+的材料不得建议 `publish`，类型备注不得写入文档。报告默认保存在
 `artifacts/release-center-real-model-scenarios-acceptance/`，不得写入文档正文、完整 prompt
 或凭据。
 

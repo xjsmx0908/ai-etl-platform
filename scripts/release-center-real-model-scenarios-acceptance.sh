@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONUNBUFFERED=1
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
@@ -19,6 +20,7 @@ export AGENT_PLANNER_TYPE="auto"
 export AGENT_PLANNER_TIMEOUT="${AGENT_PLANNER_TIMEOUT:-180s}"
 export AGENT_PLANNER_MAX_TOKENS="${AGENT_PLANNER_MAX_TOKENS:-1200}"
 export AGENT_REVIEW_MAX_TOKEN_BUDGET="${AGENT_REVIEW_MAX_TOKEN_BUDGET:-32000}"
+export AGENT_MAX_STEPS="${AGENT_MAX_STEPS:-12}"
 export LLM_ENDPOINT="${LLM_ENDPOINT:-http://host.docker.internal:11434/v1/chat/completions}"
 export LLM_MODEL="${LLM_MODEL:-qwen2.5:1.5b}"
 export EMBED_ENDPOINT="${EMBED_ENDPOINT:-http://host.docker.internal:11434/api/embeddings}"
@@ -51,5 +53,5 @@ curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null
 python3 scripts/release-center-real-model-scenarios-acceptance.py \
   --api-url "http://127.0.0.1:${API_PORT}" \
   --report "${REPORT_PATH}" \
-  --timeout "${MAX_WAIT_SECONDS:-600}"
+  --timeout "${MAX_WAIT_SECONDS:-900}"
 echo "[release-center-real-model-scenarios] retained report: ${REPORT_PATH}"

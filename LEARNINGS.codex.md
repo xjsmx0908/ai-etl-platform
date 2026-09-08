@@ -179,3 +179,10 @@
 - Reason: 对齐企业知识管理：空间用途由管理员写，预审只判断适配和可用性，类型只作备注；版本对比、政策库和冲突检查暂缓。
 - Act: 知识空间增加 purpose；新增 `assess_knowledge_fitness` 只读观察和服务端发布下限；结果只写在预审报告上。
 - Refine: 无用途时不启用空间适配门禁，以免打断现有受管发布路径；有用途则 match+usable 才能建议发布。
+
+## 2026-09-08 - P2.4-R6-ACCEPT 真实环境验收
+
+- Perceive：R6 代码已有空间用途和适合性工具，但还缺隔离栈/真实模型证明：无用途可发布、匹配可发布、放错空间不可发布、聊天记录不能当正式知识，且类型备注不得写入文档。
+- Reason：隔离栈用规则 Planner 覆盖 13 场景；真实小模型会把聊天记录误判为 `publish/usable`，所以适合性评估必须读取原文，并对非正式材料设置服务端下限。
+- Act：功能矩阵扩到 13 场景，真实模型扩到 7 场景并要求第五个工具；`EvaluateKnowledgeFitness` 对聊天/即时通讯内容强制 `not_knowledge`。
+- Refine：隔离栈 13/13 通过。真实模型前 6 场景通过后，非正式材料补跑也通过：`needs_info/reject`、`knowledge_usable=not_knowledge`、五个只读工具齐、类型备注未写入文档。证据保存在 `artifacts/release-center-functional-acceptance/` 与 `artifacts/release-center-real-model-scenarios-acceptance/`。

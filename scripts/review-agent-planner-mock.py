@@ -19,6 +19,7 @@ REVIEW_TOOLS = (
     "get_exact_candidate_chunks",
     "scan_sensitive_data",
     "scan_prompt_injection",
+    "assess_knowledge_fitness",
 )
 TOOL_NAME_RE = re.compile(
     r'"tool_name"\s*:\s*"(' + "|".join(REVIEW_TOOLS) + r')"'

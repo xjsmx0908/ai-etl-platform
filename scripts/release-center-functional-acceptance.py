@@ -107,6 +107,8 @@ class Runner:
         self.admin = self.reviewer = self.other = self.user = ""
         self.foreign = ""
         self.space = "release-center-functional"
+        self.match_space = "release-center-admin-policy"
+        self.legal_space = "release-center-legal-policy"
         self.primary_refs: dict[str, str] = {}
 
     def wait(self, fn, description: str):
@@ -133,7 +135,9 @@ class Runner:
             self.client.request("POST", "/v1/users", self.admin, {"username": username, "password": password, "role": role}, (201, 409))
             tokens.append(self.login(username, password))
         self.reviewer, self.other, self.user = tokens
-        self.client.request("POST", "/v1/knowledge-spaces", self.admin, {"id": self.space, "name": "Release Functional", "kind": "production"}, (201, 409))
+        self.ensure_space(self.space, "Release Functional")
+        self.ensure_space(self.match_space, "Administrative Policy", "存放已生效的差旅报销与行政办公制度")
+        self.ensure_space(self.legal_space, "Legal Policy", "存放已生效的劳动合同、合规条款和法务批复")
 
         foreign_tenant = "release-functional-foreign"
         foreign_user = "release-foreign-admin"
@@ -204,7 +208,7 @@ class Runner:
         self.client.upload(self.admin, doc, self.space, "Ordinary managed release content")
         self.wait(lambda: self.task_done(self.admin, doc), "ordinary ingestion")
         request, detail = self.review_for(self.admin, doc)
-        if request["required_approvals"] != 1 or detail["review"]["recommendation"] != "publish":
+        if request["required_approvals"] != 1 or detail["review"]["recommendation"] != "publish" or detail["review"].get("space_fit"):
             raise AcceptanceError(f"ordinary policy mismatch: {sanitize(detail)}")
         result = self.client.request("POST", f"/v1/release-center/requests/{request['request_id']}/decision", self.reviewer, {"decision": "approved"})
         if result.get("request", {}).get("state") != "published":
@@ -368,6 +372,63 @@ class Runner:
         self.client.request("POST", f"/v1/release-center/requests/{self.primary_refs['request_id']}/decision", self.foreign, {"decision": "approved"}, expected=(409,))
         s.observations.append({"unauthenticated": 401, "admin_access": 200, "missing_review": 404, "cross_tenant_overview_hidden": True, "cross_tenant_document": 404, "cross_tenant_request": 404, "cross_tenant_review": 404, "cross_tenant_decision": 409})
 
+    def ensure_space(self, space_id: str, name: str, purpose: str | None = None) -> None:
+        body = {"id": space_id, "name": name, "kind": "production"}
+        if purpose:
+            body["purpose"] = purpose
+        self.client.request("POST", "/v1/knowledge-spaces", self.admin, body, (201, 409))
+        if purpose is not None:
+            self.client.request("PATCH", f"/v1/knowledge-spaces/{space_id}", self.admin, {"purpose": purpose})
+
+    def document_has_kind_label(self, token: str, doc_id: str) -> bool:
+        document = self.client.request("GET", f"/v1/documents/{doc_id}", token)
+        return "kind_label" in json.dumps(document, ensure_ascii=False)
+
+    def knowledge_space_fit_match(self, s: Scenario):
+        doc = "rc-space-match-" + uuid.uuid4().hex[:8]
+        self.client.upload(self.admin, doc, self.match_space, "差旅报销制度适用于全体正式员工。出差前须提交申请，报销时须提供发票和部门经理审批记录。本制度自2026年1月1日起生效，解释权归行政部。")
+        self.wait(lambda: self.task_done(self.admin, doc), "space match ingestion")
+        request, detail = self.review_for(self.admin, doc)
+        review = detail.get("review") or {}
+        if request["required_approvals"] != 1 or review.get("recommendation") != "publish" or review.get("space_fit") != "match" or review.get("knowledge_usable") != "usable":
+            raise AcceptanceError(f"matching purpose did not stay publishable: {sanitize(detail)}")
+        if self.document_has_kind_label(self.admin, doc):
+            raise AcceptanceError("fitness kind_label leaked onto the document")
+        result = self.client.request("POST", f"/v1/release-center/requests/{request['request_id']}/decision", self.reviewer, {"decision": "approved"})
+        if result.get("request", {}).get("state") != "published":
+            raise AcceptanceError(f"matching purpose approval did not publish: {sanitize(result)}")
+        s.observations.append({"doc_id": doc, "space_fit": "match", "knowledge_usable": "usable", "state": "published", "document_untyped": True})
+
+    def knowledge_space_unfit(self, s: Scenario):
+        doc = "rc-space-unfit-" + uuid.uuid4().hex[:8]
+        self.client.upload(self.admin, doc, self.legal_space, "红烧肉烹饪说明。主料：五花肉、冰糖、生抽。步骤：炒糖色后小火炖煮至软烂。这是家庭菜谱，用于厨房备餐。")
+        self.wait(lambda: self.task_done(self.admin, doc), "space unfit ingestion")
+        request, detail = self.review_for(self.admin, doc)
+        review = detail.get("review") or {}
+        codes = {finding.get("code") for finding in review.get("findings") or [] if finding.get("code")}
+        if request.get("state") not in {"needs_info", "manual_exception"} or review.get("recommendation") == "publish":
+            raise AcceptanceError(f"unfit material was treated as publishable: {sanitize(detail)}")
+        if review.get("space_fit") not in {"mismatch", "uncertain"} or not codes.intersection({"space_mismatch", "space_fit_uncertain"}):
+            raise AcceptanceError(f"unfit material missing space-fit floor: {sanitize(detail)}")
+        if self.document_has_kind_label(self.admin, doc):
+            raise AcceptanceError("fitness kind_label leaked onto the document")
+        s.observations.append({"doc_id": doc, "space_fit": review.get("space_fit"), "state": request.get("state"), "findings": sorted(codes), "document_untyped": True})
+
+    def not_formal_knowledge(self, s: Scenario):
+        doc = "rc-not-knowledge-" + uuid.uuid4().hex[:8]
+        self.client.upload(self.admin, doc, self.space, "张三：晚上团建去哪吃？\n李四：随便，烧烤吧。\n王五：行，那我订位置。\n这是即时通讯聊天记录，不能当成可检索的业务知识使用。")
+        self.wait(lambda: self.task_done(self.admin, doc), "not knowledge ingestion")
+        request, detail = self.review_for(self.admin, doc)
+        review = detail.get("review") or {}
+        codes = {finding.get("code") for finding in review.get("findings") or [] if finding.get("code")}
+        if request.get("state") not in {"needs_info", "manual_exception"} or review.get("recommendation") == "publish":
+            raise AcceptanceError(f"informal material was treated as publishable: {sanitize(detail)}")
+        if review.get("knowledge_usable") not in {"not_knowledge", "incomplete"} and not codes.intersection({"not_knowledge", "incomplete_knowledge"}):
+            raise AcceptanceError(f"informal material missing knowledge-usable floor: {sanitize(detail)}")
+        if self.document_has_kind_label(self.admin, doc):
+            raise AcceptanceError("fitness kind_label leaked onto the document")
+        s.observations.append({"doc_id": doc, "knowledge_usable": review.get("knowledge_usable"), "state": request.get("state"), "findings": sorted(codes), "document_untyped": True})
+
     def write(self, status: str):
         self.report.parent.mkdir(parents=True, exist_ok=True)
         self.report.write_text(json.dumps(sanitize({"schema_version": "1.0", "suite": "release-center-functional-acceptance", "status": status, "started_at": self.started.isoformat(), "finished_at": datetime.now(timezone.utc).isoformat(), "scenarios": [s.__dict__ for s in self.scenarios], "environment": {"observation_seam": "public HTTP", "model_backend": "deterministic"}}), ensure_ascii=False, indent=2) + "\n")
@@ -375,7 +436,7 @@ class Runner:
     def run(self):
         self.started = datetime.now(timezone.utc)
         self.setup()
-        for name, fn in (("ordinary_managed_document", self.ordinary), ("confidential_two_admins", self.confidential), ("confidential_sensitive_two_admins", self.confidential_sensitive), ("agent_unavailable_manual_exception", self.agent_unavailable), ("internal_sensitive_content", self.sensitive), ("prompt_injection_content", self.injection), ("deterministic_gate_blocker", self.gate_blocker), ("stale_request_after_replacement", self.stale), ("rejected_request_terminal", self.rejected_terminal), ("cross_tenant_isolation", self.auth_boundaries)):
+        for name, fn in (("ordinary_managed_document", self.ordinary), ("confidential_two_admins", self.confidential), ("confidential_sensitive_two_admins", self.confidential_sensitive), ("agent_unavailable_manual_exception", self.agent_unavailable), ("internal_sensitive_content", self.sensitive), ("prompt_injection_content", self.injection), ("deterministic_gate_blocker", self.gate_blocker), ("stale_request_after_replacement", self.stale), ("rejected_request_terminal", self.rejected_terminal), ("cross_tenant_isolation", self.auth_boundaries), ("knowledge_space_fit_match", self.knowledge_space_fit_match), ("knowledge_space_unfit", self.knowledge_space_unfit), ("not_formal_knowledge", self.not_formal_knowledge)):
             print(f"[release-center] {name}", flush=True)
             self.run_scenario(name, fn)
             self.write("running")

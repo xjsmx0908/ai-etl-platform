@@ -40,7 +40,8 @@
 4. **通知、Saga 与外部工作流**（已完成，2026-09-08）：审批通知可投递到企业微信/钉钉，外部引擎可通过 webhook 收事件并用 callback 回写 Decide。
 5. **Review Report 生命周期**（已完成，2026-09-08）：TTL 默认 7 天，过期后自动重审同一候选并保留旧报告；已发布/已拒绝证据不改写；超保留期且无引用的过期报告可清理。
 6. **P2.4-R6 知识空间适配预审**（已完成，2026-09-08）：管理员为知识空间填写用途；预审判断是否适合该空间、能否作为正式知识，类型只作备注。
-7. **完整语义/隐私/合规审查**（大，暂缓）：扩展政策库、版本差异和跨文档冲突审查。不做材料类型分类器。
+7. **P2.4-R6-ACCEPT 真实环境验收**（已完成，2026-09-08）：隔离栈 13 场景含用途匹配/不适配/非知识；真实模型七场景含第五个工具。聊天/草稿即使模型误判可发布，也会被服务端拦住。
+8. **完整语义/隐私/合规审查**（大，暂缓）：扩展政策库、版本差异和跨文档冲突审查。不做材料类型分类器。
 
 ## Agent pre-review remaining
 
@@ -52,6 +53,7 @@
 | P2.4-R3 | Review report 生命周期 | completed | 已交付报告 TTL（默认 168h）、过期状态、同一候选自动重审、保留期清理（默认 90 天）和 `review_expired` 业务提示；`RELEASE_REVIEW_TTL=0` 可关闭过期 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |
 | P2.4-R4 | `success` 状态数据库兼容 | completed | 已将 `success`（含大小写变体）规范化为 PostgreSQL 允许的 `completed`，并补充协调器回归测试；后续真实 PG 验收随发布中心矩阵执行 | [`services/etl-worker/internal/releasecenter/coordinator.go`](../services/etl-worker/internal/releasecenter/coordinator.go) |
 | P2.4-R6 | 知识空间适配预审 | completed | 已交付空间用途、适配/知识可用性观察、类型备注和服务端发布下限；版本对比、政策库和冲突检查仍暂缓 | [`docs/agent-pre-review-architecture-and-implementation-plan.md`](agent-pre-review-architecture-and-implementation-plan.md) |
+| P2.4-R6-ACCEPT | 知识空间适配真实环境验收 | completed | 隔离栈 13 场景通过；真实模型七场景含第五个工具通过；非正式材料服务端下限已验证 | [`docs/release-center-functional-acceptance.md`](release-center-functional-acceptance.md) |
 
 ## Completed baseline
 

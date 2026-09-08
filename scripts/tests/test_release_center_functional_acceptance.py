@@ -28,6 +28,9 @@ class ReleaseCenterFunctionalAcceptanceTests(unittest.TestCase):
             "确定性门禁阻塞",
             "版本在审批期间变化",
             "非管理员或发起人自审",
+            "知识空间用途缺失",
+            "知识空间不适配",
+            "不能作为正式知识",
         ):
             self.assertIn(scenario, matrix)
 
@@ -45,6 +48,9 @@ class ReleaseCenterFunctionalAcceptanceTests(unittest.TestCase):
             "stale_request_after_replacement",
             "rejected_request_terminal",
             "cross_tenant_isolation",
+            "knowledge_space_fit_match",
+            "knowledge_space_unfit",
+            "not_formal_knowledge",
             "review-reports",
             "evidence_ref",
             "redis-state",

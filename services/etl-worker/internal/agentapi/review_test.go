@@ -471,7 +471,7 @@ func TestAutonomousReviewFlagsInsufficientEvidenceContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "completed" || report.Recommendation != "needs_info" || report.RiskLevel != releasecenter.RiskMedium || len(report.Findings) != 1 || report.Findings[0].Code != "insufficient_evidence" {
+	if report.Status != "completed" || report.Recommendation != "needs_info" || report.RiskLevel != releasecenter.RiskMedium || report.KnowledgeUsable != releasecenter.KnowledgeUseIncomplete || len(report.Findings) != 2 || report.Findings[0].Code != "insufficient_evidence" || report.Findings[1].Code != "incomplete_knowledge" {
 		t.Fatalf("insufficient evidence was not flagged: %+v", report)
 	}
 }
@@ -672,15 +672,15 @@ func TestValidateAutonomousReviewKeepsSensitiveFloorWhenFitnessMatches(t *testin
 	}
 }
 
-func TestAutonomousReviewRulePlannerBlocksConfiguredSpaceWithoutFit(t *testing.T) {
+func TestAutonomousReviewRulePlannerBlocksMismatchedSpace(t *testing.T) {
 	candidate := reviewCandidate()
 	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
 	runStore := agent.NewMemoryStore()
 	registry := agent.NewRegistry()
-	spaces := reviewSpaceStub{found: true, space: knowledgecatalog.Space{ID: "policies", TenantID: "tenant-a", Name: "制度库", Purpose: "只放已生效的人事制度", Kind: knowledgecatalog.SpaceKindProduction, Active: true}}
+	spaces := reviewSpaceStub{found: true, space: knowledgecatalog.Space{ID: "policies", TenantID: "tenant-a", Name: "制度库", Purpose: "存放已生效的劳动合同、合规条款和法务批复", Kind: knowledgecatalog.SpaceKindProduction, Active: true}}
 	if err := registerReviewTools(registry, workflow,
 		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
-		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}, runStore, spaces); err != nil {
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "红烧肉烹饪说明。主料：五花肉、冰糖、生抽。步骤：炒糖色后小火炖煮至软烂。", Index: 0}}}, runStore, spaces); err != nil {
 		t.Fatal(err)
 	}
 	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
@@ -691,8 +691,78 @@ func TestAutonomousReviewRulePlannerBlocksConfiguredSpaceWithoutFit(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "completed" || report.Recommendation != "needs_info" || report.SpaceFit != releasecenter.SpaceFitUncertain || len(report.Findings) == 0 || report.Findings[0].Code != "space_fit_uncertain" {
-		t.Fatalf("configured space should not publish without a fit judgment: %+v", report)
+	if report.Status != "completed" || report.Recommendation != "needs_info" || report.SpaceFit != releasecenter.SpaceFitMismatch || len(report.Findings) == 0 || report.Findings[0].Code != "space_mismatch" {
+		t.Fatalf("mismatched space should not publish: %+v", report)
+	}
+}
+
+func TestAutonomousReviewRulePlannerPublishesWhenPurposeMatches(t *testing.T) {
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	spaces := reviewSpaceStub{found: true, space: knowledgecatalog.Space{ID: "policies", TenantID: "tenant-a", Name: "行政制度", Purpose: "存放已生效的差旅报销与行政办公制度", Kind: knowledgecatalog.SpaceKindProduction, Active: true}}
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "差旅报销制度适用于全体正式员工。出差前须提交申请，报销时须提供发票和部门经理审批记录。", Index: 0}}}, runStore, spaces); err != nil {
+		t.Fatal(err)
+	}
+	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
+	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || report.Recommendation != "publish" || report.SpaceFit != releasecenter.SpaceFitMatch || report.KnowledgeUsable != releasecenter.KnowledgeUseUsable {
+		t.Fatalf("matching purpose should keep publish path: %+v", report)
+	}
+}
+
+func TestAutonomousReviewRulePlannerBlocksInformalMaterial(t *testing.T) {
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "张三：晚上团建去哪吃？\n李四：随便，烧烤吧。\n王五：行，那我订位置。\n这是即时通讯聊天记录，不能当成可检索的业务知识使用。", Index: 0}}}, runStore); err != nil {
+		t.Fatal(err)
+	}
+	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
+	report, err := service.ReviewPublicationReport(context.Background(), agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || report.Recommendation != "needs_info" || report.KnowledgeUsable != releasecenter.KnowledgeUseNotKnowledge || len(report.Findings) == 0 || report.Findings[0].Code != "not_knowledge" {
+		t.Fatalf("informal material should not publish: %+v", report)
+	}
+}
+
+func TestReviewRuleFitnessArgumentsFromObservations(t *testing.T) {
+	candidate := reviewCandidate()
+	run := agent.Run{Steps: []agent.Step{
+		reviewStep(1, getReviewContextToolName, candidate, map[string]interface{}{"knowledge_space_purpose": "存放已生效的劳动合同、合规条款和法务批复"}),
+		reviewStep(2, getExactCandidateChunksToolName, candidate, map[string]interface{}{
+			"chunk_ids": []string{"chunk-1"},
+			"chunks":    []map[string]interface{}{{"chunk_id": "chunk-1", "content": "红烧肉烹饪说明。主料：五花肉、冰糖、生抽。"}},
+		}),
+		reviewStep(3, scanSensitiveDataToolName, candidate, map[string]interface{}{"findings": []releasecenter.Finding{}}),
+	}}
+	var args map[string]interface{}
+	if err := json.Unmarshal(reviewRuleFitnessArguments(run), &args); err != nil {
+		t.Fatal(err)
+	}
+	if args["space_fit"] != releasecenter.SpaceFitMismatch || args["knowledge_usable"] != releasecenter.KnowledgeUseUsable {
+		t.Fatalf("expected mismatch usable fitness args: %+v", args)
+	}
+	refs, _ := args["evidence_chunk_ids"].([]interface{})
+	if len(refs) != 1 || refs[0] != "chunk-1" {
+		t.Fatalf("expected exact chunk evidence: %+v", args)
 	}
 }
 

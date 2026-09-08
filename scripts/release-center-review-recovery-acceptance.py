@@ -39,6 +39,7 @@ REQUIRED_TOOLS = (
     "get_exact_candidate_chunks",
     "scan_sensitive_data",
     "scan_prompt_injection",
+    "assess_knowledge_fitness",
 )
 
 

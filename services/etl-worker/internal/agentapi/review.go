@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"ai-etl-pipeline/internal/agent"
 	"ai-etl-pipeline/internal/docstore"
@@ -139,8 +140,12 @@ func reviewFitnessHandler(workflow PublicationWorkflow, documents reviewDocument
 			return agent.ToolResult{}, err
 		}
 		chunkIDs := make([]string, 0, len(binding.chunks))
+		contents := make([]string, 0, len(binding.chunks))
 		for _, chunk := range binding.chunks {
 			chunkIDs = append(chunkIDs, chunk.ChunkID)
+			if text := strings.TrimSpace(chunk.Content); text != "" {
+				contents = append(contents, text)
+			}
 		}
 		result := releasecenter.EvaluateKnowledgeFitness(releasecenter.FitnessInput{
 			Purpose:         space.Purpose,
@@ -149,6 +154,7 @@ func reviewFitnessHandler(workflow PublicationWorkflow, documents reviewDocument
 			KindLabel:       reviewDataString(inv.Arguments["kind_label"]),
 			EvidenceRefs:    reviewStringSlice(inv.Arguments["evidence_chunk_ids"]),
 			ChunkIDs:        chunkIDs,
+			Content:         strings.Join(contents, "\n"),
 		})
 		data := map[string]interface{}{
 			"candidate": structMap(binding.candidate), "knowledge_space_id": binding.document.KnowledgeSpaceID,
@@ -588,6 +594,153 @@ func requiredReviewToolCall(toolName string) agent.PlanDecision {
 	return agent.PlanDecision{Type: agent.DecisionToolCall, ToolName: toolName, Arguments: json.RawMessage(args), Thought: "complete the required review check"}
 }
 
+var knowledgeFitStopRunes = map[rune]bool{
+	'的': true, '和': true, '或': true, '及': true, '与': true, '只': true,
+	'放': true, '已': true, '不': true, '把': true, '为': true, '在': true,
+	'是': true, '了': true, '等': true, '并': true, '将': true, '对': true,
+	'中': true, '存': true, '进': true, '用': true, '可': true, '作': true,
+	'当': true, '这': true, '个': true, '本': true, '该': true, '其': true,
+}
+
+func reviewRuleFitnessArguments(run agent.Run) json.RawMessage {
+	purpose := ""
+	chunkIDs := []string{}
+	contents := []string{}
+	incomplete := false
+	for _, step := range run.Steps {
+		if step.ToolResult == nil {
+			continue
+		}
+		switch step.ToolName {
+		case getReviewContextToolName:
+			purpose = reviewDataString(step.ToolResult.Data["knowledge_space_purpose"])
+		case getExactCandidateChunksToolName:
+			chunkIDs = append(chunkIDs, reviewStringSlice(step.ToolResult.Data["chunk_ids"])...)
+			contents = append(contents, reviewChunkContents(step.ToolResult.Data["chunks"])...)
+		case scanSensitiveDataToolName:
+			payload, _ := json.Marshal(step.ToolResult.Data["findings"])
+			var findings []releasecenter.Finding
+			if json.Unmarshal(payload, &findings) == nil {
+				for _, finding := range findings {
+					if finding.Code == "insufficient_evidence" {
+						incomplete = true
+					}
+				}
+			}
+		}
+	}
+	content := strings.Join(contents, "\n")
+	knowledgeUsable := releasecenter.KnowledgeUseUsable
+	if incomplete {
+		knowledgeUsable = releasecenter.KnowledgeUseIncomplete
+	} else if releasecenter.LooksLikeInformalMaterial(content) {
+		knowledgeUsable = releasecenter.KnowledgeUseNotKnowledge
+	}
+	args := map[string]interface{}{
+		"knowledge_usable":   knowledgeUsable,
+		"evidence_chunk_ids": uniqueReviewStrings(chunkIDs),
+	}
+	if strings.TrimSpace(purpose) != "" {
+		if knowledgeSpaceOverlaps(purpose, content) {
+			args["space_fit"] = releasecenter.SpaceFitMatch
+		} else {
+			args["space_fit"] = releasecenter.SpaceFitMismatch
+		}
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return encoded
+}
+
+func reviewChunkContents(value interface{}) []string {
+	switch typed := value.(type) {
+	case []map[string]interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := reviewDataString(item["content"]); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			mapped, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if text := reviewDataString(mapped["content"]); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func uniqueReviewStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func knowledgeSpaceOverlaps(purpose, content string) bool {
+	tokens := knowledgeFitTokens(purpose)
+	if len(tokens) == 0 || strings.TrimSpace(content) == "" {
+		return false
+	}
+	lowered := strings.ToLower(content)
+	hits := 0
+	for _, token := range tokens {
+		if strings.Contains(lowered, token) {
+			hits++
+		}
+	}
+	need := 2
+	if len(tokens) < 2 {
+		need = 1
+	}
+	return hits >= need
+}
+
+func knowledgeFitTokens(purpose string) []string {
+	runes := make([]rune, 0, len(purpose))
+	for _, r := range strings.ToLower(strings.TrimSpace(purpose)) {
+		if knowledgeFitStopRunes[r] || !(unicode.IsLetter(r) || unicode.Is(unicode.Han, r)) {
+			continue
+		}
+		runes = append(runes, r)
+	}
+	if len(runes) == 0 {
+		return nil
+	}
+	if len(runes) < 2 {
+		return []string{string(runes)}
+	}
+	out := make([]string, 0, len(runes)-1)
+	seen := map[string]bool{}
+	for i := 0; i+2 <= len(runes); i++ {
+		token := string(runes[i : i+2])
+		if seen[token] {
+			continue
+		}
+		seen[token] = true
+		out = append(out, token)
+	}
+	return out
+}
+
 type ReviewRulePlanner struct{}
 
 func (ReviewRulePlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecision, error) {
@@ -599,6 +752,9 @@ func (ReviewRulePlanner) Plan(_ context.Context, run agent.Run) (agent.PlanDecis
 	}
 	for _, toolName := range requiredReviewToolNames() {
 		if !completed[toolName] {
+			if toolName == assessKnowledgeFitnessToolName {
+				return agent.PlanDecision{Type: agent.DecisionToolCall, ToolName: toolName, Arguments: reviewRuleFitnessArguments(run), Thought: "complete the required review check"}, nil
+			}
 			return requiredReviewToolCall(toolName), nil
 		}
 	}

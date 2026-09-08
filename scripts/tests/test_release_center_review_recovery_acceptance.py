@@ -30,6 +30,7 @@ class ReleaseCenterReviewRecoveryAcceptanceTests(unittest.TestCase):
             "get_review_context",
             "scan_sensitive_data",
             "scan_prompt_injection",
+            "assess_knowledge_fitness",
             "schema_version",
             "REVIEW_PLANNER_HOLD_PATH",
         ):

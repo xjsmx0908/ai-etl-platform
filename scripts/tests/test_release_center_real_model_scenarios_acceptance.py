@@ -25,6 +25,10 @@ class ReleaseCenterRealModelScenariosAcceptanceTests(unittest.TestCase):
             "sensitive_information",
             "prompt_injection",
             "insufficient_evidence",
+            "space_fit_match",
+            "space_mismatch",
+            "not_formal_knowledge",
+            "assess_knowledge_fitness",
             "LLM_ENDPOINT",
             "LLM_MODEL",
             "AGENT_PLANNER_TYPE",
@@ -35,6 +39,7 @@ class ReleaseCenterRealModelScenariosAcceptanceTests(unittest.TestCase):
             "tokens_used",
             "get_review_context",
             "scan_sensitive_data",
+            "assess_knowledge_fitness",
             "review-reports",
             "schema_version",
         ):

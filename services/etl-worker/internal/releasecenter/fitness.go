@@ -1,6 +1,9 @@
 package releasecenter
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 const (
 	SpaceFitMatch     = "match"
@@ -25,6 +28,7 @@ type FitnessInput struct {
 	KindLabel       string
 	EvidenceRefs    []string
 	ChunkIDs        []string
+	Content         string
 }
 
 type FitnessResult struct {
@@ -54,6 +58,9 @@ func EvaluateKnowledgeFitness(in FitnessInput) FitnessResult {
 	}
 	if result.KnowledgeUsable == "" {
 		result.KnowledgeUsable = KnowledgeUseUsable
+	}
+	if LooksLikeInformalMaterial(in.Content) && result.KnowledgeUsable == KnowledgeUseUsable {
+		result.KnowledgeUsable = KnowledgeUseNotKnowledge
 	}
 	if result.Configured {
 		result.SpaceFit = normalizeSpaceFit(in.SpaceFit)
@@ -152,4 +159,22 @@ func clipRunes(value string, max int) string {
 		return value
 	}
 	return string(runes[:max])
+}
+
+var informalDialoguePattern = regexp.MustCompile(`^[^：:]{1,12}[：:][^：:]{1,40}$`)
+
+// LooksLikeInformalMaterial reports chat logs and similar informal material
+// that must not be treated as formal knowledge, even if a planner omitted the
+// not_knowledge label.
+func LooksLikeInformalMaterial(content string) bool {
+	if strings.Contains(content, "聊天记录") || strings.Contains(content, "即时通讯") {
+		return true
+	}
+	turns := 0
+	for _, line := range strings.Split(content, "\n") {
+		if informalDialoguePattern.MatchString(strings.TrimSpace(line)) {
+			turns++
+		}
+	}
+	return turns >= 3
 }

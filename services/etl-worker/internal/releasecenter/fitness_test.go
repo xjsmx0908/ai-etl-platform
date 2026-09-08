@@ -98,3 +98,15 @@ func TestEvaluateKnowledgeFitnessFailsClosedWithoutChunkEvidence(t *testing.T) {
 		t.Fatalf("missing evidence was not blocked: %+v", result)
 	}
 }
+
+func TestEvaluateKnowledgeFitnessBlocksInformalMaterialEvenWhenPlannerSaysUsable(t *testing.T) {
+	result := EvaluateKnowledgeFitness(FitnessInput{
+		KnowledgeUsable: KnowledgeUseUsable,
+		EvidenceRefs:    []string{"chunk-1"},
+		ChunkIDs:        []string{"chunk-1"},
+		Content:         "张三：晚上团建去哪吃？\n李四：随便，烧烤吧。\n王五：行，那我订位置。\n这是即时通讯聊天记录，不能当成可检索的业务知识使用。",
+	})
+	if result.KnowledgeUsable != KnowledgeUseNotKnowledge || result.Recommendation != "needs_info" || len(result.Findings) != 1 || result.Findings[0].Code != notKnowledgeCode {
+		t.Fatalf("informal material must not publish as usable knowledge: %+v", result)
+	}
+}
