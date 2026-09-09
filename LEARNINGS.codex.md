@@ -228,3 +228,10 @@
 - Reason：问句匹配已发布文件名后用 ES `doc_id` 召回；已发布但无 generation 的 chunk 允许作为证据。问答列出全部授权空间，0 个时给空状态。质量页空状态写明离线评测。
 - Act：改 query/retrieval/visibility 与 QA/quality 页；`make` 相关 Go 测试与源码契约通过。真实页面：只读命中赴港流程；机密双审 2/2 已发布；质量页空状态说明离线评测。
 - Refine：SSE 不结束（UAT-011）、质量报告未挂载（UAT-007）、只读上传按钮（UAT-012）、登录英文错误（UAT-013）仍开放。现网修复后需 flush 语义缓存。
+
+## 2026-09-09 - 续跑入口写入文档
+
+- Perceive：UAT-010/PX-06/PX-09 已验证并推送 `bf5832d`，但续跑入口只在 `~/.codex/task-status.md`，仓库内仍容易重跑 D0–D4。
+- Reason：剩余项是 UAT-011/012/007/013；冻结诊断和 Next files 必须同时写进 backlog 与登记册。
+- Act：更新 task-status、fix 轮 notes/matrix、backlog `P-UAT-1-next`、findings 续跑段。
+- Refine：下一会话直接改 `querySSE` 结束条件，不要重读 ES。

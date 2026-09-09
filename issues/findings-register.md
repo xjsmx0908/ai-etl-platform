@@ -43,6 +43,8 @@
 
 2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。开放项为 UAT-007、UAT-011～013。S1（UAT-010）已于同日修复并复验。
 
+续跑：不重跑 D0–D4，不重读 ES `_source`，不重验 UAT-010/PX-06/PX-09。下一步 UAT-011（`web/lib/apiClient.ts` 在 `event: done` 后结束流）→ UAT-012 → UAT-007 → UAT-013。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
+
 ## 明细
 
 ### UAT-001 数据接入下拉意义不清
