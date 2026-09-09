@@ -37,13 +37,13 @@
 | UAT-008 | 使用逻辑 | S2 | `/release-center` | admin | 已修复 | Run ID 输入框与空治理字段让人不知道下一步 | Agent发布治理，打开RUN ID输入框存在的意义是什么？点击开始检查，基本上都是责任人不存在，生效日期不存在，存在的意义是什么? |
 | UAT-009 | 使用逻辑 | S2 | `/audit` | admin | 已修复 | 审计日志缺少分页和检索 | 审计日志存在的意义是什么？既然存在了，为什么既没有分页，也没有检索。 |
 | UAT-010 | 功能缺陷 | S1 | `/qa` | readonly | 已修复 | 只读用户无法问答列表中已发布的公开文档 | 2026-09-09 复验：只读可见空间下拉并命中「赴港流程」 |
-| UAT-011 | 性能体验 | S2 | `/qa` | user / admin | 开放 | 问答 SSE 在最终答案后不结束事件流 | 本轮发现：页面总耗时约 2.4s，客户端/自动化仍可空等约 70s |
+| UAT-011 | 性能体验 | S2 | `/qa` | user / admin | 已修复 | 问答 SSE 在最终答案后不结束事件流 | 2026-09-09 复验：`px-user` 巡检问答 3642ms 出现「回答已完成」 |
 | UAT-012 | 使用逻辑 | S2 | `/data` | readonly | 开放 | 只读用户上传按钮可点，提交后才 forbidden | 本轮发现：前端未禁用，后端拒绝 |
 | UAT-013 | 美观 UX | S3 | `/login` | 全部 | 开放 | 登录失败提示为英文 invalid credentials | 本轮发现：错误文案未本地化 |
 
-2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。开放项为 UAT-007、UAT-011～013。S1（UAT-010）已于同日修复并复验。
+2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。开放项为 UAT-007、UAT-012、UAT-013。S1（UAT-010）与 UAT-011 已于同日修复并复验。
 
-续跑：不重跑 D0–D4，不重读 ES `_source`，不重验 UAT-010/PX-06/PX-09。下一步 UAT-011（`web/lib/apiClient.ts` 在 `event: done` 后结束流）→ UAT-012 → UAT-007 → UAT-013。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
+续跑：不重跑 D0–D4，不重读 ES `_source`，不重验 UAT-010/PX-06/PX-09/UAT-011。下一步 UAT-012（只读上传按钮按角色禁用）→ UAT-007 → UAT-013。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
 
 ## 明细
 
@@ -161,7 +161,7 @@
 
 - 类型：性能体验
 - 级别：S2
-- 状态：开放
+- 状态：已修复
 - 页面：`/qa`
 - 角色：user / admin
 - 复现：
@@ -172,6 +172,8 @@
 - 证据：`followup.json` steps `user-xunjian 70550ms`、`admin-xunjian 70564ms`；同条 qa 的 UI「总耗时 2.405s」。
 - 归属：后端 query-api / 前端 EventSource
 - 建议：最终事件后关闭流；与 UAT-003 分开，因为用户可见等待已可接受。
+- 修复：`querySSE` 收到 `event: done` / `error` 后立即结束并 cancel reader，不等 HTTP body EOF；问答页在 done 态展示「回答已完成」。
+- 复验：2026-09-09，`px-user` 提问「机房日常巡检温度是多少？」3642ms 出现「回答已完成」，不再空等约 70s。证据 `uat011.json`、`UAT-011-qa-final.png`。
 
 ### UAT-012 只读用户上传按钮未禁用
 

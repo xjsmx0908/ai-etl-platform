@@ -235,3 +235,10 @@
 - Reason：剩余项是 UAT-011/012/007/013；冻结诊断和 Next files 必须同时写进 backlog 与登记册。
 - Act：更新 task-status、fix 轮 notes/matrix、backlog `P-UAT-1-next`、findings 续跑段。
 - Refine：下一会话直接改 `querySSE` 结束条件，不要重读 ES。
+
+## 2026-09-09 - 修复 UAT-011 问答 SSE 不结束
+
+- Perceive：服务端已写 `event: done`，但 `querySSE` 等到 HTTP body EOF；问答页只在 Promise resolve 后离开 streaming，巡检空等约 70s。
+- Reason：应用层 `done`/`error` 就是流结束；客户端必须立即 return 并 cancel reader。done 态还要画出「回答已完成」，否则巡检看不到完成标记。
+- Act：抽出 `consumeQuerySSEStream`，终端事件后结束；问答页 onDone 置 done 并展示完成标记。契约测试覆盖 hanging stream。
+- Refine：`px-user` 巡检问答 3642ms 出现「回答已完成」。下一步 UAT-012，不重跑 D0–D4 / UAT-010 / UAT-011。

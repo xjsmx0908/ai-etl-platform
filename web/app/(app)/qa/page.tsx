@@ -141,6 +141,7 @@ export default function QaPage() {
     setActiveStage("preparing");
     setCompletedStages([]);
     setError("");
+    let failed = false;
     try {
       await apiClient.querySSE(
         q,
@@ -154,8 +155,15 @@ export default function QaPage() {
           },
           onSources: (s) => setCitations(s),
           onDelta: (text) => setAnswer((prev) => prev + text),
-          onDone: (m) => setMeta(m),
+          onDone: (m) => {
+            setMeta(m);
+            setStatus("done");
+            setActiveStage("completed");
+            setCompletedStages(QUERY_STEPS.map((step) => step.key));
+            setPhase("回答已完成");
+          },
           onError: (msg) => {
+            failed = true;
             setStatus("error");
             setError(msg);
           },
@@ -163,6 +171,7 @@ export default function QaPage() {
         controller.signal,
         knowledgeSpace ? { knowledge_space_id: knowledgeSpace } : undefined
       );
+      if (failed) return;
       setStatus("done");
       setActiveStage("completed");
       setCompletedStages(QUERY_STEPS.map((step) => step.key));
@@ -275,6 +284,7 @@ export default function QaPage() {
                   <p className="mt-0.5 text-xs text-slate-400">每个阶段完成后自动进入下一步，耗时阶段会持续显示动画</p>
                 </div>
                 {status === "streaming" && <span className="inline-flex items-center gap-1.5 text-xs text-blue-600"><Loader2 className="h-3.5 w-3.5 animate-spin" />处理中</span>}
+                {status === "done" && <span className="inline-flex items-center gap-1.5 text-xs text-emerald-600"><Check className="h-3.5 w-3.5" />回答已完成</span>}
               </div>
               <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
                 {QUERY_STEPS.map((step) => {

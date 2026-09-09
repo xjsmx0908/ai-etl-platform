@@ -20,6 +20,7 @@ import type {
   User,
 } from "./types";
 import { clearUser, setUser } from "./auth";
+import { consumeQuerySSEStream } from "./querySSE";
 
 // Every call goes through /api/* (same-origin) so the HttpOnly `ai_etl_token`
 // cookie is sent automatically by the browser. The Next.js route handlers
@@ -386,59 +387,7 @@ export async function querySSE(
   if (!resp.ok) throw new Error(`请求失败: ${resp.status}`);
   if (!resp.body) throw new Error("服务无响应");
 
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  const handleEvent = (raw: string) => {
-    const lines = raw.split("\n");
-    let event = "message";
-    let data = "";
-    for (const line of lines) {
-      if (line.startsWith("event:")) event = line.slice(6).trim();
-      if (line.startsWith("data:")) data += line.slice(5).trim();
-    }
-    if (!data) return;
-    try {
-      const payload = JSON.parse(data);
-      switch (event) {
-        case "status":
-          handlers.onStatus?.({ stage: payload.stage || "processing", message: payload.message || "处理中…", state: payload.state || "running" });
-          break;
-        case "sources":
-          handlers.onSources?.(payload.sources || []);
-          break;
-        case "delta":
-          handlers.onDelta?.(payload.text || "");
-          break;
-        case "done":
-          handlers.onDone?.({
-            duration: payload.duration || "",
-            token_usage: payload.token_usage,
-            prompt_version: payload.prompt_version,
-            retrieval: payload.retrieval,
-          });
-          break;
-        case "error":
-          handlers.onError?.(payload.error || "服务错误");
-          break;
-      }
-    } catch {
-      // ignore malformed events
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buffer.indexOf("\n\n")) >= 0) {
-      const event = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      handleEvent(event);
-    }
-  }
+  await consumeQuerySSEStream(resp.body, handlers);
 }
 
 export const apiClient = {
