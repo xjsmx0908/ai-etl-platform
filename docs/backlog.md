@@ -20,9 +20,12 @@
 
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
-| P-UAT-1 | 产品体验验收 | planned | 按 D0–D4 使用真实 Web 巡检；先复验旧九条并迁入登记册；验收中途不改代码；S1+ 回写本文件 | [`docs/product-experience-acceptance.md`](product-experience-acceptance.md) |
+| P-UAT-1 | 产品体验验收 | in-progress | 2026-09-09 轮次未通过，不得关闭。先修 UAT-010 只读问答，再补机密双审页面证据和 PX-09 空状态；复验前不改验收中途代码约定 | [`docs/product-experience-acceptance.md`](product-experience-acceptance.md) |
+| P-UAT-1-S1 | 只读用户问答失败 | open | 只读角色能问答其文档列表中已发布公开文档，或明确提示无检索空间；复验 UAT-010 后关闭 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 
 这是 2026-09-09 明确要求的体验验收轨道，覆盖页面美观、使用逻辑和缺陷，不替代发布中心/治理/身份专项矩阵。问题登记以 [`issues/findings-register.md`](../issues/findings-register.md) 为准。
+
+2026-09-09 执行记录：D0–D4 已回写。矩阵 PX-02/PX-09 失败、PX-06 受阻；旧九条 8 修 1 留（UAT-007）；新增 UAT-010（S1）与 UAT-011～013。验收中途未改产品代码。S2/S3 留在登记册，不另开 backlog 主项。
 
 ## Current execution plan
 

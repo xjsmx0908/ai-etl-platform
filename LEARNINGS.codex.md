@@ -208,3 +208,10 @@
 - Reason：CI gold、验收脚本、P2.5 身份设计、P1.9 Gold 管线必须保留。历史实验结论已在 ADR 和默认配置里。不能把“不进 Codex 上下文”的运行材料直接删掉。
 - Act：删除 p1.3–p1.7 实验报告、压测快照、口头 bugs 副本和企业级愿景重复稿；README / evals README 收成现行入口；`.ignore` 让 rg 跳过续接备忘和合成评测集。
 - Refine：身份设计、验收矩阵、golden-set、治理脚本一律保留。
+
+## 2026-09-09 - 产品体验验收 D4 回写
+
+- Perceive：真实 Web 巡检证据已在 `artifacts/product-experience-acceptance/2026-09-09/`，但矩阵/登记册/backlog 仍停在 11:20 模板，D4 未写。
+- Reason：验收中途不改产品代码；结论必须来自页面证据。旧九条能关则关，失败项进登记册，S1 才回写 backlog。本轮不能把 P-UAT-1 标完成。
+- Act：填写 PX-01～11；UAT-001～006/008/009 已修复，UAT-007 仍开放；新增 UAT-010～013。P-UAT-1 改为 in-progress / 本轮未通过，并单列只读问答 S1。
+- Refine：机密双审和删除/退役问答是覆盖缺口不是已证实缺陷。证据目录 Git 忽略，不入库账号密码。
