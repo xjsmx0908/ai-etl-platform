@@ -1,0 +1,21 @@
+# ripgrep / Codex 检索噪音。Git 仍跟踪需要的源文件。
+artifacts/
+state/
+rag_datas/
+plan/
+.claude/
+docs/archive/
+docs/evals/reports/
+docs/evals/private/
+docs/corpora/generated/
+docs/evals/engineering-learning-golden-set.json
+docs/corpora/enterprise-kb.json
+web/package-lock.json
+**/go.sum
+CONTINUATION.md
+new_thread_prompt.md
+**/.next/
+**/.venv/
+**/.pytest_cache/
+**/node_modules/
+**/__pycache__/

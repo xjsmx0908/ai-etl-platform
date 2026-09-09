@@ -200,3 +200,11 @@
 - Reason：当前状态已由 `LEARNINGS.codex.md`、`docs/backlog.md` 和现行设计/验收文档覆盖；历史快照保留在 Git 历史即可。
 - Act：删除过时归档、无效二进制/会话文件和独立 Parser Compose；将 `services/etl-worker/README.md` 收成现行模块说明；收紧 `.codexignore`。
 - Refine：不删除现行设计文档、验收脚本、评测 gold、用户语料 `rag_datas/` 和 `issues/`。
+
+
+## 2026-09-09 - 删除无后续用途的历史材料
+
+- Perceive：上次只删了过时归档。评测阶段报告、一次性压测快照、口头 bugs 副本和根 README 的长文仍会在检索时占上下文，但其中多数对后续实现没有新信息。
+- Reason：CI gold、验收脚本、P2.5 身份设计、P1.9 Gold 管线必须保留。历史实验结论已在 ADR 和默认配置里。不能把“不进 Codex 上下文”的运行材料直接删掉。
+- Act：删除 p1.3–p1.7 实验报告、压测快照、口头 bugs 副本和企业级愿景重复稿；README / evals README 收成现行入口；`.ignore` 让 rg 跳过续接备忘和合成评测集。
+- Refine：身份设计、验收矩阵、golden-set、治理脚本一律保留。

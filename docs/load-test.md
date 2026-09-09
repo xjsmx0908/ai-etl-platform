@@ -34,5 +34,3 @@ python3 scripts/load-test.py \
 ```
 
 The report includes success rate, hit rate, top-hit rate, throughput, and p50/p95/p99 latency.
-
-Latest module-2 benchmark summary: `docs/module2-load-test-report.md`.

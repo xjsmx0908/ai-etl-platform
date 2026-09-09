@@ -34,3 +34,13 @@ scripts/archive/
 secrets/dev/
 !secrets/examples/
 *.ses
+
+# 6. 根目录续接备忘（需要时直接打开，不进默认检索）
+CONTINUATION.md
+new_thread_prompt.md
+
+# 7. 锁文件与评测合成集
+web/package-lock.json
+**/go.sum
+docs/evals/engineering-learning-golden-set.json
+docs/corpora/enterprise-kb.json

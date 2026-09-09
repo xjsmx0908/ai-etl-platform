@@ -10,7 +10,6 @@
 为准。
 
 发现问题记入 [`../issues/findings-register.md`](../issues/findings-register.md)。
-历史口头问题保留在 [`../issues/bugs.md`](../issues/bugs.md)，只作为复验来源。
 
 ## 目的
 
@@ -20,7 +19,7 @@
 完成标准：
 
 - 每个角色路径和每个页面都有通过/失败结论。
-- 旧 `issues/bugs.md` 九条全部复验并迁移到登记册。
+- 登记册中 UAT-001～UAT-009 全部在真实页面复验。
 - 新问题都有类型、严重级别、复现步骤和证据路径。
 - 验收过程中不改产品代码；S1+ 才回写 [`backlog.md`](backlog.md)。
 
@@ -135,7 +134,7 @@
 
 ## 旧问题复验清单
 
-来源：[`../issues/bugs.md`](../issues/bugs.md)。D1 必须逐条在真实页面复核。
+来源：[`../issues/findings-register.md`](../issues/findings-register.md) 中 UAT-001～UAT-009。D1 必须逐条在真实页面复核。
 
 | 旧编号 | 登记 ID | 摘要 | 复验方法 | 状态 |
 | --- | --- | --- | --- | --- |
