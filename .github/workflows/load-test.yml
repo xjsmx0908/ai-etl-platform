@@ -1,0 +1,33 @@
+name: Query Load Test Gate
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 16 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  loadtest:
+    name: Isolated Query Performance Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run isolated query load-test gate
+        run: scripts/load-test-gate.sh
+        env:
+          REQUESTS: "40"
+          CONCURRENCY: "5"
+          REPORT_DIR: docs/evals/reports
+
+      - name: Upload load-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-${{ github.run_id }}
+          path: docs/evals/reports/loadtest-*
+          if-no-files-found: warn

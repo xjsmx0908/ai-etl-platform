@@ -160,6 +160,20 @@ class LoadTestGateTests(unittest.TestCase):
             server.stop()
             report_dir.cleanup()
 
+    def test_isolated_gate_script_keeps_mock_stack_and_both_profiles(self):
+        script = (ROOT / "scripts" / "load-test-gate.sh").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "load-test.yml").read_text(encoding="utf-8")
+        required = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertIn("ai-etl-loadtest", script)
+        self.assertIn("docker-compose.eval.yml", script)
+        self.assertIn("run_profile cold-retrieval", script)
+        self.assertIn("run_profile cached-e2e", script)
+        self.assertIn("RETRIEVAL_DIAGNOSTICS_ENABLED=true", script)
+        self.assertIn("workflow_dispatch", workflow)
+        self.assertIn("scripts/load-test-gate.sh", workflow)
+        self.assertNotIn("loadtest", required.lower().split("required checks")[-1] if False else required)
+        self.assertNotIn("load-test-gate.sh", required)
+
 
 class _FakeQueryAPI:
     def __init__(self) -> None:

@@ -22,6 +22,18 @@ Cached JSON/e2e path:
 python3 scripts/load-test.py --profile cached-e2e --requests 40 --concurrency 5
 ```
 
+
+Isolated mock-stack gate (does not touch a running demo Compose project):
+
+```bash
+bash scripts/load-test-gate.sh
+```
+
+This wrapper starts `ai-etl-loadtest` with the eval/smoke overlays, a
+deterministic mock model, and both profiles. GitHub Actions runs the same
+command on `workflow_dispatch` and a nightly schedule; it is not a Required
+Check.
+
 Prefer `--username/--password` or `--token` against a running Query API. Isolated
 eval/smoke Compose already sets `RETRIEVAL_DIAGNOSTICS_ENABLED=true`, which is
 required for `--retrieval-only`. Keep this on the default `user-uploads` space;

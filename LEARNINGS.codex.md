@@ -291,3 +291,10 @@
 - Reason：先做工程预算门禁，不发明 ADR 0010 生产 SLO。冷检索与缓存/生成路径分开，默认 `user-uploads`，不把发布审批编进压测。
 - Act：增加 `--profile`、阈值、`--retrieval-only`、登录和 `evaluate_gate()`；越线 exit 1。补 `scripts/tests/test_load_test.py`。
 - Refine：契约测试覆盖百分位、profile、报告和本地假 API 的 pass/fail。真实隔离栈校准与 nightly workflow 仍未做。
+
+## 2026-09-09 - 查询门禁改为隔离 nightly
+
+- Perceive：演示栈是真实 bge-m3/LLM，diagnostics 关闭，内存不足以再起第二套 Compose。不能用它校准 mock 工程预算。
+- Reason：L1 门禁必须走独立 mock 栈；演示栈只做脚本连通，避免 40 次真实生成。
+- Act：新增 `scripts/load-test-gate.sh` 和 `workflow_dispatch`/nightly workflow，不加入 Required Checks。
+- Refine：本机用 `tenant-loadtest` JWT 做小流量连通。阈值仍待隔离栈三次校准。
