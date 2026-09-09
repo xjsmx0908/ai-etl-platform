@@ -20,17 +20,15 @@
 
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
-| P-UAT-1 | 产品体验验收 | in-progress | UAT-007/010/011/012 与 PX-06/PX-09 已复验。仍开放 UAT-013，本轮不得关闭 | [`docs/product-experience-acceptance.md`](product-experience-acceptance.md) |
+| P-UAT-1 | 产品体验验收 | done | UAT-007/010/011/012/013 与 PX-06/PX-09 已复验。登记册开放项已清空 | [`docs/product-experience-acceptance.md`](product-experience-acceptance.md) |
 | P-UAT-1-S1 | 只读用户问答失败 | done | 2026-09-09 只读可问「赴港流程」；空间下拉可见。UAT-010 已修复 | [`../issues/findings-register.md`](../issues/findings-register.md) |
-| P-UAT-1-next | 剩余体验缺陷 | in-progress | 续跑 UAT-013。不重跑 D0–D4 / UAT-007 / UAT-010 / UAT-011 / UAT-012 | [`../issues/findings-register.md`](../issues/findings-register.md) |
+| P-UAT-1-next | 剩余体验缺陷 | done | UAT-013 已复验：错密登录显示「用户名或密码错误」 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 
 这是 2026-09-09 明确要求的体验验收轨道，覆盖页面美观、使用逻辑和缺陷，不替代发布中心/治理/身份专项矩阵。问题登记以 [`issues/findings-register.md`](../issues/findings-register.md) 为准。
 
-2026-09-09 执行记录：D0–D4 已回写。随后修复 UAT-010，并补 PX-06 机密双审页面证据与 PX-09 空状态；复验通过。矩阵 PX-02/PX-06/PX-09 改为通过。随后修复 UAT-011：问答 SSE 在 `event: done` 后结束。随后修复 UAT-012：只读上传按钮禁用并说明无权限。随后修复 UAT-007：web 不再用空 reports 目录覆盖烘焙 `latest.json`，`/quality` 展示 Recall@1 55%。仍开放 UAT-013。
+2026-09-09 执行记录：D0–D4 已回写。随后修复 UAT-010，并补 PX-06 机密双审页面证据与 PX-09 空状态；复验通过。矩阵 PX-02/PX-06/PX-09 改为通过。随后修复 UAT-011：问答 SSE 在 `event: done` 后结束。随后修复 UAT-012：只读上传按钮禁用并说明无权限。随后修复 UAT-007：web 不再用空 reports 目录覆盖烘焙 `latest.json`，`/quality` 展示 Recall@1 55%。随后修复 UAT-013：错密登录显示「用户名或密码错误」。登记册开放项已清空。
 
-续跑入口（不要重读 ES `_source`）：
-
-1. UAT-013：`web/app/login/page.tsx` 将 `invalid credentials` 本地化为中文。
+续跑入口已关闭：UAT-013 完成，不重读 ES `_source`。
 
 ## Current execution plan
 

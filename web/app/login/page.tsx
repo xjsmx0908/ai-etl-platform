@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiClient } from "@/lib/apiClient";
+import { localizeLoginError } from "@/lib/loginErrors";
 import { getUser } from "@/lib/auth";
 import { Logo } from "@/components/ui/Logo";
 import { Input } from "@/components/ui/Input";
@@ -58,7 +59,7 @@ export default function LoginPage() {
       await apiClient.login(username.trim(), password);
       router.replace("/");
     } catch (err) {
-      setError((err as Error).message || "登录失败");
+      setError(localizeLoginError((err as Error).message));
     } finally {
       setLoading(false);
     }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { localizeLoginError } from "@/lib/loginErrors";
 import { parsePlatformLoginCredential } from "@/lib/platformSession";
 
 // Login is the ONLY unauthenticated endpoint. On success we set the HttpOnly
@@ -29,17 +30,14 @@ export async function POST(req: NextRequest) {
   }
 
   if (!upstream.ok) {
-    const fallback =
-      upstream.status === 401
-        ? "用户名或密码错误"
-        : upstream.status === 403
-          ? "账号已停用"
-          : `登录失败: ${upstream.status}`;
-    const message =
+    const upstreamError =
       data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
-        ? ((data as { error: string }).error as string)
-        : fallback;
-    return NextResponse.json({ error: message }, { status: upstream.status });
+        ? (data as { error: string }).error
+        : "";
+    return NextResponse.json(
+      { error: localizeLoginError(upstreamError, upstream.status) },
+      { status: upstream.status },
+    );
   }
 
   const sessionCoreEnabled = process.env.SESSION_CORE_ENABLED === "true";

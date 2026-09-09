@@ -256,3 +256,10 @@
 - Reason：禁止空 reports 覆盖 public/evals；有 `latest.json` 再拷贝。real eval 应写出质量页 schema 的 `latest.json`，mock/invalid 不覆盖。
 - Act：compose 改挂 `/eval-reports` 并 copy-if-present；`write_report()` 写 latest.json；契约测试覆盖。
 - Refine：`px-user` 打开 `/quality` 见 Recall@1 55% 与离线评测说明。下一步 UAT-013，不重跑 D0–D4 / UAT-007 / UAT-010 / UAT-011 / UAT-012。
+
+## 2026-09-09 - 修复 UAT-013 登录失败英文提示
+
+- Perceive：错密登录页直接展示 API `invalid credentials`。BFF 已有中文 fallback，但优先透传 upstream `error`。
+- Reason：登录页与 BFF 共用映射，避免英文 API 文案漏到中文界面。
+- Act：新增 `localizeLoginError`；401 映射为「用户名或密码错误」，403 映射为「账号已停用」。
+- Refine：API 401 与页面红字均为「用户名或密码错误」，无英文原文。P-UAT-1 关闭。
