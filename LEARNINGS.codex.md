@@ -284,3 +284,10 @@
 - Reason：换版期间必须保持旧发布可问，所以不能在上传时删切块。缺口是让 current≠published 的文档进入预审/审批，发布时退役其他 generation，详情按已发布 generation 过滤。
 - Act：`ProjectOverview` / `ListReviewJobs` 覆盖 published replacement；发布退役旧 generation；详情 `ResolveVisibility`。发起人不能自审，需第二管理员批准。
 - Refine：`px-admin-2` 批准后问答 120 元，详情不再列出 v1 标记。不重跑 D0–D4。
+
+## 2026-09-09 - 查询负载脚本改为性能门禁
+
+- Perceive：`scripts/load-test.py` 已能并发打 `/v1/query` 并输出 p95，但始终 exit 0，不能当回归门禁。
+- Reason：先做工程预算门禁，不发明 ADR 0010 生产 SLO。冷检索与缓存/生成路径分开，默认 `user-uploads`，不把发布审批编进压测。
+- Act：增加 `--profile`、阈值、`--retrieval-only`、登录和 `evaluate_gate()`；越线 exit 1。补 `scripts/tests/test_load_test.py`。
+- Refine：契约测试覆盖百分位、profile、报告和本地假 API 的 pass/fail。真实隔离栈校准与 nightly workflow 仍未做。

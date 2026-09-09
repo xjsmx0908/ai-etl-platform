@@ -68,7 +68,7 @@ bash scripts/e2e-smoke.sh
 | 治理验收 | `bash scripts/governance-acceptance.sh` |
 | 确定性 RAG 回归 | `python3 scripts/run-evals.py` |
 | 真实模型评测 | `python3 scripts/run-evals.py --real-models`，说明见 [`docs/evals/README.md`](docs/evals/README.md) |
-| 轻量压测 | `python3 scripts/load-test.py --requests 40 --concurrency 5` |
+| 查询性能门禁 | `python3 scripts/load-test.py --profile cold-retrieval --requests 40 --concurrency 5`，说明见 [`docs/load-test.md`](docs/load-test.md) |
 | 个人身份演示 | `bash scripts/identity-demo-acceptance.sh` |
 | 产品体验巡检 | [`docs/product-experience-acceptance.md`](docs/product-experience-acceptance.md) |
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Lightweight load test for the query API.
+"""Lightweight load test and query performance gate for the query API.
 
 This is intentionally dependency-free and keeps the target narrow:
 - seed one document
 - issue concurrent retrieval queries
 - report latency percentiles and error rate
+- optionally fail when engineering-budget thresholds are missed
 """
 
 from __future__ import annotations
@@ -14,15 +15,15 @@ import concurrent.futures as futures
 import hashlib
 import json
 import os
-import signal
+import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib import error as urllib_error
 from urllib import request
 
@@ -30,6 +31,32 @@ from urllib import request
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REPORT_DIR = ROOT / "docs" / "evals" / "reports"
 DEFAULT_MOCK_PORT = 18080
+ETL_WORKER_DIR = ROOT / "services" / "etl-worker"
+
+PROFILES: Dict[str, Dict[str, Any]] = {
+    "cold-retrieval": {
+        "retrieval_only": True,
+        "unique_questions": True,
+        "warmup": 2,
+        "min_success_rate": 1.0,
+        "min_hit_rate": 1.0,
+        "min_top_hit_rate": 1.0,
+        "max_p95_ms": 800.0,
+        "max_p99_ms": 1500.0,
+        "min_qps": 3.0,
+    },
+    "cached-e2e": {
+        "retrieval_only": False,
+        "unique_questions": False,
+        "warmup": 5,
+        "min_success_rate": 1.0,
+        "min_hit_rate": 1.0,
+        "min_top_hit_rate": 1.0,
+        "max_p95_ms": 400.0,
+        "max_p99_ms": 800.0,
+        "min_qps": 5.0,
+    },
+}
 
 
 @dataclass
@@ -40,14 +67,39 @@ class Result:
     status: int
     latency_ms: float
     top_doc_id: str
+    cache_hit: bool = False
+
+
+@dataclass
+class GateThresholds:
+    min_success_rate: Optional[float] = None
+    min_hit_rate: Optional[float] = None
+    min_top_hit_rate: Optional[float] = None
+    min_qps: Optional[float] = None
+    max_p50_ms: Optional[float] = None
+    max_p95_ms: Optional[float] = None
+    max_p99_ms: Optional[float] = None
+
+    def as_dict(self) -> Dict[str, float]:
+        return {key: value for key, value in asdict(self).items() if value is not None}
 
 
 class LoadTestError(RuntimeError):
     pass
 
 
-def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True)
+class GateFailed(RuntimeError):
+    def __init__(self, failures: List[str]) -> None:
+        self.failures = failures
+        super().__init__("; ".join(failures))
+
+
+def run_cmd(
+    cmd: List[str],
+    check: bool = True,
+    cwd: Optional[Path] = None,
+) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(cmd, cwd=str(cwd or ROOT), text=True, capture_output=True)
     if check and proc.returncode != 0:
         raise LoadTestError(f"command failed: {' '.join(cmd)}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
     return proc
@@ -106,7 +158,10 @@ def http_json(
                 return resp.status, {}, elapsed
             stripped = payload.lstrip()
             if stripped.startswith("{") or stripped.startswith("["):
-                return resp.status, json.loads(payload), elapsed
+                parsed = json.loads(payload)
+                if isinstance(parsed, dict):
+                    return resp.status, parsed, elapsed
+                return resp.status, {"raw": parsed}, elapsed
             return resp.status, {"raw": payload}, elapsed
     except urllib_error.HTTPError as e:
         elapsed = (time.perf_counter() - started) * 1000.0
@@ -116,6 +171,8 @@ def http_json(
             payload = json.loads(text) if stripped.startswith("{") or stripped.startswith("[") else {"raw": text}
         except json.JSONDecodeError:
             payload = {"error": text}
+        if not isinstance(payload, dict):
+            payload = {"raw": payload}
         return e.code, payload, elapsed
     except urllib_error.URLError:
         elapsed = (time.perf_counter() - started) * 1000.0
@@ -132,29 +189,47 @@ def wait_health(url: str, timeout_sec: int = 60) -> None:
     raise LoadTestError(f"health check timeout: {url}")
 
 
-def generate_token(jwt_secret: str, tenant_id: str) -> str:
-    go_file = ROOT / "services" / "etl-worker" / "tmp_loadtest_gen_token.go"
-    go_file.write_text(
-        """package main
-
-import (
-\t\"fmt\"
-\t\"os\"
-
-\t\"ai-etl-pipeline/internal/auth\"
-)
-
-func main() {
-\ttoken, err := auth.GenerateTestToken(os.Args[1], os.Args[2], \"loadtest-user\", []string{\"upload\", \"query\"})
-\tif err != nil {
-\t\tpanic(err)
-\t}
-\tfmt.Println(token)
-}
-""",
-        encoding="utf-8",
+def login(api_base: str, username: str, password: str) -> str:
+    body = json.dumps({"username": username, "password": password}).encode("utf-8")
+    code, payload, _ = http_json(
+        "POST",
+        f"{api_base}/v1/auth/login",
+        headers={"Content-Type": "application/json"},
+        body=body,
+        timeout=15.0,
     )
+    token = str(payload.get("token", "")).strip()
+    if code != 200 or not token:
+        raise LoadTestError(f"login failed: status={code}")
+    return token
+
+
+def generate_token(jwt_secret: str, tenant_id: str) -> str:
+    go_file = ETL_WORKER_DIR / "tmp_loadtest_gen_token.go"
+    go_src = [
+        "package main",
+        "",
+        "import (",
+        '\t"fmt"',
+        '\t"os"',
+        "",
+        '\t"ai-etl-pipeline/internal/auth"',
+        ")",
+        "",
+        "func main() {",
+        '\ttoken, err := auth.GenerateTestToken(os.Args[1], os.Args[2], "loadtest-user", []string{"upload", "query"})',
+        "\tif err != nil {",
+        "\t\tpanic(err)",
+        "\t}",
+        "\tfmt.Println(token)",
+        "}",
+        "",
+    ]
+    go_file.write_text("\n".join(go_src), encoding="utf-8")
     try:
+        if shutil.which("go"):
+            proc = run_cmd(["go", "run", go_file.name, jwt_secret, tenant_id], cwd=ETL_WORKER_DIR)
+            return proc.stdout.strip()
         proc = run_cmd(
             [
                 "docker",
@@ -171,7 +246,7 @@ func main() {
                 "golang:1.25",
                 "sh",
                 "-c",
-                f"go run /workspace/services/etl-worker/{go_file.name} \"$JWT_SECRET_VALUE\" \"$TENANT_ID_VALUE\"",
+                f'go run /workspace/services/etl-worker/{go_file.name} "$JWT_SECRET_VALUE" "$TENANT_ID_VALUE"',
             ]
         )
         return proc.stdout.strip()
@@ -180,6 +255,20 @@ func main() {
             go_file.unlink()
         except FileNotFoundError:
             pass
+
+
+def resolve_token(args: argparse.Namespace, api_base: str) -> str:
+    token = args.token.strip()
+    if token:
+        return token
+    username = args.username.strip()
+    password = args.password
+    if username:
+        return login(api_base, username, password)
+    token = generate_token(args.jwt_secret, args.tenant_id)
+    if not token:
+        raise LoadTestError("missing token")
+    return token
 
 
 def create_multipart_body(
@@ -194,14 +283,14 @@ def create_multipart_body(
 
     def add_field(name: str, value: str) -> None:
         parts.append(f"--{boundary}\r\n".encode())
-        parts.append(f'Content-Disposition: form-data; name=\"{name}\"\r\n\r\n'.encode())
+        parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
         parts.append(value.encode())
         parts.append(b"\r\n")
 
     parts.append(f"--{boundary}\r\n".encode())
     parts.append(
         (
-            f'Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n'
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
             "Content-Type: text/plain\r\n\r\n"
         ).encode()
     )
@@ -236,20 +325,86 @@ def upload_document(
     return doc_id
 
 
-def query_once(api_base: str, token: str, question: str, top_k: int, expected_doc_id: str = "") -> Result:
-    body = json.dumps({"question": question, "top_k": top_k}, ensure_ascii=False).encode("utf-8")
+def wait_task_completed(api_base: str, token: str, doc_id: str, timeout_sec: int = 120) -> Optional[float]:
+    headers = {"Authorization": f"Bearer {token}"}
+    started = time.perf_counter()
+    deadline = time.time() + timeout_sec
+    seen = False
+    while time.time() < deadline:
+        code, payload, _ = http_json("GET", f"{api_base}/v1/tasks/{doc_id}", headers=headers, timeout=5.0)
+        if code == 404 or code == 0:
+            time.sleep(1)
+            continue
+        seen = True
+        if code != 200:
+            raise LoadTestError(f"task status failed: status={code}, payload={payload}")
+        status = str(payload.get("status", ""))
+        if status == "completed":
+            return (time.perf_counter() - started) * 1000.0
+        if status == "failed":
+            raise LoadTestError(f"ingestion failed: {payload.get('error') or payload}")
+        time.sleep(1)
+    if not seen:
+        return None
+    raise LoadTestError(f"ingestion timed out for doc_id={doc_id}")
+
+
+def build_query_payload(
+    question: str,
+    top_k: int,
+    retrieval_only: bool = False,
+    knowledge_space_id: str = "",
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"question": question, "top_k": top_k}
+    if retrieval_only:
+        payload["retrieval_only"] = True
+    space_id = knowledge_space_id.strip()
+    if space_id:
+        payload["knowledge_space_id"] = space_id
+    return payload
+
+
+def question_for_index(base: str, index: int, unique: bool) -> str:
+    if not unique:
+        return base
+    return f"{base} [loadtest-{index}]"
+
+
+def query_once(
+    api_base: str,
+    token: str,
+    question: str,
+    top_k: int,
+    expected_doc_id: str = "",
+    retrieval_only: bool = False,
+    knowledge_space_id: str = "",
+) -> Result:
+    body = json.dumps(
+        build_query_payload(question, top_k, retrieval_only, knowledge_space_id),
+        ensure_ascii=False,
+    ).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
     status, payload, latency_ms = http_json("POST", f"{api_base}/v1/query", headers=headers, body=body, timeout=30.0)
-    sources = payload.get("sources") or []
+    sources = payload.get("sources") or payload.get("retrieved_sources") or []
     hit = any(isinstance(src, dict) and src.get("doc_id") for src in sources)
     top_doc_id = ""
     if sources and isinstance(sources[0], dict):
         top_doc_id = str(sources[0].get("doc_id", ""))
     top_hit = bool(expected_doc_id and top_doc_id == expected_doc_id)
-    return Result(ok=status == 200, hit=hit, top_hit=top_hit, status=status, latency_ms=latency_ms, top_doc_id=top_doc_id)
+    retrieval = payload.get("retrieval") if isinstance(payload.get("retrieval"), dict) else {}
+    cache_hit = bool(retrieval.get("cache_hit"))
+    return Result(
+        ok=status == 200,
+        hit=hit,
+        top_hit=top_hit,
+        status=status,
+        latency_ms=latency_ms,
+        top_doc_id=top_doc_id,
+        cache_hit=cache_hit,
+    )
 
 
 def percentile(values: List[float], p: float) -> float:
@@ -268,6 +423,119 @@ def percentile(values: List[float], p: float) -> float:
     return d0 + d1
 
 
+def summarize_results(
+    results: List[Result],
+    duration_ms: float,
+    seed_doc_id: str,
+    question: str,
+    ingestion_ready_ms: Optional[float] = None,
+) -> Dict[str, Any]:
+    latencies = [r.latency_ms for r in results]
+    status_counts: Dict[str, int] = {}
+    top_doc_counts: Dict[str, int] = {}
+    for item in results:
+        status_counts[str(item.status)] = status_counts.get(str(item.status), 0) + 1
+        if item.top_doc_id:
+            top_doc_counts[item.top_doc_id] = top_doc_counts.get(item.top_doc_id, 0) + 1
+    success_count = sum(1 for item in results if item.ok)
+    hit_count = sum(1 for item in results if item.hit)
+    top_hit_count = sum(1 for item in results if item.top_hit)
+    cache_hit_count = sum(1 for item in results if item.cache_hit)
+    duration_sec = duration_ms / 1000.0 if duration_ms > 0 else 0.0
+    summary: Dict[str, Any] = {
+        "total_requests": len(results),
+        "success_count": success_count,
+        "hit_count": hit_count,
+        "top_hit_count": top_hit_count,
+        "error_count": len(results) - success_count,
+        "success_rate": success_count / len(results) if results else 0.0,
+        "hit_rate": hit_count / len(results) if results else 0.0,
+        "top_hit_rate": top_hit_count / len(results) if results else 0.0,
+        "cache_hit_rate": cache_hit_count / len(results) if results else 0.0,
+        "throughput_qps": len(results) / duration_sec if duration_sec > 0 else 0.0,
+        "avg_ms": statistics.mean(latencies) if latencies else 0.0,
+        "p50_ms": percentile(latencies, 0.50),
+        "p95_ms": percentile(latencies, 0.95),
+        "p99_ms": percentile(latencies, 0.99),
+        "max_ms": max(latencies) if latencies else 0.0,
+        "duration_ms": duration_ms,
+        "status_counts": status_counts,
+        "seed_doc_id": seed_doc_id,
+        "question": question,
+        "top_doc_counts": top_doc_counts,
+        "ingestion_ready_ms": ingestion_ready_ms,
+    }
+    return summary
+
+
+def evaluate_gate(summary: Mapping[str, Any], thresholds: GateThresholds) -> List[str]:
+    failures: List[str] = []
+
+    def require_min(name: str, actual_key: str, minimum: Optional[float]) -> None:
+        if minimum is None:
+            return
+        actual = float(summary.get(actual_key, 0.0) or 0.0)
+        if actual + 1e-12 < minimum:
+            failures.append(f"{actual_key} {actual:.4f} < {name} {minimum:.4f}")
+
+    def require_max(name: str, actual_key: str, maximum: Optional[float]) -> None:
+        if maximum is None:
+            return
+        actual = float(summary.get(actual_key, 0.0) or 0.0)
+        if actual > maximum + 1e-12:
+            failures.append(f"{actual_key} {actual:.2f} > {name} {maximum:.2f}")
+
+    require_min("min_success_rate", "success_rate", thresholds.min_success_rate)
+    require_min("min_hit_rate", "hit_rate", thresholds.min_hit_rate)
+    require_min("min_top_hit_rate", "top_hit_rate", thresholds.min_top_hit_rate)
+    require_min("min_qps", "throughput_qps", thresholds.min_qps)
+    require_max("max_p50_ms", "p50_ms", thresholds.max_p50_ms)
+    require_max("max_p95_ms", "p95_ms", thresholds.max_p95_ms)
+    require_max("max_p99_ms", "p99_ms", thresholds.max_p99_ms)
+    return failures
+
+
+def thresholds_from_args(args: argparse.Namespace) -> GateThresholds:
+    return GateThresholds(
+        min_success_rate=args.min_success_rate,
+        min_hit_rate=args.min_hit_rate,
+        min_top_hit_rate=args.min_top_hit_rate,
+        min_qps=args.min_qps,
+        max_p50_ms=args.max_p50_ms,
+        max_p95_ms=args.max_p95_ms,
+        max_p99_ms=args.max_p99_ms,
+    )
+
+
+def apply_profile(args: argparse.Namespace) -> argparse.Namespace:
+    profile_name = (args.profile or "").strip()
+    if not profile_name:
+        return args
+    profile = PROFILES.get(profile_name)
+    if profile is None:
+        raise LoadTestError(f"unknown profile: {profile_name}")
+    if not args.retrieval_only:
+        args.retrieval_only = bool(profile.get("retrieval_only"))
+    if not args.unique_questions:
+        args.unique_questions = bool(profile.get("unique_questions"))
+    if int(args.warmup) == 0 and "warmup" in profile:
+        args.warmup = int(profile["warmup"])
+    for name in (
+        "min_success_rate",
+        "min_hit_rate",
+        "min_top_hit_rate",
+        "min_qps",
+        "max_p50_ms",
+        "max_p95_ms",
+        "max_p99_ms",
+    ):
+        if getattr(args, name) is None and name in profile:
+            setattr(args, name, profile[name])
+    if args.scenario == "default":
+        args.scenario = profile_name
+    return args
+
+
 def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
     report_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
@@ -275,27 +543,41 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
     md_path = report_dir / f"loadtest-{ts}.md"
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    summary = result["summary"]
+    gate = result.get("gate") or {}
     lines = [
         "# Load Test Report",
         "",
         f"- Scenario: {result['scenario']}",
         f"- Tenant ID: {result['tenant_id']}",
         f"- Concurrency: {result['config']['concurrency']}",
-        f"- Total requests: {result['summary']['total_requests']}",
-        f"- Success rate: {result['summary']['success_rate']:.2%}",
-        f"- Hit rate: {result['summary']['hit_rate']:.2%}",
-        f"- Top hit rate: {result['summary']['top_hit_rate']:.2%}",
-        f"- Throughput: {result['summary']['throughput_qps']:.2f} qps",
-        f"- p50: {result['summary']['p50_ms']:.2f} ms",
-        f"- p95: {result['summary']['p95_ms']:.2f} ms",
-        f"- p99: {result['summary']['p99_ms']:.2f} ms",
-        f"- Avg: {result['summary']['avg_ms']:.2f} ms",
-        "",
-        "| status | count |",
-        "|---|---:|",
+        f"- Total requests: {summary['total_requests']}",
+        f"- Success rate: {summary['success_rate']:.2%}",
+        f"- Hit rate: {summary['hit_rate']:.2%}",
+        f"- Top hit rate: {summary['top_hit_rate']:.2%}",
+        f"- Cache hit rate: {summary.get('cache_hit_rate', 0.0):.2%}",
+        f"- Throughput: {summary['throughput_qps']:.2f} qps",
+        f"- p50: {summary['p50_ms']:.2f} ms",
+        f"- p95: {summary['p95_ms']:.2f} ms",
+        f"- p99: {summary['p99_ms']:.2f} ms",
+        f"- Avg: {summary['avg_ms']:.2f} ms",
     ]
+    if summary.get("ingestion_ready_ms") is not None:
+        lines.append(f"- Ingestion ready: {summary['ingestion_ready_ms']:.2f} ms")
+    lines.extend(["", "## Gate", ""])
+    if gate:
+        lines.append(f"- Profile: {gate.get('profile') or 'none'}")
+        lines.append(f"- Passed: {'yes' if gate.get('passed') else 'no'}")
+        thresholds = gate.get("thresholds") or {}
+        if thresholds:
+            lines.append(f"- Thresholds: `{json.dumps(thresholds, sort_keys=True)}`")
+        for failure in gate.get("failures") or []:
+            lines.append(f"- Failed: {failure}")
+    else:
+        lines.append("- Passed: n/a")
+    lines.extend(["", "| status | count |", "|---|---:|"])
 
-    status_counts = result["summary"]["status_counts"]
+    status_counts = summary["status_counts"]
     for status, count in sorted(status_counts.items(), key=lambda item: int(item[0])):
         lines.append(f"| {status} | {count} |")
 
@@ -303,16 +585,21 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
     return json_path, md_path
 
 
-def main() -> int:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Lightweight load test for query API")
     parser.add_argument("--api-base", default="http://127.0.0.1:8080")
     parser.add_argument("--scenario", default="default")
+    parser.add_argument("--profile", choices=["", *sorted(PROFILES)], default="")
     parser.add_argument("--tenant-id", default="tenant-loadtest")
     parser.add_argument("--jwt-secret", default="change-me-in-production-please-use-32-plus-chars")
     parser.add_argument("--token", default="")
+    parser.add_argument("--username", default=os.getenv("LOADTEST_USERNAME", ""))
+    parser.add_argument("--password", default=os.getenv("LOADTEST_PASSWORD", ""))
     parser.add_argument("--permission", default="internal")
+    parser.add_argument("--knowledge-space-id", default="")
     parser.add_argument("--concurrency", type=int, default=5)
     parser.add_argument("--requests", type=int, default=40)
+    parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--question", default="")
     parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
@@ -323,13 +610,27 @@ def main() -> int:
     parser.add_argument("--mock-port", type=int, default=DEFAULT_MOCK_PORT)
     parser.add_argument("--embed-dim", type=int, default=768)
     parser.add_argument("--keep-mock-server", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--retrieval-only", action="store_true")
+    parser.add_argument("--unique-questions", action="store_true")
+    parser.add_argument("--min-success-rate", type=float, default=None)
+    parser.add_argument("--min-hit-rate", type=float, default=None)
+    parser.add_argument("--min-top-hit-rate", type=float, default=None)
+    parser.add_argument("--min-qps", type=float, default=None)
+    parser.add_argument("--max-p50-ms", type=float, default=None)
+    parser.add_argument("--max-p95-ms", type=float, default=None)
+    parser.add_argument("--max-p99-ms", type=float, default=None)
+    args = parser.parse_args(argv)
+    if args.requests <= 0 or args.concurrency <= 0:
+        raise LoadTestError("--requests and --concurrency must be positive")
+    if args.warmup < 0:
+        raise LoadTestError("--warmup must be >= 0")
+    return apply_profile(args)
 
-    wait_health(f"{args.api_base}/healthz", timeout_sec=60)
 
-    token = args.token.strip() or generate_token(args.jwt_secret, args.tenant_id)
-    if not token:
-        raise LoadTestError("missing token")
+def run_load_test(args: argparse.Namespace) -> Dict[str, Any]:
+    api_base = args.api_base.rstrip("/")
+    wait_health(f"{api_base}/healthz", timeout_sec=60)
+    token = resolve_token(args, api_base)
 
     tmp_dir: tempfile.TemporaryDirectory[str] | None = None
     mock_proc: subprocess.Popen[str] | None = None
@@ -347,6 +648,9 @@ def main() -> int:
             ):
                 raise LoadTestError("--metadata-json must be a JSON object with string keys and values")
             metadata = raw_metadata
+        space_id = args.knowledge_space_id.strip()
+        if space_id:
+            metadata["knowledge_space_id"] = space_id
 
         if args.seed_file:
             seed_path = Path(args.seed_file)
@@ -369,6 +673,7 @@ def main() -> int:
 
         print("[loadtest] uploading seed document")
         doc_id = upload_document(args.api_base, token, filename, content, args.permission, metadata)
+        ingestion_ready_ms = wait_task_completed(api_base, token, doc_id)
         for i in range(args.noise_docs):
             noise_name = f"noise-{i + 1}-{filename}"
             noise_content = (
@@ -376,62 +681,61 @@ def main() -> int:
                 "This document discusses query throughput, latency, cache behavior, "
                 "concurrent retrieval, and reranker tradeoffs for comparison."
             ).encode("utf-8")
-            upload_document(args.api_base, token, noise_name, noise_content, args.permission)
+            upload_document(args.api_base, token, noise_name, noise_content, args.permission, metadata)
 
         deadline = time.time() + 120
         while time.time() < deadline:
-            result = query_once(args.api_base, token, question, args.top_k, doc_id)
-            if result.ok and result.top_hit:
+            ready = query_once(
+                api_base,
+                token,
+                question,
+                args.top_k,
+                doc_id,
+                retrieval_only=args.retrieval_only,
+                knowledge_space_id=space_id,
+            )
+            if ready.ok and ready.top_hit:
                 break
             time.sleep(2)
         else:
             raise LoadTestError("seed document did not become queryable as top result in time")
+
+        if args.warmup > 0:
+            print(f"[loadtest] warming up {args.warmup} queries")
+            for index in range(args.warmup):
+                query_once(
+                    api_base,
+                    token,
+                    question_for_index(question, -(index + 1), args.unique_questions),
+                    args.top_k,
+                    doc_id,
+                    retrieval_only=args.retrieval_only,
+                    knowledge_space_id=space_id,
+                )
 
         print("[loadtest] starting concurrent queries")
         results: List[Result] = []
         started = time.perf_counter()
         with futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
             futs = [
-                pool.submit(query_once, args.api_base, token, question, args.top_k, doc_id)
-                for _ in range(args.requests)
+                pool.submit(
+                    query_once,
+                    api_base,
+                    token,
+                    question_for_index(question, index, args.unique_questions),
+                    args.top_k,
+                    doc_id,
+                    args.retrieval_only,
+                    space_id,
+                )
+                for index in range(args.requests)
             ]
             for fut in futures.as_completed(futs):
                 results.append(fut.result())
         total_ms = (time.perf_counter() - started) * 1000.0
-
-        latencies = [r.latency_ms for r in results]
-        status_counts: Dict[str, int] = {}
-        for r in results:
-            status_counts[str(r.status)] = status_counts.get(str(r.status), 0) + 1
-
-        success_count = sum(1 for r in results if r.ok)
-        hit_count = sum(1 for r in results if r.hit)
-        top_hit_count = sum(1 for r in results if r.top_hit)
-        duration_sec = total_ms / 1000.0 if total_ms > 0 else 0.0
-        summary = {
-            "total_requests": len(results),
-            "success_count": success_count,
-            "hit_count": hit_count,
-            "top_hit_count": top_hit_count,
-            "error_count": len(results) - success_count,
-            "success_rate": success_count / len(results) if results else 0.0,
-            "hit_rate": hit_count / len(results) if results else 0.0,
-            "top_hit_rate": top_hit_count / len(results) if results else 0.0,
-            "throughput_qps": len(results) / duration_sec if duration_sec > 0 else 0.0,
-            "avg_ms": statistics.mean(latencies) if latencies else 0.0,
-            "p50_ms": percentile(latencies, 0.50),
-            "p95_ms": percentile(latencies, 0.95),
-            "p99_ms": percentile(latencies, 0.99),
-            "max_ms": max(latencies) if latencies else 0.0,
-            "duration_ms": total_ms,
-            "status_counts": status_counts,
-            "seed_doc_id": doc_id,
-            "question": question,
-            "top_doc_counts": {},
-        }
-        for r in results:
-            if r.top_doc_id:
-                summary["top_doc_counts"][r.top_doc_id] = summary["top_doc_counts"].get(r.top_doc_id, 0) + 1
+        summary = summarize_results(results, total_ms, doc_id, question, ingestion_ready_ms)
+        thresholds = thresholds_from_args(args)
+        failures = evaluate_gate(summary, thresholds)
         result = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "scenario": args.scenario,
@@ -439,26 +743,48 @@ def main() -> int:
             "config": {
                 "concurrency": args.concurrency,
                 "requests": args.requests,
+                "warmup": args.warmup,
                 "top_k": args.top_k,
                 "noise_docs": args.noise_docs,
+                "retrieval_only": bool(args.retrieval_only),
+                "unique_questions": bool(args.unique_questions),
+                "knowledge_space_id": space_id,
                 "metadata_keys": sorted(metadata.keys()),
             },
             "summary": summary,
+            "gate": {
+                "profile": args.profile or "",
+                "thresholds": thresholds.as_dict(),
+                "passed": not failures,
+                "failures": failures,
+            },
         }
-
-        json_path, md_path = write_report(Path(args.report_dir), result)
-        print(f"[loadtest] report json: {json_path}")
-        print(f"[loadtest] report md:   {md_path}")
-        print(
-            f"[loadtest] scenario={args.scenario} success_rate={summary['success_rate']:.2%} "
-            f"hit_rate={summary['hit_rate']:.2%} top_hit_rate={summary['top_hit_rate']:.2%} "
-            f"qps={summary['throughput_qps']:.2f} p95={summary['p95_ms']:.2f}ms"
-        )
-        return 0
+        return result
     finally:
         stop_process(mock_proc)
         if tmp_dir is not None:
             tmp_dir.cleanup()
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = parse_args(argv)
+    result = run_load_test(args)
+    json_path, md_path = write_report(Path(args.report_dir), result)
+    summary = result["summary"]
+    gate = result["gate"]
+    print(f"[loadtest] report json: {json_path}")
+    print(f"[loadtest] report md:   {md_path}")
+    print(
+        f"[loadtest] scenario={result['scenario']} success_rate={summary['success_rate']:.2%} "
+        f"hit_rate={summary['hit_rate']:.2%} top_hit_rate={summary['top_hit_rate']:.2%} "
+        f"qps={summary['throughput_qps']:.2f} p95={summary['p95_ms']:.2f}ms "
+        f"gate={'pass' if gate['passed'] else 'fail'}"
+    )
+    if not gate["passed"]:
+        for failure in gate["failures"]:
+            print(f"[loadtest] GATE FAIL: {failure}", file=sys.stderr)
+        raise GateFailed(gate["failures"])
+    return 0
 
 
 if __name__ == "__main__":
@@ -466,6 +792,8 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except KeyboardInterrupt:
         raise SystemExit(130)
+    except GateFailed:
+        raise SystemExit(1)
     except LoadTestError as exc:
         print(f"[loadtest] ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2)
