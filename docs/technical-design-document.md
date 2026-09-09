@@ -55,7 +55,9 @@ Tests cover default resolution, membership denial, upload authorization,
 published-only evidence, catalog outage behavior, migration ordering, handler
 status codes, and two same-topic documents in different spaces. Completion also
 requires `gofmt`, `go vet`, full Go/Python tests, Web build, Compose validation,
-and the deterministic RAG evaluation.
+and the deterministic RAG evaluation. Live workbench walkthroughs follow
+[`product-experience-acceptance.md`](product-experience-acceptance.md) and record
+findings in [`../issues/findings-register.md`](../issues/findings-register.md).
 
 ## Exact-candidate Publication
 

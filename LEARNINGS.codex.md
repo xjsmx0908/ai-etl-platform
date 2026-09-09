@@ -186,3 +186,10 @@
 - Reason：隔离栈用规则 Planner 覆盖 13 场景；真实小模型会把聊天记录误判为 `publish/usable`，所以适合性评估必须读取原文，并对非正式材料设置服务端下限。
 - Act：功能矩阵扩到 13 场景，真实模型扩到 7 场景并要求第五个工具；`EvaluateKnowledgeFitness` 对聊天/即时通讯内容强制 `not_knowledge`。
 - Refine：隔离栈 13/13 通过。真实模型前 6 场景通过后，非正式材料补跑也通过：`needs_info/reject`、`knowledge_usable=not_knowledge`、五个只读工具齐、类型备注未写入文档。证据保存在 `artifacts/release-center-functional-acceptance/` 与 `artifacts/release-center-real-model-scenarios-acceptance/`。
+
+## 2026-09-09 - 产品体验验收文档落地
+
+- Perceive：仓库已有发布中心/治理/身份专项验收，但真实 Web 的美观、使用逻辑和缺陷没有单一登记处；`issues/bugs.md` 九条口头问题也未复验关闭。
+- Reason：体验巡检必须与隔离栈矩阵分开，否则会把脚本绿报当成页面可用；问题要分级、可复现、带证据，验收中途不改代码。
+- Act：新增 `docs/product-experience-acceptance.md` 和 `issues/findings-register.md`，将旧口头问题迁移为 UAT-001～UAT-009 待复验；同步 backlog/README/SRS/PRD。
+- Refine：下一步从 D0/D1 开始用真实页面复验旧九条，不以代码里已有 SSE/分页实现直接结案。

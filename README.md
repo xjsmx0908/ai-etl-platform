@@ -3,7 +3,7 @@
 企业级 AI 知识流水线平台，支持文档解析、向量化、混合检索、RAG 查询，以及受控的
 Knowledge Release Center 与自主 Agent 预审。
 
-## 当前进展（2026-09-08）
+## 当前进展（2026-09-09）
 
 - 文档摄取、generation manifest、Qdrant/Elasticsearch 双索引、版本绑定发布、审批和可恢复删除已落地。
 - Agent 预审已从“固定流程 + 单次模型判断”改为基于现有 Orchestrator 的多步自主闭环；模型根据 observation 选择下一只读工具或提交报告。
@@ -13,6 +13,7 @@ Knowledge Release Center 与自主 Agent 预审。
 - Go 全模块、`go vet`、Python 契约、Web lint/build、发布中心隔离栈 10 场景矩阵、真实模型预算终止、Review Agent 部署恢复和真实模型四场景验收已通过；P2.4-R1 MVP 已完成。
 - P2.4-R5 已完成：审批通知写入 outbox 后投递到企业微信/钉钉，并可转发外部工作流引擎；外部引擎通过 callback 回写现有审批决定。Agent 失败时对已完成的副作用工具做反向补偿。
 - P2.4-R3 已完成：预审报告默认 7 天有效；过期后同一文档版本会自动重审，已发布或已拒绝的记录保留当时证据。
+- 已建立产品体验验收轨道：真实 Web 巡检记录美观、使用逻辑和缺陷，章程见 [`docs/product-experience-acceptance.md`](docs/product-experience-acceptance.md)，问题记入 [`issues/findings-register.md`](issues/findings-register.md)。
 
 详细边界见 [`docs/agent-pre-review-architecture-and-implementation-plan.md`](docs/agent-pre-review-architecture-and-implementation-plan.md)，当前执行状态见 [`docs/backlog.md`](docs/backlog.md)。
 
@@ -70,6 +71,7 @@ ai-etl-platform/
 ├── infrastructure/              # PostgreSQL/监控/告警等基础设施配置
 ├── deploy/                      # 部署覆盖与 Nginx 模板
 ├── docs/                        # 需求、架构、实施方案与验收规范
+├── issues/                      # 产品体验问题登记与历史口头问题
 │
 ├── scripts/                     # 启停、评测、E2E 与治理验收脚本
 │
@@ -165,6 +167,14 @@ bash scripts/release-center-real-model-scenarios-acceptance.sh
 敏感信息、提示词注入、确定性阻断、候选过期、拒绝终态和跨租户隔离。默认
 `AGENT_PLANNER_TYPE=auto` 时 Review Agent 使用 RAG Query 的模型配置；`rule` 仅用于显式的
 确定性测试和验收环境。Agent 只产生版本绑定的建议与证据，不能审批或发布。
+
+### 产品体验验收
+
+真实 Web 工作台的美观、使用逻辑和缺陷巡检见
+[`docs/product-experience-acceptance.md`](docs/product-experience-acceptance.md)。
+问题只记入 [`issues/findings-register.md`](issues/findings-register.md)，
+不把隔离栈绿报当作页面已通过。证据写入
+`artifacts/product-experience-acceptance/`（本地目录，不提交）。
 
 企业身份仍为默认关闭状态。生产 IdP 验收门槛见
 [`docs/enterprise-identity-production-acceptance.md`](docs/enterprise-identity-production-acceptance.md)，

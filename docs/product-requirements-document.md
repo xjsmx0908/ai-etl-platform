@@ -42,6 +42,13 @@ quarantined in a non-default demo space and cannot enter production answers.
 - All successful answers expose the resolved space and traceable citations.
 - Existing user-upload documents remain queryable after migration.
 
+## Product Experience Acceptance
+
+In addition to isolation tests, a reviewer must walk the live workbench as
+reader, contributor, and administrator. Visual issues, confusing controls, and
+functional defects are logged in the findings register defined by
+[`product-experience-acceptance.md`](product-experience-acceptance.md).
+
 ## Later Phases
 
 P1 adds review/approval workflow, richer authority and applicability metadata,

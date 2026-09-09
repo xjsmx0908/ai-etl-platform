@@ -68,3 +68,10 @@ The deterministic release-center matrix must cover ordinary and confidential
 approval, Agent failure, sensitive-data and prompt-injection findings, stale
 exact candidates, rejection, idempotency/conflict, and tenant isolation. R1 also
 requires the real-model four-scenario acceptance; that gate has now passed.
+
+## Product Experience Acceptance
+
+Web workbench walkthroughs must follow
+[`product-experience-acceptance.md`](product-experience-acceptance.md).
+Findings are recorded in [`../issues/findings-register.md`](../issues/findings-register.md).
+This page-level gate does not replace the Agent pre-review matrix.

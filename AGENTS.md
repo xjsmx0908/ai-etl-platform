@@ -33,6 +33,8 @@ Go 代码使用 `gofmt`，包名保持简短、小写并聚焦领域。Go 测试
 
 Knowledge Release Center 变更必须通过功能验收，不能仅以集成演练替代。每次修改发布中心策略、Agent 预审、发布流程或 Web 界面后，都要运行 `docs/release-center-functional-acceptance.md` 中的矩阵。矩阵必须覆盖普通单管理员审批、机密/高风险双管理员审批、Agent 成功、Agent 错误和显式失败状态、确定性阻断、过期 exact-candidate 拒绝，以及幂等/冲突决策。仅构建成功或 happy path 测试通过不代表验收完成。
 
+产品体验巡检或 Web 工作台交互变更必须执行 `docs/product-experience-acceptance.md`。美观、使用逻辑和缺陷只记入 `issues/findings-register.md`，不能用隔离栈绿报代替真实页面结论；验收中途不改代码。
+
 ## 提交与 Pull Request 约定
 Git 历史使用 `feat:`、`fix:`、`chore:` 等 Conventional Commit 前缀。每个提交保持单一主题，并说明用户可见或运维层面的影响。Pull Request 应包含简短摘要、适用时关联 issue、执行过的验证命令，以及 API/运维行为变更所需的截图或日志。分支保护要求至少一次审批，并在合并前通过 `Required Checks` CI 门禁。
 

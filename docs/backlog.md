@@ -1,6 +1,6 @@
 # Backlog
 
-最后核验：2026-09-08。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
+最后核验：2026-09-09。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
 仓库规则维护：已将 `AGENTS.md` 的自然语言指令统一为中文，并明确简洁回答与最小上下文原则。
 已完成的阶段计划、逐次 PRAR 记录和旧路线图保存在
 [`docs/archive/backlog-2026-09-05.md`](archive/backlog-2026-09-05.md)。
@@ -17,9 +17,17 @@
 
 以上事项保留在 backlog 中用于生产准入跟踪，但不属于当前 Agent 审计功能路线；除非用户重新指定，不得自动启动。
 
+## Product experience UAT
+
+| ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
+| --- | --- | --- | --- | --- |
+| P-UAT-1 | 产品体验验收 | planned | 按 D0–D4 使用真实 Web 巡检；先复验旧九条并迁入登记册；验收中途不改代码；S1+ 回写本文件 | [`docs/product-experience-acceptance.md`](product-experience-acceptance.md) |
+
+这是 2026-09-09 明确要求的体验验收轨道，覆盖页面美观、使用逻辑和缺陷，不替代发布中心/治理/身份专项矩阵。问题登记以 [`issues/findings-register.md`](../issues/findings-register.md) 为准。
+
 ## Current execution plan
 
-当前唯一主线是“企业级 Agent 审计功能完善”，不是通用生产准入或 OCR 验收。由于目标
+Agent 功能主线仍是“企业级 Agent 审计功能完善”，不是通用生产准入或 OCR 验收。并行进行 P-UAT-1 产品体验验收。由于目标
 已从固定流程中的模型审查器调整为受约束的自主预审 Agent，并已将方案收缩为最小
 自主闭环。新会话按以下顺序推进：
 
@@ -69,6 +77,7 @@
 ## Acceptance gates
 
 - 发布中心变更必须执行 [`docs/release-center-functional-acceptance.md`](release-center-functional-acceptance.md) 要求的快速矩阵和完整业务矩阵。
+- 产品体验巡检或 Web 工作台交互变更必须执行 [`docs/product-experience-acceptance.md`](product-experience-acceptance.md)，问题记入 [`issues/findings-register.md`](../issues/findings-register.md)；不能只用隔离栈绿报代替页面结论。
 - 生产晋级必须同时有 Go/Python/Web、Compose、安全、确定性评估以及相应的真实模型、负载和恢复证据。
 - 所有开放事项必须补充责任人、外部依赖、验收命令和最后核验日期后才能进入实施。
 
