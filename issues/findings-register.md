@@ -38,12 +38,12 @@
 | UAT-009 | 使用逻辑 | S2 | `/audit` | admin | 已修复 | 审计日志缺少分页和检索 | 审计日志存在的意义是什么？既然存在了，为什么既没有分页，也没有检索。 |
 | UAT-010 | 功能缺陷 | S1 | `/qa` | readonly | 已修复 | 只读用户无法问答列表中已发布的公开文档 | 2026-09-09 复验：只读可见空间下拉并命中「赴港流程」 |
 | UAT-011 | 性能体验 | S2 | `/qa` | user / admin | 已修复 | 问答 SSE 在最终答案后不结束事件流 | 2026-09-09 复验：`px-user` 巡检问答 3642ms 出现「回答已完成」 |
-| UAT-012 | 使用逻辑 | S2 | `/data` | readonly | 开放 | 只读用户上传按钮可点，提交后才 forbidden | 本轮发现：前端未禁用，后端拒绝 |
+| UAT-012 | 使用逻辑 | S2 | `/data` | readonly | 已修复 | 只读用户上传按钮可点，提交后才 forbidden | 2026-09-09 复验：按钮/文件选择禁用，页面说明无权限 |
 | UAT-013 | 美观 UX | S3 | `/login` | 全部 | 开放 | 登录失败提示为英文 invalid credentials | 本轮发现：错误文案未本地化 |
 
-2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。开放项为 UAT-007、UAT-012、UAT-013。S1（UAT-010）与 UAT-011 已于同日修复并复验。
+2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。开放项为 UAT-007、UAT-013。S1（UAT-010）与 UAT-011/UAT-012 已于同日修复并复验。
 
-续跑：不重跑 D0–D4，不重读 ES `_source`，不重验 UAT-010/PX-06/PX-09/UAT-011。下一步 UAT-012（只读上传按钮按角色禁用）→ UAT-007 → UAT-013。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
+续跑：不重跑 D0–D4，不重读 ES `_source`，不重验 UAT-010/PX-06/PX-09/UAT-011/UAT-012。下一步 UAT-007 → UAT-013。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
 
 ## 明细
 
@@ -190,6 +190,8 @@
 - 证据：`followup.json` `readonly-upload disabled=false`；`readonly-upload-attempt.png`。
 - 归属：前端
 - 建议：按角色禁用并改文案，不要只靠 API 错误。
+- 修复：`canUploadDocuments` 仅 admin/user 可上传；只读禁用文件选择、空间/密级和上传按钮，并展示「没有数据接入权限」。
+- 复验：2026-09-09，`px-readonly` 上传按钮 `disabled=true`，文件选择禁用，页面说明无权限，未出现 `forbidden`；`px-user` 选文件后按钮仍可点。证据 `uat012.json`、`UAT-012-readonly-upload.png`。
 
 ### UAT-013 登录失败提示为英文
 

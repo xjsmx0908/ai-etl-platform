@@ -242,3 +242,10 @@
 - Reason：应用层 `done`/`error` 就是流结束；客户端必须立即 return 并 cancel reader。done 态还要画出「回答已完成」，否则巡检看不到完成标记。
 - Act：抽出 `consumeQuerySSEStream`，终端事件后结束；问答页 onDone 置 done 并展示完成标记。契约测试覆盖 hanging stream。
 - Refine：`px-user` 巡检问答 3642ms 出现「回答已完成」。下一步 UAT-012，不重跑 D0–D4 / UAT-010 / UAT-011。
+
+## 2026-09-09 - 修复 UAT-012 只读上传按钮
+
+- Perceive：只读打开 `/data` 后可选文件，上传按钮 `disabled=false`，提交才 `forbidden`。
+- Reason：前端必须按角色禁用，并说明无权限；不能只靠后端拒绝。
+- Act：抽出 `canUploadDocuments`；只读禁用文件/空间/密级/上传，展示「没有数据接入权限」。
+- Refine：`px-readonly` 按钮与文件选择均 disabled，无 forbidden；`px-user` 选文件后仍可上传。下一步 UAT-007，不重跑 D0–D4 / UAT-010 / UAT-011 / UAT-012。

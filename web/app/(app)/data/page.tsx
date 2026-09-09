@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
 import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
+import { READONLY_UPLOAD_DENIED_MESSAGE, canUploadDocuments } from "@/lib/permissions";
 import { CheckCircle2, ChevronRight, Copy, Loader2, XCircle } from "lucide-react";
 import type { KnowledgeSpace, TaskStatus, UploadResult } from "@/lib/types";
 
@@ -26,7 +27,8 @@ const PERMISSION_OPTIONS = [
 ];
 
 export default function DataPage() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, role } = useAuth();
+  const canUpload = canUploadDocuments(role);
   const [file, setFile] = useState<File | null>(null);
   const [permission, setPermission] = useState("internal");
   const [knowledgeSpace, setKnowledgeSpace] = useState("");
@@ -106,7 +108,7 @@ export default function DataPage() {
   };
 
   const upload = async () => {
-    if (!file) return;
+    if (!canUpload || !file) return;
     stopPolling();
     setStatus("uploading");
     setUploadResult(null);
@@ -197,12 +199,18 @@ export default function DataPage() {
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="mb-3 text-sm font-semibold text-slate-500">上传文档 · 异步 ETL 流程</h2>
+        {role === "readonly" && (
+          <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            {READONLY_UPLOAD_DENIED_MESSAGE}
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-3">
           <input
             type="file"
             accept={UPLOAD_ACCEPT}
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-            className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
+            disabled={!canUpload}
+            onChange={(e) => setFile(canUpload ? e.target.files?.[0] || null : null)}
+            className="text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
           />
           <span className="text-xs text-slate-400">单文件上限 {MAX_UPLOAD_SIZE_MB} MB</span>
           {knowledgeSpaces.length > 0 ? (
@@ -211,7 +219,8 @@ export default function DataPage() {
               value={knowledgeSpace}
               onChange={(e) => setKnowledgeSpace(e.target.value)}
               aria-label="目标知识空间"
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+              disabled={!canUpload}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {knowledgeSpaces.map((space) => (
                 <option key={space.id} value={space.id}>
@@ -225,7 +234,8 @@ export default function DataPage() {
           <select
             value={permission}
             onChange={(e) => setPermission(e.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            disabled={!canUpload}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {permissionOptions.map((o) => (
               <option key={o.value} value={o.value}>
@@ -235,7 +245,8 @@ export default function DataPage() {
           </select>
           <button
             onClick={() => void upload()}
-            disabled={!file || !knowledgeSpace || !governanceComplete || status === "uploading" || status === "polling"}
+            disabled={!canUpload || !file || !knowledgeSpace || !governanceComplete || status === "uploading" || status === "polling"}
+            title={!canUpload ? READONLY_UPLOAD_DENIED_MESSAGE : undefined}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {status === "uploading" || status === "polling" ? "上传中…" : "上传"}
@@ -280,7 +291,7 @@ export default function DataPage() {
             文档管理
           </Link>
           中打开该文档，使用「上传新版本」。
-          {!isAdmin && <span className="ml-1 text-amber-600">机密级别需管理员上传。</span>}
+          {role === "user" && <span className="ml-1 text-amber-600">机密级别需管理员上传。</span>}
           {knowledgeSpace === "user-uploads" ? (
             <span className="ml-1 text-emerald-600">个人上传空间：处理完成后自动发布并可用于问答。</span>
           ) : knowledgeSpace ? (
