@@ -169,6 +169,8 @@ class LoadTestGateTests(unittest.TestCase):
         self.assertIn("run_profile cold-retrieval", script)
         self.assertIn("run_profile cached-e2e", script)
         self.assertIn("RETRIEVAL_DIAGNOSTICS_ENABLED=true", script)
+        self.assertIn('mkdir -p "${REPORT_DIR}"', script)
+        self.assertLess(script.index('mkdir -p "${REPORT_DIR}"'), script.index("docker compose up"))
         self.assertIn("workflow_dispatch", workflow)
         self.assertIn("scripts/load-test-gate.sh", workflow)
         self.assertNotIn("loadtest", required.lower().split("required checks")[-1] if False else required)

@@ -41,6 +41,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Create the report dir as the current user before Compose mounts it; Docker
+# would otherwise create a missing host path as root and CI cannot write reports.
+mkdir -p "${REPORT_DIR}"
+export PYTHONUNBUFFERED=1
+
 echo "[loadtest-gate] starting mock model server on :${MOCK_PORT}"
 python3 scripts/mock-openai-server.py --port "${MOCK_PORT}" --dim "${EMBED_DIMENSION}" >"${MOCK_LOG}" 2>&1 &
 MOCK_PID=$!
