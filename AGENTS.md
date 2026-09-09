@@ -12,7 +12,7 @@
 - 存在多个方案时直接推荐一个，并用一句话说明原因。
 
 ## 项目结构与模块组织
-本仓库是由 Go 和 Python 服务组成的 AI ETL/RAG 平台。`services/etl-worker/` 是 Kafka ETL Worker 和 Query API 的 Go 模块；入口位于 `cmd/worker` 和 `cmd/api`，可复用代码位于 `internal/`。`services/doc-parser-service/` 是 Python FastAPI Parser Service，应用代码位于 `app/`，测试位于 `tests/`。`services/reranker-service/` 是可选的 FastAPI Cross-Encoder Reranker，通过 Docker Compose 的 `rerank` profile 启用。共享编排和运维资源位于根目录：`docker-compose.yml`、`infrastructure/`、`deploy/`、`scripts/`、`docs/` 和 `secrets/examples/`。
+本仓库是由 Go 和 Python 服务组成的 AI ETL/RAG 平台。`services/etl-worker/` 是 Kafka ETL Worker 和 Query API 的 Go 模块；入口位于 `cmd/worker` 和 `cmd/api`，可复用代码位于 `internal/`。Query API 的 HTTP 组装在 `cmd/api/main.go`，上传在 `upload_handlers.go`，健康检查在 `health_handlers.go`，任务状态在 `task_handlers.go`。`services/doc-parser-service/` 是 Python FastAPI Parser Service，应用代码位于 `app/`，测试位于 `tests/`。`services/reranker-service/` 是可选的 FastAPI Cross-Encoder Reranker，通过 Docker Compose 的 `rerank` profile 启用。共享编排和运维资源位于根目录：`docker-compose.yml`、`infrastructure/`、`deploy/`、`scripts/`、`docs/` 和 `secrets/examples/`。
 
 ## 构建、测试与开发命令
 - `docker compose up -d`：启动完整本地服务栈。

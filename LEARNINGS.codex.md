@@ -263,3 +263,10 @@
 - Reason：登录页与 BFF 共用映射，避免英文 API 文案漏到中文界面。
 - Act：新增 `localizeLoginError`；401 映射为「用户名或密码错误」，403 映射为「账号已停用」。
 - Refine：API 401 与页面红字均为「用户名或密码错误」，无英文原文。P-UAT-1 关闭。
+
+## 2026-09-09 - 拆分 Query API upload/health 入口
+
+- Perceive：上下文膨胀主要来自少数 god file，不是仓库整体过大。`cmd/api/main.go` 约 1746 行，上传、健康检查与组装混在一起。
+- Reason：第一刀只做同包机械拆分，不改 HTTP/权限语义，不抽新接口。
+- Act：抽出 `health_handlers.go`、`upload_handlers.go`、`task_handlers.go`；`main.go` 只保留组装与后台 relay。
+- Refine：`go test ./cmd/api -count=1`、`go vet ./cmd/api`、`go build ./cmd/api` 通过。下一步如继续精简，再拆 `query/service.go`，不重做本次拆分。
