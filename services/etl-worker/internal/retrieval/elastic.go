@@ -51,24 +51,7 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 		allowed = []string{"public"}
 	}
 
-	contentClauses := []map[string]interface{}{
-		{
-			"match_phrase": map[string]interface{}{
-				"content": map[string]interface{}{
-					"query": req.Question,
-					"boost": 4.0,
-				},
-			},
-		},
-		{
-			"match": map[string]interface{}{
-				"content": map[string]interface{}{
-					"query":    req.Question,
-					"operator": "and",
-				},
-			},
-		},
-	}
+	contentClauses := titleAwareShouldClauses(req)
 	boolQuery := map[string]interface{}{
 		"filter": []map[string]interface{}{
 			{
@@ -176,6 +159,64 @@ func (r *ElasticRetriever) Search(ctx context.Context, req SearchRequest) ([]Can
 		})
 	}
 	return candidates, nil
+}
+
+func titleAwareShouldClauses(req SearchRequest) []map[string]interface{} {
+	clauses := []map[string]interface{}{
+		{
+			"match_phrase": map[string]interface{}{
+				"content": map[string]interface{}{
+					"query": req.Question,
+					"boost": 4.0,
+				},
+			},
+		},
+		{
+			"match": map[string]interface{}{
+				"content": map[string]interface{}{
+					"query":    req.Question,
+					"operator": "and",
+				},
+			},
+		},
+		{
+			"match_phrase": map[string]interface{}{
+				"file_name": map[string]interface{}{
+					"query": req.Question,
+					"boost": 6.0,
+				},
+			},
+		},
+		{
+			"match": map[string]interface{}{
+				"file_name": map[string]interface{}{
+					"query": req.Question,
+					"boost": 3.0,
+				},
+			},
+		},
+	}
+	ids := make([]string, 0, len(req.TitleMatchDocIDs))
+	seen := map[string]struct{}{}
+	for _, id := range req.TitleMatchDocIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) > 0 {
+		clauses = append(clauses, map[string]interface{}{
+			"terms": map[string]interface{}{
+				"doc_id": ids,
+			},
+		})
+	}
+	return clauses
 }
 
 func metadataExactShouldClauses(question string, fields []string) []map[string]interface{} {

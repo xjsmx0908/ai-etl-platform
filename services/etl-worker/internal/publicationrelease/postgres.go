@@ -76,10 +76,45 @@ func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate published release visibility: %w", err)
 	}
+	legacyIDs := make([]string, 0, len(documentIDs))
+	for _, documentID := range documentIDs {
+		identity, ok := published[documentID]
+		if ok && identity.versionID != "" && identity.generationID != "" {
+			continue
+		}
+		legacyIDs = append(legacyIDs, documentID)
+	}
+	legacyPublished := map[string]struct{}{}
+	if len(legacyIDs) > 0 {
+		legacyRows, err := s.q.Query(ctx, `SELECT doc_id FROM documents
+			WHERE tenant_id=$1 AND doc_id=ANY($2)
+			  AND publication_status='published'
+			  AND deletion_status='active'`, tenantID, legacyIDs)
+		if err != nil {
+			return nil, fmt.Errorf("resolve published legacy visibility: %w", err)
+		}
+		defer legacyRows.Close()
+		for legacyRows.Next() {
+			var documentID string
+			if err := legacyRows.Scan(&documentID); err != nil {
+				return nil, fmt.Errorf("scan published legacy visibility: %w", err)
+			}
+			legacyPublished[documentID] = struct{}{}
+		}
+		if err := legacyRows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate published legacy visibility: %w", err)
+		}
+	}
 	for i, ref := range refs {
 		identity, ok := published[ref.DocumentID]
-		visible[i] = ok && ref.DocumentVersionID != "" && ref.GenerationID != "" &&
-			identity.versionID == ref.DocumentVersionID && identity.generationID == ref.GenerationID
+		if ok && ref.DocumentVersionID != "" && ref.GenerationID != "" &&
+			identity.versionID == ref.DocumentVersionID && identity.generationID == ref.GenerationID {
+			visible[i] = true
+			continue
+		}
+		if _, ok := legacyPublished[ref.DocumentID]; ok && strings.TrimSpace(ref.DocumentVersionID) == "" && strings.TrimSpace(ref.GenerationID) == "" {
+			visible[i] = true
+		}
 	}
 	return visible, nil
 }

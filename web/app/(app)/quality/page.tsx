@@ -31,8 +31,14 @@ export default function QualityPage() {
 
   if (loadError) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500 shadow-sm">
-        检索质量数据未找到（docs/evals/reports/latest.json 未挂载）。请确认 web 容器已挂载评测报告。
+      <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
+        <p className="font-medium text-slate-800">这是离线评测回归页，不是某一次问答的即时评分。</p>
+        <p className="mt-2 text-slate-500">
+          本页只展示最近一次离线检索评测报告，用于比较 embedding/检索配置，不会改变在线问答结果。
+        </p>
+        <p className="mt-2 text-slate-500">
+          当前未找到评测报告（<code className="rounded bg-slate-100 px-1">docs/evals/reports/latest.json</code> 未挂载或无法读取）。不影响问答工作台使用。
+        </p>
       </div>
     );
   }

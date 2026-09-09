@@ -93,8 +93,8 @@ func TestElasticRetriever_SearchUsesPhraseFirstAndFallback(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if len(gotShould) != 2 {
-		t.Fatalf("expected phrase and AND clauses, got %#v", gotShould)
+	if len(gotShould) < 4 {
+		t.Fatalf("expected content and title clauses, got %#v", gotShould)
 	}
 	phrase := gotShould[0].(map[string]interface{})["match_phrase"].(map[string]interface{})
 	if phrase["content"].(map[string]interface{})["boost"].(float64) != 4 {
@@ -103,6 +103,10 @@ func TestElasticRetriever_SearchUsesPhraseFirstAndFallback(t *testing.T) {
 	match := gotShould[1].(map[string]interface{})["match"].(map[string]interface{})
 	if match["content"].(map[string]interface{})["operator"] != "and" {
 		t.Fatalf("expected AND fallback, got %#v", match)
+	}
+	titlePhrase := gotShould[2].(map[string]interface{})["match_phrase"].(map[string]interface{})
+	if _, ok := titlePhrase["file_name"]; !ok {
+		t.Fatalf("expected file_name phrase clause, got %#v", titlePhrase)
 	}
 }
 
@@ -145,5 +149,61 @@ func TestElasticRetriever_SearchUsesExactSchemaMetadata(t *testing.T) {
 	}
 	if _, ok := got[0].Metadata["ignored"]; ok {
 		t.Fatalf("did not expect unconfigured metadata field, got %+v", got[0].Metadata)
+	}
+}
+
+func TestElasticRetriever_SearchMatchesTitleFieldsAndTitleMatchedDocIDs(t *testing.T) {
+	var gotShould []interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		query := body["query"].(map[string]interface{})
+		boolQuery := query["bool"].(map[string]interface{})
+		gotShould = boolQuery["should"].([]interface{})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hits":{"hits":[]}}`))
+	}))
+	defer srv.Close()
+
+	retriever := NewElasticRetriever(srv.URL, "", "documents_text", srv.Client())
+	if _, err := retriever.Search(context.Background(), SearchRequest{
+		Question:           "赴港流程是什么？",
+		TenantID:           "tenant-a",
+		AllowedPermissions: []string{"public"},
+		TitleMatchDocIDs:   []string{"doc-1787627147806850576"},
+	}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+
+	var sawFileName, sawTitleDocID bool
+	for _, clause := range gotShould {
+		item, _ := clause.(map[string]interface{})
+		if phrase, ok := item["match_phrase"].(map[string]interface{}); ok {
+			if _, ok := phrase["file_name"]; ok {
+				sawFileName = true
+			}
+		}
+		if match, ok := item["match"].(map[string]interface{}); ok {
+			if _, ok := match["file_name"]; ok {
+				sawFileName = true
+			}
+		}
+		if terms, ok := item["terms"].(map[string]interface{}); ok {
+			if values, ok := terms["doc_id"].([]interface{}); ok {
+				for _, value := range values {
+					if value == "doc-1787627147806850576" {
+						sawTitleDocID = true
+					}
+				}
+			}
+		}
+	}
+	if !sawFileName {
+		t.Fatalf("expected file_name title clause, got %#v", gotShould)
+	}
+	if !sawTitleDocID {
+		t.Fatalf("expected title-matched doc_id terms, got %#v", gotShould)
 	}
 }

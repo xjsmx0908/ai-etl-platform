@@ -45,6 +45,9 @@ type Request struct {
 	// DiagnosticRequiredDocIDs is populated only by controlled local
 	// evaluations. Results expose aggregate stage coverage, never these ids.
 	DiagnosticRequiredDocIDs []string
+	// TitleMatchDocIDs are published documents whose file names appear in the
+	// question. Elasticsearch uses them to recover title-only hits.
+	TitleMatchDocIDs []string
 }
 
 // SearchRequest is passed to individual retrieval backends.
@@ -58,6 +61,7 @@ type SearchRequest struct {
 	ExactSchemaFields  []string
 	KnowledgeBaseID    string
 	ApplicableScope    string
+	TitleMatchDocIDs   []string
 }
 
 // Candidate is one retrieved chunk candidate from one or more backends.

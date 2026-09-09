@@ -215,3 +215,16 @@
 - Reason：验收中途不改产品代码；结论必须来自页面证据。旧九条能关则关，失败项进登记册，S1 才回写 backlog。本轮不能把 P-UAT-1 标完成。
 - Act：填写 PX-01～11；UAT-001～006/008/009 已修复，UAT-007 仍开放；新增 UAT-010～013。P-UAT-1 改为 in-progress / 本轮未通过，并单列只读问答 S1。
 - Refine：机密双审和删除/退役问答是覆盖缺口不是已证实缺陷。证据目录 Git 忽略，不入库账号密码。
+
+## 2026-09-09 - Resume must not re-diagnose
+
+- Perceive: 续跑时把「Verify, Then Trust」做成整包重读 findings/ES/源码，120k goal 在诊断阶段耗尽，代码未动。
+- Reason: 冻结诊断写进 task-status 后，续跑只开 Next files；核实针对补丁结果，不针对已知根因。
+- Act: 更新 ~/.codex/AGENTS.md 1.1 与 task-status 字段：Frozen diagnosis / Do not repeat / Next files。
+
+## 2026-09-09 - 修复 UAT-010 并补 PX-06/PX-09
+
+- Perceive：只读能看见已发布「赴港流程」，但问答拒答。标题在 `documents.file_name`，chunk 正文不含标题；该文档 release 为 unresolved 且无 generation。
+- Reason：问句匹配已发布文件名后用 ES `doc_id` 召回；已发布但无 generation 的 chunk 允许作为证据。问答列出全部授权空间，0 个时给空状态。质量页空状态写明离线评测。
+- Act：改 query/retrieval/visibility 与 QA/quality 页；`make` 相关 Go 测试与源码契约通过。真实页面：只读命中赴港流程；机密双审 2/2 已发布；质量页空状态说明离线评测。
+- Refine：SSE 不结束（UAT-011）、质量报告未挂载（UAT-007）、只读上传按钮（UAT-012）、登录英文错误（UAT-013）仍开放。现网修复后需 flush 语义缓存。

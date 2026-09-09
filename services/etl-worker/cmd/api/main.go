@@ -372,6 +372,7 @@ func main() {
 	// are written once at ingest and never updated in place.
 	qs := query.NewServiceWithObserver(cfg, prom).
 		WithGovernance(docStore).
+		WithDocuments(docStore).
 		WithKnowledgeCatalog(knowledgeCatalog).
 		WithReleaseVisibility(releaseVisibility)
 	taskStatusStore, err := newTaskStatusStore(cfg)

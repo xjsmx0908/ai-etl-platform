@@ -22,6 +22,9 @@ func TestPostgresStoreResolvesOnlyHealthyPublishedReleaseInOneBatch(t *testing.T
 			AddRow("doc-replacement", "job-old", "gen-old").
 			AddRow("doc-draft", nil, nil).
 			AddRow("doc-unresolved", nil, nil))
+	mock.ExpectQuery("SELECT doc_id FROM documents").
+		WithArgs("acme", []string{"doc-draft", "doc-unresolved", "doc-unmanaged"}).
+		WillReturnRows(pgxmock.NewRows([]string{"doc_id"}))
 
 	refs := []indexmanifest.GenerationReference{
 		{DocumentID: "doc-replacement", DocumentVersionID: "job-old", GenerationID: "gen-old"},
@@ -37,6 +40,36 @@ func TestPostgresStoreResolvesOnlyHealthyPublishedReleaseInOneBatch(t *testing.T
 		t.Fatal(err)
 	}
 	want := []bool{true, false, false, false, false, false, false}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("visibility=%v, want %v", got, want)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreAllowsPublishedDocumentsWithoutGenerationIdentity(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery("SELECT r.document_id,r.published_version_id,r.published_generation_id").
+		WithArgs("acme", []string{"doc-legacy"}).
+		WillReturnRows(pgxmock.NewRows([]string{"document_id", "published_version_id", "published_generation_id"}))
+	mock.ExpectQuery("SELECT doc_id FROM documents").
+		WithArgs("acme", []string{"doc-legacy"}).
+		WillReturnRows(pgxmock.NewRows([]string{"doc_id"}).AddRow("doc-legacy"))
+
+	refs := []indexmanifest.GenerationReference{
+		{DocumentID: "doc-legacy"},
+		{DocumentID: "doc-legacy", DocumentVersionID: "job-legacy", GenerationID: "gen-legacy"},
+	}
+	got, err := NewPostgresStore(mock).ResolveVisibility(context.Background(), "acme", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []bool{true, false}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("visibility=%v, want %v", got, want)
 	}

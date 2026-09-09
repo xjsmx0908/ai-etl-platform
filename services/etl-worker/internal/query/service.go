@@ -54,6 +54,7 @@ type Service struct {
 	// nil in the worker and in tests, in which case both features are skipped —
 	// retrieval behaviour is then exactly as before.
 	governance governanceLookup
+	documents  documentLister
 	catalog    *knowledgecatalog.Catalog
 
 	// Per-1k-token USD prices for cost estimation (LLM_PRICE_*). Zero means no
@@ -69,10 +70,22 @@ type governanceLookup interface {
 	GovernanceByDocIDs(ctx context.Context, tenantID string, docIDs []string) (map[string]docstore.Governance, error)
 }
 
+type documentLister interface {
+	List(ctx context.Context, q docstore.ListQuery) ([]docstore.Document, int, error)
+}
+
 // WithGovernance attaches the document registry so retrieval can filter retired
 // documents and disclose conflicts. Wired in cmd/api; safe to omit.
 func (s *Service) WithGovernance(g governanceLookup) *Service {
 	s.governance = g
+	if lister, ok := g.(documentLister); ok {
+		s.documents = lister
+	}
+	return s
+}
+
+func (s *Service) WithDocuments(d documentLister) *Service {
+	s.documents = d
 	return s
 }
 
@@ -539,6 +552,7 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, pr
 		KnowledgeBaseID:          resolvedSpace.ID,
 		ApplicableScope:          strings.TrimSpace(req.ApplicableScope),
 		DiagnosticRequiredDocIDs: diagnosticRequiredDocIDs(s.cfg.RetrievalDiagnosticsEnabled, req.DiagnosticRequiredDocIDs),
+		TitleMatchDocIDs:         s.titleMatchDocIDs(ctx, access.TenantID, resolvedSpace.ID, req.Question, allowedPermissions),
 	})
 	if err != nil {
 		slog.Error("retrieval failed", "error", err)

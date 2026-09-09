@@ -259,6 +259,7 @@ cacheMiss:
 				ExactSchemaFields:  e.cfg.RetrievalExactSchemaFields,
 				KnowledgeBaseID:    req.KnowledgeBaseID,
 				ApplicableScope:    req.ApplicableScope,
+				TitleMatchDocIDs:   req.TitleMatchDocIDs,
 			})
 			backendSpan.SetAttributes(attribute.Int("retrieval.candidate_count", len(candidates)))
 			if err != nil {
@@ -307,7 +308,7 @@ cacheMiss:
 	)
 	fusionSpan.End()
 	if len(fused) == 0 {
-		result := Result{Route: route, PartialErrors: partialErrors, Duration: time.Since(start)}
+		result := Result{Route: route, BackendCandidateCounts: backendCandidateCounts, PartialErrors: partialErrors, Duration: time.Since(start)}
 		if cacheDiagnostics {
 			diagnostics := DiagnoseStages(req.DiagnosticRequiredDocIDs, results, fused, nil)
 			result.StageDiagnostics = &diagnostics

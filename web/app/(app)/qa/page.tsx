@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/Card";
 import { AlertTriangle, Check, ChevronDown, Loader2, MessageSquareText, Send, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import type { AnswerMeta, KnowledgeSpace, Source } from "@/lib/types";
+import { EMPTY_QUERYABLE_SPACES_MESSAGE, preferredKnowledgeSpace, queryableKnowledgeSpaces } from "@/lib/qaSpaces";
 
 const STRATEGY_LABELS: Record<string, string> = {
   exact_keyword: "精确关键词",
@@ -126,7 +127,7 @@ export default function QaPage() {
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const selectedSpace = knowledgeSpaces.find((space) => space.id === knowledgeSpace);
-  const hasMultipleProductionSpaces = knowledgeSpaces.length > 1;
+  const hasQueryableSpaces = knowledgeSpaces.length > 0;
 
   const stream = useCallback(async (q: string) => {
     abortRef.current?.abort();
@@ -177,12 +178,9 @@ export default function QaPage() {
 
   useEffect(() => {
     void apiClient.listKnowledgeSpaces().then(({ items }) => {
-      // The formal Q&A workbench only operates on production knowledge spaces.
-      // Demo data belongs to an explicit demo/test entry point and should not
-      // compete with real business sources in the user's default workflow.
-      const productionSpaces = items.filter((space) => space.kind === "production");
-      setKnowledgeSpaces(productionSpaces);
-      const preferred = productionSpaces.find((space) => space.is_default) || productionSpaces[0];
+      const spaces = queryableKnowledgeSpaces(items);
+      setKnowledgeSpaces(spaces);
+      const preferred = preferredKnowledgeSpace(spaces);
       if (preferred) setKnowledgeSpace(preferred.id);
     }).catch((e: Error) => setError(e.message || "知识空间加载失败"));
     return () => abortRef.current?.abort();
@@ -218,7 +216,7 @@ export default function QaPage() {
             className="min-w-0 flex-1 rounded-lg border border-transparent bg-slate-50 px-4 py-2.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-500/10"
             disabled={status === "streaming"}
           />
-          {hasMultipleProductionSpaces && (
+          {hasQueryableSpaces && (
             <select
               value={knowledgeSpace}
               onChange={(e) => setKnowledgeSpace(e.target.value)}
@@ -227,21 +225,24 @@ export default function QaPage() {
               className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-700 transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/15 disabled:bg-slate-50"
             >
               {knowledgeSpaces.map((space) => (
-                <option key={space.id} value={space.id}>{space.name}</option>
+                <option key={space.id} value={space.id}>{space.name}{space.kind === "demo" ? "（演示）" : ""}</option>
               ))}
             </select>
           )}
           <button
             type="submit"
-            disabled={status === "streaming" || !question.trim()}
+            disabled={status === "streaming" || !question.trim() || !hasQueryableSpaces}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {status !== "streaming" && <Send className="h-4 w-4" />}
             {status === "streaming" ? phase : "发送问题"}
           </button>
         </div>
-        {selectedSpace && hasMultipleProductionSpaces && (
+        {selectedSpace && (
           <p className="mt-2 px-1 text-xs text-slate-400">当前检索范围：{selectedSpace.name} · 仅使用该空间中已发布的文档</p>
+        )}
+        {!hasQueryableSpaces && (
+          <p className="mt-2 px-1 text-xs text-amber-700">{EMPTY_QUERYABLE_SPACES_MESSAGE}</p>
         )}
       </form>
 
