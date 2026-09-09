@@ -4,6 +4,10 @@
 
 ## 1. 已完成的工作
 
+### 仓库上下文清理
+
+- 已删除过时归档、根目录旧学习日志、误提交 PDF/会话文件和独立 Parser Compose，并收紧 `.codexignore`；现行状态仍以 `LEARNINGS.codex.md` 与 `docs/backlog.md` 为准。
+
 ### 平台主链路与治理
 
 - 已实现并合并文档上传、Kafka 异步 ETL、解析、OCR、Embedding、Qdrant/Elasticsearch 入库、混合检索、RAG 问答、引用与权限过滤。
@@ -142,7 +146,7 @@ P2.3、P2.5、P2.6、P1.9 属于生产准入或外部决策，不是当前 Agent
 - 当前模型端点是本机 Ollama：`http://host.docker.internal:11434/api/embeddings`，模型 `bge-m3`，维度 1024；CPU 推理是整本任务耗时的主要因素。
 - 当前 Compose 容器均运行；Kafka topic 已创建：`doc-processing`、`doc-processing-dlq`、`doc-processing-ocr`、`doc-processing-ocr-dlq`。
 - 失败任务不应被隐式篡改；重新上传会产生新 doc ID。若要重放，必须通过明确的 DLQ/任务重放流程并记录结果。
-- 不得修改、提交或删除用户本地文件：`:memory:.ses`、`CONTINUATION.md`（本文件除非用户明确要求更新）、`new_thread_prompt.md`；`issues/` 也应视为用户问题记录，除非明确要求不要覆盖。
+- 不得覆盖用户问题记录 `issues/`，也不得在未要求时改写 `new_thread_prompt.md`；本文件仅在任务进展变化时更新。
 - Go 宿主机可能没有 `go/gofmt`，使用 Docker 执行测试和格式化：
 
   ```bash

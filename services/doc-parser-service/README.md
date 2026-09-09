@@ -44,15 +44,10 @@ python -m app.main
 
 ### 2. Docker 部署
 
+在仓库根目录构建并启动，不要使用本目录下的独立 Compose：
+
 ```bash
-# 构建镜像
-docker build -t doc-parser-service:latest .
-
-# 启动服务
-docker run -p 8000:8000 doc-parser-service:latest
-
-# 或使用 docker-compose
-docker compose up -d
+docker compose up -d parser-service
 ```
 
 ## API 接口

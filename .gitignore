@@ -66,3 +66,7 @@ TOOLS.md
 USER.md
 openclaw-workspace-state.json
 state/
+
+# Accidental local session artifacts
+:memory:.ses
+*.ses

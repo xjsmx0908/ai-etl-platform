@@ -1,11 +1,13 @@
 # Documentation Archive
 
-这里保存已完成阶段的历史计划、学习日志和验收上下文。归档文件保留原文内容，
-仅将因目录移动而失效的相对链接调整为可访问路径；当前执行状态不应从归档文件推断。
+历史学习日志、旧 backlog、面试材料和早期演示设计已移出工作树，避免检索时把过时架构读进上下文。
 
-- [`LEARNINGS.codex-2026-09-05.md`](LEARNINGS.codex-2026-09-05.md)：2026-08-19 至 2026-09-05 的完整 PRAR 学习日志。
-- [`backlog-2026-09-05.md`](backlog-2026-09-05.md)：重构前的完整 backlog、阶段计划和历史结果。
-- 其他文件：较早的路线图、演示设计和面试材料归档。
+需要查阅时从 Git 历史读取删除前提交：
 
-根目录 `LEARNINGS.codex.md` 和 `docs/backlog.md` 只表达当前可执行信息；
-历史内容需要修正时追加更正记录，不直接改写归档快照。
+```bash
+git log -- docs/archive/
+git log -1 -- docs/archive/LEARNINGS.codex-2026-09-05.md
+git show <commit>:docs/archive/LEARNINGS.codex-2026-09-05.md
+```
+
+当前执行状态只以根目录 `LEARNINGS.codex.md`、`docs/backlog.md` 和对应设计/验收文档为准。

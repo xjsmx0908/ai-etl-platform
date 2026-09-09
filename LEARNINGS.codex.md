@@ -1,8 +1,7 @@
 # Codex Learnings
 
-这是项目的精简、可追加学习日志。历史 PRAR 记录不删除，完整快照保存在
-[`docs/archive/LEARNINGS.codex-2026-09-05.md`](docs/archive/LEARNINGS.codex-2026-09-05.md)。
-后续条目只记录可复用的工程结论、边界和验证结果，不重复完整提交说明或临时运行日志。
+这是项目的精简、可追加学习日志。后续条目只记录可复用的工程结论、边界和验证结果，不重复完整提交说明或临时运行日志。
+2026-08-19 至 2026-09-05 的完整 PRAR 快照已移出工作树，需要时从 Git 历史查阅。
 
 ## 2026-09-05 - 学习日志归档重构
 
@@ -193,3 +192,11 @@
 - Reason：体验巡检必须与隔离栈矩阵分开，否则会把脚本绿报当成页面可用；问题要分级、可复现、带证据，验收中途不改代码。
 - Act：新增 `docs/product-experience-acceptance.md` 和 `issues/findings-register.md`，将旧口头问题迁移为 UAT-001～UAT-009 待复验；同步 backlog/README/SRS/PRD。
 - Refine：下一步从 D0/D1 开始用真实页面复验旧九条，不以代码里已有 SSE/分页实现直接结案。
+
+
+## 2026-09-09 - 清理过时上下文材料
+
+- Perceive：根目录旧 `LEARNINGS.md`、`docs/archive/` 大快照、误提交 PDF/会话文件和过时模块 README 会在每次 Codex 检索时占用大量 token，并可能让模型学习到早期架构。
+- Reason：当前状态已由 `LEARNINGS.codex.md`、`docs/backlog.md` 和现行设计/验收文档覆盖；历史快照保留在 Git 历史即可。
+- Act：删除过时归档、无效二进制/会话文件和独立 Parser Compose；将 `services/etl-worker/README.md` 收成现行模块说明；收紧 `.codexignore`。
+- Refine：不删除现行设计文档、验收脚本、评测 gold、用户语料 `rag_datas/` 和 `issues/`。

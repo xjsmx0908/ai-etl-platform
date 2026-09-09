@@ -1,21 +1,36 @@
-# 1. 第三方依赖与语言缓存（提升检索效率，节省大量 Token）
+# 1. 第三方依赖与语言缓存
 **/node_modules/
 **/__pycache__/
 *.pyc
+**/.pytest_cache/
+**/.venv/
+**/.next/
+**/coverage.out
+**/*.tsbuildinfo
 
-# 2. 运行时状态与构建产物（避免读取非源码文件）
+# 2. 运行时状态与构建产物
 artifacts/
 state/
+plan/
+.claude/
 
-# 3. 评估报告、日志与生成语料（消除噪音，防止误导 Codex）
+# 3. 评估报告、日志、生成语料与二进制文档
 rag_datas/
 docs/corpora/generated/
 docs/evals/
+**/*.pdf
+**/*.pptx
+**/*.ppt
+**/*.doc
+**/*.docx
+**/*.xls
+**/*.xlsx
 
-# 4. 废弃与归档代码（防止 Codex 学习并使用旧架构/API）
+# 4. 废弃与归档材料
 docs/archive/
 scripts/archive/
 
-# 5. 敏感凭据（安全风险控制）
+# 5. 敏感凭据与会话残留
 secrets/dev/
 !secrets/examples/
+*.ses
