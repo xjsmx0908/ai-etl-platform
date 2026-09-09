@@ -113,6 +113,21 @@ func TestProjectOverviewUsesDeterministicBusinessStates(t *testing.T) {
 		block string
 	}{
 		{"published", OverviewInput{PublicationStatus: "published"}, "published", ""},
+		{"published replacement checking", OverviewInput{
+			PublicationStatus: "published", ReplacementPending: true,
+			IngestionStatus: "completed", KnowledgeSpaceID: "production",
+			Owner: "owner", EffectiveDatePresent: true, CandidateReady: true,
+		}, "checking", ""},
+		{"published replacement approval", OverviewInput{
+			PublicationStatus: "published", ReplacementPending: true,
+			IngestionStatus: "completed", RequestState: RequestApprovalPending,
+		}, "approval_pending", ""},
+		{"stale published request does not hide replacement", OverviewInput{
+			PublicationStatus: "published", RequestState: RequestPublished,
+			ReplacementPending: true, IngestionStatus: "completed",
+			KnowledgeSpaceID: "production", Owner: "owner",
+			EffectiveDatePresent: true, CandidateReady: true,
+		}, "checking", ""},
 		{"processing", OverviewInput{IngestionStatus: "processing"}, "checking", "ingestion_not_completed"},
 		{"review blocked", OverviewInput{IngestionStatus: "completed", ReviewStatus: "failed"}, "review_blocked", "agent_review_unavailable"},
 		{"approval", OverviewInput{IngestionStatus: "completed", RequestState: RequestApprovalPending}, "approval_pending", ""},

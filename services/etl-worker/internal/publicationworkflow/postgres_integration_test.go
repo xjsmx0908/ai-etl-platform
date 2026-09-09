@@ -63,6 +63,15 @@ func TestPostgresPublicationCommitsExactCandidateAndAuditOnce(t *testing.T) {
 	if status != "published" || versionID != "job-2" || generationID != "gen-2" || revision != 8 || key == "" || audits != 1 || cache.calls != 1 {
 		t.Fatalf("status=%q version=%q generation=%q revision=%d key=%q audits=%d cache=%d", status, versionID, generationID, revision, key, audits, cache.calls)
 	}
+	var oldState, newState string
+	if err := pool.QueryRow(context.Background(), `SELECT
+		(SELECT state FROM index_manifests WHERE generation_id='gen-1'),
+		(SELECT state FROM index_manifests WHERE generation_id='gen-2')`).Scan(&oldState, &newState); err != nil {
+		t.Fatal(err)
+	}
+	if oldState != "retired" || newState != "active" {
+		t.Fatalf("generation states old=%q new=%q, want retired/active", oldState, newState)
+	}
 }
 
 func TestPostgresPublicationRejectsStaleOrUnhealthyCandidateWithoutWrites(t *testing.T) {
@@ -134,7 +143,7 @@ func assertPublicationUnchanged(t *testing.T, pool *pgxpool.Pool) {
 		WHERE d.tenant_id='acme' AND d.doc_id='policy-1'`).Scan(&status, &revision, &publishedVersion); err != nil {
 		t.Fatal(err)
 	}
-	if status != "draft" || revision != 7 || publishedVersion != nil {
+	if status != "draft" || revision != 7 || publishedVersion == nil || *publishedVersion != "job-1" {
 		t.Fatalf("partial publication status=%q revision=%d published=%v", status, revision, publishedVersion)
 	}
 }
@@ -143,9 +152,10 @@ func seedExactPublication(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
 		INSERT INTO documents VALUES ('acme','policy-1','completed','active','policies','draft','legal',now());
-		INSERT INTO document_releases (tenant_id,document_id,current_version_id,revision,resolution_status)
-		VALUES ('acme','policy-1','job-2',7,'resolved');
+		INSERT INTO document_releases (tenant_id,document_id,current_version_id,published_version_id,published_generation_id,revision,resolution_status)
+		VALUES ('acme','policy-1','job-2','job-1','gen-1',7,'resolved');
 		INSERT INTO index_manifests VALUES
+		('gen-1','acme','policy-1','job-1',3,'sha256:old',3,'sha256:old',3,'sha256:old','active',''),
 		('gen-2','acme','policy-1','job-2',4,'sha256:approved',4,'sha256:approved',4,'sha256:approved','active','');
 	`)
 	if err != nil {
@@ -192,7 +202,8 @@ func publicationWorkflowPool(t *testing.T) (*pgxpool.Pool, func()) {
 		CREATE TABLE index_manifests (
 			generation_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,document_id TEXT NOT NULL,document_version_id TEXT NOT NULL,
 			expected_chunk_count INT,expected_chunk_digest TEXT,qdrant_count INT,qdrant_digest TEXT,
-			elasticsearch_count INT,elasticsearch_digest TEXT,state TEXT NOT NULL,last_reconcile_error TEXT NOT NULL DEFAULT '');
+			elasticsearch_count INT,elasticsearch_digest TEXT,state TEXT NOT NULL,last_reconcile_error TEXT NOT NULL DEFAULT '',
+			retired_at TIMESTAMPTZ);
 		CREATE TABLE audit_logs (
 			id BIGSERIAL PRIMARY KEY,tenant_id TEXT NOT NULL DEFAULT '',actor_user_id TEXT NOT NULL DEFAULT '',actor_role TEXT NOT NULL DEFAULT '',
 			action TEXT NOT NULL,resource_type TEXT NOT NULL DEFAULT '',resource_id TEXT NOT NULL DEFAULT '',result TEXT NOT NULL DEFAULT 'success',

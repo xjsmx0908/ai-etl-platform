@@ -111,6 +111,27 @@ func TestHandleDocumentChunks_Success(t *testing.T) {
 	}
 }
 
+func TestHandleDocumentChunksFiltersUnpublishedReplacementGeneration(t *testing.T) {
+	docs := newFakeDocStore()
+	seedDoc(docs, "acme", "d1", "internal")
+	lister := &fakeChunkLister{chunks: map[string][]store.StoredChunk{
+		"d1": {
+			{ChunkID: "old", DocID: "d1", TenantID: "acme", DocumentVersionID: "job-old", GenerationID: "gen-published", Content: "80 yuan", Index: 0},
+			{ChunkID: "new", DocID: "d1", TenantID: "acme", DocumentVersionID: "job-new", GenerationID: "gen-replacement", Content: "120 yuan", Index: 0},
+		},
+	}}
+	handler := handleDocumentChunks(docs, lister, testQueryService(),
+		documentSearchVisibilityStub{visible: map[string]bool{"gen-published": true}})
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents/d1/chunks", nil)
+	req = req.WithContext(ctxWithRole("acme", "user"))
+	req.SetPathValue("docID", "d1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "120 yuan") || !strings.Contains(rec.Body.String(), "80 yuan") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleDocumentChunks_NotFoundForCrossTenantRoleOrMissing(t *testing.T) {
 	docs := newFakeDocStore()
 	seedDoc(docs, "acme", "d1", "internal")

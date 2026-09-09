@@ -360,7 +360,7 @@ type chunkView struct {
 // handleDocumentChunks serves GET /v1/documents/{docID}/chunks: the chunks of a
 // single document, tenant- and permission-scoped exactly like the registry
 // detail (missing/cross-tenant/not-allowed all 404).
-func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister, qs *query.Service) http.HandlerFunc {
+func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister, qs *query.Service, visibility ...retrieval.VisibilityResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -396,6 +396,29 @@ func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister, qs *q
 			slog.Error("chunk listing failed", "doc_id", docID, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
+		}
+		if len(visibility) > 0 && visibility[0] != nil && len(list) > 0 {
+			refs := make([]indexmanifest.GenerationReference, len(list))
+			for i, chunk := range list {
+				refs[i] = indexmanifest.GenerationReference{
+					DocumentID:        chunk.DocID,
+					DocumentVersionID: chunk.DocumentVersionID,
+					GenerationID:      chunk.GenerationID,
+				}
+			}
+			visible, visErr := visibility[0].ResolveVisibility(r.Context(), tenantID, refs)
+			if visErr != nil || len(visible) != len(list) {
+				slog.Error("document chunk publication visibility failed", "doc_id", docID, "error", visErr)
+				writeError(w, http.StatusServiceUnavailable, "publication visibility unavailable")
+				return
+			}
+			filtered := make([]store.StoredChunk, 0, len(list))
+			for i, chunk := range list {
+				if visible[i] {
+					filtered = append(filtered, chunk)
+				}
+			}
+			list = filtered
 		}
 		items := make([]chunkView, 0, len(list))
 		for _, c := range list {

@@ -119,6 +119,7 @@ type OverviewInput struct {
 	PublicationStatus    string
 	DeletionStatus       string
 	CandidateReady       bool
+	ReplacementPending   bool
 	ReviewStatus         string
 	RequestState         RequestState
 	ReviewID             string
@@ -142,8 +143,10 @@ type OverviewItem struct {
 }
 
 // ProjectOverview applies deterministic, human-readable state rules to one
-// document snapshot. The ordering is deliberate: terminal publication state
-// wins, then active approval/review states, then deterministic blockers.
+// document snapshot. The ordering is deliberate: a fully cut-over published
+// release wins, then active approval/review states, then deterministic blockers.
+// A published catalog row with a newer current version stays on the replacement
+// review path so the previous generation can remain retrievable until cutover.
 func ProjectOverview(in OverviewInput) OverviewItem {
 	item := OverviewItem{DocumentID: in.DocumentID, FileName: in.FileName,
 		Permission: in.Permission, KnowledgeSpaceID: in.KnowledgeSpaceID,
@@ -151,7 +154,7 @@ func ProjectOverview(in OverviewInput) OverviewItem {
 		ReviewID:     in.ReviewID,
 		RequestState: in.RequestState, RequiredApprovals: in.RequiredApprovals,
 		ApprovedDecisions: in.ApprovedDecisions}
-	if in.PublicationStatus == "published" || in.RequestState == RequestPublished {
+	if !in.ReplacementPending && (in.PublicationStatus == "published" || in.RequestState == RequestPublished) {
 		item.State = "published"
 		return item
 	}

@@ -277,3 +277,10 @@
 - Reason：验收中途不改产品代码。个人空间与用户管理可以当场补测；受管换版必须等预审/审批，不能用占位短文绕过空间适配门禁。
 - Act：真实页面补测个人换版/退役/新建用户均通过。受管路径上，换版过程中旧发布仍可问；新版本发布后同一文档并列旧/新切块，问答仍引用 80 元而非 120 元，登记 UAT-014。
 - Refine：不要根据整页「需补齐/已发布」判断当前文档状态；发布态以详情页徽章和批准按钮为准。合成短文会被生产库用途门禁判为非知识。
+
+## 2026-09-09 - 修复 UAT-014 受管换版未切换
+
+- Perceive：已发布受管文档换版后 catalog 仍为 published，`ListReviewJobs` 只要 draft，发布中心把整页当成已发布，v2 无法预审。检索仍指向旧 generation。
+- Reason：换版期间必须保持旧发布可问，所以不能在上传时删切块。缺口是让 current≠published 的文档进入预审/审批，发布时退役其他 generation，详情按已发布 generation 过滤。
+- Act：`ProjectOverview` / `ListReviewJobs` 覆盖 published replacement；发布退役旧 generation；详情 `ResolveVisibility`。发起人不能自审，需第二管理员批准。
+- Refine：`px-admin-2` 批准后问答 120 元，详情不再列出 v1 标记。不重跑 D0–D4。

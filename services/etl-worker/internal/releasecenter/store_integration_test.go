@@ -45,7 +45,8 @@ func TestPostgresOverviewProjectsPublishedApprovalAndTenantScope(t *testing.T) {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id,doc_id));
 		CREATE TABLE document_releases (
 			tenant_id TEXT NOT NULL, document_id TEXT NOT NULL, current_version_id TEXT,
-			resolution_status TEXT NOT NULL, revision BIGINT NOT NULL, PRIMARY KEY (tenant_id,document_id));
+			resolution_status TEXT NOT NULL, revision BIGINT NOT NULL, published_version_id TEXT,
+			PRIMARY KEY (tenant_id,document_id));
 		CREATE TABLE index_manifests (
 			generation_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, document_id TEXT NOT NULL,
 			document_version_id TEXT NOT NULL, state TEXT NOT NULL, expected_chunk_count INT,
@@ -58,7 +59,7 @@ func TestPostgresOverviewProjectsPublishedApprovalAndTenantScope(t *testing.T) {
 			status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 		CREATE TABLE release_center_requests (
 			request_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, document_id TEXT NOT NULL,
-			state TEXT NOT NULL, required_approvals INT NOT NULL, review_id TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+			document_version_id TEXT, state TEXT NOT NULL, required_approvals INT NOT NULL, review_id TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
 		CREATE TABLE release_center_decisions (
 			decision_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, request_id TEXT NOT NULL,
 			decided_by TEXT NOT NULL, decision TEXT NOT NULL);
@@ -69,14 +70,16 @@ func TestPostgresOverviewProjectsPublishedApprovalAndTenantScope(t *testing.T) {
 			('acme','blocked-1','Blocked','internal','completed','active','owner',CURRENT_DATE,'production','draft','active'),
 			('acme','stale-1','Stale','internal','completed','active','owner',CURRENT_DATE,'production','draft','active'),
 			('acme','replacement-1','Replacement','internal','completed','active','owner',CURRENT_DATE,'production','draft','active'),
+			('acme','cutover-1','Cutover','internal','completed','active','owner',CURRENT_DATE,'production','published','active'),
 			('other','hidden-1','Hidden','internal','completed','active','owner',CURRENT_DATE,'production','draft','active');
 		INSERT INTO document_releases VALUES
-			('acme','published-1','job-published','resolved',1),
-			('acme','approval-1','job-approval','resolved',1),
-			('acme','blocked-1','job-blocked','resolved',1),
-			('acme','stale-1','job-stale','resolved',2),
-			('acme','replacement-1','job-new','resolved',2),
-			('other','hidden-1','job-hidden','resolved',1);
+			('acme','published-1','job-published','resolved',1,'job-published'),
+			('acme','approval-1','job-approval','resolved',1,NULL),
+			('acme','blocked-1','job-blocked','resolved',1,NULL),
+			('acme','stale-1','job-stale','resolved',2,NULL),
+			('acme','replacement-1','job-new','resolved',2,NULL),
+			('acme','cutover-1','job-new','resolved',2,'job-old'),
+			('other','hidden-1','job-hidden','resolved',1,NULL);
 		INSERT INTO index_manifests (generation_id,tenant_id,document_id,document_version_id,state,expected_chunk_count,expected_chunk_digest,qdrant_count,qdrant_digest,elasticsearch_count,elasticsearch_digest)
 		VALUES
 			('gen-published','acme','published-1','job-published','active',1,'digest',1,'digest',1,'digest'),
@@ -84,14 +87,15 @@ func TestPostgresOverviewProjectsPublishedApprovalAndTenantScope(t *testing.T) {
 			('gen-blocked','acme','blocked-1','job-blocked','active',1,'digest',1,'digest',1,'digest'),
 			('gen-stale','acme','stale-1','job-stale','active',1,'digest',1,'digest',1,'digest'),
 			('gen-new','acme','replacement-1','job-new','active',1,'digest',1,'digest',1,'digest'),
+			('gen-cutover','acme','cutover-1','job-new','active',1,'digest',1,'digest',1,'digest'),
 			('gen-hidden','other','hidden-1','job-hidden','active',1,'digest',1,'digest',1,'digest');
 		INSERT INTO release_center_reviews (review_id,tenant_id,document_id,document_version_id,generation_id,release_revision,status) VALUES
 			('review-approval','acme','approval-1','job-approval','gen-approval',1,'completed'),
 			('review-blocked','acme','blocked-1','job-blocked','gen-blocked',1,'failed'),
 			('review-stale','acme','stale-1','job-stale','gen-stale',2,'completed'),
 			('review-old-failed','acme','replacement-1','job-old','gen-old',1,'failed');
-		INSERT INTO release_center_requests (request_id,tenant_id,document_id,state,required_approvals,review_id) VALUES ('request-approval','acme','approval-1','approval_pending',2,'review-approval');
-		INSERT INTO release_center_requests (request_id,tenant_id,document_id,state,required_approvals,review_id) VALUES ('request-stale','acme','stale-1','needs_info',1,'review-stale');
+		INSERT INTO release_center_requests (request_id,tenant_id,document_id,document_version_id,state,required_approvals,review_id) VALUES ('request-approval','acme','approval-1','job-approval','approval_pending',2,'review-approval');
+		INSERT INTO release_center_requests (request_id,tenant_id,document_id,document_version_id,state,required_approvals,review_id) VALUES ('request-stale','acme','stale-1','job-stale','needs_info',1,'review-stale');
 		INSERT INTO release_center_decisions (decision_id,tenant_id,request_id,decided_by,decision) VALUES ('decision-1','acme','request-approval','admin-a','approved');
 	`); err != nil {
 		t.Fatal(err)
@@ -100,10 +104,10 @@ func TestPostgresOverviewProjectsPublishedApprovalAndTenantScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 5 {
-		t.Fatalf("items=%d, want 5 tenant-scoped rows: %+v", len(items), items)
+	if len(items) != 6 {
+		t.Fatalf("items=%d, want 6 tenant-scoped rows: %+v", len(items), items)
 	}
-	var published, approval, blocked, stale, replacement *OverviewItem
+	var published, approval, blocked, stale, replacement, cutover *OverviewItem
 	for i := range items {
 		switch items[i].DocumentID {
 		case "published-1":
@@ -116,6 +120,8 @@ func TestPostgresOverviewProjectsPublishedApprovalAndTenantScope(t *testing.T) {
 			stale = &items[i]
 		case "replacement-1":
 			replacement = &items[i]
+		case "cutover-1":
+			cutover = &items[i]
 		}
 	}
 	if published == nil || published.State != "published" {
@@ -132,5 +138,8 @@ func TestPostgresOverviewProjectsPublishedApprovalAndTenantScope(t *testing.T) {
 	}
 	if replacement == nil || replacement.State != "checking" {
 		t.Fatalf("replacement projection=%+v, old failed review must not bind to current version", replacement)
+	}
+	if cutover == nil || cutover.State != "checking" {
+		t.Fatalf("published replacement projection=%+v, want checking not published", cutover)
 	}
 }

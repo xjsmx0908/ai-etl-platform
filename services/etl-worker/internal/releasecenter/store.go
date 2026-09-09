@@ -75,7 +75,8 @@ func (s *PostgresStore) ListOverview(ctx context.Context, tenantID string, limit
 		        AND m.elasticsearch_count=m.expected_chunk_count AND m.elasticsearch_digest=m.expected_chunk_digest),
 		       COALESCE((SELECT count(*) FROM release_center_decisions dec
 		                 WHERE dec.tenant_id=d.tenant_id AND dec.request_id=q.request_id
-		                   AND dec.decision='approved'),0)
+		                   AND dec.decision='approved'),0),
+		       (r.published_version_id IS NOT NULL AND r.published_version_id IS DISTINCT FROM r.current_version_id)
 		FROM documents d
 		LEFT JOIN document_releases r ON r.tenant_id=d.tenant_id AND r.document_id=d.doc_id
 		LEFT JOIN LATERAL (
@@ -87,6 +88,7 @@ func (s *PostgresStore) ListOverview(ctx context.Context, tenantID string, limit
 		LEFT JOIN LATERAL (
 			SELECT q1.* FROM release_center_requests q1
 			WHERE q1.tenant_id=d.tenant_id AND q1.document_id=d.doc_id
+			  AND q1.document_version_id=r.current_version_id
 			ORDER BY q1.updated_at DESC LIMIT 1
 		) q ON TRUE
 		LEFT JOIN LATERAL (
@@ -110,7 +112,8 @@ func (s *PostgresStore) ListOverview(ctx context.Context, tenantID string, limit
 		if err := rows.Scan(&in.DocumentID, &in.FileName, &in.Permission, &in.IngestionStatus,
 			&in.DocStatus, &in.Owner, &in.EffectiveDatePresent, &in.KnowledgeSpaceID,
 			&in.PublicationStatus, &in.DeletionStatus, &in.RequestID, &in.ReviewID, &requestState,
-			&in.RequiredApprovals, &in.ReviewStatus, &in.CandidateReady, &in.ApprovedDecisions); err != nil {
+			&in.RequiredApprovals, &in.ReviewStatus, &in.CandidateReady, &in.ApprovedDecisions,
+			&in.ReplacementPending); err != nil {
 			return nil, fmt.Errorf("scan release overview: %w", err)
 		}
 		in.RequestState = RequestState(requestState)
@@ -264,6 +267,10 @@ func (s *PostgresStore) GetRequest(ctx context.Context, tenantID, requestID stri
 	return request, nil
 }
 
+// ListReviewJobs returns managed documents whose current version is not the
+// published release and still need Agent pre-review. Catalog publication_status
+// may remain "published" during a replacement so the previous generation stays
+// retrievable until the new version is independently approved.
 func (s *PostgresStore) ListReviewJobs(ctx context.Context, limit int) ([]ReviewJob, error) {
 	if s == nil || s.q == nil {
 		return nil, fmt.Errorf("release center store is not configured")
@@ -276,7 +283,7 @@ func (s *PostgresStore) ListReviewJobs(ctx context.Context, limit int) ([]Review
 		FROM documents d JOIN document_releases r ON r.tenant_id=d.tenant_id AND r.document_id=d.doc_id
 		JOIN index_manifests m ON m.tenant_id=r.tenant_id AND m.document_id=r.document_id AND m.document_version_id=r.current_version_id
 		WHERE d.status='completed' AND d.doc_status='active' AND d.deletion_status='active'
-		  AND d.publication_status='draft' AND d.knowledge_space_id<>'' AND d.knowledge_space_id<>'user-uploads'
+		  AND d.publication_status IN ('draft','published') AND d.knowledge_space_id<>'' AND d.knowledge_space_id<>'user-uploads'
 		  AND d.owner<>'' AND d.effective_date IS NOT NULL AND r.resolution_status='resolved'
 		  AND (r.published_version_id IS NULL OR r.published_version_id<>r.current_version_id)
 		  AND m.state='active' AND m.expected_chunk_count>0 AND m.expected_chunk_digest<>'' AND m.last_reconcile_error=''

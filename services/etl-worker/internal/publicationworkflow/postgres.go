@@ -144,6 +144,11 @@ func (p *PostgresPublication) Publish(ctx context.Context, actor Actor, candidat
 	if tag.RowsAffected() != 1 {
 		return ErrCandidateStale
 	}
+	if _, err = tx.Exec(ctx, `UPDATE index_manifests SET state='retired',retired_at=now()
+		WHERE tenant_id=$1 AND document_id=$2 AND generation_id<>$3 AND state='active'`,
+		actor.TenantID, candidate.DocumentID, candidate.GenerationID); err != nil {
+		return fmt.Errorf("retire superseded document generations: %w", err)
+	}
 	if err := audit.New(tx).Record(ctx, audit.Entry{
 		TenantID: actor.TenantID, ActorUserID: actor.UserID, ActorRole: actor.Role,
 		Action: "document.publication.update", ResourceType: "document", ResourceID: candidate.DocumentID,

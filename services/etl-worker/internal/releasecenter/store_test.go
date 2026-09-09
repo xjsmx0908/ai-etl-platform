@@ -97,6 +97,26 @@ func TestExpireDueReviewsSQL(t *testing.T) {
 	}
 }
 
+func TestListReviewJobsSQLIncludesPublishedReplacement(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	rows := pgxmock.NewRows([]string{
+		"tenant_id", "doc_id", "uploaded_by", "current_version_id", "generation_id",
+		"expected_chunk_count", "expected_chunk_digest", "revision",
+	}).AddRow("acme", "doc-1", "uploader", "job-2", "gen-2", 3, "sha256:ready", int64(2))
+	mock.ExpectQuery(`draft','published`).WithArgs(10).WillReturnRows(rows)
+	jobs, err := NewPostgresStore(mock).ListReviewJobs(context.Background(), 10)
+	if err != nil || len(jobs) != 1 || jobs[0].Candidate.DocumentVersionID != "job-2" {
+		t.Fatalf("jobs=%+v err=%v", jobs, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestListReviewJobsIncludesExpiredNeedsInfo(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

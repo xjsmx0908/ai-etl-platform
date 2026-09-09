@@ -422,7 +422,7 @@ func main() {
 			writeError(w, http.StatusServiceUnavailable, "vector store unavailable")
 		})
 	} else {
-		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorerForHandler, qs))
+		chunksHandler = http.HandlerFunc(handleDocumentChunks(docStore, chunkStorerForHandler, qs, releaseVisibility))
 	}
 	releaseCoordinator := releasecenter.NewCoordinator(publicationWorkflow, docStore, releaseCenterReviewer{service: agentSvc}, releaseCenterStore, releaseCenterStore).WithNotifier(notificationStore).WithReviewTTL(cfg.ReleaseReviewTTL).WithReviewRetention(cfg.ReleaseReviewRetention)
 	go runReleaseReviewCollector(relayCtx, releaseCoordinator, 5*time.Second)
