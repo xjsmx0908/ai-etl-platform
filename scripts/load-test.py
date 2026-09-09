@@ -36,7 +36,7 @@ ETL_WORKER_DIR = ROOT / "services" / "etl-worker"
 PROFILES: Dict[str, Dict[str, Any]] = {
     "cold-retrieval": {
         "retrieval_only": True,
-        "unique_questions": True,
+        "unique_questions": False,
         "warmup": 2,
         "min_success_rate": 1.0,
         "min_hit_rate": 1.0,

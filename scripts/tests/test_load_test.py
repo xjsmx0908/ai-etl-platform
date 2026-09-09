@@ -61,7 +61,7 @@ class LoadTestGateTests(unittest.TestCase):
     def test_cold_retrieval_profile_sets_retrieval_only_and_budgets(self):
         args = self.mod.parse_args(["--profile", "cold-retrieval"])
         self.assertTrue(args.retrieval_only)
-        self.assertTrue(args.unique_questions)
+        self.assertFalse(args.unique_questions)
         self.assertEqual(args.warmup, 2)
         self.assertEqual(args.scenario, "cold-retrieval")
         self.assertEqual(args.max_p95_ms, 800.0)
@@ -169,6 +169,8 @@ class LoadTestGateTests(unittest.TestCase):
         self.assertIn("run_profile cold-retrieval", script)
         self.assertIn("run_profile cached-e2e", script)
         self.assertIn("RETRIEVAL_DIAGNOSTICS_ENABLED=true", script)
+        self.assertIn("SEMANTIC_CACHE_ENABLED=false", script)
+        self.assertIn("force-recreate", script)
         self.assertIn('mkdir -p "${REPORT_DIR}"', script)
         self.assertLess(script.index('mkdir -p "${REPORT_DIR}"'), script.index("docker compose up"))
         self.assertIn("workflow_dispatch", workflow)

@@ -54,7 +54,7 @@ These are engineering budgets for a local/mock stack, not production SLOs.
 
 | Profile | Path | success / top-hit | p95 | p99 | min qps |
 | --- | --- | --- | --- | --- | --- |
-| `cold-retrieval` | `retrieval_only`, unique questions, cache bypass via distinct queries | 100% | ≤ 800ms | ≤ 1500ms | ≥ 3 |
+| `cold-retrieval` | `retrieval_only`, semantic cache disabled | 100% | ≤ 800ms | ≤ 1500ms | ≥ 3 |
 | `cached-e2e` | repeated full `/v1/query` including mock generation | 100% | ≤ 400ms | ≤ 800ms | ≥ 5 |
 
 Explicit `--min-*` / `--max-*` flags override the profile. Sample size 40 is too

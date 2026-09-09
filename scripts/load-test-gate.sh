@@ -23,6 +23,7 @@ REQUESTS="${REQUESTS:-40}"
 CONCURRENCY="${CONCURRENCY:-5}"
 REPORT_DIR="${REPORT_DIR:-${ROOT_DIR}/docs/evals/reports}"
 export RETRIEVAL_DIAGNOSTICS_ENABLED=true
+export SEMANTIC_CACHE_ENABLED=false
 
 TMP_DIR="$(mktemp -d)"
 MOCK_LOG="${TMP_DIR}/mock-openai.log"
@@ -121,6 +122,23 @@ run_profile() {
 }
 
 run_profile cold-retrieval
+
+echo "[loadtest-gate] enabling semantic cache for cached-e2e"
+export SEMANTIC_CACHE_ENABLED=true
+docker compose up -d --force-recreate --no-deps query-api >/dev/null
+api_healthy=0
+for _ in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:${API_PORT}/healthz" >/dev/null; then
+    api_healthy=1
+    break
+  fi
+  sleep 2
+done
+if [[ "${api_healthy}" != "1" ]]; then
+  echo "[loadtest-gate] query-api not healthy after cache enable" >&2
+  docker compose logs --tail=80 query-api >&2 || true
+  exit 1
+fi
 run_profile cached-e2e
 
 echo "[loadtest-gate] PASS"
