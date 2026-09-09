@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -22,3 +23,14 @@ class QaQualityExperienceTests(unittest.TestCase):
         self.assertIn("离线评测", page)
         self.assertIn("不是某一次问答的即时评分", page)
         self.assertIn("不会改变在线问答结果", page)
+
+    def test_quality_compose_keeps_baked_evals_when_reports_empty(self):
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertNotIn("./docs/evals/reports:/app/public/evals", compose)
+        self.assertIn("./docs/evals/reports:/eval-reports:ro", compose)
+        self.assertIn("/eval-reports/latest.json", compose)
+        self.assertIn("/app/public/evals/latest.json", compose)
+        baked = json.loads((ROOT / "web" / "public" / "evals" / "latest.json").read_text(encoding="utf-8"))
+        self.assertEqual(baked["recall"][0]["k"], 1)
+        self.assertIn("value", baked["recall"][0])
+        self.assertTrue(baked["experiments"])

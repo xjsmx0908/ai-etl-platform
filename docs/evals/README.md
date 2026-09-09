@@ -12,7 +12,7 @@
 - `historical-golden-set.template.json` / `historical-data-intake.md`：私有历史集模板与脱敏流程。
 - `business-gold-approval.template.json`：业务 Gold 批准模板。
 - `public-datasets.json`：已审核公共数据集目录。
-- `reports/`、`private/`：本地产物，不提交。
+- `reports/`、`private/`：本地产物，不提交。`reports/latest.json` 是 `/quality` 使用的检索质量摘要；web 在启动时拷贝该文件覆盖烘焙副本，空目录不会再挡住 `web/public/evals/latest.json`。
 
 ## 运行
 

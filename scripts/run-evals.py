@@ -45,6 +45,13 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GOLDEN_SET = ROOT / "docs" / "evals" / "golden-set.json"
 DEFAULT_REPORT_DIR = ROOT / "docs" / "evals" / "reports"
 EVAL_COMPOSE_FILE = ROOT / "docker-compose.eval.yml"
+QUALITY_LATEST_NAME = "latest.json"
+BAKED_QUALITY_LATEST = ROOT / "web" / "public" / "evals" / "latest.json"
+QUALITY_RECALL_NOTES = {
+    1: "目标文档排第 1 的比例",
+    3: "目标在前 3 名",
+    5: "目标在前 5 名（可找到）",
+}
 NOT_FOUND_ANSWER = "未找到相关文档，无法回答该问题。"
 
 # Refusal detection must not depend on any single model's phrasing.
@@ -1804,7 +1811,62 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
             )
 
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_quality_latest(report_dir, result, json_path.name)
     return json_path, md_path
+
+
+def _load_quality_latest_template(report_dir: Path) -> Dict[str, Any]:
+    for candidate in (report_dir / QUALITY_LATEST_NAME, BAKED_QUALITY_LATEST):
+        if not candidate.is_file():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def write_quality_latest(report_dir: Path, result: Dict[str, Any], source_name: str) -> Path | None:
+    if str(result.get("model_mode", "")).lower() != "real":
+        return None
+    summary = result.get("summary") or {}
+    if summary.get("run_valid") is False:
+        return None
+
+    existing = _load_quality_latest_template(report_dir)
+    models = result.get("models") or {}
+    dataset = result.get("dataset") or {}
+
+    def pct(key: str) -> int:
+        return int(round(float(summary.get(key, 0) or 0) * 100))
+
+    dataset_label = str(existing.get("dataset") or "")
+    name = str(dataset.get("name") or "").strip()
+    case_count = dataset.get("case_count")
+    if name:
+        dataset_label = f"{name} ({case_count} cases)" if case_count not in (None, "") else name
+
+    payload = {
+        "source_report": source_name,
+        "timestamp": result.get("timestamp") or existing.get("timestamp"),
+        "model_mode": "real",
+        "embed_model": models.get("embed_model") or existing.get("embed_model"),
+        "embed_dimension": models.get("embed_dimension") or existing.get("embed_dimension"),
+        "llm_model": models.get("llm_model") or existing.get("llm_model"),
+        "dataset": dataset_label,
+        "recall": [
+            {"k": 1, "value": pct("recall_at_1"), "note": QUALITY_RECALL_NOTES[1]},
+            {"k": 3, "value": pct("recall_at_3"), "note": QUALITY_RECALL_NOTES[3]},
+            {"k": 5, "value": pct("recall_at_5"), "note": QUALITY_RECALL_NOTES[5]},
+        ],
+        "noise_floor": existing.get("noise_floor", 4.26),
+        "experiments": existing.get("experiments") or [],
+    }
+    latest_path = report_dir / QUALITY_LATEST_NAME
+    latest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return latest_path
 
 
 def main() -> int:
@@ -1923,7 +1985,7 @@ def main() -> int:
     golden_set_path = Path(args.golden_set)
     report_dir = Path(args.report_dir)
     # Pre-create the report dir as the running user BEFORE docker compose up: the
-    # web service mounts docs/evals/reports (ro) as a volume, and Docker creates
+    # web service mounts docs/evals/reports at /eval-reports, and Docker creates
     # a missing mount source as root — which would make this directory unwritable
     # by the non-root CI user later.
     report_dir.mkdir(parents=True, exist_ok=True)

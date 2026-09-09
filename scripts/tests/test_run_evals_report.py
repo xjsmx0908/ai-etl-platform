@@ -1225,10 +1225,68 @@ class JudgeReportTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             json_path, _ = module.write_report(Path(tmp), result)
             payload = json.loads(json_path.read_text(encoding="utf-8"))
+            latest_exists = (Path(tmp) / "latest.json").exists()
 
         self.assertEqual(payload["summary"]["successful_query_cases"], 1)
         self.assertEqual(payload["summary"]["grounding_unavailable_cases"], 1)
         self.assertFalse(payload["summary"]["run_valid"])
+        self.assertFalse(latest_exists)
+
+    def test_real_report_writes_quality_latest_json(self):
+        module = self._load_module("run_evals_quality_latest_real")
+        result = _minimal_result(model_mode="real", embed_model="bge-m3")
+        result["models"]["embed_dimension"] = 1024
+        result["models"]["llm_model"] = "deepseek-v4-flash"
+        result["summary"]["recall_at_1"] = 0.55
+        result["summary"]["recall_at_3"] = 0.68
+        result["summary"]["recall_at_5"] = 0.71
+        result["dataset"] = {"name": "semantic-golden-set.json", "case_count": 44}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, _ = module.write_report(Path(tmp), result)
+            latest = json.loads((Path(tmp) / "latest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(latest["source_report"], json_path.name)
+        self.assertEqual(latest["model_mode"], "real")
+        self.assertEqual(latest["embed_model"], "bge-m3")
+        self.assertEqual(latest["embed_dimension"], 1024)
+        self.assertEqual(
+            latest["recall"][0],
+            {"k": 1, "value": 55, "note": "目标文档排第 1 的比例"},
+        )
+        self.assertEqual(latest["recall"][1]["value"], 68)
+        self.assertEqual(latest["recall"][2]["value"], 71)
+        self.assertEqual(latest["dataset"], "semantic-golden-set.json (44 cases)")
+        self.assertEqual(latest["noise_floor"], 4.26)
+        self.assertTrue(latest["experiments"])
+
+    def test_mock_report_does_not_overwrite_quality_latest_json(self):
+        module = self._load_module("run_evals_quality_latest_mock")
+        existing = {"source_report": "keep-me.json", "model_mode": "real", "recall": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            latest_path = Path(tmp) / "latest.json"
+            latest_path.write_text(json.dumps(existing), encoding="utf-8")
+            module.write_report(Path(tmp), _minimal_result(model_mode="mock"))
+            payload = json.loads(latest_path.read_text(encoding="utf-8"))
+            created = list(Path(tmp).glob("eval-*.json"))
+        self.assertTrue(created)
+        self.assertEqual(payload["source_report"], "keep-me.json")
+
+    def test_real_report_preserves_existing_quality_experiments(self):
+        module = self._load_module("run_evals_quality_latest_preserve")
+        result = _minimal_result(model_mode="real", embed_model="bge-m3")
+        result["summary"]["recall_at_1"] = 0.4
+        existing = {
+            "noise_floor": 1.5,
+            "experiments": [{"title": "custom", "verdict": "keep", "detail": "x", "good": True}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "latest.json").write_text(json.dumps(existing), encoding="utf-8")
+            module.write_report(Path(tmp), result)
+            latest = json.loads((Path(tmp) / "latest.json").read_text(encoding="utf-8"))
+        self.assertEqual(latest["noise_floor"], 1.5)
+        self.assertEqual(latest["experiments"][0]["title"], "custom")
+        self.assertEqual(latest["recall"][0]["value"], 40)
 
 
 class PublicationReadinessTest(unittest.TestCase):

@@ -595,10 +595,19 @@ services:
     ports:
       - "${WEB_HOST_PORT:-3100}:3000"
     volumes:
-      # Latest retrieval-quality eval summary served statically at /evals/latest.json.
-      # Mounting docs/evals/reports over the baked copy lets re-running the eval
-      # update the 检索质量 tab without rebuilding the web image.
-      - ./docs/evals/reports:/app/public/evals:ro
+      # Optional live eval summary. Do not overlay /app/public/evals with the
+      # reports directory: an empty host dir hides the baked latest.json and
+      # 404s /quality. Copy the file over the baked fallback when present.
+      - ./docs/evals/reports:/eval-reports:ro
+    command:
+      - sh
+      - -c
+      - |
+        if [ -f /eval-reports/latest.json ]; then
+          mkdir -p /app/public/evals
+          cp /eval-reports/latest.json /app/public/evals/latest.json
+        fi
+        exec node server.js
     depends_on:
       query-api:
         condition: service_healthy

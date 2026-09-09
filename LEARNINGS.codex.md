@@ -249,3 +249,10 @@
 - Reason：前端必须按角色禁用，并说明无权限；不能只靠后端拒绝。
 - Act：抽出 `canUploadDocuments`；只读禁用文件/空间/密级/上传，展示「没有数据接入权限」。
 - Refine：`px-readonly` 按钮与文件选择均 disabled，无 forbidden；`px-user` 选文件后仍可上传。下一步 UAT-007，不重跑 D0–D4 / UAT-010 / UAT-011 / UAT-012。
+
+## 2026-09-09 - 修复 UAT-007 检索质量报告未挂载
+
+- Perceive：PX-09 空状态已过。`docs/evals/reports/` 为空，compose 把该目录挂到 `/app/public/evals`，盖掉烘焙 `latest.json`，`/evals/latest.json` 404。
+- Reason：禁止空 reports 覆盖 public/evals；有 `latest.json` 再拷贝。real eval 应写出质量页 schema 的 `latest.json`，mock/invalid 不覆盖。
+- Act：compose 改挂 `/eval-reports` 并 copy-if-present；`write_report()` 写 latest.json；契约测试覆盖。
+- Refine：`px-user` 打开 `/quality` 见 Recall@1 55% 与离线评测说明。下一步 UAT-013，不重跑 D0–D4 / UAT-007 / UAT-010 / UAT-011 / UAT-012。
