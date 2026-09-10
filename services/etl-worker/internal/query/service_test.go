@@ -1,6 +1,7 @@
 package query
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -367,14 +368,15 @@ func TestHandleQueryStreamingReportsGroundingVerdict(t *testing.T) {
 
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		content := "办公用品通过 OA 申领。来源: policy"
 		if strings.Contains(string(body), "回答：") {
-			content = `{"supported": true, "answers_question": true}`
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"message": map[string]string{"content": `{"supported": true, "answers_question": true}`}}},
+			})
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"choices": []map[string]any{{"message": map[string]string{"content": content}}},
-		})
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"办公用品通过 OA 申领。来源: policy\"}}]}\n\ndata: [DONE]\n\n")
 	}))
 	defer llmSrv.Close()
 	t.Setenv("LLM_ENDPOINT", llmSrv.URL)
@@ -401,6 +403,202 @@ func TestHandleQueryStreamingReportsGroundingVerdict(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `"grounding_checked":true`) || !strings.Contains(body, `"grounding_passed":true`) {
 		t.Fatalf("expected SSE grounding verdict, got %s", body)
+	}
+}
+
+func TestHandleQueryStreamingEmitsTokensBeforeGrounding(t *testing.T) {
+	firstDelta := make(chan struct{})
+	doneSeen := make(chan struct{})
+	groundingStarted := make(chan struct{})
+	releaseGeneration := make(chan struct{}, 1)
+	releaseGrounding := make(chan struct{}, 1)
+	t.Cleanup(func() {
+		select {
+		case releaseGeneration <- struct{}{}:
+		default:
+		}
+		select {
+		case releaseGrounding <- struct{}{}:
+		default:
+		}
+	})
+
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+	}))
+	defer embedSrv.Close()
+
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"points":[{"score":0.5,"payload":{"chunk_id":"policy-1","doc_id":"policy","content":"办公用品通过 OA 申领。","tenant_id":"tenant-a"}}]}}`))
+	}))
+	defer qdrantSrv.Close()
+
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "回答：") {
+			select {
+			case <-groundingStarted:
+			default:
+				close(groundingStarted)
+			}
+			<-releaseGrounding
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"message": map[string]string{"content": `{"supported": true, "answers_question": true}`}}},
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := http.NewResponseController(w)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"办公用品通过 OA 申领。来源: policy\"}}]}\n\n")
+		_ = flusher.Flush()
+		<-releaseGeneration
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		_ = flusher.Flush()
+	}))
+	defer llmSrv.Close()
+	t.Setenv("LLM_ENDPOINT", llmSrv.URL)
+
+	svc := NewService(config.Config{
+		EmbedEndpoint:               embedSrv.URL,
+		EmbedModel:                  "test-embed",
+		StoreEndpoint:               qdrantSrv.URL,
+		StoreCollection:             "docs",
+		RetrievalGroundingCheck:     true,
+		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingHighBound: 0.7,
+		SparseK1:                    1.2,
+		SparseB:                     0.75,
+		SparseAvgDL:                 256,
+	})
+	querySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), auth.CtxTenantID, "tenant-a")
+		ctx = context.WithValue(ctx, auth.CtxPermission, "user")
+		svc.HandleQueryStreaming(w, r.WithContext(ctx))
+	}))
+	defer querySrv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, querySrv.URL, strings.NewReader(`{"question":"办公用品","top_k":5}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer resp.Body.Close()
+
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		event := ""
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "event:") {
+				event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			}
+			if line == "" {
+				if event == "delta" {
+					select {
+					case <-firstDelta:
+					default:
+						close(firstDelta)
+					}
+				}
+				if event == "done" {
+					select {
+					case <-doneSeen:
+					default:
+						close(doneSeen)
+					}
+				}
+				event = ""
+			}
+		}
+	}()
+
+	select {
+	case <-firstDelta:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected first answer token before grounding finished")
+	}
+	select {
+	case <-groundingStarted:
+		t.Fatal("grounding started before the first streamed token")
+	default:
+	}
+	releaseGeneration <- struct{}{}
+	select {
+	case <-groundingStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected grounding after generation")
+	}
+	releaseGrounding <- struct{}{}
+	select {
+	case <-doneSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected streaming query to finish after grounding")
+	}
+}
+
+func TestHandleQueryStreamingReplacesAnswerWhenGroundingFails(t *testing.T) {
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+	}))
+	defer embedSrv.Close()
+
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"points":[{"score":0.52,"payload":{"chunk_id":"training-1","doc_id":"training","content":"项目成员必须每季度完成安全培训。","tenant_id":"tenant-a"}}]}}`))
+	}))
+	defer qdrantSrv.Close()
+
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "回答：") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"message": map[string]string{"content": `{"supported":true,"answers_question":false}`}}},
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"项目成员必须每季度完成安全培训。来源: training\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer llmSrv.Close()
+	t.Setenv("LLM_ENDPOINT", llmSrv.URL)
+
+	svc := NewService(config.Config{
+		EmbedEndpoint:               embedSrv.URL,
+		EmbedModel:                  "test-embed",
+		StoreEndpoint:               qdrantSrv.URL,
+		StoreCollection:             "docs",
+		RetrievalGroundingCheck:     true,
+		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingHighBound: 0.7,
+		SparseK1:                    1.2,
+		SparseB:                     0.75,
+		SparseAvgDL:                 256,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/query", strings.NewReader(`{"question":"机密项目的成员名单是什么？","top_k":5}`))
+	ctx := context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a")
+	ctx = context.WithValue(ctx, auth.CtxPermission, "user")
+	w := httptest.NewRecorder()
+	svc.HandleQueryStreaming(w, req.WithContext(ctx))
+
+	body := w.Body.String()
+	if !strings.Contains(body, "项目成员必须每季度完成安全培训。") {
+		t.Fatalf("expected streamed provisional answer, got %s", body)
+	}
+	if !strings.Contains(body, "event: replace") || !strings.Contains(body, NoEvidenceAnswer) {
+		t.Fatalf("expected streamed answer to be replaced by canonical refusal, got %s", body)
+	}
+	if !strings.Contains(body, `"grounding_checked":true`) || strings.Contains(body, `"grounding_passed":true`) {
+		t.Fatalf("expected failed grounding verdict in done event, got %s", body)
 	}
 }
 

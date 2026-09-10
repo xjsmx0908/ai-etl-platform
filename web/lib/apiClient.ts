@@ -362,6 +362,7 @@ export type QuerySSEHandlers = {
   onStatus?: (progress: { stage: string; message: string; state: string }) => void;
   onSources?: (sources: Source[]) => void;
   onDelta?: (text: string) => void;
+  onReplace?: (text: string) => void;
   onDone?: (meta: AnswerMeta) => void;
   onError?: (message: string) => void;
 };

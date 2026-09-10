@@ -2,6 +2,7 @@ type QuerySSEStreamHandlers<TSource, TMeta> = {
   onStatus?: (progress: { stage: string; message: string; state: string }) => void;
   onSources?: (sources: TSource[]) => void;
   onDelta?: (text: string) => void;
+  onReplace?: (text: string) => void;
   onDone?: (meta: TMeta) => void;
   onError?: (message: string) => void;
 };
@@ -41,12 +42,22 @@ export async function consumeQuerySSEStream<TSource = unknown, TMeta = { duratio
         case "delta":
           handlers.onDelta?.(payload.text || "");
           break;
+        case "replace":
+          handlers.onReplace?.(payload.text || "");
+          if (payload.sources || payload.citations) {
+            handlers.onSources?.((payload.citations || payload.sources || []) as TSource[]);
+          }
+          break;
         case "done":
           handlers.onDone?.({
             duration: payload.duration || "",
             token_usage: payload.token_usage,
             prompt_version: payload.prompt_version,
             retrieval: payload.retrieval,
+            answer: payload.answer,
+            sources: payload.sources,
+            citations: payload.citations,
+            ttft: payload.ttft,
           } as TMeta);
           return "done";
         case "error":

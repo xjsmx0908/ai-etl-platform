@@ -91,6 +91,38 @@ async function testDoneDoesNotWaitForEOF() {
   }
 }
 
+async function testReplaceAndDoneAnswerAreCanonical() {
+  const received = { replace: [], done: [], sources: [], deltas: [] };
+  const body = hangingStream(
+    encodeEvents([
+      { event: "delta", data: { text: "provisional" } },
+      { event: "replace", data: { text: "未找到相关文档，无法回答该问题。", sources: [] } },
+      { event: "done", data: { duration: "1s", answer: "未找到相关文档，无法回答该问题。", sources: [], citations: [] } },
+    ])
+  );
+
+  await withTimeout(
+    consumeQuerySSEStream(body, {
+      onDelta: (text) => received.deltas.push(text),
+      onReplace: (text) => received.replace.push(text),
+      onSources: (sources) => received.sources.push(sources),
+      onDone: (meta) => received.done.push(meta),
+    }),
+    500,
+    "replace-and-done"
+  );
+
+  if (received.deltas.join("") !== "provisional") {
+    throw new Error(`unexpected deltas: ${JSON.stringify(received.deltas)}`);
+  }
+  if (received.replace.join("") !== "未找到相关文档，无法回答该问题。") {
+    throw new Error(`unexpected replace: ${JSON.stringify(received.replace)}`);
+  }
+  if (received.done.length !== 1 || received.done[0].answer !== "未找到相关文档，无法回答该问题。") {
+    throw new Error(`expected canonical done.answer, got ${JSON.stringify(received.done)}`);
+  }
+}
+
 async function testErrorDoesNotWaitForEOF() {
   const received = { errors: [], done: [] };
   const body = hangingStream(
@@ -116,6 +148,7 @@ async function testErrorDoesNotWaitForEOF() {
 
 async function main() {
   await testDoneDoesNotWaitForEOF();
+  await testReplaceAndDoneAnswerAreCanonical();
   await testErrorDoesNotWaitForEOF();
   console.log("ok");
 }

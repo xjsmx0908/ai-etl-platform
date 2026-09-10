@@ -169,6 +169,14 @@ type QueryProgress struct {
 	State   string `json:"state"`
 }
 
+// queryStream lets the SSE handler observe retrieval and generation as they
+// happen. JSON callers pass a zero value and keep the fully buffered path.
+type queryStream struct {
+	progress func(QueryProgress)
+	sources  func(retrieved []SourceContext)
+	delta    func(text string)
+}
+
 // Response represents the query result returned to the client.
 type Response struct {
 	Answer string `json:"answer"`
@@ -179,6 +187,9 @@ type Response struct {
 	RetrievedSources []SourceContext `json:"retrieved_sources"`
 	Citations        []SourceContext `json:"citations"`
 	Duration         string          `json:"duration"`
+	// TimeToFirstToken is set on the streaming path: request start to first
+	// visible answer token. Omitted for JSON callers.
+	TimeToFirstToken string `json:"ttft,omitempty"`
 	// TokenUsage is populated when the LLM provider reports usage. Omitted
 	// otherwise so callers can rely on zero value meaning "not reported".
 	TokenUsage *TokenUsage `json:"token_usage,omitempty"`
@@ -486,10 +497,10 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 
 // Ask executes the RAG query pipeline for an authenticated caller.
 func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (response Response, err error) {
-	return s.ask(ctx, req, access, nil)
+	return s.ask(ctx, req, access, queryStream{})
 }
 
-func (s *Service) ask(ctx context.Context, req Request, access AccessContext, progress func(QueryProgress)) (response Response, err error) {
+func (s *Service) ask(ctx context.Context, req Request, access AccessContext, stream queryStream) (response Response, err error) {
 	ctx, askSpan := s.tracer.Start(ctx, "QueryService.Ask")
 	defer func() {
 		if err != nil {
@@ -537,8 +548,8 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, pr
 
 	start := time.Now()
 	emit := func(stage, message, state string) {
-		if progress != nil {
-			progress(QueryProgress{Stage: stage, Message: message, State: state})
+		if stream.progress != nil {
+			stream.progress(QueryProgress{Stage: stage, Message: message, State: state})
 		}
 	}
 	emit("preparing", "正在确认检索范围…", "completed")
@@ -677,8 +688,23 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, pr
 	)
 
 	emit("screening", "证据筛选完成", "completed")
+	if stream.sources != nil {
+		stream.sources(sources)
+	}
 	emit("generating", "正在根据证据生成回答…", "running")
-	answer, usage, err := s.generateAnswer(ctx, req.Question, sources)
+	var ttft time.Duration
+	var answer string
+	var usage llmCallResult
+	if stream.delta != nil {
+		answer, usage, err = s.generateAnswerStreaming(ctx, req.Question, sources, func(text string) {
+			if ttft == 0 {
+				ttft = time.Since(start)
+			}
+			stream.delta(text)
+		})
+	} else {
+		answer, usage, err = s.generateAnswer(ctx, req.Question, sources)
+	}
 	if err != nil {
 		slog.Error("LLM generation failed", "error", err)
 		return Response{}, fmt.Errorf("%w: %v", ErrGenerationFailed, err)
@@ -691,14 +717,18 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, pr
 	if answer == NoEvidenceAnswer {
 		emit("refused", "回答缺少可验证证据", "completed")
 		span.SetAttributes(attribute.Bool("llm.refused_for_lack_of_evidence", true))
-		return Response{
+		resp := Response{
 			Answer:           NoEvidenceAnswer,
 			Sources:          []SourceContext{},
 			RetrievedSources: []SourceContext{},
 			Citations:        []SourceContext{},
 			Duration:         time.Since(start).String(),
 			Retrieval:        annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions)),
-		}, nil
+		}
+		if ttft > 0 {
+			resp.TimeToFirstToken = ttft.String()
+		}
+		return resp, nil
 	}
 
 	// Post-generation answer verification. The relevance band is ambiguous: on
@@ -737,14 +767,18 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, pr
 		info := annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions))
 		info.GroundingChecked = true
 		info.GroundingPassed = false
-		return Response{
+		resp := Response{
 			Answer:           NoEvidenceAnswer,
 			Sources:          []SourceContext{},
 			RetrievedSources: []SourceContext{},
 			Citations:        []SourceContext{},
 			Duration:         time.Since(start).String(),
 			Retrieval:        info,
-		}, nil
+		}
+		if ttft > 0 {
+			resp.TimeToFirstToken = ttft.String()
+		}
+		return resp, nil
 	}
 
 	var tokenUsage *TokenUsage
@@ -771,6 +805,9 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, pr
 		PromptVersion:    s.promptVersion,
 		Retrieval:        retrievalInfo,
 	}
+	if ttft > 0 {
+		resp.TimeToFirstToken = ttft.String()
+	}
 	emit("verifying", "回答校验完成", "completed")
 	emit("finalizing", "正在整理回答和引用…", "running")
 	emit("finalizing", "回答和引用整理完成", "completed")
@@ -789,16 +826,18 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, pr
 }
 
 // HandleQueryStreaming serves POST /v1/query with SSE when the client sends
-// Accept: text/event-stream. Retrieval happens first; the sources event is sent
-// before the first answer token, so clients can render citations while the LLM
-// streams. Streams also record time-to-first-token.
+// Accept: text/event-stream. Retrieval and generation stream incrementally.
+// Grounding still runs before the done event; if it rejects the answer, a
+// replace event overwrites any provisional tokens.
 //
 // Event protocol:
 //
-//	event: sources   data: {"sources":[...]}
-//	event: delta     data: {"text":"..."}
-//	event: done      data: {"token_usage":{...},"duration":"..."}
-//	event: error     data: {"error":"..."}
+//	event: status   data: {"stage":"...","message":"...","state":"..."}
+//	event: sources  data: {"sources":[...],"retrieved_sources":[...]}
+//	event: delta    data: {"text":"..."}
+//	event: replace  data: {"text":"...","sources":[...]}
+//	event: done     data: {"answer":"...","duration":"...","retrieval":{...}}
+//	event: error    data: {"error":"..."}
 func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -824,14 +863,41 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher := http.NewResponseController(w)
-	writeSSEStatus := func(progress QueryProgress) {
-		payload, _ := json.Marshal(progress)
-		fmt.Fprintf(w, "event: status\ndata: %s\n\n", payload)
+	writeEvent := func(event string, payload any) {
+		body, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, body)
 		_ = flusher.Flush()
+	}
+	writeSSEStatus := func(progress QueryProgress) {
+		writeEvent("status", progress)
 	}
 	writeSSEStatus(QueryProgress{Stage: "preparing", Message: "正在确认检索范围…", State: "running"})
 
-	resp, err := s.ask(r.Context(), req, AccessContext{TenantID: tenantID, UserID: auth.GetUserID(r.Context()), Role: role}, writeSSEStatus)
+	var streamed strings.Builder
+	sourcesSent := false
+	writeSources := func(retrieved, citations []SourceContext) {
+		sourcesSent = true
+		shown := citations
+		if len(shown) == 0 {
+			shown = retrieved
+		}
+		writeEvent("sources", map[string]any{
+			"sources":           shown,
+			"citations":         citations,
+			"retrieved_sources": retrieved,
+		})
+	}
+
+	resp, err := s.ask(r.Context(), req, AccessContext{TenantID: tenantID, UserID: auth.GetUserID(r.Context()), Role: role}, queryStream{
+		progress: writeSSEStatus,
+		sources: func(retrieved []SourceContext) {
+			writeSources(retrieved, nil)
+		},
+		delta: func(text string) {
+			streamed.WriteString(text)
+			writeEvent("delta", map[string]string{"text": text})
+		},
+	})
 	if err != nil {
 		failureMessage := "问答处理失败，请稍后重试"
 		switch {
@@ -854,33 +920,36 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The answer is fully validated before the first event. This intentionally
-	// trades time-to-first-token for parity with the JSON path: an answer that is
-	// later rejected by relevance, governance, refusal, or grounding must never
-	// have already leaked provisional text or citations to the browser.
-	sourcesPayload, _ := json.Marshal(map[string]interface{}{
+	if !sourcesSent {
+		writeSources(resp.RetrievedSources, resp.Citations)
+	}
+	if streamed.Len() == 0 {
+		writeEvent("delta", map[string]string{"text": resp.Answer})
+	} else if streamed.String() != resp.Answer || resp.Answer == NoEvidenceAnswer {
+		writeEvent("replace", map[string]any{
+			"text":              resp.Answer,
+			"sources":           resp.Citations,
+			"citations":         resp.Citations,
+			"retrieved_sources": resp.RetrievedSources,
+		})
+	}
+
+	done := map[string]any{
+		"answer":            resp.Answer,
 		"sources":           resp.Citations,
 		"citations":         resp.Citations,
 		"retrieved_sources": resp.RetrievedSources,
-	})
-	fmt.Fprintf(w, "event: sources\ndata: %s\n\n", sourcesPayload)
-	flusher.Flush()
-
-	answerPayload, _ := json.Marshal(resp.Answer)
-	fmt.Fprintf(w, "event: delta\ndata: {\"text\":%s}\n\n", answerPayload)
-	flusher.Flush()
-
-	done := map[string]interface{}{
-		"duration":       resp.Duration,
-		"prompt_version": resp.PromptVersion,
-		"retrieval":      resp.Retrieval,
+		"duration":          resp.Duration,
+		"prompt_version":    resp.PromptVersion,
+		"retrieval":         resp.Retrieval,
+	}
+	if resp.TimeToFirstToken != "" {
+		done["ttft"] = resp.TimeToFirstToken
 	}
 	if resp.TokenUsage != nil {
 		done["token_usage"] = resp.TokenUsage
 	}
-	donePayload, _ := json.Marshal(done)
-	fmt.Fprintf(w, "event: done\ndata: %s\n\n", donePayload)
-	flusher.Flush()
+	writeEvent("done", done)
 }
 
 func writeSSEError(w http.ResponseWriter, message string) {
@@ -935,6 +1004,26 @@ func AllowedPermissionsForRole(role string) []string {
 }
 
 func (s *Service) generateAnswer(ctx context.Context, question string, sources []SourceContext) (answer string, usage llmCallResult, err error) {
+	return s.completeAnswer(ctx, question, sources, nil)
+}
+
+func (s *Service) generateAnswerStreaming(ctx context.Context, question string, sources []SourceContext, onDelta func(string)) (answer string, usage llmCallResult, err error) {
+	if onDelta == nil {
+		onDelta = func(string) {}
+	}
+	return s.completeAnswer(ctx, question, sources, onDelta)
+}
+
+func enableChatStream(data []byte) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, err
+	}
+	body["stream"] = true
+	return json.Marshal(body)
+}
+
+func (s *Service) completeAnswer(ctx context.Context, question string, sources []SourceContext, onDelta func(string)) (answer string, usage llmCallResult, err error) {
 	_, promptSpan := s.tracer.Start(ctx, "Prompt.Build")
 	data, contextChars, err := s.buildPrompt(question, sources)
 	if err != nil {
@@ -969,6 +1058,45 @@ func (s *Service) generateAnswer(ctx context.Context, question string, sources [
 	defer func() {
 		s.llmObserver.RecordLLMRequest(s.llmModel, llmOutcome, time.Since(llmStarted))
 	}()
+
+	if onDelta != nil {
+		streamData, streamErr := enableChatStream(data)
+		if streamErr != nil {
+			llmOutcome = llmOutcomeInvalidResponse
+			return "", llmCallResult{}, streamErr
+		}
+		var assembled strings.Builder
+		result, err := s.breaker.Execute(func() (any, error) {
+			return s.streamChat(ctx, streamData, func(delta string) {
+				assembled.WriteString(delta)
+				onDelta(delta)
+			})
+		})
+		if err != nil {
+			llmOutcome = classifyLLMOutcome(err)
+			return "", llmCallResult{}, err
+		}
+		streamResult, ok := result.(llmStreamResult)
+		content := assembled.String()
+		if !ok || strings.TrimSpace(content) == "" {
+			llmOutcome = llmOutcomeInvalidResponse
+			return "", llmCallResult{}, newLLMCallError(llmOutcomeInvalidResponse, errors.New("empty LLM response"))
+		}
+		call := llmCallResult{
+			Content:          content,
+			PromptTokens:     streamResult.PromptTokens,
+			CompletionTokens: streamResult.CompletionTokens,
+		}
+		if call.PromptTokens > 0 || call.CompletionTokens > 0 {
+			s.llmObserver.RecordLLMTokens(s.llmModel, call.PromptTokens, call.CompletionTokens)
+		}
+		llmSpan.SetAttributes(
+			attribute.Int("gen_ai.usage.prompt_tokens", int(call.PromptTokens)),
+			attribute.Int("gen_ai.usage.completion_tokens", int(call.CompletionTokens)),
+			attribute.Int("gen_ai.response.chars", len(content)),
+		)
+		return content, call, nil
+	}
 
 	result, err := s.breaker.Execute(func() (any, error) {
 		return s.callLLM(ctx, data)

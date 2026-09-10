@@ -26,6 +26,8 @@ class QuerySSEClientTests(unittest.TestCase):
     def test_qa_page_renders_completed_marker_after_sse_done(self):
         page = (ROOT / "web" / "app" / "(app)" / "qa" / "page.tsx").read_text(encoding="utf-8")
         self.assertIn('onDone: (m) => {', page)
+        self.assertIn("typeof m.answer === \"string\"", page)
+        self.assertIn("onReplace: (text) => setAnswer(text)", page)
         self.assertIn('setStatus("done")', page)
         self.assertIn('setPhase("回答已完成")', page)
         self.assertIn('{status === "done" && <span', page)

@@ -26,6 +26,7 @@
 | P-CAP-1 | 入库容量包络 | done | 脚本与契约测试已落地。演示栈 CPU bge-m3：short-text 2 chunk / 11s，typical-doc 12 chunk / 24s。扫描 PDF 仍用 `--fixture-file` | [`ingestion-capacity.md`](ingestion-capacity.md) |
 | P-CAP-2 | 真实模型 RAG 质量 | blocked | 停演示栈或换机器后运行 `python3 scripts/run-evals.py --real-models --embed-dim 1024` | [`evals/README.md`](evals/README.md) |
 | P-CAP-3 | 真实问答时延观察 | pending | 入库完成后串行 5–10 次完整 `/v1/query`，不回写 L1 阈值 | [`ingestion-capacity.md`](ingestion-capacity.md) |
+| P-CAP-5 | 问答真流式 | done | SSE 在 grounding 前推送 token；校验失败发 `replace`；`done.answer` 为最终答案 | 本文件 |
 | P-CAP-4 | 入库阶段耗时展示 | done | 任务/文档返回 `stage_timings`；上传页和文档页展示；Grafana Parse/Embed/Store/OCR p95。演示栈短文本 parse 4ms / embed 7.9s / store 314ms / total 8.2s | 本文件 |
 
 ## Product experience UAT

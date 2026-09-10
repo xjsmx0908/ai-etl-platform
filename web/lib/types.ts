@@ -196,6 +196,10 @@ export type AnswerMeta = {
   token_usage?: TokenUsage;
   prompt_version?: string;
   duration?: string;
+  answer?: string;
+  sources?: Source[];
+  citations?: Source[];
+  ttft?: string;
 };
 
 export type TaskStatus = {

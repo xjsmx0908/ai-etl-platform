@@ -312,3 +312,10 @@
 - Reason：在当前 Compose 记阶段耗时：任务 Redis JSON、documents.stage_timings、Prometheus histogram、上传页和文档页。
 - Act：pipeline 计时 + observer；migration 0029；API `stage_timings`；Grafana Parse/Embed/Store/OCR p95。完成态保留 chunks_done。
 - Refine：Go 测试通过。演示栈短文本 `doc-1789008297108283450`：parse 4ms / embed 7868ms / store 314ms / total 8231ms。旧文档仍显示 —。
+
+## 2026-09-10 - 问答 SSE 真流式
+
+- Perceive：工作台虽发 `Accept: text/event-stream`，但 `/v1/query` 等 generate + grounding 全部结束后才吐一个 delta，首字等于整段完成。
+- Reason：检索通过后即可推 token；JSON 路径保持整段返回。grounding 仍在 done 前执行，失败用 `replace` 覆盖，避免未校验答案成为终态。
+- Act：`ask` 增加 `queryStream`；流式走 `streamChat`；`done.answer` 为最终答案。Web 用 `replace`/`done.answer` 覆盖。
+- Refine：`go test ./internal/query` 与 `scripts.tests.test_query_sse_client` 通过。入库仍受 CPU embedding 限制，本切片不改。

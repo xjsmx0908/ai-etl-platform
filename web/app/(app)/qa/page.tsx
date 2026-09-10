@@ -155,7 +155,11 @@ export default function QaPage() {
           },
           onSources: (s) => setCitations(s),
           onDelta: (text) => setAnswer((prev) => prev + text),
+          onReplace: (text) => setAnswer(text),
           onDone: (m) => {
+            if (typeof m.answer === "string") setAnswer(m.answer);
+            if (m.citations) setCitations(m.citations);
+            else if (m.sources) setCitations(m.sources);
             setMeta(m);
             setStatus("done");
             setActiveStage("completed");
