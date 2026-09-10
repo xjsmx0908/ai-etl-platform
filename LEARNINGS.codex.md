@@ -347,3 +347,10 @@
 - Reason：保留 phrase 高精度，把 fallback 改成 OR + `minimum_should_match=50%`。不改镜像、不重建索引、不停演示栈。
 - Act：`titleAwareShouldClauses` 的 content match 改为 OR/50%；更新检索单测。
 - Refine：`go test ./internal/retrieval ./internal/es -count=1` 通过。这不能让无关第二篇变成必中。
+
+## 2026-09-10 - 表格切块保留表头
+
+- Perceive：大表按字符切断后，后面的行丢掉「工号/姓名」表头；噪声过滤器还可能把稀疏花名册当空表丢掉。
+- Reason：Sheet 标记当作分界；超大 sheet 按行切并在每块重复表头；带 tab 的表格不走密度丢弃。
+- Act：`chunker.py` 增加 tabular split；测试覆盖花名册、多 sheet、超大切块重复表头。
+- Refine：parser `tests/test_chunker.py tests/test_office_parsers.py` 17 passed。未停演示栈、未重跑真实评测。

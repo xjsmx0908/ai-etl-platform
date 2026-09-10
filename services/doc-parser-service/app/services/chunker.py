@@ -45,10 +45,11 @@ def chunk_text(
     chunk_idx = 0
     
     for line in lines:
-        # PDF page markers are explicit semantic boundaries. Without this,
-        # extracted pages can be repeatedly accumulated through short blank-line
-        # buffers and produce a staircase of near-duplicate chunks.
-        if re.match(r"^--- Page \d+ ---$", line.strip()) and buffer:
+        # PDF page markers and spreadsheet sheet markers are explicit semantic
+        # boundaries. Without this, extracted pages/sheets can be repeatedly
+        # accumulated through short blank-line buffers and produce a staircase
+        # of near-duplicate chunks, or mix unrelated tables.
+        if is_section_marker(line) and buffer:
             current = '\n'.join(buffer).strip()
             if current:
                 chunks.extend(
@@ -96,9 +97,10 @@ def chunk_text(
         
         buffer.append(line)
         
-        # Force split if buffer exceeds max size
+        # Force split if buffer exceeds max size. Spreadsheet sheets stay intact
+        # until a section boundary so later row chunks can keep the header.
         buffer_text = '\n'.join(buffer)
-        if len(buffer_text) >= max_size:
+        if len(buffer_text) >= max_size and not is_tabular_content(buffer_text):
             chunks.extend(
                 split_oversized_chunk(buffer_text, doc_id, tenant_id, chunk_idx,
                                      permission, file_hash, metadata, max_size, overlap)
@@ -180,11 +182,32 @@ def is_noise_chunk(content: str) -> bool:
             return True
 
     # Extremely low information density: mostly table lines / whitespace.
-    meaningful = re.sub(r"[\s|\|+\-—＿_.,:：;；/()（）0-9]", "", text)
-    if len(meaningful) / max(len(text), 1) < 0.3:
-        return True
+    # Tabular employee rosters are sparse by design (IDs, tabs, short names)
+    # and must not be dropped as empty table fragments.
+    if not is_tabular_content(text):
+        meaningful = re.sub(r"[\s|\|+\-—＿_.,:：;；/()（）0-9]", "", text)
+        if len(meaningful) / max(len(text), 1) < 0.3:
+            return True
 
     return False
+
+
+def is_section_marker(line: str) -> bool:
+    stripped = line.strip()
+    return bool(re.match(r"^--- Page \d+ ---$", stripped) or re.match(r"^--- Sheet: .+ ---$", stripped))
+
+
+def is_tabular_content(text: str) -> bool:
+    stripped = text.strip()
+    if stripped.startswith("--- Sheet:"):
+        return True
+    lines = [line for line in stripped.splitlines() if line.strip()]
+    if not lines:
+        return False
+    tabbed = sum(1 for line in lines if "\t" in line)
+    if len(lines) == 1:
+        return tabbed == 1
+    return tabbed >= max(2, (len(lines) + 1) // 2)
 
 
 def is_heading(line: str) -> bool:
@@ -231,6 +254,24 @@ def split_oversized_chunk(
             'metadata': dict(metadata) if metadata else None
         })
         return chunks
+
+    if is_tabular_content(text):
+        tabular = split_tabular_text(text, max_size)
+        chunks = []
+        for local_idx, piece in enumerate(tabular):
+            chunks.append({
+                'chunk_id': f"{doc_id}_{start_idx + local_idx:04d}",
+                'doc_id': doc_id,
+                'tenant_id': tenant_id,
+                'content': piece,
+                'index': start_idx + local_idx,
+                'token_count': estimate_tokens(piece),
+                'permission': permission,
+                'file_hash': file_hash,
+                'metadata': dict(metadata) if metadata else None
+            })
+        if chunks:
+            return chunks
     
     # Force split with overlap
     pos = 0
@@ -261,6 +302,49 @@ def split_oversized_chunk(
     
     return chunks
 
+
+
+def split_tabular_text(text: str, max_size: int) -> List[str]:
+    """Split a sheet on row boundaries and repeat the header on every chunk."""
+    lines = text.split("\n")
+    prefix_lines: List[str] = []
+    body_start = 0
+    for index, line in enumerate(lines):
+        if is_section_marker(line):
+            prefix_lines.append(line)
+            continue
+        if not line.strip():
+            continue
+        prefix_lines.append(line)
+        body_start = index + 1
+        break
+    if not prefix_lines:
+        return []
+
+    prefix = "\n".join(prefix_lines)
+    if len(prefix) >= max_size:
+        return []
+
+    pieces: List[str] = []
+    current_body: List[str] = []
+
+    def flush() -> None:
+        if not current_body and pieces:
+            return
+        content = prefix if not current_body else prefix + "\n" + "\n".join(current_body)
+        if content.strip():
+            pieces.append(content)
+
+    for line in lines[body_start:]:
+        candidate = current_body + [line]
+        candidate_text = prefix + "\n" + "\n".join(candidate)
+        if current_body and len(candidate_text) > max_size:
+            flush()
+            current_body = [line]
+            continue
+        current_body.append(line)
+    flush()
+    return pieces
 
 def get_overlap(text: str, overlap_size: int) -> str:
     """Get overlap suffix from text"""

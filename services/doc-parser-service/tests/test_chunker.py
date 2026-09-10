@@ -97,3 +97,52 @@ def test_page_markers_start_a_new_semantic_chunk(monkeypatch):
 
     assert len(chunks) == 2
     assert chunks[1]["content"].startswith("--- Page 2 ---")
+
+
+def test_employee_roster_table_is_not_noise():
+    roster = "--- Sheet: 员工数据 ---\n工号\t姓名\nG00024\t陈伟\nG00001\t江峦"
+    assert not is_noise_chunk(roster)
+    assert not is_noise_chunk("G00024\t陈伟")
+
+
+def test_sheet_markers_start_a_new_semantic_chunk(monkeypatch):
+    monkeypatch.setattr(
+        chunker,
+        "get_settings",
+        lambda: SimpleNamespace(MIN_CHUNK_SIZE=20, MAX_CHUNK_SIZE=4000, CHUNK_OVERLAP=200),
+    )
+    first = "工号\t姓名\nG00024\t陈伟"
+    second = "城市级别\t住宿上限\n一线城市\t600"
+
+    chunks = chunker.chunk_text(
+        f"--- Sheet: 员工数据 ---\n{first}\n--- Sheet: 差旅标准 ---\n{second}",
+        doc_id="oa",
+        tenant_id="tenant-a",
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0]["content"].startswith("--- Sheet: 员工数据 ---")
+    assert "G00024\t陈伟" in chunks[0]["content"]
+    assert chunks[1]["content"].startswith("--- Sheet: 差旅标准 ---")
+    assert "一线城市\t600" in chunks[1]["content"]
+
+
+def test_oversized_sheet_repeats_header_on_each_chunk(monkeypatch):
+    monkeypatch.setattr(
+        chunker,
+        "get_settings",
+        lambda: SimpleNamespace(MIN_CHUNK_SIZE=20, MAX_CHUNK_SIZE=90, CHUNK_OVERLAP=0),
+    )
+    header = "工号\t姓名\t部门"
+    rows = [f"G{i:05d}\t员工{i}\t装备承制" for i in range(1, 12)]
+    text = "--- Sheet: 员工数据 ---\n" + header + "\n" + "\n".join(rows)
+
+    chunks = chunker.chunk_text(text, doc_id="oa", tenant_id="tenant-a")
+
+    assert len(chunks) >= 2
+    for item in chunks:
+        assert item["content"].startswith("--- Sheet: 员工数据 ---")
+        assert "工号\t姓名\t部门" in item["content"]
+    joined = "\n".join(item["content"] for item in chunks)
+    assert "G00001\t员工1\t装备承制" in joined
+    assert "G00011\t员工11\t装备承制" in joined
