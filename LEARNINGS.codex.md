@@ -340,3 +340,10 @@
 - Reason：多样性应先覆盖不同文档，再补 maxPerDoc 以内的第二块；单文档结果仍允许填满剩余槽位。
 - Act：`diversifyCandidates` 改为 unique-document-first；回归测试锁住 fused 两篇必查文档在 Top-5 仍都在。
 - Refine：`go test ./internal/retrieval -count=1` 通过。未重跑真实模型评测，未停演示栈。
+
+## 2026-09-10 - ES 中文 BM25 不再要求整句 AND
+
+- Perceive：mapping 已是 `cjk` v2，再装 IK 解决不了 P1.8 的 ES 0%。`match operator=and` 等于问句每个 CJK bigram 都要出现；跨文档 gold 里多道第二篇与问句 0 重叠。
+- Reason：保留 phrase 高精度，把 fallback 改成 OR + `minimum_should_match=50%`。不改镜像、不重建索引、不停演示栈。
+- Act：`titleAwareShouldClauses` 的 content match 改为 OR/50%；更新检索单测。
+- Refine：`go test ./internal/retrieval ./internal/es -count=1` 通过。这不能让无关第二篇变成必中。

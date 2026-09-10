@@ -174,8 +174,9 @@ func titleAwareShouldClauses(req SearchRequest) []map[string]interface{} {
 		{
 			"match": map[string]interface{}{
 				"content": map[string]interface{}{
-					"query":    req.Question,
-					"operator": "and",
+					"query":                req.Question,
+					"operator":             "or",
+					"minimum_should_match": "50%",
 				},
 			},
 		},

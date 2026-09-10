@@ -101,8 +101,9 @@ func TestElasticRetriever_SearchUsesPhraseFirstAndFallback(t *testing.T) {
 		t.Fatalf("expected phrase boost, got %#v", phrase)
 	}
 	match := gotShould[1].(map[string]interface{})["match"].(map[string]interface{})
-	if match["content"].(map[string]interface{})["operator"] != "and" {
-		t.Fatalf("expected AND fallback, got %#v", match)
+	content := match["content"].(map[string]interface{})
+	if content["operator"] != "or" || content["minimum_should_match"] != "50%" {
+		t.Fatalf("expected CJK-tolerant OR fallback, got %#v", match)
 	}
 	titlePhrase := gotShould[2].(map[string]interface{})["match_phrase"].(map[string]interface{})
 	if _, ok := titlePhrase["file_name"]; !ok {
