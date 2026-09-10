@@ -19,12 +19,12 @@
 
 ## Real-model and ingestion capacity
 
-与 L1 mock 查询门禁分开。本机演示栈继续运行时，只允许串行入库测量；真实 RAG 质量评测需要停演示栈或换机器。数字只作为容量包络，不写入 ADR 0010，不加入 Required Checks。
+与 L1 mock 查询门禁分开。演示栈可按 `--api-base` 串行跑 retrieval-only 真实模型评测，不必停站或另起 Compose。数字只作为技术门槛证据，不写入 ADR 0010，不加入 Required Checks，也不等于 P1.9 业务 Gold。
 
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
 | P-CAP-1 | 入库容量包络 | done | 脚本与契约测试已落地。演示栈 CPU bge-m3：short-text 2 chunk / 11s，typical-doc 12 chunk / 24s。扫描 PDF 仍用 `--fixture-file` | [`ingestion-capacity.md`](ingestion-capacity.md) |
-| P-CAP-2 | 真实模型 RAG 质量 | blocked | 停演示栈或换机器后运行 `python3 scripts/run-evals.py --real-models --embed-dim 1024` | [`evals/README.md`](evals/README.md) |
+| P-CAP-2 | 真实模型 RAG 质量 | done | 演示栈 `--api-base` retrieval-only：有效 60 题 Recall@5 95.6% 达到 90%；Recall@1 62% 仍低。不作为 P1.9 签字 Gold | [`evals/README.md`](evals/README.md) |
 | P-CAP-3 | 真实问答时延观察 | pending | 入库完成后串行 5–10 次完整 `/v1/query`，不回写 L1 阈值 | [`ingestion-capacity.md`](ingestion-capacity.md) |
 | P-CAP-5 | 问答真流式 | done | SSE 在 grounding 前推送 token；校验失败发 `replace`；`done.answer` 为最终答案 | 本文件 |
 | P-CAP-4 | 入库阶段耗时展示 | done | 任务/文档返回 `stage_timings`；上传页和文档页展示；Grafana Parse/Embed/Store/OCR p95。演示栈短文本 parse 4ms / embed 7.9s / store 314ms / total 8.2s | 本文件 |

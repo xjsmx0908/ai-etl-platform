@@ -32,7 +32,7 @@ python3 scripts/run-evals.py
 
 入库容量（accepted-to-ready，真实 embedding）是另一条轨道，命令是
 `python3 scripts/ingestion-capacity.py`，说明见 [`../ingestion-capacity.md`](../ingestion-capacity.md)。
-不要把它和 L1 查询 p95 或本页 Recall 混用。本机演示栈运行时不要再起一套 eval Compose。
+不要把它和 L1 查询 p95 或本页 Recall 混用。本机演示栈运行时不要再起一套 eval Compose。要对现网 Query API 做技术评测，加 `--api-base http://127.0.0.1:8080`，不要停演示栈。`/quality` 读取 `docs/evals/reports/latest.json`（启动时覆盖烘焙副本）；那是最近一次真实模型技术评测，不是 P1.9 业务签字 Gold。
 
 
 ```bash

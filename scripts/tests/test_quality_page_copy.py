@@ -14,6 +14,8 @@ class QualityPageCopyTests(unittest.TestCase):
         self.assertIn("不能当作企业级 SLO", text)
         self.assertIn("{r.note", text)
         self.assertIn("目标文档出现在前 k 条来源", text)
+        self.assertIn("Recall@5 / hit_rate ≥ 90%", text)
+        self.assertIn("第一名稳不稳", text)
 
 
 if __name__ == "__main__":

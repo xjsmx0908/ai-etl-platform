@@ -375,3 +375,10 @@
 - Reason：跨文档题必须不能抄单文档问句，且问句与每个来源证据不能 0 重叠。有效题 60 道才对照 90% 门槛。
 - Act：`validate_cross_document_candidate` 增加 `query_copied_from_single_document` / `query_unrelated_to_source`；过滤后在演示栈重跑 retrieval-only。
 - Refine：有效集 Recall@1/3/5 = 62.2%/91.1%/95.6%，hit_rate 95.6%，负样本 100%。Recall@5 达到 90%；Recall@1 仍低。未改检索截断，未停演示栈。
+
+## 2026-09-10 - 质量页改挂技术评测数字
+
+- Perceive：用户把 `/quality` 的 55/68/71 当成企业标准，并问 P1.9 签字、停演示栈、第一名不稳。
+- Reason：有效 60 题演示栈 Recall@5=95.6% 已过 90% 技术门槛；Recall@1=62% 是排序问题。抢第一名最多的是演示栈已有长文档（爱因斯坦传）和相似制度，不是题集过期，也不需要业务签字。
+- Act：把 `/quality` 挂到 `eval-20260910-205904`（62/91/96），文案改成 Recall@5 才是技术门槛；P-CAP-2 记为可在演示栈 `--api-base` 完成。
+- Refine：不启用英文 reranker，不停站。第一名要再往上走，需要中文 reranker 或压长文档，不指望 Recall@1 也到 90%。

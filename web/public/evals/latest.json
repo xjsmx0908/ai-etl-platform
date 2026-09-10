@@ -1,34 +1,46 @@
 {
-  "source_report": "eval-20260814-102122.json",
-  "timestamp": "2026-08-14T10:21:22Z",
+  "source_report": "eval-20260910-205904.json",
+  "timestamp": "2026-09-10T12:59:04Z",
   "model_mode": "real",
   "embed_model": "bge-m3",
   "embed_dimension": 1024,
   "llm_model": "deepseek-v4-flash",
-  "dataset": "semantic-golden-set.json (44 cases)",
+  "dataset": "演示栈企业技术候选（有效 60 题）",
   "recall": [
-    { "k": 1, "value": 55, "note": "目标文档排第 1 的比例" },
-    { "k": 3, "value": 68, "note": "目标在前 3 名" },
-    { "k": 5, "value": 71, "note": "目标在前 5 名（可找到）" }
+    {
+      "k": 1,
+      "value": 62,
+      "note": "第一名是否就是目标文档"
+    },
+    {
+      "k": 3,
+      "value": 91,
+      "note": "目标在前 3 名"
+    },
+    {
+      "k": 5,
+      "value": 96,
+      "note": "目标在前 5 名（可找到）"
+    }
   ],
   "noise_floor": 4.26,
   "experiments": [
     {
-      "title": "ES 混合检索",
-      "verdict": "保留",
-      "detail": "关闭 ES 后 pass_rate 52% → 开 ES 69%（+17pp）",
+      "title": "可找到性",
+      "verdict": "达标",
+      "detail": "有效正样本 Recall@5 95.6%、hit_rate 95.6%，超过仓库 90% 技术门槛",
       "good": true
     },
     {
-      "title": "英文 reranker",
-      "verdict": "关闭",
-      "detail": "ms-marco（英文）对中文 0 例受益、2 例受害，69% → 74%",
-      "good": true
+      "title": "第一名稳定性",
+      "verdict": "未达标",
+      "detail": "Recall@1 62%。演示栈里的长文档和相似制度会抢走第一名；英文 reranker 仍关闭",
+      "good": false
     },
     {
-      "title": "评测方法论",
-      "verdict": "语义集",
-      "detail": "锚点集假 100% 掩盖真实能力，语义集 Recall@1 仅 19%",
+      "title": "负样本",
+      "verdict": "达标",
+      "detail": "15/15 安全负样本未误召，负样本通过率 100%",
       "good": true
     }
   ]
