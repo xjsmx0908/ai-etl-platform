@@ -43,12 +43,13 @@ type Metrics struct {
 	HTTPRequestInFlight *prometheus.GaugeVec
 
 	// Pipeline metrics
-	ChunksProcessed *prometheus.CounterVec
-	EmbedDuration   *prometheus.HistogramVec
-	EmbedFailures   *prometheus.CounterVec
-	StoreDuration   *prometheus.HistogramVec
-	StoreFailures   *prometheus.CounterVec
-	DLQMessages     *prometheus.CounterVec
+	ChunksProcessed       *prometheus.CounterVec
+	PipelineStageDuration *prometheus.HistogramVec
+	EmbedDuration         *prometheus.HistogramVec
+	EmbedFailures         *prometheus.CounterVec
+	StoreDuration         *prometheus.HistogramVec
+	StoreFailures         *prometheus.CounterVec
+	DLQMessages           *prometheus.CounterVec
 	// ESDeadLetter counts chunks that permanently failed ES indexing. Non-zero
 	// means Qdrant and ES are silently diverging — alert on it.
 	ESDeadLetter             *prometheus.CounterVec
@@ -134,6 +135,16 @@ func New(namespace string) *Metrics {
 				Help:      "Total number of chunks processed",
 			},
 			[]string{"tenant_id", "status"},
+		),
+		PipelineStageDuration: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Subsystem: "pipeline",
+				Name:      "stage_duration_seconds",
+				Help:      "Ingestion stage wall time",
+				Buckets:   []float64{0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 120},
+			},
+			[]string{"stage", "status"},
 		),
 		EmbedDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -422,6 +433,7 @@ func New(namespace string) *Metrics {
 		m.HTTPRequestDuration,
 		m.HTTPRequestInFlight,
 		m.ChunksProcessed,
+		m.PipelineStageDuration,
 		m.EmbedDuration,
 		m.EmbedFailures,
 		m.StoreDuration,
@@ -584,6 +596,32 @@ func (m *Metrics) ObserveDeletion(report deletionworkflow.Report, err error) {
 	}
 	for outcome, count := range map[string]int{"completed": report.Completed, "failed": report.Failed, "conflicted": report.Conflicted} {
 		m.DeletionOutcomes.WithLabelValues(outcome).Add(float64(count))
+	}
+}
+
+// ObserveStage records parse/embed/store/OCR wall time.
+func (m *Metrics) ObserveStage(stage, tenant, outcome string, duration time.Duration) {
+	if m == nil || duration < 0 {
+		return
+	}
+	if outcome == "" {
+		outcome = "success"
+	}
+	if stage == "" {
+		stage = "unknown"
+	}
+	m.PipelineStageDuration.WithLabelValues(stage, outcome).Observe(duration.Seconds())
+	switch stage {
+	case "embed":
+		m.EmbedDuration.WithLabelValues(tenant, outcome).Observe(duration.Seconds())
+		if outcome != "success" {
+			m.EmbedFailures.WithLabelValues(tenant, outcome).Inc()
+		}
+	case "store":
+		m.StoreDuration.WithLabelValues(tenant, outcome).Observe(duration.Seconds())
+		if outcome != "success" {
+			m.StoreFailures.WithLabelValues(tenant, outcome).Inc()
+		}
 	}
 }
 

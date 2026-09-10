@@ -17,6 +17,7 @@ import (
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/knowledgecatalog"
+	"ai-etl-pipeline/internal/model"
 	"ai-etl-pipeline/internal/query"
 	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/store"
@@ -41,13 +42,14 @@ type documentView struct {
 	// Controlled-document governance. DocStatus is the document's lifecycle as a
 	// knowledge source (active/superseded/archived) and is a different axis from
 	// Status above, which is the ETL processing state.
-	DocStatus         string `json:"doc_status,omitempty"`
-	EffectiveDate     string `json:"effective_date,omitempty"` // YYYY-MM-DD
-	Supersedes        string `json:"supersedes,omitempty"`
-	Owner             string `json:"owner,omitempty"`
-	KnowledgeSpaceID  string `json:"knowledge_space_id"`
-	PublicationStatus string `json:"publication_status"`
-	DeletionStatus    string `json:"deletion_status"`
+	DocStatus         string             `json:"doc_status,omitempty"`
+	EffectiveDate     string             `json:"effective_date,omitempty"` // YYYY-MM-DD
+	Supersedes        string             `json:"supersedes,omitempty"`
+	Owner             string             `json:"owner,omitempty"`
+	KnowledgeSpaceID  string             `json:"knowledge_space_id"`
+	PublicationStatus string             `json:"publication_status"`
+	DeletionStatus    string             `json:"deletion_status"`
+	StageTimings      model.StageTimings `json:"stage_timings,omitempty"`
 }
 
 func toDocView(d docstore.Document) documentView {
@@ -72,6 +74,7 @@ func toDocView(d docstore.Document) documentView {
 		KnowledgeSpaceID:  d.KnowledgeSpaceID,
 		PublicationStatus: d.PublicationStatus,
 		DeletionStatus:    d.DeletionStatus,
+		StageTimings:      d.StageTimings,
 	}
 	if !d.CompletedAt.IsZero() {
 		t := d.CompletedAt

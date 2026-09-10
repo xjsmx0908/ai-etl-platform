@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -631,6 +632,108 @@ func TestHandleTask_RecordsCompletedStatus(t *testing.T) {
 	}
 	if !foundProgress {
 		t.Fatalf("expected an embedding stage with ChunksDone=1, got %+v", statuses.statuses)
+	}
+}
+
+type delayEmbedder struct{ d time.Duration }
+
+func (e delayEmbedder) Embed(_ context.Context, c *model.Chunk) error {
+	time.Sleep(e.d)
+	c.Vector = []float64{0.1, 0.2, 0.3}
+	return nil
+}
+func (delayEmbedder) Close() error { return nil }
+
+type delayStorer struct{ d time.Duration }
+
+func (s delayStorer) Upsert(context.Context, model.Chunk) error {
+	time.Sleep(s.d)
+	return nil
+}
+func (delayStorer) Exists(context.Context, string) (bool, error) { return false, nil }
+func (delayStorer) Close() error                                 { return nil }
+
+type captureObserver struct {
+	mu     sync.Mutex
+	stages []string
+}
+
+func (o *captureObserver) ObserveStage(stage, tenant, outcome string, d time.Duration) {
+	if d > 0 {
+		o.mu.Lock()
+		o.stages = append(o.stages, stage+":"+outcome)
+		o.mu.Unlock()
+	}
+}
+
+func (o *captureObserver) joined() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return strings.Join(o.stages, ",")
+}
+
+func TestHandleTask_RecordsStageTimings(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.Environment = "dev"
+	cfg.MaxChunkSize = 512
+	cfg.ReadBufferSize = 4096
+	cfg.StageTimeout = 2 * time.Second
+	cfg.PipelineTimeout = 2 * time.Second
+	cfg.ParserEndpoint = mockParserServer(t, "doc-timing", []map[string]interface{}{
+		{"chunk_id": "doc-timing_0000", "doc_id": "doc-timing", "tenant_id": "tenant-a", "content": "# Timing\n" + strings.Repeat("a", 140), "index": 0},
+	})
+
+	tmp, err := os.CreateTemp(t.TempDir(), "timing-*.md")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if _, err := tmp.WriteString("# Timing\n" + strings.Repeat("a", 140)); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+
+	statuses := &taskStatusStub{}
+	observer := &captureObserver{}
+	p := New(cfg, delayEmbedder{d: 25 * time.Millisecond}, delayStorer{d: 15 * time.Millisecond}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).
+		WithTaskStatusStore(statuses).
+		WithObserver(observer)
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: model.Task{
+			DocID:     "doc-timing",
+			TenantID:  "tenant-a",
+			FilePath:  tmp.Name(),
+			CreatedAt: time.Now().UTC(),
+		},
+		Ack:  func() {},
+		Nack: func(error) {},
+	})
+	if len(statuses.statuses) == 0 {
+		t.Fatal("expected task statuses")
+	}
+	got := statuses.statuses[len(statuses.statuses)-1]
+	if got.Status != model.TaskStatusCompleted {
+		t.Fatalf("status=%s, want completed", got.Status)
+	}
+	if got.StageTimings.EmbedMS < 20 {
+		t.Fatalf("embed_ms=%d, want >= 20: %+v", got.StageTimings.EmbedMS, got.StageTimings)
+	}
+	if got.StageTimings.StoreMS < 10 {
+		t.Fatalf("store_ms=%d, want >= 10: %+v", got.StageTimings.StoreMS, got.StageTimings)
+	}
+	if got.StageTimings.TotalMS < got.StageTimings.EmbedMS {
+		t.Fatalf("total_ms=%d shorter than embed_ms=%d", got.StageTimings.TotalMS, got.StageTimings.EmbedMS)
+	}
+	if got.ChunksDone < 1 {
+		t.Fatalf("completed status dropped chunk progress: %+v", got)
+	}
+	joined := observer.joined()
+	if !strings.Contains(joined, "parse:success") || !strings.Contains(joined, "embed:success") || !strings.Contains(joined, "store:success") {
+		t.Fatalf("observer stages=%v", observer.stages)
+	}
+	if got.StageTimings.ParseMS < 1 {
+		t.Fatalf("parse_ms=%d, want >= 1: %+v", got.StageTimings.ParseMS, got.StageTimings)
 	}
 }
 

@@ -197,7 +197,8 @@ func main() {
 		WithTaskStatusStore(taskStatusStore).
 		WithDocStore(docStore).
 		WithIngestionJobs(ingestionJobs).
-		WithGenerationBuilder(generationBuilder)
+		WithGenerationBuilder(generationBuilder).
+		WithObserver(prom)
 
 	// Start Pipeline
 	ctx, cancel := context.WithCancel(context.Background())

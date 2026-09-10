@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/pashagolub/pgxmock/v5"
+
+	"ai-etl-pipeline/internal/model"
 )
 
 // docCols matches the leading part of the production column list, which is
@@ -18,7 +20,7 @@ func docRowColumns() []string {
 	return []string{"tenant_id", "doc_id", "file_name", "object_key", "file_hash", "file_size",
 		"content_type", "permission", "status", "stage", "chunks_done", "chunks_total", "error",
 		"metadata", "uploaded_by", "created_at", "updated_at", "completed_at",
-		"doc_status", "effective_date", "supersedes", "owner", "knowledge_space_id", "publication_status", "deletion_status"}
+		"doc_status", "effective_date", "supersedes", "owner", "knowledge_space_id", "publication_status", "deletion_status", "stage_timings"}
 }
 
 func docRow() *pgxmock.Rows {
@@ -26,7 +28,7 @@ func docRow() *pgxmock.Rows {
 		AddRow("acme", "doc-1", "a.pdf", "acme/doc-1.pdf", "abc123", int64(1024), "application/pdf",
 			"internal", "completed", "completed", 4, 4, "", map[string]string{"k": "v"},
 			"u-1", time.Now(), time.Now(), tPtr(time.Now()),
-			"active", tPtr(time.Now()), "", "owner-hr", "user-uploads", "published", "active")
+			"active", tPtr(time.Now()), "", "owner-hr", "user-uploads", "published", "active", []byte(`{"parse_ms":12,"embed_ms":34}`))
 }
 
 func TestUpsert(t *testing.T) {
@@ -71,6 +73,9 @@ func TestGet(t *testing.T) {
 	if d.FileSize != 1024 || d.Status != StatusCompleted || d.CompletedAt.IsZero() {
 		t.Fatalf("unexpected scan values: size=%d status=%s completed=%v", d.FileSize, d.Status, d.CompletedAt)
 	}
+	if d.StageTimings.ParseMS != 12 || d.StageTimings.EmbedMS != 34 {
+		t.Fatalf("unexpected stage timings: %+v", d.StageTimings)
+	}
 }
 
 func TestGet_NotFound(t *testing.T) {
@@ -104,7 +109,7 @@ func TestList_WithFilters(t *testing.T) {
 		WillReturnRows(docRow().AddRow("acme", "doc-2", "b.docx", "acme/doc-2.docx", "def", int64(2048),
 			"application/docx", "internal", "completed", "completed", 2, 2, "", map[string]string{},
 			"u-1", time.Now(), time.Now(), tPtr(time.Now()),
-			"superseded", tPtr(time.Now()), "doc-1", "", "user-uploads", "retired", "active"))
+			"superseded", tPtr(time.Now()), "doc-1", "", "user-uploads", "retired", "active", []byte(`{}`)))
 	mock.ExpectQuery("SELECT count").WithArgs("acme", "completed", []string{"internal"}, "%contract%").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 
@@ -249,12 +254,13 @@ func TestUpsertStatus(t *testing.T) {
 	}
 	defer mock.Close()
 	mock.ExpectExec(`publication_status = CASE WHEN \$3 = 'completed' AND knowledge_space_id = 'user-uploads' THEN 'published' ELSE publication_status END`).
-		WithArgs("acme", "doc-1", "processing", "embedding", 3, 5, "", "").
+		WithArgs("acme", "doc-1", "processing", "embedding", 3, 5, "", "", []byte(`{"embed_ms":34}`)).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	s := New(mock)
 	err = s.UpsertStatus(context.Background(), "acme", "doc-1", Document{
 		Status: "processing", Stage: "embedding", ChunksDone: 3, ChunksTotal: 5,
+		StageTimings: model.StageTimings{EmbedMS: 34},
 	})
 	if err != nil {
 		t.Fatalf("UpsertStatus: %v", err)

@@ -340,3 +340,22 @@ func counterValue(t *testing.T, metric prometheus.Metric) float64 {
 	}
 	return out.Counter.GetValue()
 }
+
+func TestObserveStageRecordsHistograms(t *testing.T) {
+	m := New("ai_etl_stage")
+	m.ObserveStage("embed", "tenant-a", "success", 250*time.Millisecond)
+	m.ObserveStage("store", "tenant-a", "success", 20*time.Millisecond)
+	m.ObserveStage("parse", "tenant-a", "success", time.Second)
+	if got := histogramCount(t, m.PipelineStageDuration.WithLabelValues("parse", "success").(prometheus.Metric)); got != 1 {
+		t.Fatalf("pipeline parse count = %d, want 1", got)
+	}
+	if got := histogramCount(t, m.PipelineStageDuration.WithLabelValues("embed", "success").(prometheus.Metric)); got != 1 {
+		t.Fatalf("pipeline embed count = %d, want 1", got)
+	}
+	if got := histogramCount(t, m.EmbedDuration.WithLabelValues("tenant-a", "success").(prometheus.Metric)); got != 1 {
+		t.Fatalf("embed count = %d, want 1", got)
+	}
+	if got := histogramCount(t, m.StoreDuration.WithLabelValues("tenant-a", "success").(prometheus.Metric)); got != 1 {
+		t.Fatalf("store count = %d, want 1", got)
+	}
+}

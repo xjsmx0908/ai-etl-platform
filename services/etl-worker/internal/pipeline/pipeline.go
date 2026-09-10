@@ -49,10 +49,96 @@ type Pipeline struct {
 	}
 	generationBuilds indexmanifest.BuildStarter
 	sparseEncoder    *sparse.Encoder
+	observer         StageObserver
 
 	taskCh  chan model.TaskWithAck
 	wg      sync.WaitGroup
 	running atomic.Bool
+}
+
+// StageObserver records parse/embed/store durations for metrics backends.
+type StageObserver interface {
+	ObserveStage(stage, tenant, outcome string, duration time.Duration)
+}
+
+type stageTimerKey struct{}
+
+type stageTimer struct {
+	mu      sync.Mutex
+	timings model.StageTimings
+}
+
+func newStageTimer() *stageTimer { return &stageTimer{} }
+
+func withStageTimer(ctx context.Context, timer *stageTimer) context.Context {
+	return context.WithValue(ctx, stageTimerKey{}, timer)
+}
+
+func stageTimerFrom(ctx context.Context) *stageTimer {
+	timer, _ := ctx.Value(stageTimerKey{}).(*stageTimer)
+	return timer
+}
+
+func (t *stageTimer) add(stage string, d time.Duration) {
+	if t == nil || d <= 0 {
+		return
+	}
+	ms := d.Milliseconds()
+	if ms <= 0 {
+		ms = 1
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch stage {
+	case "parse":
+		t.timings.ParseMS += ms
+	case "ocr":
+		t.timings.OCRms += ms
+	case "embed":
+		t.timings.EmbedMS += ms
+	case "store":
+		t.timings.StoreMS += ms
+	}
+}
+
+func (t *stageTimer) setTotal(d time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.timings.TotalMS = d.Milliseconds()
+	if t.timings.TotalMS <= 0 {
+		t.timings.TotalMS = 1
+	}
+}
+
+func (t *stageTimer) snapshot() model.StageTimings {
+	if t == nil {
+		return model.StageTimings{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.timings
+}
+
+func mergeStageTimings(prev, next model.StageTimings) model.StageTimings {
+	if next.ParseMS > prev.ParseMS {
+		prev.ParseMS = next.ParseMS
+	}
+	if next.OCRms > prev.OCRms {
+		prev.OCRms = next.OCRms
+	}
+	if next.EmbedMS > prev.EmbedMS {
+		prev.EmbedMS = next.EmbedMS
+	}
+	if next.StoreMS > prev.StoreMS {
+		prev.StoreMS = next.StoreMS
+	}
+	if next.TotalMS > prev.TotalMS {
+		prev.TotalMS = next.TotalMS
+	}
+	return prev
 }
 
 var ErrTaskCancelled = errors.New("task cancelled")
@@ -138,6 +224,18 @@ func (p *Pipeline) WithDocStore(store docStatusWriter) *Pipeline {
 func (p *Pipeline) WithTaskStatusStore(store model.TaskStatusStore) *Pipeline {
 	p.taskStatus = store
 	return p
+}
+
+func (p *Pipeline) WithObserver(observer StageObserver) *Pipeline {
+	p.observer = observer
+	return p
+}
+
+func (p *Pipeline) observeStage(stage, tenant, outcome string, d time.Duration) {
+	if p.observer == nil || d < 0 {
+		return
+	}
+	p.observer.ObserveStage(stage, tenant, outcome, d)
 }
 
 // Run starts consuming from the source and launches the worker pool.
@@ -232,10 +330,16 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 		}
 	}
 
+	timer := newStageTimer()
+	ctx = withStageTimer(ctx, timer)
+	started := time.Now()
 	p.saveTaskStatus(ctx, twa.Task, model.TaskStatusProcessing, "processing", "")
 
 	for attempt := 0; attempt <= p.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			timer = newStageTimer()
+			ctx = withStageTimer(ctx, timer)
+			started = time.Now()
 			backoff := p.cfg.RetryBackoff * time.Duration(1<<(attempt-1))
 			slog.Info("retrying task", "worker", workerID, "doc_id", twa.Task.DocID,
 				"attempt", attempt, "backoff", backoff)
@@ -274,8 +378,11 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 		if err := p.checkpoint.Delete(ctx, twa.Task.DocID); err != nil {
 			slog.Warn("checkpoint delete failed", "doc_id", twa.Task.DocID, "error", err)
 		}
+		timer.setTotal(time.Since(started))
 		p.saveTaskStatus(ctx, twa.Task, model.TaskStatusCompleted, "completed", "")
-		slog.Info("task completed", "worker", workerID, "doc_id", twa.Task.DocID)
+		slog.Info("task completed", "worker", workerID, "doc_id", twa.Task.DocID,
+			"parse_ms", timer.snapshot().ParseMS, "embed_ms", timer.snapshot().EmbedMS,
+			"store_ms", timer.snapshot().StoreMS, "total_ms", timer.snapshot().TotalMS)
 		return
 	}
 
@@ -293,6 +400,7 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 		}
 	}
 	twa.Ack()
+	timer.setTotal(time.Since(started))
 	p.saveTaskStatus(ctx, twa.Task, model.TaskStatusFailed, "failed", lastErr.Error())
 	slog.Error("task exhausted retries and moved to DLQ", "doc_id", twa.Task.DocID, "error", lastErr)
 }
@@ -313,28 +421,29 @@ func (p *Pipeline) saveTaskStatusProgressPages(ctx context.Context, task model.T
 	}
 	now := time.Now().UTC()
 	status := model.TaskStatus{
-		TaskID:      task.DocID,
-		DocID:       task.DocID,
-		TenantID:    task.TenantID,
-		JobID:       task.JobID,
-		EventID:     task.EventID,
-		Status:      state,
-		Stage:       stage,
-		ChunksDone:  done,
-		TotalChunks: total,
-		PagesDone:   pagesDone,
-		PagesTotal:  pagesTotal,
-		Error:       message,
-		FilePath:    task.FilePath,
-		FileHash:    task.FileHash,
-		Permission:  task.Permission,
-		UploadedBy:  task.UploadedBy,
-		Metadata:    task.Metadata,
-		CreatedAt:   task.CreatedAt,
-		UpdatedAt:   now,
+		TaskID:       task.DocID,
+		DocID:        task.DocID,
+		TenantID:     task.TenantID,
+		JobID:        task.JobID,
+		EventID:      task.EventID,
+		Status:       state,
+		Stage:        stage,
+		ChunksDone:   done,
+		TotalChunks:  total,
+		PagesDone:    pagesDone,
+		PagesTotal:   pagesTotal,
+		Error:        message,
+		FilePath:     task.FilePath,
+		FileHash:     task.FileHash,
+		Permission:   task.Permission,
+		UploadedBy:   task.UploadedBy,
+		Metadata:     task.Metadata,
+		CreatedAt:    task.CreatedAt,
+		UpdatedAt:    now,
+		StageTimings: stageTimerFrom(ctx).snapshot(),
 	}
-	if (done == 0 && total == 0 && pagesDone == 0 && pagesTotal == 0) || state == model.TaskStatusFailed {
-		if previous, found, err := p.taskStatus.Load(ctx, task.TenantID, task.DocID); err == nil && found {
+	if previous, found, err := p.taskStatus.Load(ctx, task.TenantID, task.DocID); err == nil && found {
+		if (done == 0 && total == 0 && pagesDone == 0 && pagesTotal == 0) || state == model.TaskStatusFailed {
 			if done == 0 && total == 0 {
 				status.ChunksDone, status.TotalChunks = previous.ChunksDone, previous.TotalChunks
 			}
@@ -342,6 +451,7 @@ func (p *Pipeline) saveTaskStatusProgressPages(ctx context.Context, task model.T
 				status.PagesDone, status.PagesTotal = previous.PagesDone, previous.PagesTotal
 			}
 		}
+		status.StageTimings = mergeStageTimings(previous.StageTimings, status.StageTimings)
 	}
 	if state == model.TaskStatusCompleted || state == model.TaskStatusFailed || state == model.TaskStatusCancelled {
 		status.CompletedAt = now
@@ -355,14 +465,15 @@ func (p *Pipeline) saveTaskStatusProgressPages(ctx context.Context, task model.T
 
 	// Write-through to the document registry so the inventory mirrors durable
 	// task status. Best-effort: never blocks or fails ingestion.
-	if p.docStatus != nil && task.EventID == "" {
+	if p.docStatus != nil {
 		if err := p.docStatus.UpsertStatus(ctx, task.TenantID, task.DocID, docstore.Document{
-			Status:      string(state),
-			Stage:       stage,
-			ChunksDone:  done,
-			ChunksTotal: total,
-			Error:       message,
-			CompletedAt: status.CompletedAt,
+			Status:       string(state),
+			Stage:        stage,
+			ChunksDone:   status.ChunksDone,
+			ChunksTotal:  status.TotalChunks,
+			Error:        message,
+			CompletedAt:  status.CompletedAt,
+			StageTimings: status.StageTimings,
 		}); err != nil {
 			slog.Warn("document registry status update failed", "doc_id", task.DocID, "status", state, "error", err)
 		}
@@ -470,7 +581,12 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr 
 	totalCh := make(chan int, 1) // known chunk total for the parser-service path
 	go func() {
 		if !needsParserService {
-			parseErrCh <- p.parser.ParseStream(taskCtx, task, chunkCh)
+			parseStarted := time.Now()
+			err := p.parser.ParseStream(taskCtx, task, chunkCh)
+			elapsed := time.Since(parseStarted)
+			stageTimerFrom(taskCtx).add("parse", elapsed)
+			p.observeStage("parse", task.TenantID, outcomeFrom(err), elapsed)
+			parseErrCh <- err
 			return
 		}
 		// The parser-service path owns chunkCh and must close it on every exit
@@ -496,7 +612,11 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr 
 
 		localTask := task
 		localTask.FilePath = localPath
+		parseStarted := time.Now()
 		chunks, err := p.parserClient.ParseFile(taskCtx, localTask)
+		elapsed := time.Since(parseStarted)
+		stageTimerFrom(taskCtx).add("parse", elapsed)
+		p.observeStage("parse", task.TenantID, outcomeFrom(err), elapsed)
 		if err != nil {
 			totalCh <- 0
 			parseErrCh <- fmt.Errorf("parser service: %w", err)
@@ -630,7 +750,11 @@ func (p *Pipeline) processPDFBatches(taskCtx context.Context, task model.Task, c
 		// A large deterministic ID segment per page prevents two page batches
 		// from colliding even when the number of chunks per page varies.
 		chunkOffset = startPage * 10000
+		ocrStarted := time.Now()
 		result, err := p.parserClient.ParseFileRangeResult(taskCtx, localTask, startPage, end, chunkOffset)
+		elapsed := time.Since(ocrStarted)
+		stageTimerFrom(taskCtx).add("ocr", elapsed)
+		p.observeStage("ocr", task.TenantID, outcomeFrom(err), elapsed)
 		if err != nil {
 			return totalChunks, fmt.Errorf("parser service OCR pages %d-%d: %w", startPage+1, end, err)
 		}
@@ -706,6 +830,7 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	embedErrs := make([]error, len(batch))
+	embedStarted := time.Now()
 
 	for i := range batch {
 		wg.Add(1)
@@ -718,10 +843,13 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 				embedErrs[idx] = stageCtx.Err()
 				return
 			}
+			callStarted := time.Now()
 			embedErrs[idx] = p.embedder.Embed(stageCtx, &batch[idx])
+			p.observeStage("embed", batch[idx].TenantID, outcomeFrom(embedErrs[idx]), time.Since(callStarted))
 		}(i)
 	}
 	wg.Wait()
+	stageTimerFrom(ctx).add("embed", time.Since(embedStarted))
 
 	// Generate sparse vectors (synchronous, CPU-bound and fast)
 	for i := range batch {
@@ -760,6 +888,7 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 	// Sequential store with failure threshold
 	storeFailed := 0
 	lastStoredChunkID := ""
+	storeStarted := time.Now()
 	for _, chunk := range successful {
 		select {
 		case <-stageCtx.Done():
@@ -767,11 +896,13 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 		default:
 		}
 		var storeErr error
+		callStarted := time.Now()
 		if generationBuild != nil {
 			storeErr = generationBuild.Upsert(stageCtx, chunk)
 		} else {
 			storeErr = p.storer.Upsert(stageCtx, chunk)
 		}
+		p.observeStage("store", chunk.TenantID, outcomeFrom(storeErr), time.Since(callStarted))
 		if storeErr != nil {
 			storeFailed++
 			slog.Warn("store upsert failed", "chunk_id", chunk.ChunkID, "error", storeErr)
@@ -796,6 +927,8 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 		}
 	}
 
+	stageTimerFrom(ctx).add("store", time.Since(storeStarted))
+
 	// Update checkpoint
 	if generationBuild == nil && *total > 0 && lastStoredChunkID != "" {
 		cp := model.Checkpoint{
@@ -816,4 +949,11 @@ func (p *Pipeline) processBatch(ctx context.Context, batch []model.Chunk, docID 
 	}
 
 	return nil
+}
+
+func outcomeFrom(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "success"
 }

@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/auth";
 import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
 import { READONLY_UPLOAD_DENIED_MESSAGE, canUploadDocuments } from "@/lib/permissions";
 import { CheckCircle2, ChevronRight, Copy, Loader2, XCircle } from "lucide-react";
+import { formatDurationMs } from "@/lib/docDisplay";
 import type { KnowledgeSpace, TaskStatus, UploadResult } from "@/lib/types";
 
 const PIPELINE_STEPS = [
@@ -345,6 +346,9 @@ export default function DataPage() {
                     <span className="font-semibold">({prog})</span>
                   )}
                   {step.key === "ocr" && pageProg && state === "active" && <span className="font-semibold">({pageProg} 页)</span>}
+                  {formatDurationMs(stepTiming(taskStatus, step.key)) !== "—" && (
+                    <span className="font-semibold">({formatDurationMs(stepTiming(taskStatus, step.key))})</span>
+                  )}
                 </div>
                 {i < PIPELINE_STEPS.length - 1 && <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />}
               </div>
@@ -359,6 +363,9 @@ export default function DataPage() {
             {prog && <span className="ml-2 font-medium text-blue-700">chunk {prog}</span>}
             {pageProg && <span className="ml-2 font-medium text-blue-700">页 {pageProg}</span>}
             {taskStatus.error && <span className="ml-2 text-red-600">{taskStatus.error}</span>}
+            {taskStatus.stage_timings?.total_ms ? (
+              <span className="ml-2">合计 {formatDurationMs(taskStatus.stage_timings.total_ms)}</span>
+            ) : null}
           </div>
         )}
         {error && <div className="mt-3 text-sm text-red-600">{error}</div>}
@@ -375,4 +382,14 @@ export default function DataPage() {
       </div>
     </div>
   );
+}
+
+function stepTiming(status: TaskStatus | null, key: string): number | undefined {
+  const timings = status?.stage_timings;
+  if (!timings) return undefined;
+  if (key === "ocr") return timings.ocr_ms;
+  if (key === "parsing") return timings.parse_ms;
+  if (key === "embedding") return timings.embed_ms;
+  if (key === "completed") return timings.store_ms;
+  return undefined;
 }

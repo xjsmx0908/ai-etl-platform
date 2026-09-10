@@ -13,6 +13,7 @@ import (
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/deletionworkflow"
 	"ai-etl-pipeline/internal/docstore"
+	"ai-etl-pipeline/internal/model"
 )
 
 type deletionAccepterStub struct {
@@ -110,6 +111,29 @@ func TestHandleDocument_GetRoleFiltered(t *testing.T) {
 	rec = doRequest(handler, http.MethodGet, "/v1/documents/doc-1", nil, ctxWithRole("acme", "readonly", "query"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("readonly should 404 on internal doc, got %d", rec.Code)
+	}
+}
+
+func TestHandleDocument_GetIncludesStageTimings(t *testing.T) {
+	store := newFakeDocStore()
+	if err := store.Upsert(context.Background(), docstore.Document{
+		TenantID: "acme", DocID: "doc-1", FileName: "doc-1.pdf", Permission: "internal",
+		Status: docstore.StatusCompleted, Metadata: map[string]string{},
+		StageTimings: model.StageTimings{ParseMS: 12, EmbedMS: 34, StoreMS: 5, TotalMS: 50},
+	}); err != nil {
+		t.Fatalf("seed document: %v", err)
+	}
+	handler := handleDocument(testAuthConfig(), testQueryService(), noopObjectStore{}, store, nil)
+	rec := doRequest(handler, http.MethodGet, "/v1/documents/doc-1", nil, ctxWithRole("acme", "user", "query"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var view documentView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.StageTimings.ParseMS != 12 || view.StageTimings.EmbedMS != 34 || view.StageTimings.TotalMS != 50 {
+		t.Fatalf("stage_timings missing from document JSON: %+v body=%s", view.StageTimings, rec.Body.String())
 	}
 }
 

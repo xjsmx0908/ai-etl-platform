@@ -11,14 +11,15 @@ import (
 func TestMemoryStoreSavesAndLoadsTenantScopedStatus(t *testing.T) {
 	store := NewMemoryStore()
 	status := model.TaskStatus{
-		TaskID:    "doc-1",
-		DocID:     "doc-1",
-		TenantID:  "tenant-a",
-		Status:    model.TaskStatusProcessing,
-		Stage:     "processing",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-		Metadata:  map[string]string{"contract_no": "CN-1"},
+		TaskID:       "doc-1",
+		DocID:        "doc-1",
+		TenantID:     "tenant-a",
+		Status:       model.TaskStatusProcessing,
+		Stage:        "processing",
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+		Metadata:     map[string]string{"contract_no": "CN-1"},
+		StageTimings: model.StageTimings{ParseMS: 12, EmbedMS: 34, StoreMS: 5, TotalMS: 50},
 	}
 	if err := store.Save(context.Background(), status); err != nil {
 		t.Fatalf("save status: %v", err)
@@ -33,6 +34,9 @@ func TestMemoryStoreSavesAndLoadsTenantScopedStatus(t *testing.T) {
 	}
 	if got.Status != model.TaskStatusProcessing || got.Stage != "processing" {
 		t.Fatalf("unexpected status: %+v", got)
+	}
+	if got.StageTimings.EmbedMS != 34 || got.StageTimings.TotalMS != 50 {
+		t.Fatalf("unexpected stage timings: %+v", got.StageTimings)
 	}
 
 	got.Metadata["contract_no"] = "mutated"

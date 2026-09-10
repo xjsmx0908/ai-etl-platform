@@ -7,7 +7,7 @@ import { apiClient } from "@/lib/apiClient";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { useAuth } from "@/lib/auth";
-import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
+import { formatUploader, formatDurationMs, getFileTypeMeta } from "@/lib/docDisplay";
 import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
 import { Bot, Upload, Pencil } from "lucide-react";
 import type { Document, DocumentChunk } from "@/lib/types";
@@ -260,6 +260,26 @@ export default function DocumentDetailPage() {
           <div>
             <dt className="text-xs text-slate-400">分块</dt>
             <dd>{doc.chunks_total ? `${doc.chunks_done ?? 0}/${doc.chunks_total}` : "—"}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-400">解析</dt>
+            <dd>{formatDurationMs(doc.stage_timings?.parse_ms)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-400">OCR</dt>
+            <dd>{formatDurationMs(doc.stage_timings?.ocr_ms)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-400">向量化</dt>
+            <dd>{formatDurationMs(doc.stage_timings?.embed_ms)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-400">写入</dt>
+            <dd>{formatDurationMs(doc.stage_timings?.store_ms)}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-slate-400">入库合计</dt>
+            <dd>{formatDurationMs(doc.stage_timings?.total_ms)}</dd>
           </div>
           <div>
             <dt className="text-xs text-slate-400">大小</dt>

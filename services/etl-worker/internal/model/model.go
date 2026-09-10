@@ -100,26 +100,41 @@ const (
 
 // TaskStatus is a tenant-scoped read model for upload/worker task progress.
 type TaskStatus struct {
-	TaskID      string            `json:"task_id"`
-	DocID       string            `json:"doc_id"`
-	TenantID    string            `json:"tenant_id"`
-	JobID       string            `json:"job_id,omitempty"`
-	EventID     string            `json:"event_id,omitempty"`
-	Status      TaskStatusState   `json:"status"`
-	Stage       string            `json:"stage,omitempty"`
-	ChunksDone  int               `json:"chunks_done,omitempty"`
-	TotalChunks int               `json:"total_chunks,omitempty"`
-	PagesDone   int               `json:"pages_done,omitempty"`
-	PagesTotal  int               `json:"pages_total,omitempty"`
-	Error       string            `json:"error,omitempty"`
-	FilePath    string            `json:"file_path,omitempty"`
-	FileHash    string            `json:"file_hash,omitempty"`
-	Permission  string            `json:"permission,omitempty"`
-	UploadedBy  string            `json:"uploaded_by,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	CompletedAt time.Time         `json:"completed_at,omitempty"`
+	TaskID       string            `json:"task_id"`
+	DocID        string            `json:"doc_id"`
+	TenantID     string            `json:"tenant_id"`
+	JobID        string            `json:"job_id,omitempty"`
+	EventID      string            `json:"event_id,omitempty"`
+	Status       TaskStatusState   `json:"status"`
+	Stage        string            `json:"stage,omitempty"`
+	ChunksDone   int               `json:"chunks_done,omitempty"`
+	TotalChunks  int               `json:"total_chunks,omitempty"`
+	PagesDone    int               `json:"pages_done,omitempty"`
+	PagesTotal   int               `json:"pages_total,omitempty"`
+	Error        string            `json:"error,omitempty"`
+	FilePath     string            `json:"file_path,omitempty"`
+	FileHash     string            `json:"file_hash,omitempty"`
+	Permission   string            `json:"permission,omitempty"`
+	UploadedBy   string            `json:"uploaded_by,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	CompletedAt  time.Time         `json:"completed_at,omitempty"`
+	StageTimings StageTimings      `json:"stage_timings,omitempty"`
+}
+
+// StageTimings is per-document parse/embed/store work time in milliseconds.
+// Stage values can overlap a streaming pipeline; TotalMS is end-to-end wall time.
+type StageTimings struct {
+	ParseMS int64 `json:"parse_ms,omitempty"`
+	OCRms   int64 `json:"ocr_ms,omitempty"`
+	EmbedMS int64 `json:"embed_ms,omitempty"`
+	StoreMS int64 `json:"store_ms,omitempty"`
+	TotalMS int64 `json:"total_ms,omitempty"`
+}
+
+func (t StageTimings) Empty() bool {
+	return t.ParseMS == 0 && t.OCRms == 0 && t.EmbedMS == 0 && t.StoreMS == 0 && t.TotalMS == 0
 }
 
 // DLQMessage represents a failed task destined for the dead letter queue.

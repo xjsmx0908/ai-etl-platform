@@ -7,6 +7,7 @@ package docstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"ai-etl-pipeline/internal/db"
+	"ai-etl-pipeline/internal/model"
 )
 
 // Status values mirror model.TaskStatus so the registry can be filtered the same
@@ -69,6 +71,7 @@ type Document struct {
 	KnowledgeSpaceID  string    // governed tenant-local knowledge space
 	PublicationStatus string    // draft | published | retired
 	DeletionStatus    string    // active | pending
+	StageTimings      model.StageTimings
 }
 
 // Governance is the subset of a document's governance state that retrieval needs
@@ -321,10 +324,14 @@ func (s *PgStore) UpsertStatus(ctx context.Context, tenantID, docID string, d Do
 			publication_status = CASE
 				WHEN $3 = 'completed' AND knowledge_space_id = 'user-uploads' THEN 'published'
 				ELSE publication_status
+			END,
+			stage_timings = CASE
+				WHEN $9::jsonb = '{}'::jsonb THEN stage_timings
+				ELSE $9::jsonb
 			END
 		WHERE tenant_id = $1 AND doc_id = $2`,
 		tenantID, docID, d.Status, d.Stage, d.ChunksDone, d.ChunksTotal, d.Error,
-		completedAtParam(d.CompletedAt))
+		completedAtParam(d.CompletedAt), stageTimingsParam(d.StageTimings))
 	if err != nil {
 		return fmt.Errorf("upsert document status: %w", err)
 	}
@@ -394,16 +401,19 @@ func listWhere(q ListQuery) (string, []any) {
 const documentColumns = `tenant_id, doc_id, file_name, object_key, file_hash, file_size,
 	content_type, permission, status, stage, chunks_done, chunks_total,
 	error, metadata, uploaded_by, created_at, updated_at, completed_at,
-	doc_status, effective_date, supersedes, owner, knowledge_space_id, publication_status, deletion_status`
+	doc_status, effective_date, supersedes, owner, knowledge_space_id, publication_status, deletion_status,
+	stage_timings`
 
 func scanDocument(row pgx.Row) (Document, bool, error) {
 	var d Document
 	var completedAt, effectiveDate *time.Time
 	var metadata map[string]string
+	var timingsRaw []byte
 	err := row.Scan(&d.TenantID, &d.DocID, &d.FileName, &d.ObjectKey, &d.FileHash, &d.FileSize,
 		&d.ContentType, &d.Permission, &d.Status, &d.Stage, &d.ChunksDone, &d.ChunksTotal,
 		&d.Error, &metadata, &d.UploadedBy, &d.CreatedAt, &d.UpdatedAt, &completedAt,
-		&d.DocStatus, &effectiveDate, &d.Supersedes, &d.Owner, &d.KnowledgeSpaceID, &d.PublicationStatus, &d.DeletionStatus)
+		&d.DocStatus, &effectiveDate, &d.Supersedes, &d.Owner, &d.KnowledgeSpaceID, &d.PublicationStatus, &d.DeletionStatus,
+		&timingsRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Document{}, false, nil
 	}
@@ -417,7 +427,18 @@ func scanDocument(row pgx.Row) (Document, bool, error) {
 	if effectiveDate != nil {
 		d.EffectiveDate = *effectiveDate
 	}
+	if len(timingsRaw) > 0 {
+		_ = json.Unmarshal(timingsRaw, &d.StageTimings)
+	}
 	return d, true, nil
+}
+
+func stageTimingsParam(t model.StageTimings) []byte {
+	raw, err := json.Marshal(t)
+	if err != nil || len(raw) == 0 {
+		return []byte("{}")
+	}
+	return raw
 }
 
 // dateParam turns a zero time into a nil DATE parameter so "not tracked" is

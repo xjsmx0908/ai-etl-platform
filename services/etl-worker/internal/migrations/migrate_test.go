@@ -497,3 +497,20 @@ func TestMigration0027ReviewReportLifecycleIndexes(t *testing.T) {
 		}
 	}
 }
+
+func TestMigration0029StageTimings(t *testing.T) {
+	body, err := migrationFiles.ReadFile("0029_stage_timings.up.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	source := string(body)
+	for _, expected := range []string{
+		"ALTER TABLE documents",
+		"ADD COLUMN IF NOT EXISTS stage_timings",
+		"jsonb NOT NULL DEFAULT '{}'::jsonb",
+	} {
+		if !strings.Contains(source, expected) {
+			t.Errorf("migration missing %q", expected)
+		}
+	}
+}

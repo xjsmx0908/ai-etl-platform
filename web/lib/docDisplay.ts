@@ -46,3 +46,13 @@ export function formatUploader(id?: string): { label: string; title?: string } {
   if (UUID_RE.test(id)) return { label: `${id.slice(0, 8)}…`, title: id };
   return { label: id };
 }
+
+/** Format ingestion stage milliseconds for document and upload views. */
+export function formatDurationMs(ms?: number): string {
+  if (ms == null || ms <= 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}

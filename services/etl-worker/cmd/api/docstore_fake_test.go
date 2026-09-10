@@ -169,6 +169,9 @@ func (f *fakeDocStore) UpsertStatus(_ context.Context, tenantID, docID string, d
 	if !d.CompletedAt.IsZero() {
 		existing.CompletedAt = d.CompletedAt
 	}
+	if !d.StageTimings.Empty() {
+		existing.StageTimings = d.StageTimings
+	}
 	f.docs[key] = existing
 	return nil
 }

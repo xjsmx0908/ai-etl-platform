@@ -47,6 +47,15 @@ export type Document = {
   knowledge_space_id: string;
   publication_status: "draft" | "published" | "retired";
   deletion_status: "active" | "pending";
+  stage_timings?: StageTimings;
+};
+
+export type StageTimings = {
+  parse_ms?: number;
+  ocr_ms?: number;
+  embed_ms?: number;
+  store_ms?: number;
+  total_ms?: number;
 };
 
 export type KnowledgeSpace = {
@@ -200,6 +209,7 @@ export type TaskStatus = {
   pages_total?: number;
   error?: string;
   file_path?: string;
+  stage_timings?: StageTimings;
 };
 
 export type AgentStep = {

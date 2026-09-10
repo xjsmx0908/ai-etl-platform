@@ -305,3 +305,10 @@
 - Reason：质量、入库容量、真实问答时延必须分轨。先做可在演示栈串行运行的 accepted-to-ready 测量；真实 RAG 评测等待停栈窗口。
 - Act：新增 `scripts/ingestion-capacity.py`、契约测试和 `docs/ingestion-capacity.md`。脚本不调用 `/v1/query`、不起 Compose。
 - Refine：契约测试 6/6 通过。演示栈 CPU bge-m3 串行：short-text 2 chunk / 11.0s，typical-doc 12 chunk / 24.0s。短文本不等于扫描 PDF。P-CAP-2 仍需停演示栈才能跑 `--real-models`。
+
+## 2026-09-10 - 补全入库阶段耗时记录与展示
+
+- Perceive：演示栈能看到整单入库墙钟，但任务/文档没有 parse/OCR/embed/store 毫秒。缺的是字段和展示，不是另开评测栈。
+- Reason：在当前 Compose 记阶段耗时：任务 Redis JSON、documents.stage_timings、Prometheus histogram、上传页和文档页。
+- Act：pipeline 计时 + observer；migration 0029；API `stage_timings`；Grafana Parse/Embed/Store/OCR p95。完成态保留 chunks_done。
+- Refine：Go 测试通过。演示栈短文本 `doc-1789008297108283450`：parse 4ms / embed 7868ms / store 314ms / total 8231ms。旧文档仍显示 —。
