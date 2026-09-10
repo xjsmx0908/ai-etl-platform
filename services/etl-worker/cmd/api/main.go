@@ -275,6 +275,15 @@ func main() {
 		WithDocuments(docStore).
 		WithKnowledgeCatalog(knowledgeCatalog).
 		WithReleaseVisibility(releaseVisibility)
+	go func() {
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), cfg.EmbedTimeout)
+		defer warmCancel()
+		if err := qs.WarmEmbeddings(warmCtx); err != nil {
+			slog.Warn("query embedding warmup failed", "model", cfg.EmbedModel, "error", err)
+			return
+		}
+		slog.Info("query embedding model kept warm", "model", cfg.EmbedModel, "keep_alive", cfg.EmbedKeepAlive)
+	}()
 	taskStatusStore, err := newTaskStatusStore(cfg)
 	if err != nil {
 		slog.Error("failed to create task status store", "error", err)

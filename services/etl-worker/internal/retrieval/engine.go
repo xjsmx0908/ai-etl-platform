@@ -560,11 +560,24 @@ func topCandidateMatches(evidence exactEvidence, candidates []Candidate) bool {
 	return evidence.MatchesCandidate(candidates[0])
 }
 
+// Warm pins the embedding model on Ollama-native endpoints so the first
+// user query does not pay a cold load.
+func (e *Engine) Warm(ctx context.Context) error {
+	if e == nil || !isOllamaNativeEndpoint(e.cfg.EmbedEndpoint) {
+		return nil
+	}
+	_, err := e.embedQuestion(ctx, "warmup")
+	return err
+}
+
 func (e *Engine) embedQuestion(ctx context.Context, question string) ([]float64, error) {
 	ollamaNative := isOllamaNativeEndpoint(e.cfg.EmbedEndpoint)
 	reqBody := map[string]interface{}{"model": e.cfg.EmbedModel}
 	if ollamaNative {
 		reqBody["prompt"] = question
+		if keepAlive := strings.TrimSpace(e.cfg.EmbedKeepAlive); keepAlive != "" {
+			reqBody["keep_alive"] = keepAlive
+		}
 	} else {
 		reqBody["input"] = question
 	}

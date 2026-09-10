@@ -2,9 +2,12 @@ package embedder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ai-etl-pipeline/internal/config"
@@ -190,3 +193,65 @@ func TestIsRetryableDeadline(t *testing.T) {
 type plainError struct{ msg string }
 
 func (e *plainError) Error() string { return e.msg }
+
+func TestEmbedOllamaNativeRequestPinsKeepAlive(t *testing.T) {
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embedding":[0.1,0.2]}`))
+	}))
+	defer srv.Close()
+
+	e, err := NewHTTPEmbedder(config.Config{
+		Environment:     "staging",
+		EmbedEndpoint:   srv.URL + "/api/embeddings",
+		EmbedModel:      "bge-m3",
+		EmbedKeepAlive:  "24h",
+		EmbedMaxRetries: 1,
+	})
+	if err != nil {
+		t.Fatalf("new embedder: %v", err)
+	}
+	defer e.Close()
+
+	chunk := &model.Chunk{ChunkID: "c1", Content: "hello"}
+	if err := e.Embed(context.Background(), chunk); err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	if payload["keep_alive"] != "24h" {
+		t.Fatalf("expected keep_alive 24h, got %v in %s", payload["keep_alive"], raw)
+	}
+}
+
+func TestEmbedOpenAICompatibleRequestOmitsKeepAlive(t *testing.T) {
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1]}],"usage":{"total_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	e, err := NewHTTPEmbedder(config.Config{
+		Environment:     "staging",
+		EmbedEndpoint:   srv.URL + "/v1/embeddings",
+		EmbedModel:      "text-embedding-3-small",
+		EmbedKeepAlive:  "24h",
+		EmbedMaxRetries: 1,
+	})
+	if err != nil {
+		t.Fatalf("new embedder: %v", err)
+	}
+	defer e.Close()
+	if err := e.Embed(context.Background(), &model.Chunk{ChunkID: "c1", Content: "hello"}); err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	if strings.Contains(string(raw), "keep_alive") {
+		t.Fatalf("openai-compatible embed must not send keep_alive, got %s", raw)
+	}
+}

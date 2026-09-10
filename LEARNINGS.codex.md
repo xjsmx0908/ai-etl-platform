@@ -319,3 +319,10 @@
 - Reason：检索通过后即可推 token；JSON 路径保持整段返回。grounding 仍在 done 前执行，失败用 `replace` 覆盖，避免未校验答案成为终态。
 - Act：`ask` 增加 `queryStream`；流式走 `streamChat`；`done.answer` 为最终答案。Web 用 `replace`/`done.answer` 覆盖。
 - Refine：`go test ./internal/query` 与 `scripts.tests.test_query_sse_client` 通过。入库仍受 CPU embedding 限制，本切片不改。
+
+## 2026-09-10 - 钉住本地 embedding 去掉空闲冷启动
+
+- Perceive：用户觉得问答十几秒、上传很久不符合企业接口。`/v1/upload` 已是 202；短文本 embed 7.9s 是 CPU bge-m3 冷加载。问答检索约 0.4s，总时长是远程 LLM。keep-alive 已写未部署。
+- Reason：Ollama `keep_alive=24h` + 启动预热可以消掉空闲冷加载，不能把大文档 CPU 推理变成 GPU。不提高 `EMBED_CONCURRENCY`，不起第二套 Compose。query-api 预热放后台，避免 HEALTHCHECK start-period 5s 被堵。
+- Act：embedder/retrieval 发送 keep_alive；worker 同步预热，query-api 异步预热；问答日志补 retrieval_ms/ttft；工作台展示首字耗时。重建 etl-worker、query-api、web。
+- Refine：短文本 embed 487ms、就绪 2.0s、上传 HTTP 28ms。问答进度 2ms，首字 3.1–4.9s。大 PDF 仍受 CPU embedding 限制。

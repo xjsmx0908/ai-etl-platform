@@ -504,6 +504,7 @@ export default function QaPage() {
                   value={meta.token_usage?.estimated_cost_usd ? formatCost(meta.token_usage.estimated_cost_usd) : "—"}
                   highlight={Boolean(meta.token_usage?.estimated_cost_usd)}
                 />
+                <Row label="首字耗时" value={meta.ttft || "—"} />
                 <Row label="总耗时" value={meta.duration || "—"} />
                 <Row label="Prompt 版本" value={meta.prompt_version || "v1"} />
               </dl>

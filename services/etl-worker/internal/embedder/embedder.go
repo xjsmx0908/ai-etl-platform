@@ -202,14 +202,27 @@ func (e *HTTPEmbedder) callOpenAIAPI(ctx context.Context, text string) ([]float6
 	return result.Data[0].Embedding, result.Usage.TotalTokens, nil
 }
 
-// callOllamaAPI sends embedding request in Ollama native format.
+// Warm loads the embedding model and pins it with keep_alive. Best-effort.
+func (e *HTTPEmbedder) Warm(ctx context.Context) error {
+	if e == nil || !isOllamaNativeEndpoint(e.cfg.EmbedEndpoint) {
+		return nil
+	}
+	chunk := &model.Chunk{ChunkID: "warmup", Content: "warmup"}
+	return e.Embed(ctx, chunk)
+}
+
+// callOllamaAPI sends an embedding request in Ollama native format.
 // Request:  {"model": "...", "prompt": "..."}
 // Response: {"embedding": [...]}
 func (e *HTTPEmbedder) callOllamaAPI(ctx context.Context, text string) ([]float64, int, error) {
-	reqBody, _ := json.Marshal(map[string]interface{}{
+	payload := map[string]interface{}{
 		"model":  e.cfg.EmbedModel,
 		"prompt": text,
-	})
+	}
+	if keepAlive := strings.TrimSpace(e.cfg.EmbedKeepAlive); keepAlive != "" {
+		payload["keep_alive"] = keepAlive
+	}
+	reqBody, _ := json.Marshal(payload)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", e.cfg.EmbedEndpoint, bytes.NewReader(reqBody))
 	if err != nil {

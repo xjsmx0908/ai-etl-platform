@@ -61,6 +61,9 @@ type Config struct {
 	EmbedMaxBackoff  time.Duration
 	EmbedRateLimit   float64 // requests per second
 	EmbedConcurrency int
+	// EmbedKeepAlive is forwarded to Ollama-native embedding calls so the
+	// model stays resident. Empty omits the field. Default is 24h.
+	EmbedKeepAlive string
 
 	// Parser Service
 	ParserEndpoint      string
@@ -298,6 +301,7 @@ func Load() Config {
 		EmbedMaxBackoff:  EnvDuration("EMBED_MAX_BACKOFF", 30*time.Second),
 		EmbedRateLimit:   EnvFloat("EMBED_RATE_LIMIT", 50.0),
 		EmbedConcurrency: EnvInt("EMBED_CONCURRENCY", 2),
+		EmbedKeepAlive:   EnvStr("EMBED_KEEP_ALIVE", "24h"),
 
 		// Parser Service
 		ParserEndpoint:      EnvStr("PARSER_ENDPOINT", "http://parser-service:8000"),

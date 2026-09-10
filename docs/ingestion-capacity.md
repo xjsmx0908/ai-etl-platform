@@ -87,3 +87,22 @@ ingestion throughput.
 Real full `/v1/query` latency with a live LLM is an optional observation:
 5–10 serial requests after ingest, reported separately, never 40 concurrent
 generations on the demo stack.
+
+## Local embedding keep-alive
+
+Idle Ollama `bge-m3` on this CPU host previously paid a cold load of about 8s
+on the first chunk. Worker and Query API now send `keep_alive=24h` and warm
+the model at process start.
+
+After rebuilding the live demo stack on 2026-09-10:
+
+| Path | Before keep-alive | After keep-alive |
+| --- | --- | --- |
+| `/v1/upload` HTTP | already `202` | `202` in 28ms |
+| short-text embed | 7.9s (`doc-1789008297108283450`) | 487ms (`doc-1789013217876229964`) |
+| short-text accepted-to-ready | 8.2s–11s | 2.0s |
+| query retrieval | folded into 4–10s total | 350–430ms |
+| query TTFT / total | first token waited for full answer | progress at 2ms; TTFT 3.1–4.9s, almost all remote LLM |
+
+Keep `EMBED_CONCURRENCY=1` on CPU. Keep-alive does not change per-chunk
+transformer cost on large PDFs.

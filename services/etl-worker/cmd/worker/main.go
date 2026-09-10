@@ -74,6 +74,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer emb.Close()
+	warmCtx, warmCancel := context.WithTimeout(context.Background(), cfg.EmbedTimeout)
+	if err := emb.Warm(warmCtx); err != nil {
+		slog.Warn("embedding warmup failed", "model", cfg.EmbedModel, "error", err)
+	} else {
+		slog.Info("embedding model kept warm", "model", cfg.EmbedModel, "keep_alive", cfg.EmbedKeepAlive)
+	}
+	warmCancel()
 
 	storer, err := newStorer(cfg)
 	if err != nil {

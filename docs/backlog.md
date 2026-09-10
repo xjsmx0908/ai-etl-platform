@@ -28,6 +28,7 @@
 | P-CAP-3 | 真实问答时延观察 | pending | 入库完成后串行 5–10 次完整 `/v1/query`，不回写 L1 阈值 | [`ingestion-capacity.md`](ingestion-capacity.md) |
 | P-CAP-5 | 问答真流式 | done | SSE 在 grounding 前推送 token；校验失败发 `replace`；`done.answer` 为最终答案 | 本文件 |
 | P-CAP-4 | 入库阶段耗时展示 | done | 任务/文档返回 `stage_timings`；上传页和文档页展示；Grafana Parse/Embed/Store/OCR p95。演示栈短文本 parse 4ms / embed 7.9s / store 314ms / total 8.2s | 本文件 |
+| P-CAP-6 | 本地 embedding keep-alive | done | Ollama `keep_alive=24h` + worker/query-api 启动预热已重建进演示栈。短文本 embed 7.9s→487ms，HTTP 202 为 28ms，就绪 2.0s。问答检索 350–430ms，首字 3–5s 是远程 LLM | 本文件 |
 
 ## Product experience UAT
 

@@ -440,6 +440,15 @@ func (s *Service) InvalidateSemanticCache(ctx context.Context) error {
 	return s.retriever.InvalidateCache(ctx)
 }
 
+// WarmEmbeddings pins the query-time embedding model so the first question
+// after process start does not wait on an Ollama cold load.
+func (s *Service) WarmEmbeddings(ctx context.Context) error {
+	if s == nil || s.retriever == nil {
+		return nil
+	}
+	return s.retriever.Warm(ctx)
+}
+
 func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -818,6 +827,9 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 		"sources", len(sources),
 		"retrieval_strategy", retrievalResult.Route.Strategy,
 		"retrieval_cache_hit", retrievalResult.CacheHit,
+		"retrieval_ms", retrievalResult.Duration.Milliseconds(),
+		"ttft", resp.TimeToFirstToken,
+		"grounding_checked", groundingChecked,
 		"duration", resp.Duration)
 
 	span.SetAttributes(attribute.Int("answer_len", len(answer)))
