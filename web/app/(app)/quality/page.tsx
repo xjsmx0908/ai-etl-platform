@@ -32,9 +32,9 @@ export default function QualityPage() {
   if (loadError) {
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
-        <p className="font-medium text-slate-800">这是离线评测回归页，不是某一次问答的即时评分。</p>
+        <p className="font-medium text-slate-800">这是离线评测回归页，不是某一次问答的即时评分，也不是企业 Gold 验收。</p>
         <p className="mt-2 text-slate-500">
-          本页只展示最近一次离线检索评测报告，用于比较 embedding/检索配置，不会改变在线问答结果。
+          本页只展示最近一次离线检索评测报告，用于比较 embedding/检索配置，不会改变在线问答结果。数字来自语义回归集，不能当作企业级 SLO。
         </p>
         <p className="mt-2 text-slate-500">
           当前未找到评测报告（<code className="rounded bg-slate-100 px-1">docs/evals/reports/latest.json</code> 未挂载或无法读取）。不影响问答工作台使用。
@@ -55,7 +55,7 @@ export default function QualityPage() {
     <div className="space-y-6">
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-800">
-          本页面向管理员和运维人员，展示离线评测报告的检索回归指标，用于比较 embedding/检索配置是否改善整体召回；它不代表某一次问答的即时评分，也不会改变在线问答结果。建议在更换模型或索引后重新运行评测并关注趋势。
+          本页面向管理员和运维人员，展示离线评测报告的检索回归指标，用于比较 embedding/检索配置是否改善整体召回。它不是某一次问答的即时评分，也不是已签字的企业业务 Gold 验收；当前数字来自语义回归集，不能当作企业级 SLO，也不会改变在线问答结果。建议在更换模型或索引后重新运行评测并关注趋势。
         </div>
         <h2 className="mb-1 text-sm font-semibold text-slate-500">
           真实模型语义检索{modelLabel ? `（${modelLabel}）` : ""}
@@ -77,12 +77,13 @@ export default function QualityPage() {
                 </span>
               </div>
               <span className="mt-2 text-xs font-medium text-slate-600">Recall@{r.k}</span>
+              {r.note ? <span className="mt-1 max-w-[88px] text-center text-[11px] leading-4 text-slate-400">{r.note}</span> : null}
             </div>
           ))}
-          <div className="ml-4 max-w-[260px] text-xs text-slate-500">
-            <p className="font-medium text-slate-600">embedding 选型是检索质量的压倒性因素</p>
+          <div className="ml-4 max-w-[280px] text-xs text-slate-500">
+            <p className="font-medium text-slate-600">Recall@k 是目标文档出现在前 k 条来源的比例</p>
             <p className="mt-1">
-              同一数据集下，从 nomic-embed-text 换到 bge-m3（中文优化），Recall@1 从 19% 显著提升。
+              这是语义回归集上的离线对比，不是签字后的企业 Gold。同一数据集下，从 nomic-embed-text 换到 bge-m3（中文优化），Recall@1 从 19% 显著提升。
               embedding 的语义分辨率决定了检索上限，策略调优只能微调。
             </p>
           </div>

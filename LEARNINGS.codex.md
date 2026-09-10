@@ -354,3 +354,10 @@
 - Reason：Sheet 标记当作分界；超大 sheet 按行切并在每块重复表头；带 tab 的表格不走密度丢弃。
 - Act：`chunker.py` 增加 tabular split；测试覆盖花名册、多 sheet、超大切块重复表头。
 - Refine：parser `tests/test_chunker.py tests/test_office_parsers.py` 17 passed。未停演示栈、未重跑真实评测。
+
+## 2026-09-10 - 检索质量页标明非企业 Gold
+
+- Perceive：用户把 Recall@1/3/5 当成企业级标准。页面只说离线回归，没展示 note，也没写不是签字 Gold。
+- Reason：在 `/quality` 写清「不是即时评分、不是企业 Gold、不能当 SLO」，并渲染 Recall@k 的 note。
+- Act：更新 `quality/page.tsx`；增加 `scripts/tests/test_quality_page_copy.py`。
+- Refine：文案单测通过。未停演示栈、未重跑真实评测。
