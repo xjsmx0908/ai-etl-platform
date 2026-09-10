@@ -38,6 +38,7 @@
 | P-UAT-1-S1 | 只读用户问答失败 | done | 2026-09-09 只读可问「赴港流程」；空间下拉可见。UAT-010 已修复 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 | P-UAT-1-next | 剩余体验缺陷 | done | UAT-013 已复验：错密登录显示「用户名或密码错误」 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 | P-UAT-2 | 受管换版切块未切换 | done | UAT-014 已复验：新版本发布后问答 120 元，旧 generation 退役 | [`../issues/findings-register.md`](../issues/findings-register.md) |
+| P-UAT-3 | 发布中心 Fail to fetch 红字 | in progress | 代码已改：静默轮询不展示瞬时 fetch 失败；待真实页面复验 UAT-015 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 
 这是 2026-09-09 明确要求的体验验收轨道，覆盖页面美观、使用逻辑和缺陷，不替代发布中心/治理/身份专项矩阵。问题登记以 [`issues/findings-register.md`](../issues/findings-register.md) 为准。
 

@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, FileCheck2, RefreshCw, Search, X } from "lucide-react";
 import { apiClient } from "@/lib/apiClient";
+import { isTransientFetchError, localizeFetchError } from "@/lib/fetchErrors";
 import { useAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -98,22 +99,33 @@ export default function AgentPage() {
   const [error, setError] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
 
+  const refreshSeq = useRef(0);
   const refreshReleaseCenter = useCallback(async (quiet = false) => {
     if (!isAdmin) { setLoading(false); return; }
     if (!quiet) setRefreshing(true);
+    const seq = ++refreshSeq.current;
     try {
       const [docs, reqs, states] = await Promise.all([
         apiClient.listDocuments({ limit: 100 }), apiClient.listReleaseRequests(), apiClient.listReleaseOverview(),
       ]);
+      if (seq !== refreshSeq.current) return;
       setDocuments(docs.items);
       setRequests(reqs.items);
       setOverview(states.items);
       setLastSyncedAt(Date.now());
       setSelectedOverviewID((id) => id || states.items[0]?.document_id || "");
+      setError("");
     } catch (e: unknown) {
-      setError((e as Error).message || "无法刷新发布中心");
+      if (seq !== refreshSeq.current) return;
+      const raw = (e as Error).message;
+      if (!quiet || !isTransientFetchError(raw)) {
+        setError(localizeFetchError(raw) || "无法刷新发布中心");
+      }
     } finally {
-      setLoading(false); if (!quiet) setRefreshing(false);
+      if (seq === refreshSeq.current) {
+        setLoading(false);
+        if (!quiet) setRefreshing(false);
+      }
     }
   }, [isAdmin]);
 
@@ -177,7 +189,7 @@ export default function AgentPage() {
     if (!detail) return;
     setBusy(true); setError("");
     try { const next = await apiClient.decideReleaseRequest(detail.request.request_id, decision, reason); setDetail(next); setReason(""); await refreshReleaseCenter(); }
-    catch (e: unknown) { setError((e as Error).message || "审批操作失败"); }
+    catch (e: unknown) { setError(localizeFetchError((e as Error).message) || "审批操作失败"); }
     finally { setBusy(false); }
   };
 

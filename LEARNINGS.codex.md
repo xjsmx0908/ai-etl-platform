@@ -326,3 +326,10 @@
 - Reason：Ollama `keep_alive=24h` + 启动预热可以消掉空闲冷加载，不能把大文档 CPU 推理变成 GPU。不提高 `EMBED_CONCURRENCY`，不起第二套 Compose。query-api 预热放后台，避免 HEALTHCHECK start-period 5s 被堵。
 - Act：embedder/retrieval 发送 keep_alive；worker 同步预热，query-api 异步预热；问答日志补 retrieval_ms/ttft；工作台展示首字耗时。重建 etl-worker、query-api、web。
 - Refine：短文本 embed 487ms、就绪 2.0s、上传 HTTP 28ms。问答进度 2ms，首字 3.1–4.9s。大 PDF 仍受 CPU embedding 限制。
+
+## 2026-09-10 - 发布中心红色 Fail to fetch
+
+- Perceive：知识发布中心时不时出现红色 `Fail to fetch`。页面每 8 秒并行拉 documents/requests/overview；`catch` 直接 `setError(e.message)`，成功刷新不清空。query-api overview 近 4h 202 次全 200。
+- Reason：红字是浏览器/BFF 瞬时 `fetch` 失败被放大，不是审批业务 5xx。数据接入页已对同类代理抖动做过容忍，发布中心没有。
+- Act：静默轮询忽略瞬时网络错误；成功刷新清横幅；BFF `proxyBackend` 捕获上游 fetch 失败返回 503 JSON。
+- Refine：`python3 scripts/tests/test_release_center_fetch_error.py` 通过。UAT-015 待真实页面复验。
