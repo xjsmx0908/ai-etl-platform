@@ -14,9 +14,10 @@ type diversityStats struct {
 }
 
 // diversifyCandidates selects context in rank order while preventing repeated
-// text and a single document from hiding useful alternatives. A second pass
-// fills unused slots, so questions that genuinely need several chunks from one
-// document still receive them when no other documents are available.
+// text and a single document from hiding useful alternatives. The first pass
+// keeps one chunk per document so a second required document is not dropped
+// from Top-K; later passes add extra chunks up to maxPerDoc, then fill leftover
+// slots from a single-document result set.
 func diversifyCandidates(candidates []Candidate, topK, maxPerDoc int) ([]Candidate, diversityStats) {
 	if topK <= 0 || topK > len(candidates) {
 		topK = len(candidates)
@@ -49,29 +50,51 @@ func diversifyCandidates(candidates []Candidate, topK, maxPerDoc int) ([]Candida
 	}
 
 	selected := make([]Candidate, 0, topK)
-	deferred := make([]Candidate, 0)
+	selectedIDs := make(map[string]struct{}, topK)
 	perDoc := make(map[string]int)
 	availableDocs := make(map[string]struct{})
 	for _, candidate := range deduplicated {
 		availableDocs[candidate.DocID] = struct{}{}
 	}
+
+	take := func(candidate Candidate, ignoreCap bool) bool {
+		if len(selected) >= topK {
+			return false
+		}
+		id := candidateID(candidate)
+		if _, exists := selectedIDs[id]; exists {
+			return false
+		}
+		if !ignoreCap && perDoc[candidate.DocID] >= maxPerDoc {
+			return false
+		}
+		selected = append(selected, candidate)
+		selectedIDs[id] = struct{}{}
+		perDoc[candidate.DocID]++
+		return true
+	}
+
 	for _, candidate := range deduplicated {
 		if len(selected) >= topK {
 			break
 		}
-		if perDoc[candidate.DocID] >= maxPerDoc {
-			deferred = append(deferred, candidate)
+		if perDoc[candidate.DocID] > 0 {
 			continue
 		}
-		selected = append(selected, candidate)
-		perDoc[candidate.DocID]++
+		take(candidate, false)
 	}
-	if len(availableDocs) == 1 {
-		for _, candidate := range deferred {
+	for _, candidate := range deduplicated {
+		if len(selected) >= topK {
+			break
+		}
+		take(candidate, false)
+	}
+	if len(selected) < topK && len(availableDocs) == 1 {
+		for _, candidate := range deduplicated {
 			if len(selected) >= topK {
 				break
 			}
-			selected = append(selected, candidate)
+			take(candidate, true)
 		}
 	}
 	for i := range selected {

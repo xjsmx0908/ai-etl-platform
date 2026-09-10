@@ -333,3 +333,10 @@
 - Reason：红字是浏览器/BFF 瞬时 `fetch` 失败被放大，不是审批业务 5xx。数据接入页已对同类代理抖动做过容忍，发布中心没有。
 - Act：静默轮询忽略瞬时网络错误；成功刷新清横幅；BFF `proxyBackend` 捕获上游 fetch 失败返回 503 JSON。
 - Refine：`python3 scripts/tests/test_release_center_fetch_error.py` 通过。UAT-015 待真实页面复验。
+
+## 2026-09-10 - Top-K 截断不再挤掉第二篇必查文档
+
+- Perceive：`/quality` 55/68/71 不是企业验收。gold-candidate-v2 跨文档 fused all-required 40% → selected 0%，最终 Top-5 先收下同一文档第 2 块。
+- Reason：多样性应先覆盖不同文档，再补 maxPerDoc 以内的第二块；单文档结果仍允许填满剩余槽位。
+- Act：`diversifyCandidates` 改为 unique-document-first；回归测试锁住 fused 两篇必查文档在 Top-5 仍都在。
+- Refine：`go test ./internal/retrieval -count=1` 通过。未重跑真实模型评测，未停演示栈。
