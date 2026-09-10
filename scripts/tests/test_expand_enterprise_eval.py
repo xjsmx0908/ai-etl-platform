@@ -124,6 +124,35 @@ class ExpandEnterpriseEvalTests(unittest.TestCase):
         )
         self.assertIn("incompatible_business_domains", reasons)
 
+    def test_cross_document_candidate_rejects_single_source_query(self):
+        left = self.document("doc-a", "finance")
+        right = {
+            "id": "doc-b",
+            "filename": "doc-b.docx",
+            "permission": "internal",
+            "content": "借款应在报销完成后五个工作日内核销。",
+            "metadata": {"business_domain": "finance"},
+        }
+        generated = {
+            "query": "陈伟的OA账号是什么？",
+            "reference_answer": "陈伟的OA账号是G00024；报销材料应在返程后十个工作日内提交。",
+            "answer_must_include": ["十个工作日", "五个工作日"],
+            "source_key_facts": {"doc-a": "十个工作日", "doc-b": "五个工作日"},
+        }
+        evidence = {
+            "doc-a": "报销材料应在返程后十个工作日内提交。",
+            "doc-b": "借款应在报销完成后五个工作日内核销。",
+        }
+
+        reasons = self.module.validate_cross_document_candidate(
+            generated,
+            [left, right],
+            evidence,
+            source_queries=["陈伟的OA账号是什么？", "借款核销截止时间是什么？"],
+        )
+        self.assertIn("query_copied_from_single_document", reasons)
+        self.assertTrue(any(item.startswith("query_unrelated_to_source:") for item in reasons))
+
     def test_build_dataset_uses_explicit_cohorts_and_required_document_ids(self):
         source = {
             "provenance": {},

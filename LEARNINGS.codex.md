@@ -368,3 +368,10 @@
 - Reason：`--api-base` 复用 Query API；企业候选 35 篇入库 user-uploads 后 retrieval-only 70 题。技术门槛沿用仓库 90% hit/Recall@5，不当作签字 Gold。
 - Act：评测脚本跳过隔离 Compose，现有栈走宿主机 ES；入库 2 份大文件 embedding 超时后串行重传成功。报告 `docs/evals/private/p1.4-enterprise/live-demo-20260910/eval-20260910-205028.json`。
 - Refine：Recall@1/3/5 = 50.9%/74.5%/78.2%，未达 90%。词面 100%、语义 93%、跨文档 selected all-required 0%、负样本 100%。未改 `/quality` 烘焙数字。
+
+## 2026-09-10 - 跨文档 0% 是题集问题
+
+- Perceive：10 道 cross-document 把无关第二篇标成 required，7 道直接复制「陈伟的OA账号是什么？」；fused rank 38 是正常排序，不该改 diversity 硬塞。
+- Reason：跨文档题必须不能抄单文档问句，且问句与每个来源证据不能 0 重叠。有效题 60 道才对照 90% 门槛。
+- Act：`validate_cross_document_candidate` 增加 `query_copied_from_single_document` / `query_unrelated_to_source`；过滤后在演示栈重跑 retrieval-only。
+- Refine：有效集 Recall@1/3/5 = 62.2%/91.1%/95.6%，hit_rate 95.6%，负样本 100%。Recall@5 达到 90%；Recall@1 仍低。未改检索截断，未停演示栈。

@@ -148,6 +148,7 @@ def validate_cross_document_candidate(
     documents: list[dict[str, Any]],
     evidence_by_document: dict[str, str],
     expected_facts_by_document: dict[str, list[str]] | None = None,
+    source_queries: list[str] | None = None,
 ) -> list[str]:
     reasons: list[str] = []
     document_ids = [str(document.get("id", "")) for document in documents]
@@ -187,6 +188,12 @@ def validate_cross_document_candidate(
             reasons.append(f"source_fact_missing_from_answer:{document_id}")
         if fact and fact not in key_facts:
             reasons.append(f"source_fact_missing_from_assertions:{document_id}")
+        if query_content_overlap(query, evidence) == 0:
+            reasons.append(f"query_unrelated_to_source:{document_id}")
+    if source_queries:
+        normalized_query = normalized_text(query)
+        if any(normalized_query == normalized_text(item) for item in source_queries if str(item).strip()):
+            reasons.append("query_copied_from_single_document")
     return reasons
 
 
@@ -765,7 +772,11 @@ def generate_cross_cases(
             source["document_id"]: source["prevalidated_key_facts"] for source in sources
         }
         if validate_cross_document_candidate(
-            generated, source_documents, evidence, expected_facts
+            generated,
+            source_documents,
+            evidence,
+            expected_facts,
+            source_queries=[str(case.get("query", "")) for case in (left, right)],
         ):
             stats["mechanical_rejected"] += 1
             continue
