@@ -69,6 +69,7 @@ bash scripts/e2e-smoke.sh
 | 确定性 RAG 回归 | `python3 scripts/run-evals.py` |
 | 真实模型评测 | `python3 scripts/run-evals.py --real-models`，说明见 [`docs/evals/README.md`](docs/evals/README.md) |
 | 查询性能门禁 | `python3 scripts/load-test.py --profile cold-retrieval --requests 40 --concurrency 5`，说明见 [`docs/load-test.md`](docs/load-test.md) |
+| 入库容量包络 | `python3 scripts/ingestion-capacity.py --profile short-text`，说明见 [`docs/ingestion-capacity.md`](docs/ingestion-capacity.md) |
 | 个人身份演示 | `bash scripts/identity-demo-acceptance.sh` |
 | 产品体验巡检 | [`docs/product-experience-acceptance.md`](docs/product-experience-acceptance.md) |
 

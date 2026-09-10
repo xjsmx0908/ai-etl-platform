@@ -1,6 +1,6 @@
 # Backlog
 
-最后核验：2026-09-09。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
+最后核验：2026-09-10。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
 仓库规则维护：已将 `AGENTS.md` 的自然语言指令统一为中文，并明确简洁回答与最小上下文原则。
 已完成的阶段计划和历史实验报告已移出工作树；当前状态以本文件和对应设计/验收文档为准。
 
@@ -15,6 +15,17 @@
 | P2.6 | 生产证据门 | blocked | 由业务和运维批准 SLO、RPO/RTO、容量、质量、备份恢复、驻留和预算，再执行保留证据的验收 | 归档快照 P2.6 规划章节 |
 
 以上事项保留在 backlog 中用于生产准入跟踪，但不属于当前 Agent 审计功能路线；除非用户重新指定，不得自动启动。
+
+
+## Real-model and ingestion capacity
+
+与 L1 mock 查询门禁分开。本机演示栈继续运行时，只允许串行入库测量；真实 RAG 质量评测需要停演示栈或换机器。数字只作为容量包络，不写入 ADR 0010，不加入 Required Checks。
+
+| ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
+| --- | --- | --- | --- | --- |
+| P-CAP-1 | 入库容量包络 | done | 脚本与契约测试已落地。演示栈 CPU bge-m3：short-text 2 chunk / 11s，typical-doc 12 chunk / 24s。扫描 PDF 仍用 `--fixture-file` | [`ingestion-capacity.md`](ingestion-capacity.md) |
+| P-CAP-2 | 真实模型 RAG 质量 | blocked | 停演示栈或换机器后运行 `python3 scripts/run-evals.py --real-models --embed-dim 1024` | [`evals/README.md`](evals/README.md) |
+| P-CAP-3 | 真实问答时延观察 | pending | 入库完成后串行 5–10 次完整 `/v1/query`，不回写 L1 阈值 | [`ingestion-capacity.md`](ingestion-capacity.md) |
 
 ## Product experience UAT
 

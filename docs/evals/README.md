@@ -30,6 +30,11 @@ python3 scripts/run-evals.py
 
 真实模式会使用独立 Qdrant collection，避免与 mock 维度冲突。
 
+入库容量（accepted-to-ready，真实 embedding）是另一条轨道，命令是
+`python3 scripts/ingestion-capacity.py`，说明见 [`../ingestion-capacity.md`](../ingestion-capacity.md)。
+不要把它和 L1 查询 p95 或本页 Recall 混用。本机演示栈运行时不要再起一套 eval Compose。
+
+
 ```bash
 python3 scripts/run-evals.py \
   --min-hit-rate 0.90 \

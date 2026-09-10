@@ -298,3 +298,10 @@
 - Reason：L1 门禁必须走独立 mock 栈；演示栈只做脚本连通，避免 40 次真实生成。
 - Act：新增 `scripts/load-test-gate.sh` 和 `workflow_dispatch`/nightly workflow，不加入 Required Checks。
 - Refine：本机用 `tenant-loadtest` JWT 做小流量连通。阈值仍待隔离栈三次校准。
+
+## 2026-09-10 - 入库容量轨道与 L1 查询门禁分离
+
+- Perceive：L1 mock 查询门禁已通过；用户要看真实模型和入库性能。演示栈是 CPU bge-m3 + 远程 LLM，不能再起第二套 Compose，也不能用 40 并发真实生成校准 L1。
+- Reason：质量、入库容量、真实问答时延必须分轨。先做可在演示栈串行运行的 accepted-to-ready 测量；真实 RAG 评测等待停栈窗口。
+- Act：新增 `scripts/ingestion-capacity.py`、契约测试和 `docs/ingestion-capacity.md`。脚本不调用 `/v1/query`、不起 Compose。
+- Refine：契约测试 6/6 通过。演示栈 CPU bge-m3 串行：short-text 2 chunk / 11.0s，typical-doc 12 chunk / 24.0s。短文本不等于扫描 PDF。P-CAP-2 仍需停演示栈才能跑 `--real-models`。

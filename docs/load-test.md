@@ -86,3 +86,10 @@ python3 scripts/load-test.py \
 The report includes success rate, hit rate, top-hit rate, cache-hit rate,
 throughput, p50/p95/p99, optional ingestion-ready latency, and the gate verdict.
 This is not the ADR 0010 production evidence pack.
+
+
+## Ingestion capacity
+
+Query profiles do not measure embedding or accepted-to-ready time. Use
+[`ingestion-capacity.md`](ingestion-capacity.md) for real-model ingest
+capacity. Do not calibrate L1 p95 with live `bge-m3` or LLM generation.
