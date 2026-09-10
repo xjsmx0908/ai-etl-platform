@@ -316,7 +316,8 @@ cacheMiss:
 		return result, nil
 	}
 
-	ranked := append([]Candidate(nil), fused...)
+	stabilized := stabilizeRanking(req.Question, fused)
+	ranked := append([]Candidate(nil), stabilized...)
 	if e.rerankerConfigured() {
 		decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused)
 		span.SetAttributes(
@@ -354,13 +355,13 @@ cacheMiss:
 			if rerankErr != "" {
 				decision.Reason = "reranker_failed_exact_candidate_pinned"
 			}
-			ranked = protectExactMatches(fused, fused, decision.Evidence, len(fused))
+			ranked = protectExactMatches(stabilized, fused, decision.Evidence, len(fused))
 		}
 		e.logRerankDecision(req, route, decision, fused, ranked, rerankErr)
 	} else if decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused); decision.ProtectExactMatches {
 		decision.ShouldRerank = false
 		decision.Reason = "reranker_not_configured_exact_candidate_pinned"
-		ranked = protectExactMatches(fused, fused, decision.Evidence, len(fused))
+		ranked = protectExactMatches(stabilized, fused, decision.Evidence, len(fused))
 		e.logRerankDecision(req, route, decision, fused, ranked, "")
 	}
 	ranked, diversity := diversifyCandidates(ranked, req.TopK, defaultMaxChunksPerDocument)

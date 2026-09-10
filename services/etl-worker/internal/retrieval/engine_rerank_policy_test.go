@@ -42,8 +42,8 @@ func TestEngineRerankPolicy_UsesRerankerWhenSemanticRankingImproves(t *testing.T
 	if offResult.Route.Strategy != StrategySemantic {
 		t.Fatalf("expected semantic route, got %+v", offResult.Route)
 	}
-	if got := firstChunkID(offResult); got != "semantic-distractor" {
-		t.Fatalf("expected fused ranking to keep distractor first without rerank, got %q", got)
+	if got := firstChunkID(offResult); got != "semantic-target" {
+		t.Fatalf("expected lexical hub penalty to promote Chinese policy without rerank, got %q", got)
 	}
 
 	reranker := &scoringPolicyEvalReranker{
