@@ -1343,5 +1343,29 @@ class PublicationReadinessTest(unittest.TestCase):
                 )
 
 
+class SkipComposeTests(unittest.TestCase):
+    def test_existing_api_base_skips_isolated_compose(self):
+        module_path = Path(__file__).resolve().parents[1] / "run-evals.py"
+        spec = importlib.util.spec_from_file_location("run_evals_skip_compose", module_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        self.assertFalse(module.should_start_compose("http://127.0.0.1:8080"))
+        self.assertFalse(module.should_start_compose("  http://127.0.0.1:8080/  "))
+        self.assertTrue(module.should_start_compose(""))
+        self.assertTrue(module.should_start_compose("   "))
+
+    def test_host_es_count_url(self):
+        module_path = Path(__file__).resolve().parents[1] / "run-evals.py"
+        spec = importlib.util.spec_from_file_location("run_evals_es_count_url", module_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        self.assertEqual(
+            module.elasticsearch_count_url("http://127.0.0.1:9200/", "documents_text"),
+            "http://127.0.0.1:9200/documents_text/_count",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

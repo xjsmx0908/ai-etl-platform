@@ -361,3 +361,10 @@
 - Reason：在 `/quality` 写清「不是即时评分、不是企业 Gold、不能当 SLO」，并渲染 Recall@k 的 note。
 - Act：更新 `quality/page.tsx`；增加 `scripts/tests/test_quality_page_copy.py`。
 - Refine：文案单测通过。未停演示栈、未重跑真实评测。
+
+## 2026-09-10 - 演示栈真实模型企业候选评测
+
+- Perceive：用户不要 P1.9 签字，只要在现有演示栈上测系统能不能达到企业技术门槛；禁止第二套 Compose、禁止停站。
+- Reason：`--api-base` 复用 Query API；企业候选 35 篇入库 user-uploads 后 retrieval-only 70 题。技术门槛沿用仓库 90% hit/Recall@5，不当作签字 Gold。
+- Act：评测脚本跳过隔离 Compose，现有栈走宿主机 ES；入库 2 份大文件 embedding 超时后串行重传成功。报告 `docs/evals/private/p1.4-enterprise/live-demo-20260910/eval-20260910-205028.json`。
+- Refine：Recall@1/3/5 = 50.9%/74.5%/78.2%，未达 90%。词面 100%、语义 93%、跨文档 selected all-required 0%、负样本 100%。未改 `/quality` 烘焙数字。

@@ -456,11 +456,17 @@ def load_upload_map(
     return tenant_id, documents
 
 
+def elasticsearch_count_url(es_url: str, es_index: str) -> str:
+    """Build the Elasticsearch _count URL for a host-exposed eval stack."""
+    return f"{str(es_url).strip().rstrip('/')}/{str(es_index).strip().strip('/')}/_count"
+
+
 def wait_for_es_sync(
     env: Dict[str, str],
     expected_docs: int,
     timeout_sec: int = 120,
     poll_sec: int = 2,
+    es_url: str = "",
 ) -> None:
     """Block until Elasticsearch has indexed all expected documents.
 
@@ -471,18 +477,27 @@ def wait_for_es_sync(
     retrieval timeout. Polling ES's document count closes that race.
     """
     es_index = env.get("ES_INDEX", "documents_text")
+    host_url = str(es_url or "").strip()
     deadline = time.time() + timeout_sec
     last_count = -1
     while time.time() < deadline:
         # ES may still be starting up; a timed-out curl is "not ready yet",
         # not an error — keep polling until the deadline.
         try:
-            proc = run_cmd(
-                ["docker", "compose", "exec", "-T", "elasticsearch", "curl", "-s",
-                 f"http://localhost:9200/{es_index}/_count"],
-                env=env, check=False, timeout_sec=20,
-            )
-            last_count = int(json.loads(proc.stdout).get("count", 0))
+            if host_url:
+                code, payload = http_json(
+                    "GET",
+                    elasticsearch_count_url(host_url, es_index),
+                    timeout=10.0,
+                )
+                last_count = int(payload.get("count", 0)) if code == 200 else -1
+            else:
+                proc = run_cmd(
+                    ["docker", "compose", "exec", "-T", "elasticsearch", "curl", "-s",
+                     f"http://localhost:9200/{es_index}/_count"],
+                    env=env, check=False, timeout_sec=20,
+                )
+                last_count = int(json.loads(proc.stdout).get("count", 0))
         except (EvalRunnerError, ValueError, TypeError):
             last_count = -1
         if last_count >= expected_docs:
@@ -496,6 +511,11 @@ def wait_for_es_sync(
         f"[eval] WARN: ES sync check did not reach {expected_docs} after "
         f"{timeout_sec}s (last count {last_count}); continuing"
     )
+
+
+def should_start_compose(api_base: str) -> bool:
+    """Start an isolated eval stack unless the caller already provided an API."""
+    return not bool(str(api_base or "").strip())
 
 
 def resolve_compose_project(raw: str) -> str:
@@ -735,7 +755,7 @@ def upload_document(api_base: str, token: str, document: EvalDocument) -> str:
         "Authorization": f"Bearer {token}",
         "Content-Type": ctype,
     }
-    code, payload = http_json("POST", f"{api_base}/v1/upload", headers=headers, body=body, timeout=30.0)
+    code, payload = http_json("POST", f"{api_base}/v1/upload", headers=headers, body=body, timeout=120.0)
     if code != 202:
         raise EvalRunnerError(f"upload failed for {document.document_id}, status={code}, payload={payload}")
     doc_id = str(payload.get("doc_id", ""))
@@ -1935,7 +1955,17 @@ def main() -> int:
     parser.add_argument(
         "--api-base",
         default="",
-        help="optional Query API base URL override; defaults to the isolated Compose mapping",
+        help="Query API base URL. When set, reuse that stack and do not start Compose.",
+    )
+    parser.add_argument(
+        "--admin-username",
+        default="",
+        help="existing-stack admin username; defaults to BOOTSTRAP_ADMIN_USERNAME or eval-admin",
+    )
+    parser.add_argument(
+        "--admin-password",
+        default="",
+        help="existing-stack admin password; defaults to BOOTSTRAP_ADMIN_PASSWORD or eval-admin password",
     )
     parser.add_argument(
         "--compose-project",
@@ -2065,61 +2095,74 @@ def main() -> int:
             wait_health(f"http://127.0.0.1:{resolved_mock_port}/healthz", timeout_sec=30)
 
         print(f"[eval] tenant_id: {tenant_id}")
-        print(f"[eval] compose project: {compose_project}")
+        api_base = args.api_base.strip().rstrip("/")
         env = compose_env(
             profile,
             tenant_id,
             args.jwt_secret,
             compose_project,
         )
-
-        print("[eval] starting docker compose stack")
-        run_cmd(["docker", "compose", "up", "-d", "--build"], env=env, timeout_sec=900)
-        started_services = True
-
-        api_base = args.api_base.strip().rstrip("/")
-        if not api_base:
+        if should_start_compose(api_base):
+            print(f"[eval] compose project: {compose_project}")
+            print("[eval] starting docker compose stack")
+            run_cmd(["docker", "compose", "up", "-d", "--build"], env=env, timeout_sec=900)
+            started_services = True
             port_result = run_cmd(
                 ["docker", "compose", "port", "query-api", "8080"],
                 env=env,
                 timeout_sec=30,
             )
             api_base = api_base_from_compose_port(port_result.stdout)
-
-        print("[eval] waiting query-api healthz")
-        wait_health(f"{api_base}/healthz", timeout_sec=180)
-
-        print("[eval] ensuring kafka topic exists")
-        run_cmd(
-            [
-                "docker",
-                "compose",
-                "exec",
-                "-T",
-                "kafka",
-                "kafka-topics.sh",
-                "--bootstrap-server",
-                "localhost:9092",
-                "--create",
-                "--if-not-exists",
-                "--topic",
-                env.get("KAFKA_TOPIC", "doc-processing"),
-                "--partitions",
-                "1",
-                "--replication-factor",
-                "1",
-            ],
-            env=env,
-            check=True,
-            timeout_sec=30,
-        )
-
-        print("[eval] restarting etl-worker")
-        run_cmd(["docker", "compose", "restart", "etl-worker"], env=env, timeout_sec=60)
-        time.sleep(5)
+            print("[eval] waiting query-api healthz")
+            wait_health(f"{api_base}/healthz", timeout_sec=180)
+            print("[eval] ensuring kafka topic exists")
+            run_cmd(
+                [
+                    "docker",
+                    "compose",
+                    "exec",
+                    "-T",
+                    "kafka",
+                    "kafka-topics.sh",
+                    "--bootstrap-server",
+                    "localhost:9092",
+                    "--create",
+                    "--if-not-exists",
+                    "--topic",
+                    env.get("KAFKA_TOPIC", "doc-processing"),
+                    "--partitions",
+                    "1",
+                    "--replication-factor",
+                    "1",
+                ],
+                env=env,
+                check=True,
+                timeout_sec=30,
+            )
+            print("[eval] restarting etl-worker")
+            run_cmd(["docker", "compose", "restart", "etl-worker"], env=env, timeout_sec=60)
+            time.sleep(5)
+            admin_username = "eval-admin"
+            admin_password = "eval-admin-password-2026"
+        else:
+            print(f"[eval] reusing existing Query API {api_base} (no compose)")
+            print("[eval] waiting query-api healthz")
+            wait_health(f"{api_base}/healthz", timeout_sec=180)
+            admin_username = (
+                args.admin_username.strip()
+                or str(os.environ.get("BOOTSTRAP_ADMIN_USERNAME", "")).strip()
+                or "admin"
+            )
+            admin_password = (
+                args.admin_password
+                or str(os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", ""))
+                or "admin"
+            )
+            if not str(admin_password).strip():
+                raise EvalRunnerError("existing API eval requires --admin-password or BOOTSTRAP_ADMIN_PASSWORD")
 
         print("[eval] provisioning catalog-member test users")
-        admin_token = login_eval_user(api_base, "eval-admin", "eval-admin-password-2026")
+        admin_token = login_eval_user(api_base, admin_username, admin_password)
         # User identities live in the isolated project's database, so they must
         # be provisioned even when document ids are reused from another run.
         # 409 is idempotent when --keep-services is used across retries.
@@ -2188,7 +2231,13 @@ def main() -> int:
             # gets pushed out of the top-K by the RRF fusion — the eval then reports
             # a false retrieval timeout. The documents are always uploaded and stored;
             # the race is purely the eval's, not the pipeline's.
-            wait_for_es_sync(env, len(uploaded_doc_ids), timeout_sec=120, poll_sec=2)
+            wait_for_es_sync(
+                env,
+                len(uploaded_doc_ids),
+                timeout_sec=120,
+                poll_sec=2,
+                es_url="" if started_services else "http://127.0.0.1:9200",
+            )
             wait_for_document_tasks(
                 api_base,
                 admin_token,
