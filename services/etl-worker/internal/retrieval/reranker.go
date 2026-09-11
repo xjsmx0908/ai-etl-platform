@@ -49,7 +49,7 @@ func (r *HTTPReranker) Rerank(ctx context.Context, query string, candidates []Ca
 
 	documents := make([]string, 0, len(candidates))
 	for _, c := range candidates {
-		documents = append(documents, c.Content)
+		documents = append(documents, rerankDocumentText(c))
 	}
 
 	body := map[string]interface{}{
@@ -134,4 +134,16 @@ func topCandidates(candidates []Candidate, topK int) []Candidate {
 		out[i].Rank = i + 1
 	}
 	return out
+}
+
+func rerankDocumentText(candidate Candidate) string {
+	name := strings.TrimSpace(candidateFileName(candidate))
+	content := strings.TrimSpace(candidate.Content)
+	if name == "" {
+		return candidate.Content
+	}
+	if content == "" {
+		return "标题: " + name
+	}
+	return "标题: " + name + "\n" + candidate.Content
 }

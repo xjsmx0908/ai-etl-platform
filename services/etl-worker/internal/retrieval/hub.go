@@ -163,3 +163,28 @@ func candidateLexicalText(candidate Candidate) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+func attachCandidateFileNames(candidates []Candidate, names map[string]string) {
+	if len(candidates) == 0 || len(names) == 0 {
+		return
+	}
+	for i := range candidates {
+		name := strings.TrimSpace(names[candidates[i].DocID])
+		if name == "" {
+			continue
+		}
+		if candidates[i].Metadata == nil {
+			candidates[i].Metadata = map[string]string{}
+		}
+		if strings.TrimSpace(candidates[i].Metadata["file_name"]) == "" {
+			candidates[i].Metadata["file_name"] = name
+		}
+	}
+}
+
+func candidateFileName(candidate Candidate) string {
+	if len(candidate.Metadata) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(candidate.Metadata["file_name"])
+}

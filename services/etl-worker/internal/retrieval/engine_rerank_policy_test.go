@@ -65,6 +65,46 @@ func TestEngineRerankPolicy_UsesRerankerWhenSemanticRankingImproves(t *testing.T
 	}
 }
 
+func TestEngineAttachesFileNamesBeforeRerank(t *testing.T) {
+	embedServer := newPolicyEvalEmbedServer(t)
+	defer embedServer.Close()
+
+	retrievers := map[string]Retriever{
+		SourceQdrant: staticPolicyEvalRetriever{
+			name: SourceQdrant,
+			candidates: []Candidate{
+				{ChunkID: "leave", DocID: "doc-leave", Content: "陈伟 年假天数", Rank: 1},
+				{ChunkID: "oa", DocID: "doc-oa", Content: "陈伟 G00024", Rank: 2},
+			},
+		},
+	}
+	reranker := &capturingPolicyEvalReranker{
+		scoringPolicyEvalReranker: scoringPolicyEvalReranker{
+			scores: map[string]float64{"oa": 0.99, "leave": 0.10},
+		},
+	}
+	engine := newPolicyEvalEngine(embedServer.URL, embedServer.Client(), retrievers, reranker, true, config.RerankPolicyAuto)
+	if _, err := engine.Retrieve(context.Background(), Request{
+		Question:           "陈伟的OA账号是什么？",
+		TopK:               1,
+		TenantID:           "tenant-policy-eval",
+		AllowedPermissions: []string{"public"},
+		FileNames:          map[string]string{"doc-oa": "OA账号.xls", "doc-leave": "年休假信息收集表.xls"},
+	}); err != nil {
+		t.Fatalf("retrieve: %v", err)
+	}
+	if reranker.calls == 0 {
+		t.Fatal("expected reranker to be called")
+	}
+	byID := map[string]string{}
+	for _, candidate := range reranker.got {
+		byID[candidate.DocID] = candidate.Metadata["file_name"]
+	}
+	if byID["doc-oa"] != "OA账号.xls" || byID["doc-leave"] != "年休假信息收集表.xls" {
+		t.Fatalf("expected filenames on rerank candidates, got %#v", byID)
+	}
+}
+
 func TestEngineRerankPolicy_SkipsRerankerWhenExactFusionIsBetter(t *testing.T) {
 	embedServer := newPolicyEvalEmbedServer(t)
 	defer embedServer.Close()
@@ -361,6 +401,16 @@ func (r staticPolicyEvalRetriever) Search(context.Context, SearchRequest) ([]Can
 type scoringPolicyEvalReranker struct {
 	scores map[string]float64
 	calls  int
+}
+
+type capturingPolicyEvalReranker struct {
+	scoringPolicyEvalReranker
+	got []Candidate
+}
+
+func (r *capturingPolicyEvalReranker) Rerank(ctx context.Context, query string, candidates []Candidate, topK int) ([]Candidate, error) {
+	r.got = append([]Candidate(nil), candidates...)
+	return r.scoringPolicyEvalReranker.Rerank(ctx, query, candidates, topK)
 }
 
 type failingPolicyEvalReranker struct {

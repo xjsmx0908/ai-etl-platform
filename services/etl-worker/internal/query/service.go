@@ -564,6 +564,7 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	emit("preparing", "正在确认检索范围…", "completed")
 	emit("retrieving", "正在检索相关文档…", "running")
 
+	publishedDocs := s.listedPublishedDocuments(ctx, access.TenantID, resolvedSpace.ID, allowedPermissions)
 	retrievalResult, err := s.retriever.Retrieve(ctx, retrieval.Request{
 		Question:                 req.Question,
 		TopK:                     req.TopK,
@@ -572,7 +573,8 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 		KnowledgeBaseID:          resolvedSpace.ID,
 		ApplicableScope:          strings.TrimSpace(req.ApplicableScope),
 		DiagnosticRequiredDocIDs: diagnosticRequiredDocIDs(s.cfg.RetrievalDiagnosticsEnabled, req.DiagnosticRequiredDocIDs),
-		TitleMatchDocIDs:         s.titleMatchDocIDs(ctx, access.TenantID, resolvedSpace.ID, req.Question, allowedPermissions),
+		TitleMatchDocIDs:         titleMatchedDocIDs(req.Question, publishedDocs),
+		FileNames:                publishedFileNames(publishedDocs),
 	})
 	if err != nil {
 		slog.Error("retrieval failed", "error", err)

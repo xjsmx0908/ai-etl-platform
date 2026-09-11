@@ -12,12 +12,16 @@ import (
 )
 
 func (s *Service) titleMatchDocIDs(ctx context.Context, tenantID, spaceID, question string, permissions []string) []string {
+	return titleMatchedDocIDs(question, s.listedPublishedDocuments(ctx, tenantID, spaceID, permissions))
+}
+
+func (s *Service) listedPublishedDocuments(ctx context.Context, tenantID, spaceID string, permissions []string) []docstore.Document {
 	if s == nil || s.documents == nil {
 		return nil
 	}
 	spaceID = strings.TrimSpace(spaceID)
 	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" || spaceID == "" || strings.TrimSpace(question) == "" {
+	if tenantID == "" || spaceID == "" {
 		return nil
 	}
 	docs, _, err := s.documents.List(ctx, docstore.ListQuery{
@@ -31,7 +35,29 @@ func (s *Service) titleMatchDocIDs(ctx context.Context, tenantID, spaceID, quest
 		slog.Warn("title match document lookup failed", "tenant_id", tenantID, "space_id", spaceID, "error", err)
 		return nil
 	}
-	return titleMatchedDocIDs(question, docs)
+	return docs
+}
+
+func publishedFileNames(docs []docstore.Document) map[string]string {
+	out := make(map[string]string)
+	for _, doc := range docs {
+		if strings.TrimSpace(doc.PublicationStatus) != "" && doc.PublicationStatus != "published" {
+			continue
+		}
+		if doc.DeletionStatus == "pending" {
+			continue
+		}
+		name := strings.TrimSpace(doc.FileName)
+		id := strings.TrimSpace(doc.DocID)
+		if id == "" || name == "" {
+			continue
+		}
+		out[id] = name
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func titleMatchedDocIDs(question string, docs []docstore.Document) []string {

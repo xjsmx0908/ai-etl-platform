@@ -81,3 +81,24 @@ func TestLexicalOverlapMatchesYearLeaveParaphrase(t *testing.T) {
 		t.Fatalf("expected 年假/年休假 paraphrase overlap, query=%v content=%v", query, content)
 	}
 }
+
+func TestAttachCandidateFileNames(t *testing.T) {
+	candidates := []Candidate{
+		{DocID: "oa", Content: "陈伟", Metadata: map[string]string{"order_id": "1"}},
+		{DocID: "leave", Content: "年假"},
+		{DocID: "oa", Content: "duplicate already named", Metadata: map[string]string{"file_name": "keep.xls"}},
+	}
+	attachCandidateFileNames(candidates, map[string]string{
+		"oa":    "OA账号.xls",
+		"leave": "年休假信息收集表.xls",
+	})
+	if candidates[0].Metadata["file_name"] != "OA账号.xls" {
+		t.Fatalf("expected oa filename, got %+v", candidates[0].Metadata)
+	}
+	if candidates[1].Metadata["file_name"] != "年休假信息收集表.xls" {
+		t.Fatalf("expected leave filename, got %+v", candidates[1].Metadata)
+	}
+	if candidates[2].Metadata["file_name"] != "keep.xls" {
+		t.Fatalf("expected existing filename to win, got %+v", candidates[2].Metadata)
+	}
+}

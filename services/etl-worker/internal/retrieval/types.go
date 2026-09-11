@@ -48,6 +48,9 @@ type Request struct {
 	// TitleMatchDocIDs are published documents whose file names appear in the
 	// question. Elasticsearch uses them to recover title-only hits.
 	TitleMatchDocIDs []string
+	// FileNames maps published doc_id to original file name so rerank can
+	// distinguish near-duplicate policies without a lexical score boost.
+	FileNames map[string]string
 }
 
 // SearchRequest is passed to individual retrieval backends.

@@ -92,7 +92,7 @@ func NewRedisSemanticCache(addr, password string, db int, ttl time.Duration, thr
 		ttl:        ttl,
 		threshold:  threshold,
 		maxEntries: maxEntries,
-		prefix:     "retrieval:cache:v3",
+		prefix:     "retrieval:cache:v4",
 	}, nil
 }
 

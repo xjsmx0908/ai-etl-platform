@@ -1,20 +1,20 @@
 {
-  "source_report": "eval-20260910-221343.json",
-  "timestamp": "2026-09-10T14:13:43Z",
+  "source_report": "eval-20260911-122209.json",
+  "timestamp": "2026-09-11T04:22:09Z",
   "model_mode": "real",
   "embed_model": "bge-m3",
   "embed_dimension": 1024,
   "llm_model": "deepseek-v4-flash",
-  "dataset": "演示栈企业技术候选（有效 60 题，中文 reranker）",
+  "dataset": "演示栈企业技术候选（有效 60 题，中文 reranker + 文件名）",
   "recall": [
     {
       "k": 1,
-      "value": 80,
+      "value": 82,
       "note": "第一名是否就是目标文档"
     },
     {
       "k": 3,
-      "value": 100,
+      "value": 96,
       "note": "目标在前 3 名"
     },
     {
@@ -34,7 +34,7 @@
     {
       "title": "第一名稳定性",
       "verdict": "改善中",
-      "detail": "Recall@1 71%→80%。已开中文 bge-reranker-base；剩余 9 题是相似制度互抢，不要求 Recall@1 也到 90%",
+      "detail": "Recall@1 80%→82%。rerank 已带文件名；剩余 8 题仍是近重复制度互抢，不要求 Recall@1 到 90%",
       "good": false
     },
     {

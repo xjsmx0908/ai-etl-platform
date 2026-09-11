@@ -316,26 +316,30 @@ cacheMiss:
 		return result, nil
 	}
 
+	attachCandidateFileNames(fused, req.FileNames)
 	stabilized := stabilizeRanking(req.Question, fused)
 	ranked := append([]Candidate(nil), stabilized...)
 	if e.rerankerConfigured() {
-		decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, fused)
+		decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, stabilized)
 		span.SetAttributes(
 			attribute.Bool("retrieval.rerank_applied", decision.ShouldRerank),
 			attribute.String("retrieval.rerank_reason", decision.Reason),
 		)
 		rerankErr := ""
 		if decision.ShouldRerank {
-			rerankTopK := len(fused)
+			rerankTopK := len(stabilized)
+			if rerankTopK > 20 {
+				rerankTopK = 20
+			}
 			rerankCtx, rerankSpan := tracer.Start(ctx, "Retrieval.Rerank",
 				trace.WithSpanKind(trace.SpanKindClient),
 				trace.WithAttributes(
-					attribute.Int("rerank.candidate_count", len(fused)),
+					attribute.Int("rerank.candidate_count", len(stabilized)),
 					attribute.Int("rerank.top_k", rerankTopK),
 					attribute.Bool("rerank.protect_exact_matches", decision.ProtectExactMatches),
 				),
 			)
-			reranked, err := e.reranker.Rerank(rerankCtx, req.Question, fused, rerankTopK)
+			reranked, err := e.reranker.Rerank(rerankCtx, req.Question, stabilized, rerankTopK)
 			if err != nil {
 				rerankSpan.RecordError(err)
 				rerankSpan.SetStatus(codes.Error, "reranker failed")

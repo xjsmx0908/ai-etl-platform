@@ -54,3 +54,14 @@ func TestServiceTitleMatchDocIDsUsesPublishedFileNames(t *testing.T) {
 		t.Fatalf("unexpected list query: %+v", fake.q)
 	}
 }
+
+func TestPublishedFileNamesSkipsDrafts(t *testing.T) {
+	got := publishedFileNames([]docstore.Document{
+		{DocID: "doc-gang", FileName: "赴港流程.docx", PublicationStatus: "published"},
+		{DocID: "doc-draft", FileName: "草稿.docx", PublicationStatus: "draft"},
+		{DocID: "doc-empty", FileName: "  ", PublicationStatus: "published"},
+	})
+	if len(got) != 1 || got["doc-gang"] != "赴港流程.docx" {
+		t.Fatalf("expected published filename map, got %#v", got)
+	}
+}

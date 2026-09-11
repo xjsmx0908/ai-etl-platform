@@ -396,3 +396,10 @@
 - Reason：技术门槛是 Recall@5/hit_rate ≥ 90%，不是 Recall@1。剩余 miss 是相似制度互抢，不是题集过期。演示栈 `--api-base` 可重考，不必停站。
 - Act：现网打开 `BAAI/bge-reranker-base`，有效 60 题重跑 `eval-20260910-221343`。质量页改挂 80/100/100。
 - Refine：Recall@1/3/5 = 80%/100%/100%，负样本 100%。剩余 9 题第一名仍被同类制度抢走。不停站、不走 P1.9。
+
+## 2026-09-11 - rerank 带上文件名
+
+- Perceive：剩余第一名 miss 多是近重复制度；rerank 只看 chunk 正文，ES 也没有 file_name 字段。
+- Reason：给 cross-encoder 加标题，不给所有候选做词面加分。rerank 改为处理 hub 降权后的列表。
+- Act：Query 把已发布文件名传入检索；HTTP reranker 前缀 `标题:`。有效 60 题重跑 `eval-20260911-122209`。
+- Refine：Recall@1/3/5 = 82.2%/95.6%/100%，负样本 100%。OA账号已能靠文件名排到第一；Recall@3 从 100% 掉到 96%，低于噪声门槛不算回退。不停站、不走 P1.9。
