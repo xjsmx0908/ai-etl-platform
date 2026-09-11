@@ -64,20 +64,18 @@ export default function QualityPage() {
           {quality.dataset || "离线评测集"}
           {evalDate ? ` · 最近一次真实评测 ${evalDate}` : ""} · 来源 docs/evals/reports
         </p>
-        <div className="flex items-end gap-6">
+        <div className="flex items-start gap-6">
           {quality.recall.map((r) => (
-            <div key={r.k} className="flex flex-col items-center">
-              <div className="relative flex h-40 w-14 items-end overflow-hidden rounded-lg bg-slate-100">
+            <div key={r.k} className="flex w-24 flex-col items-center">
+              <span className="mb-1 text-xs font-bold tabular-nums text-slate-700">{r.value}%</span>
+              <div className="flex h-40 w-14 items-end overflow-hidden rounded-lg bg-slate-100">
                 <div
                   className="bg-brand-gradient w-full rounded-t-lg transition-[height] duration-500"
                   style={{ height: `${r.value}%` }}
                 />
-                <span className="absolute inset-x-0 top-1 text-center text-xs font-bold text-slate-700">
-                  {r.value}%
-                </span>
               </div>
-              <span className="mt-2 text-xs font-medium text-slate-600">Recall@{r.k}</span>
-              {r.note ? <span className="mt-1 max-w-[88px] text-center text-[11px] leading-4 text-slate-400">{r.note}</span> : null}
+              <span className="mt-2 whitespace-nowrap text-xs font-medium text-slate-600">Recall@{r.k}</span>
+              {r.note ? <span className="mt-1 min-h-8 text-center text-[11px] leading-4 text-slate-400">{r.note}</span> : null}
             </div>
           ))}
           <div className="ml-4 max-w-[280px] text-xs text-slate-500">

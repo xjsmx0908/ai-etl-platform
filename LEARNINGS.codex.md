@@ -403,3 +403,10 @@
 - Reason：给 cross-encoder 加标题，不给所有候选做词面加分。rerank 改为处理 hub 降权后的列表。
 - Act：Query 把已发布文件名传入检索；HTTP reranker 前缀 `标题:`。有效 60 题重跑 `eval-20260911-122209`。
 - Refine：Recall@1/3/5 = 82.2%/95.6%/100%，负样本 100%。OA账号已能靠文件名排到第一；Recall@3 从 100% 掉到 96%，低于噪声门槛不算回退。不停站、不走 P1.9。
+
+## 2026-09-11 - 修复质量页 Recall@3 柱图错位
+
+- Perceive：`/quality` 的 Recall@3 柱子比两侧低，96% 数字压在柱顶灰/蓝交界上。
+- Reason：外层 `items-end` 按说明文字底对齐，Recall@3 的 note 只有一行，柱子被拉下去；百分比写在 `overflow-hidden` 柱内，96% 几乎顶满时会被裁切和叠色。
+- Act：柱图改为顶对齐，百分比移到柱外，标签 `whitespace-nowrap`，说明区给 `min-h-8`。
+- Refine：`python3 -m unittest scripts.tests.test_quality_page_copy scripts.tests.test_qa_quality_experience -q` 通过。未停演示栈。

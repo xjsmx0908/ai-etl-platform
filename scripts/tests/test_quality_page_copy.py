@@ -17,6 +17,15 @@ class QualityPageCopyTests(unittest.TestCase):
         self.assertIn("Recall@5 / hit_rate ≥ 90%", text)
         self.assertIn("第一名稳不稳", text)
 
+    def test_recall_bars_stay_aligned_when_notes_differ(self):
+        text = PAGE.read_text(encoding="utf-8")
+        self.assertIn("flex items-start gap-6", text)
+        self.assertIn("whitespace-nowrap", text)
+        self.assertIn("tabular-nums", text)
+        self.assertNotIn("flex items-end gap-6", text)
+        self.assertNotIn("absolute inset-x-0 top-1", text)
+        self.assertNotIn("max-w-[88px]", text)
+
 
 if __name__ == "__main__":
     unittest.main()
