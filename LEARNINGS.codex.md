@@ -410,3 +410,10 @@
 - Reason：外层 `items-end` 按说明文字底对齐，Recall@3 的 note 只有一行，柱子被拉下去；百分比写在 `overflow-hidden` 柱内，96% 几乎顶满时会被裁切和叠色。
 - Act：柱图改为顶对齐，百分比移到柱外，标签 `whitespace-nowrap`，说明区给 `min-h-8`。
 - Refine：`python3 -m unittest scripts.tests.test_quality_page_copy scripts.tests.test_qa_quality_experience -q` 通过。未停演示栈。
+
+## 2026-09-11 - UAT-015 发布中心红字复验
+
+- Perceive：下一未完成项是 UAT-015 真实页面复验，代码已静默轮询瞬时 fetch。
+- Reason：验收中途不改代码。用 px-admin 打开 `/release-center`，核对停留轮询、中断 overview、手动刷新三条路径。
+- Act：Playwright 复验；静默失败无红字，手动刷新显示「同步暂时失败，请稍后重试」，恢复后横幅消失。
+- Refine：登记册 UAT-015 与 backlog P-UAT-3 关闭。证据 `artifacts/product-experience-acceptance/2026-09-11-uat015/`。不停演示栈。

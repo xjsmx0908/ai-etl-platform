@@ -1,6 +1,6 @@
 # 产品体验问题登记册
 
-最后核验：2026-09-10。
+最后核验：2026-09-11。
 
 这是产品体验验收的整改主文档。新问题只在这里建单。
 验收章程和页面矩阵见 [`../docs/product-experience-acceptance.md`](../docs/product-experience-acceptance.md)。
@@ -41,9 +41,9 @@
 | UAT-012 | 使用逻辑 | S2 | `/data` | readonly | 已修复 | 只读用户上传按钮可点，提交后才 forbidden | 2026-09-09 复验：按钮/文件选择禁用，页面说明无权限 |
 | UAT-013 | 美观 UX | S3 | `/login` | 全部 | 已修复 | 登录失败提示为英文 invalid credentials | 2026-09-09 复验：错误显示「用户名或密码错误」 |
 | UAT-014 | 功能缺陷 | S2 | `/documents/[id]` `/qa` | admin | 已修复 | 受管「上传新版本」发布后问答仍引用旧切块 | 2026-09-09 复验：第二管理员批准后问答 120 元，详情不再列出旧切块 |
-| UAT-015 | 功能缺陷 | S2 | `/release-center` | admin | 待复验 | 知识发布中心间歇出现红色 Fail to fetch | 页面时不时出现 Fail to fetch 红字 |
+| UAT-015 | 功能缺陷 | S2 | `/release-center` | admin | 已修复 | 知识发布中心间歇出现红色 Fail to fetch | 2026-09-11 复验：静默轮询无红字；手动刷新显示「同步暂时失败，请稍后重试」 |
 
-2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。UAT-001～014 已关闭。
+2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。UAT-001～015 已关闭。
 
 续跑完成：不重跑 D0–D4。UAT-013 已修复并复验。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
 
@@ -236,7 +236,7 @@
 
 ### UAT-015 发布中心间歇红色 Fail to fetch
 
-- 类型：功能缺陷 · 级别：S2 · 状态：待复验
+- 类型：功能缺陷 · 级别：S2 · 状态：已修复
 - 页面：`/release-center` · 角色：admin
 - 复现：管理员打开知识发布中心并停留。页面每 8 秒并行刷新 documents/requests/overview；任一次浏览器或 BFF `fetch` 失败都会把 `Failed to fetch`/`Fail to fetch` 写进红色横幅，且后续成功刷新不会清除。
 - 期望：瞬时网络/代理抖动不长期占据红字；自动刷新失败可重试；手动刷新才提示「同步暂时失败，请稍后重试」。
@@ -244,6 +244,7 @@
 - 证据：`scripts/tests/test_release_center_fetch_error.py`；`web/app/(app)/agent/page.tsx`；query-api metrics `/v1/release-center/overview` status=200。
 - 归属：前端
 - 建议：静默轮询忽略瞬时 fetch 失败；成功刷新清掉横幅；BFF 捕获上游 `fetch failed` 返回 503 JSON，避免把连接失败泄漏成浏览器 Failed to fetch。
+- 复验：2026-09-11，`px-admin` 打开 `/release-center`。停留约 18s（12 次轮询）无 `Fail to fetch`；中断 overview 后静默轮询仍无红字；手动「刷新状态」显示「同步暂时失败，请稍后重试」，恢复后横幅消失。证据 `artifacts/product-experience-acceptance/2026-09-11-uat015/`。
 
 ## 本轮未建单的缺口
 
