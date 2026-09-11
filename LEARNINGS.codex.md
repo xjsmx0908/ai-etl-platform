@@ -431,3 +431,10 @@
 - Reason：同一批 S3，不改发布/替换语义；spaceLabel 抽到 docDisplay 避免两页各写一份。
 - Act：详情页 PageHeader、空间名、有效/已替代/归档；替换确认用文件名；补 test_product_shell。
 - Refine：契约测试通过。随后重建 web 镜像才能在 :3100 看到。
+
+## 2026-09-11 - 壳层上线后现网观感复验
+
+- Perceive：用户问整站是否已经设计合理。代码已推送且 web 已重建，需要真页面而不是契约测试。
+- Reason：验收中途不改代码。用 px-admin 截九页加文档详情，对照产品稿只记 S3。
+- Act：证据 `artifacts/product-experience-acceptance/2026-09-11-ux-retest/`。UAT-016 现网通过。开放 UAT-017～020。
+- Refine：壳层/中文主路径已合理。未做视觉重设计。未改发布策略。

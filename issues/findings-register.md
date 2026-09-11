@@ -43,8 +43,12 @@
 | UAT-014 | 功能缺陷 | S2 | `/documents/[id]` `/qa` | admin | 已修复 | 受管「上传新版本」发布后问答仍引用旧切块 | 2026-09-09 复验：第二管理员批准后问答 120 元，详情不再列出旧切块 |
 | UAT-015 | 功能缺陷 | S2 | `/release-center` | admin | 已修复 | 知识发布中心间歇出现红色 Fail to fetch | 2026-09-11 复验：静默轮询无红字；手动刷新显示「同步暂时失败，请稍后重试」 |
 | UAT-016 | 美观 UX | S3 | 全站工作台 | 全部 | 已修复 | 页面语言和壳层与产品稿不一致 | 对照产品稿与 2026-09-11 现网截图 |
+| UAT-017 | 美观 UX | S3 | `/release-center` | admin | 开放 | 发布中心仍显示空间 raw id 与英文权限 | 2026-09-11 现网复验：空间 production / 权限 internal |
+| UAT-018 | 美观 UX | S3 | `/audit` | admin | 开放 | 审计操作者列显示 UUID 而不是用户名 | 2026-09-11 现网复验 |
+| UAT-019 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 开放 | xls/pptx 类型显示为 FILE | 2026-09-11 现网复验 |
+| UAT-020 | 美观 UX | S3 | `/login` | 全部 | 开放 | 登录品牌文案与产品稿不一致 | 2026-09-11 现网复验：仍写可量化 / 语义检索 |
 
-2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。UAT-001～016 已关闭。
+2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。UAT-001～016 已关闭。UAT-017～020 为 2026-09-11 现网观感复验开放项。
 
 续跑完成：不重跑 D0–D4。UAT-013 已修复并复验。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
 
@@ -261,7 +265,63 @@
 - 归属：前端
 - 建议：按产品稿统一壳层与页面语言，不改发布策略/预审。
 - 修复：新增 `PageHeader`；侧栏「管理」分组；问答依据折叠、引用文件名优先；数据接入中文阶段与文档编号；文档列表文件名和空间名优先；发布中心共用页头；文档详情页使用同一页头、空间名和中文治理状态。
-- 复验：2026-09-11，契约测试覆盖壳层、问答引用、数据接入阶段、文档列表、发布中心页头和质量页文案。未重跑 D0–D4，未改发布策略。
+- 复验：2026-09-11，契约测试覆盖壳层文案。同日 `px-admin` 打开重建后的 `http://localhost:3100`：侧栏「管理」、PageHeader、数据接入中文阶段、文档文件名/空间名、发布中心新页头均已上现网。证据 `artifacts/product-experience-acceptance/2026-09-11-ux-retest/`。剩余密度/ID 见 UAT-017～020。
+
+### UAT-017 发布中心空间与权限仍是内部 ID
+
+- 类型：美观 UX
+- 级别：S3
+- 状态：开放
+- 页面：`/release-center`
+- 角色：admin
+- 复现：2026-09-11 用 `px-admin` 打开知识发布中心。
+- 期望：空间显示名称（如生产库），权限显示公开/内部/机密。
+- 实际：列表与详情写 `production` / `enterprise-demo`，权限写 `internal`。页头与业务状态筛选已中文。
+- 证据：`artifacts/product-experience-acceptance/2026-09-11-ux-retest/screenshots/release.png`
+- 归属：前端
+- 建议：发布中心列表/详情复用空间名与权限中文标签，不改审批/预审逻辑。
+
+### UAT-018 审计操作者显示 UUID
+
+- 类型：美观 UX
+- 级别：S3
+- 状态：开放
+- 页面：`/audit`
+- 角色：admin
+- 复现：打开审计日志第一页。
+- 期望：操作者显示用户名，必要时才露出 ID。
+- 实际：操作者列为 `96ca72d2-682d-4e60-b3b1-32d133401b23管理员`。
+- 证据：`artifacts/product-experience-acceptance/2026-09-11-ux-retest/screenshots/audit.png`
+- 归属：前端
+- 建议：优先渲染 username，UUID 放到详情展开。
+
+### UAT-019 表格把 xls/pptx 显示成 FILE
+
+- 类型：美观 UX
+- 级别：S3
+- 状态：开放
+- 页面：`/documents`、`/documents/[id]`
+- 角色：全部
+- 复现：文档列表第一页有 `.xls` / `.pptx`。
+- 期望：类型列显示 XLS / PPTX。
+- 实际：类型徽章为 `FILE`。文件名和空间名已正确。
+- 证据：`artifacts/product-experience-acceptance/2026-09-11-ux-retest/screenshots/documents.png`
+- 归属：前端
+- 建议：`getFileTypeMeta` 补 xls/xlsx/pptx。
+
+### UAT-020 登录品牌文案与产品稿不一致
+
+- 类型：美观 UX
+- 级别：S3
+- 状态：开放
+- 页面：`/login`
+- 角色：全部
+- 复现：打开登录页。
+- 期望：产品稿为「可检索、可问答、可发布的知识资产」；卖点「多路召回 · 只回答已发布知识」「权限隔离 · 引用可追溯」。
+- 实际：仍是「可量化的知识资产」「多路召回 · 语义检索 / 忠实度校验 · 权限隔离」。表单与错误中文正常。
+- 证据：`artifacts/product-experience-acceptance/2026-09-11-ux-retest/screenshots/login.png`
+- 归属：前端
+- 建议：只改登录品牌区文案，不改认证流程。
 
 ## 本轮未建单的缺口
 

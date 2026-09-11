@@ -227,3 +227,4 @@
 | 2026-09-09-uat013 | 2026-09-09 | Codex | UAT-013 复验 | 错密登录显示「用户名或密码错误」，无 `invalid credentials`。P-UAT-1 关闭 |
 | 2026-09-09-gap | 2026-09-09 | Codex | 覆盖缺口补测 | 个人换版/退役/新建用户通过。受管换版：旧版过程中仍可问；发布后旧切块残留已修复，UAT-014 关闭 |
 | 2026-09-11-uat015 | 2026-09-11 | Codex | UAT-015 复验 | `px-admin` 打开 `/release-center`：静默轮询无 `Fail to fetch`；手动刷新显示「同步暂时失败，请稍后重试」，恢复后红字消失。P-UAT-3 关闭 |
+| 2026-09-11-ux-retest | 2026-09-11 | Codex | 壳层上线后现网观感 | `px-admin` 打开重建后的 `:3100`。UAT-016 现网确认通过。新开 UAT-017～020（发布中心 ID、审计 UUID、FILE 类型、登录文案）。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-11-ux-retest/` |
