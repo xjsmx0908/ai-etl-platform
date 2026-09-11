@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { GaugeCircle } from "lucide-react";
 
 // Retrieval-quality data is served by /evals/latest.json (the latest real-model
 // eval summary) so the page always reflects the last actual evaluation run.
@@ -31,14 +33,17 @@ export default function QualityPage() {
 
   if (loadError) {
     return (
+      <div className="space-y-6">
+      <PageHeader icon={GaugeCircle} title="检索质量" description="离线评测回归，不是某一次问答的即时评分" />
       <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
         <p className="font-medium text-slate-800">这是离线评测回归页，不是某一次问答的即时评分，也不是企业业务 Gold 验收。</p>
         <p className="mt-2 text-slate-500">
           本页只展示最近一次离线检索评测报告。企业技术门槛看 Recall@5 / hit_rate ≥ 90%，Recall@1 只说明第一名稳不稳，不能当作企业级 SLO。
         </p>
         <p className="mt-2 text-slate-500">
-          当前未找到评测报告（<code className="rounded bg-slate-100 px-1">docs/evals/reports/latest.json</code> 未挂载或无法读取）。不影响问答工作台使用。
+          当前未找到评测报告。不影响问答工作台使用。
         </p>
+      </div>
       </div>
     );
   }
@@ -53,6 +58,7 @@ export default function QualityPage() {
 
   return (
     <div className="space-y-6">
+      <PageHeader icon={GaugeCircle} title="检索质量" description="离线评测回归，不是某一次问答的即时评分" />
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs text-blue-800">
           本页面向管理员和运维人员，展示最近一次真实模型离线评测。它不是某一次问答的即时评分，也不是已签字的企业业务 Gold 验收，不能当作企业级 SLO，也不会改变在线问答结果。企业技术门槛看 Recall@5 / hit_rate ≥ 90%；Recall@1 只说明第一名稳不稳。
@@ -62,7 +68,7 @@ export default function QualityPage() {
         </h2>
         <p className="mb-4 text-xs text-slate-400">
           {quality.dataset || "离线评测集"}
-          {evalDate ? ` · 最近一次真实评测 ${evalDate}` : ""} · 来源 docs/evals/reports
+          {evalDate ? ` · 最近一次真实评测 ${evalDate}` : ""}
         </p>
         <div className="flex items-start gap-6">
           {quality.recall.map((r) => (

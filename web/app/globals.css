@@ -1,6 +1,17 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap");
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --zj-brand: #2563eb;
+  --zj-brand-2: #4f46e5;
+  --zj-bg: #f8fafc;
+  --zj-surface: #ffffff;
+  --zj-text: #0f172a;
+  --zj-muted: #64748b;
+  --zj-border: #e2e8f0;
+}
 
 @layer base {
   body {

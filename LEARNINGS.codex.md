@@ -417,3 +417,10 @@
 - Reason：验收中途不改代码。用 px-admin 打开 `/release-center`，核对停留轮询、中断 overview、手动刷新三条路径。
 - Act：Playwright 复验；静默失败无红字，手动刷新显示「同步暂时失败，请稍后重试」，恢复后横幅消失。
 - Refine：登记册 UAT-015 与 backlog P-UAT-3 关闭。证据 `artifacts/product-experience-acceptance/2026-09-11-uat015/`。不停演示栈。
+
+## 2026-09-11 - 产品壳层与页面语言
+
+- Perceive：产品稿已给出统一壳层和中文页面语言；现网截图和工作树仍露出文档 ID、英文 stage 和技术路径。
+- Reason：只改 Web 展示，不改发布策略、预审和 reranker。页头、导航分组、引用和阶段文案是同一批 S3。
+- Act：落地 PageHeader、管理分组、问答依据折叠、数据接入中文阶段、文档文件名/空间名、发布中心页头；补 `test_product_shell.py` 与 UAT-016。
+- Refine：契约测试覆盖本批文案。文档详情页本轮不做。未停演示栈。

@@ -6,26 +6,37 @@ import { apiClient } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
 import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
 import { READONLY_UPLOAD_DENIED_MESSAGE, canUploadDocuments } from "@/lib/permissions";
-import { CheckCircle2, ChevronRight, Copy, Loader2, XCircle } from "lucide-react";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { CheckCircle2, ChevronRight, Copy, Loader2, UploadCloud, XCircle } from "lucide-react";
 import { formatDurationMs } from "@/lib/docDisplay";
 import type { KnowledgeSpace, TaskStatus, UploadResult } from "@/lib/types";
 
 const PIPELINE_STEPS = [
-  { key: "queued", label: "上传 · Kafka 异步" },
-  { key: "ocr", label: "扫描解析 · OCR" },
-  { key: "parsing", label: "解析 · parser-service" },
-  { key: "embedding", label: "向量化 · embedding" },
-  { key: "completed", label: "入库 · Qdrant + ES" },
+  { key: "queued", label: "上传" },
+  { key: "ocr", label: "扫描识别" },
+  { key: "parsing", label: "解析文档" },
+  { key: "embedding", label: "向量化" },
+  { key: "completed", label: "入库" },
 ];
 const MAX_UPLOAD_SIZE_MB = 100;
 
 // Classification is authorized server-side; the options are narrowed here so the
 // UI does not offer a level the caller's role would be rejected for.
 const PERMISSION_OPTIONS = [
-  { value: "public", label: "public（公开）", adminOnly: false },
-  { value: "internal", label: "internal（内部）", adminOnly: false },
-  { value: "confidential", label: "confidential（机密）", adminOnly: true },
+  { value: "public", label: "公开", adminOnly: false },
+  { value: "internal", label: "内部", adminOnly: false },
+  { value: "confidential", label: "机密", adminOnly: true },
 ];
+
+const TASK_STATUS_LABELS: Record<string, string> = {
+  queued: "排队中",
+  processing: "处理中",
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+const STAGE_LABELS: Record<string, string> = Object.fromEntries(PIPELINE_STEPS.map((step) => [step.key, step.label]));
 
 export default function DataPage() {
   const { isAdmin, role } = useAuth();
@@ -198,8 +209,9 @@ export default function DataPage() {
 
   return (
     <div className="space-y-6">
+      <PageHeader icon={UploadCloud} title="数据接入" description="上传到个人空间会自动发布；受管空间需审批后才能被问答引用" />
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="mb-3 text-sm font-semibold text-slate-500">上传文档 · 异步 ETL 流程</h2>
+        <h2 className="mb-3 text-sm font-semibold text-slate-800">上传文档</h2>
         {role === "readonly" && (
           <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
             {READONLY_UPLOAD_DENIED_MESSAGE}
@@ -253,7 +265,7 @@ export default function DataPage() {
             {status === "uploading" || status === "polling" ? "上传中…" : "上传"}
           </button>
           {uploadResult && !isDuplicate && (
-            <span className="font-mono text-xs text-slate-500">doc: {uploadResult.doc_id}</span>
+            <span className="text-xs text-slate-500">文档编号 <span className="font-mono text-[11px] text-slate-400">{uploadResult.doc_id}</span></span>
           )}
           {taskStatus && (taskStatus.status === "queued" || taskStatus.status === "processing") && (
             <button onClick={() => void apiClient.cancelTask(taskStatus.doc_id).then(setTaskStatus)} className="rounded-lg border border-red-200 px-3 py-2 text-sm text-red-600 hover:bg-red-50">取消任务</button>
@@ -282,7 +294,7 @@ export default function DataPage() {
           <div className="mt-3 grid gap-3 rounded-lg border border-amber-100 bg-amber-50/50 p-3 sm:grid-cols-3">
             <label className="text-xs text-slate-600">责任人 <span className="text-red-500">*</span><input value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="知识管理部" className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <label className="text-xs text-slate-600">生效日期 <span className="text-red-500">*</span><input type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs text-slate-600">文档状态<select value={docStatus} onChange={(e) => setDocStatus(e.target.value as typeof docStatus)} className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"><option value="active">active（有效）</option><option value="superseded">superseded（已替代）</option><option value="archived">archived（归档）</option></select></label>
+            <label className="text-xs text-slate-600">文档状态<select value={docStatus} onChange={(e) => setDocStatus(e.target.value as typeof docStatus)} className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"><option value="active">有效</option><option value="superseded">已替代</option><option value="archived">归档</option></select></label>
             <p className="text-xs text-amber-700 sm:col-span-3">受管文档建议上传时填写责任人和生效日期；处理完成后仍为草稿，需在知识发布中心完成 Agent 预审和管理员审批。</p>
           </div>
         )}
@@ -358,9 +370,9 @@ export default function DataPage() {
 
         {taskStatus && (
           <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
-            <span className="font-medium text-slate-700">状态：{taskStatus.status}</span>
-            {taskStatus.stage && <span className="ml-2">阶段：{taskStatus.stage}</span>}
-            {prog && <span className="ml-2 font-medium text-blue-700">chunk {prog}</span>}
+            <span className="font-medium text-slate-700">状态：{TASK_STATUS_LABELS[taskStatus.status] || taskStatus.status}</span>
+            {taskStatus.stage && <span className="ml-2">阶段：{STAGE_LABELS[taskStatus.stage] || taskStatus.stage}</span>}
+            {prog && <span className="ml-2 font-medium text-blue-700">切块 {prog}</span>}
             {pageProg && <span className="ml-2 font-medium text-blue-700">页 {pageProg}</span>}
             {taskStatus.error && <span className="ml-2 text-red-600">{taskStatus.error}</span>}
             {taskStatus.stage_timings?.total_ms ? (
@@ -372,12 +384,12 @@ export default function DataPage() {
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="mb-2 text-sm font-semibold text-slate-500">为什么这是可靠的 ETL？</h2>
+        <h2 className="mb-2 text-sm font-semibold text-slate-800">上传后可以离开此页</h2>
         <ul className="space-y-1 text-xs text-slate-600">
-          <li>· 上传后立即返回任务编号，后台异步处理（Kafka 削峰解耦）</li>
-          <li>· 处理失败自动重试，重试耗尽进 DLQ，不丢消息</li>
-          <li>· 相同幂等键重复上传复用第一次结果</li>
-          <li>· 每个任务记录状态，可追溯处理阶段</li>
+          <li>· 提交后立即开始后台处理，可在文档管理查看进度</li>
+          <li>· 失败会自动重试；仍失败会留下记录，不会静默丢失</li>
+          <li>· 内容完全相同的文件不会重复入库</li>
+          <li>· 每个文件都能看到处理到哪一步</li>
         </ul>
       </div>
     </div>

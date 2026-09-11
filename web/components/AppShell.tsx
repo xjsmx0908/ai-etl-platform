@@ -41,12 +41,17 @@ const ROLE_LABELS: Record<string, string> = {
   readonly: "只读用户",
 };
 
+function pageTitle(pathname: string): string {
+  const items = [...NAV_ITEMS, ...ADMIN_ITEMS, { href: "/agent", label: "知识发布中心", icon: Bot }];
+  const match = items.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
+  return match?.label || "企业智能知识平台";
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, isAdmin, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const items = isAdmin ? [...NAV_ITEMS, ...ADMIN_ITEMS] : NAV_ITEMS;
 
   useEffect(() => {
     document.body.style.overflow = mobileOpen ? "hidden" : "";
@@ -55,54 +60,50 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     };
   }, [mobileOpen]);
 
+  const renderItems = (items: { href: string; label: string; icon: LucideIcon }[]) =>
+    items.map((item) => {
+      const active = pathname === item.href || pathname.startsWith(`${item.href}/`) || (item.href === "/release-center" && pathname.startsWith("/agent"));
+      const Icon = item.icon;
+      return (
+        <Link
+          key={item.href}
+          href={item.href}
+          onClick={() => setMobileOpen(false)}
+          aria-current={active ? "page" : undefined}
+          className={
+            active
+              ? "relative flex items-center gap-2.5 rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700"
+              : "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+          }
+        >
+          {active && <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded bg-blue-600" />}
+          <Icon className="h-4 w-4 shrink-0" />
+          {item.label}
+        </Link>
+      );
+    });
+
   const nav = (
     <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-4">
-      {items.map((item) => {
-        const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-        const Icon = item.icon;
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={() => setMobileOpen(false)}
-            className={
-              active
-                ? "relative flex items-center gap-2.5 rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700"
-                : "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
-            }
-          >
-            {active && (
-              <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded bg-blue-600" />
-            )}
-            <Icon className="h-4 w-4 shrink-0" />
-            {item.label}
-          </Link>
-        );
-      })}
+      {renderItems(NAV_ITEMS)}
+      {isAdmin && (
+        <>
+          <p className="px-3 pb-1 pt-4 text-[11px] font-medium uppercase tracking-wider text-slate-400">管理</p>
+          {renderItems(ADMIN_ITEMS)}
+        </>
+      )}
     </nav>
   );
 
   const userCard = (
     <div className="border-t border-slate-200 px-5 py-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-slate-700">{user?.username || "未登录"}</p>
-          <p className="text-xs text-slate-400">{user ? ROLE_LABELS[user.role] || user.role : ""}</p>
-        </div>
-        <button
-          onClick={() => void logout()}
-          className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-slate-500 transition-colors hover:bg-red-50 hover:text-red-600"
-        >
-          <LogOut className="h-3.5 w-3.5" />
-          退出
-        </button>
-      </div>
+      <p className="truncate text-sm font-medium text-slate-700">{user?.username || "未登录"}</p>
+      <p className="text-xs text-slate-400">{user ? ROLE_LABELS[user.role] || user.role : ""}</p>
     </div>
   );
 
   return (
     <div className="flex min-h-screen bg-slate-50">
-      {/* 桌面侧栏 */}
       <aside className="hidden w-60 shrink-0 flex-col border-r border-slate-200 bg-white lg:flex">
         <div className="border-b border-slate-200 px-5 py-4">
           <Logo />
@@ -111,7 +112,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {userCard}
       </aside>
 
-      {/* 移动端抽屉 */}
       {mobileOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <div className="absolute inset-0 bg-slate-900/40" onClick={() => setMobileOpen(false)} />
@@ -134,7 +134,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <button onClick={() => setMobileOpen(true)} className="text-slate-500 lg:hidden" aria-label="打开菜单">
               <Menu className="h-5 w-5" />
             </button>
-            <span className="text-sm text-slate-500">企业智能知识平台</span>
+            <span className="text-sm font-medium text-slate-800">{pageTitle(pathname)}</span>
           </div>
           <div className="relative">
             <button

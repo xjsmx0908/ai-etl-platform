@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, FileCheck2, RefreshCw, Search, X } from "lucide-react";
+import { Bot, Check, ChevronDown, FileCheck2, RefreshCw, Search, X } from "lucide-react";
 import { apiClient } from "@/lib/apiClient";
 import { isTransientFetchError, localizeFetchError } from "@/lib/fetchErrors";
 import { useAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Forbidden } from "@/components/ui/Forbidden";
+import { PageHeader } from "@/components/ui/PageHeader";
 import type { AgentRun, Document, ReleaseOverviewItem, ReleaseRequest, ReleaseRequestDetail, ReleaseReview } from "@/lib/types";
 
 const STATE_LABELS: Record<string, string> = {
@@ -195,11 +196,18 @@ export default function AgentPage() {
 
   if (!isAdmin) return <Forbidden />;
   return (
-    <div className="mx-auto max-w-[1500px] space-y-4 p-4 sm:p-6">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div><h1 className="text-2xl font-semibold text-slate-900">知识发布中心</h1><p className="mt-1 text-sm text-slate-500">统一查看发布状态、Agent 预审证据与管理员审批进度。</p></div>
-        <div className="flex items-center gap-2"><span className="text-xs text-slate-400">最后同步：{relativeTime(lastSyncedAt)}</span><Button variant="secondary" size="sm" icon={RefreshCw} loading={refreshing} onClick={() => void refreshReleaseCenter()}>刷新状态</Button></div>
-      </header>
+    <div className="space-y-4">
+      <PageHeader
+        icon={Bot}
+        title="知识发布中心"
+        description="按业务状态查看预审证据，并完成管理员审批"
+        actions={
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">最后同步：{relativeTime(lastSyncedAt)}</span>
+            <Button variant="secondary" size="sm" icon={RefreshCw} loading={refreshing} onClick={() => void refreshReleaseCenter()}>刷新状态</Button>
+          </div>
+        }
+      />
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
       {loading && <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">正在同步发布状态…</div>}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm"><span className="px-2 text-xs font-medium text-slate-500">状态筛选</span>

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/Button";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { ChevronLeft, ChevronRight, RotateCcw, Search, ScrollText } from "lucide-react";
 import type { AuditEntry } from "@/lib/types";
 
@@ -139,13 +140,7 @@ export default function AuditPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <div className="flex items-center gap-2">
-          <ScrollText className="h-5 w-5 text-blue-600" />
-          <h1 className="text-xl font-semibold text-slate-900">审计日志</h1>
-        </div>
-        <p className="mt-1 text-sm text-slate-500">追踪登录、数据变更和管理操作，用于安全核查与问题追溯。</p>
-      </div>
+      <PageHeader icon={ScrollText} title="审计日志" description="追踪登录、数据变更和管理操作，用于安全核查与问题追溯。" />
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
 

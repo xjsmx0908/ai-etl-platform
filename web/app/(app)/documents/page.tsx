@@ -9,10 +9,11 @@ import { Card } from "@/components/ui/Card";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { Spinner } from "@/components/ui/Spinner";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Files, FileText, Filter, RotateCcw, Search, ShieldCheck, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
-import type { Document, DocumentSearchResult } from "@/lib/types";
+import type { Document, DocumentSearchResult, KnowledgeSpace } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "排队中",
@@ -27,6 +28,18 @@ const PERMISSION_LABELS: Record<string, string> = {
   internal: "内部",
   confidential: "机密",
 };
+
+function permissionTone(permission: string) {
+  if (permission === "public") return "success" as const;
+  if (permission === "internal") return "info" as const;
+  if (permission === "confidential") return "warning" as const;
+  return "neutral" as const;
+}
+
+function spaceLabel(id: string | undefined, spaces: KnowledgeSpace[]) {
+  if (!id) return "—";
+  return spaces.find((space) => space.id === id)?.name || (id === "user-uploads" ? "个人上传" : id);
+}
 
 function formatSize(bytes?: number): string {
   if (!bytes && bytes !== 0) return "—";
@@ -72,6 +85,7 @@ export default function DocumentsPage() {
   const [searchResults, setSearchResults] = useState<DocumentSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
+  const [spaces, setSpaces] = useState<KnowledgeSpace[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,6 +111,10 @@ export default function DocumentsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void apiClient.listKnowledgeSpaces().then((data) => setSpaces(data.items)).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     setPageInput(String(page + 1));
@@ -151,23 +169,19 @@ export default function DocumentsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-cyan-500 text-white shadow-sm">
-            <FileText className="h-5 w-5" />
+      <PageHeader
+        icon={FileText}
+        title="文档管理"
+        description="按文件名查找、筛选并管理知识库文档"
+        actions={
+          <div className="rounded-lg bg-slate-100 px-3 py-2 text-right">
+            <div className="text-lg font-semibold leading-none text-slate-800">{total}</div>
+            <div className="mt-1 text-[11px] text-slate-500">当前可见文档</div>
           </div>
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-slate-900">文档管理</h1>
-            <p className="mt-0.5 text-sm text-slate-500">浏览、检索并管理已接入知识库的企业文档</p>
-          </div>
-        </div>
-        <div className="hidden rounded-lg bg-slate-100 px-3 py-2 text-right sm:block">
-          <div className="text-lg font-semibold leading-none text-slate-800">{total}</div>
-          <div className="mt-1 text-[11px] text-slate-500">当前可见文档</div>
-        </div>
-      </div>
+        }
+      />
 
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-blue-100 bg-gradient-to-r from-blue-50/80 to-cyan-50/50 px-4 py-3 text-xs text-slate-600">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-xs text-slate-600">
         <span className="flex items-center gap-1.5 font-medium text-slate-700">
           <Sparkles className="h-3.5 w-3.5 text-blue-600" />
           多格式解析：TXT / Markdown / DOCX / PDF / 图片 OCR / 扫描件 OCR
@@ -298,7 +312,6 @@ export default function DocumentsPage() {
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50/90 text-xs text-slate-500">
                 <tr>
-                  <th className="px-4 py-2 font-medium">文档 ID</th>
                   <th className="px-4 py-2 font-medium">文件名</th>
                   <th className="px-4 py-2 font-medium">类型</th>
                   <th className="px-4 py-2 font-medium">权限</th>
@@ -315,15 +328,11 @@ export default function DocumentsPage() {
               <tbody className="divide-y divide-slate-100">
                 {items.map((doc) => (
                   <tr key={doc.doc_id} className="transition-colors hover:bg-blue-50/30">
-                    <td className="px-4 py-2.5 font-mono text-xs text-blue-600">
-                      <Link href={`/documents/${doc.doc_id}`} className="hover:underline">
-                        {doc.doc_id}
-                      </Link>
-                    </td>
                     <td className="px-4 py-2.5 text-slate-700">
-                      <Link href={`/documents/${doc.doc_id}`} className="hover:text-blue-600 hover:underline">
+                      <Link href={`/documents/${doc.doc_id}`} className="font-medium hover:text-blue-600 hover:underline">
                         {doc.file_name}
                       </Link>
+                      <div className="mt-0.5 font-mono text-[11px] text-slate-400">{doc.doc_id}</div>
                     </td>
                     <td className="px-4 py-2.5">
                       {(() => {
@@ -338,9 +347,9 @@ export default function DocumentsPage() {
                       })()}
                     </td>
                     <td className="px-4 py-2.5">
-                      <Badge>{PERMISSION_LABELS[doc.permission] || doc.permission}</Badge>
+                      <Badge tone={permissionTone(doc.permission)}>{PERMISSION_LABELS[doc.permission] || doc.permission}</Badge>
                     </td>
-					<td className="px-4 py-2.5 text-xs text-slate-600">{doc.knowledge_space_id || "—"}</td>
+					<td className="px-4 py-2.5 text-xs text-slate-600">{spaceLabel(doc.knowledge_space_id, spaces)}</td>
 					<td className="px-4 py-2.5">
 					  <Badge tone={doc.deletion_status === "pending" ? "warning" : doc.publication_status === "published" ? "success" : "warning"}>
 						{doc.deletion_status === "pending" ? "删除处理中" : doc.publication_status === "published" ? "已发布" : doc.publication_status === "retired" ? "已退役" : "草稿"}

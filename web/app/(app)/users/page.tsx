@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Button } from "@/components/ui/Button";
+import { Users } from "lucide-react";
 import type { User } from "@/lib/types";
 
 const ROLE_LABELS: Record<string, string> = {
@@ -187,15 +190,12 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-500">用户管理</h2>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
-        >
-          新建用户
-        </button>
-      </div>
+      <PageHeader
+        icon={Users}
+        title="用户管理"
+        description="创建、启停账号并重置密码"
+        actions={<Button onClick={() => setShowCreate(true)}>新建用户</Button>}
+      />
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
 

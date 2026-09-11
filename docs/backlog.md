@@ -39,6 +39,7 @@
 | P-UAT-1-next | 剩余体验缺陷 | done | UAT-013 已复验：错密登录显示「用户名或密码错误」 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 | P-UAT-2 | 受管换版切块未切换 | done | UAT-014 已复验：新版本发布后问答 120 元，旧 generation 退役 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 | P-UAT-3 | 发布中心 Fail to fetch 红字 | done | 2026-09-11 真实页面复验通过：静默轮询无 Fail to fetch；手动刷新显示「同步暂时失败，请稍后重试」 | [`../issues/findings-register.md`](../issues/findings-register.md) |
+| P-UAT-4 | 产品壳层与页面语言 | done | UAT-016：统一 PageHeader、管理分组、中文阶段/引用/空间名；契约测试 `test_product_shell.py` | [`../issues/findings-register.md`](../issues/findings-register.md) |
 
 这是 2026-09-09 明确要求的体验验收轨道，覆盖页面美观、使用逻辑和缺陷，不替代发布中心/治理/身份专项矩阵。问题登记以 [`issues/findings-register.md`](../issues/findings-register.md) 为准。
 

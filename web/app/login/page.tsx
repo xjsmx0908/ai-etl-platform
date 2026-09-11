@@ -75,7 +75,7 @@ export default function LoginPage() {
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.14),transparent_55%)]" />
 
         <div className="relative">
-          <Logo size="lg" />
+          <Logo size="lg" inverse />
         </div>
 
         <div className="relative">

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import Link from "next/link";
 import { Card } from "@/components/ui/Card";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Button } from "@/components/ui/Button";
 import { AlertTriangle, Check, ChevronDown, Loader2, MessageSquareText, Send, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import type { AnswerMeta, KnowledgeSpace, Source } from "@/lib/types";
@@ -210,15 +212,7 @@ export default function QaPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-cyan-500 text-white shadow-sm">
-          <MessageSquareText className="h-5 w-5" />
-        </div>
-        <div>
-          <h1 className="text-xl font-semibold text-slate-900">问答工作台</h1>
-          <p className="mt-0.5 text-sm text-slate-500">基于已发布的企业文档生成可追溯回答</p>
-        </div>
-      </div>
+      <PageHeader icon={MessageSquareText} title="问答工作台" description="基于已发布的企业文档生成可追溯回答" />
 
       <form onSubmit={onSubmit} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -242,14 +236,14 @@ export default function QaPage() {
               ))}
             </select>
           )}
-          <button
+          <Button
             type="submit"
             disabled={status === "streaming" || !question.trim() || !hasQueryableSpaces}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            icon={status === "streaming" ? undefined : Send}
+            loading={status === "streaming"}
           >
-            {status !== "streaming" && <Send className="h-4 w-4" />}
-            {status === "streaming" ? phase : "发送问题"}
-          </button>
+            {status === "streaming" ? "提问中…" : "发送"}
+          </Button>
         </div>
         {selectedSpace && (
           <p className="mt-2 px-1 text-xs text-slate-400">当前检索范围：{selectedSpace.name} · 仅使用该空间中已发布的文档</p>
@@ -322,11 +316,11 @@ export default function QaPage() {
                         <li key={c.doc_id} className="flex flex-wrap items-center gap-x-2 text-xs text-amber-800">
                           <Link
                             href={`/documents/${encodeURIComponent(c.doc_id)}`}
-                            className="font-mono hover:underline"
+                            className="font-medium hover:underline"
                           >
-                            {c.doc_id}
+                            {c.file_name || c.doc_id}
                           </Link>
-                          {c.file_name && <span className="text-amber-700">{c.file_name}</span>}
+                          {c.file_name && <span className="font-mono text-[11px] text-amber-600">{c.doc_id}</span>}
                           {c.effective_date && <span className="text-amber-600">生效 {c.effective_date}</span>}
                           {c.supersedes && (
                             <span className="text-amber-600">声明替代 {c.supersedes}</span>
@@ -357,7 +351,7 @@ export default function QaPage() {
                 <p className="whitespace-pre-wrap leading-relaxed text-slate-800">
                   {answer}
                   {status === "streaming" && (
-                    <span className="ml-0.5 inline-block h-4 w-[2px] animate-blink bg-cyan-500 align-middle" />
+                    <span className="ml-0.5 inline-block h-4 w-[2px] animate-blink bg-blue-600 align-middle" />
                   )}
                 </p>
               ) : (
@@ -367,7 +361,7 @@ export default function QaPage() {
 
             {citations.length > 0 && (
               <Card>
-                <h2 className="mb-3 text-sm font-semibold text-slate-500">实际引用（{citations.length}）</h2>
+                <h2 className="mb-3 text-sm font-semibold text-slate-500">引用（{citations.length}）</h2>
                 <div className="space-y-2">
                   {citations.map((s, i) => (
                     <details key={s.chunk_id} className="group rounded-lg border border-slate-200">
@@ -378,13 +372,10 @@ export default function QaPage() {
                           </span>
                           <span>
                             <span className="font-medium text-slate-700">{s.file_name || s.doc_id}</span>
-                            {s.file_name && <span className="ml-2 font-mono text-xs text-blue-600">{s.doc_id}</span>}
+                            {s.file_name && <span className="mt-0.5 block font-mono text-[11px] text-slate-400">{s.doc_id}</span>}
                           </span>
                         </span>
-                        <span className="flex items-center gap-2 text-xs text-slate-400">
-                          score {s.score.toFixed(4)}
-                          <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-                        </span>
+                        <ChevronDown className="h-3.5 w-3.5 text-slate-400 transition-transform group-open:rotate-180" />
                       </summary>
                       <div className="border-t border-slate-100 px-3 py-2">
                         {(s.effective_date || s.knowledge_base_id || s.applicable_scope) && (
@@ -408,7 +399,10 @@ export default function QaPage() {
           </div>
 
           <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <details className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-700">回答依据与系统详情</summary>
+              <p className="mt-1 text-xs text-slate-400">检索链路和本次查询用量默认收起，不影响回答与引用。</p>
+            <div className="mt-4">
               <h2 className="mb-3 text-sm font-semibold text-slate-500">检索链路</h2>
               <dl className="space-y-2 text-sm">
                 <Row
@@ -509,6 +503,7 @@ export default function QaPage() {
                 <Row label="Prompt 版本" value={meta.prompt_version || "v1"} />
               </dl>
             </div>
+            </details>
           </div>
         </div>
       )}

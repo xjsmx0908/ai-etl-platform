@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import StatCard from "@/components/StatCard";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Spinner } from "@/components/ui/Spinner";
@@ -41,6 +42,7 @@ export default function ObservePage() {
 
   return (
     <div className="space-y-6">
+      <PageHeader icon={Activity} title="系统可观测" description="查看问答主链路是否在线；基础设施组件不在此列表" />
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <StatCard label="服务总数" value={health ? String(entries.length) : "—"} icon={Server} />
         <StatCard

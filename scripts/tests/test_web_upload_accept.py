@@ -24,7 +24,8 @@ class WebUploadAcceptTests(unittest.TestCase):
     def test_managed_upload_exposes_space_creation_and_governance_fields(self):
         source = (ROOT / "web/app/(app)/data/page.tsx").read_text(encoding="utf-8")
         self.assertIn("新建受管空间", source)
-        self.assertIn("创建 production 受管空间", source)
+        self.assertIn("创建受管空间", source)
+        self.assertIn('kind: "production"', source)
         self.assertIn("责任人", source)
         self.assertIn('type="date"', source)
         self.assertIn("effectiveDate", source)
