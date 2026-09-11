@@ -12,7 +12,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Files, FileText, Filter, RotateCcw, Search, ShieldCheck, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth";
-import { formatUploader, getFileTypeMeta } from "@/lib/docDisplay";
+import { formatUploader, getFileTypeMeta, spaceLabel } from "@/lib/docDisplay";
 import type { Document, DocumentSearchResult, KnowledgeSpace } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -34,11 +34,6 @@ function permissionTone(permission: string) {
   if (permission === "internal") return "info" as const;
   if (permission === "confidential") return "warning" as const;
   return "neutral" as const;
-}
-
-function spaceLabel(id: string | undefined, spaces: KnowledgeSpace[]) {
-  if (!id) return "—";
-  return spaces.find((space) => space.id === id)?.name || (id === "user-uploads" ? "个人上传" : id);
 }
 
 function formatSize(bytes?: number): string {

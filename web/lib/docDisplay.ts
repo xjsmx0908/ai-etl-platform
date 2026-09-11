@@ -56,3 +56,9 @@ export function formatDurationMs(ms?: number): string {
   const seconds = Math.round((ms % 60_000) / 1000);
   return `${minutes}m ${seconds}s`;
 }
+
+/** Display a knowledge-space id as its human name when the list is available. */
+export function spaceLabel(id: string | undefined, spaces: { id: string; name: string }[]): string {
+  if (!id) return "—";
+  return spaces.find((space) => space.id === id)?.name || (id === "user-uploads" ? "个人上传" : id);
+}

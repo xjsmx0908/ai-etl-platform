@@ -424,3 +424,10 @@
 - Reason：只改 Web 展示，不改发布策略、预审和 reranker。页头、导航分组、引用和阶段文案是同一批 S3。
 - Act：落地 PageHeader、管理分组、问答依据折叠、数据接入中文阶段、文档文件名/空间名、发布中心页头；补 `test_product_shell.py` 与 UAT-016。
 - Refine：契约测试覆盖本批文案。文档详情页本轮不做。未停演示栈。
+
+## 2026-09-11 - 文档详情页对齐产品壳层
+
+- Perceive：列表和接入页已中文化，详情页仍用英文治理状态下拉、空间 raw id、标题不是 PageHeader。
+- Reason：同一批 S3，不改发布/替换语义；spaceLabel 抽到 docDisplay 避免两页各写一份。
+- Act：详情页 PageHeader、空间名、有效/已替代/归档；替换确认用文件名；补 test_product_shell。
+- Refine：契约测试通过。随后重建 web 镜像才能在 :3100 看到。

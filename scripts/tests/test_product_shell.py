@@ -29,10 +29,21 @@ class ProductShellTests(unittest.TestCase):
 
     def test_documents_prefer_filename_and_space_name(self):
         page = (ROOT / "web/app/(app)/documents/page.tsx").read_text(encoding="utf-8")
+        helper = (ROOT / "web/lib/docDisplay.ts").read_text(encoding="utf-8")
         self.assertLess(page.find("{doc.file_name}"), page.find("{doc.doc_id}"))
         self.assertIn("spaceLabel(doc.knowledge_space_id, spaces)", page)
-        self.assertIn("个人上传", page)
+        self.assertIn('id === "user-uploads" ? "个人上传"', helper)
         self.assertNotIn("{doc.knowledge_space_id || \"—\"}", page)
+
+    def test_document_detail_uses_page_header_and_chinese_governance(self):
+        page = (ROOT / "web/app/(app)/documents/[id]/page.tsx").read_text(encoding="utf-8")
+        self.assertIn("PageHeader", page)
+        self.assertIn("spaceLabel(doc.knowledge_space_id, spaces)", page)
+        self.assertIn(">有效<", page)
+        self.assertIn(">已替代<", page)
+        self.assertIn(">归档<", page)
+        self.assertIn("新文件将替换「{doc.file_name}」的内容", page)
+        self.assertNotIn("active（有效）", page)
 
     def test_release_center_uses_page_header_without_changing_gates(self):
         page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")

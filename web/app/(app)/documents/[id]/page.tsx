@@ -7,10 +7,11 @@ import { apiClient } from "@/lib/apiClient";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { useAuth } from "@/lib/auth";
-import { formatUploader, formatDurationMs, getFileTypeMeta } from "@/lib/docDisplay";
+import { formatUploader, formatDurationMs, getFileTypeMeta, spaceLabel } from "@/lib/docDisplay";
 import { UPLOAD_ACCEPT } from "@/lib/fileTypes";
-import { Bot, Upload, Pencil } from "lucide-react";
-import type { Document, DocumentChunk } from "@/lib/types";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { Bot, FileText, Upload, Pencil } from "lucide-react";
+import type { Document, DocumentChunk, KnowledgeSpace } from "@/lib/types";
 
 const STATUS_LABELS: Record<string, string> = {
   queued: "排队中",
@@ -28,9 +29,9 @@ const PERMISSION_LABELS: Record<string, string> = {
 
 // Knowledge-source lifecycle, distinct from the ETL `status` above.
 const DOC_STATUS_LABELS: Record<string, string> = {
-  active: "现行",
-  superseded: "已被替代",
-  archived: "已归档",
+  active: "有效",
+  superseded: "已替代",
+  archived: "归档",
 };
 
 const PUBLICATION_LABELS: Record<string, string> = {
@@ -81,6 +82,7 @@ export default function DocumentDetailPage() {
   const [editingGovernance, setEditingGovernance] = useState(false);
   const [governanceForm, setGovernanceForm] = useState({ owner: "", effective_date: "", doc_status: "active" as "active" | "superseded" | "archived", supersedes: "" });
   const [savingGovernance, setSavingGovernance] = useState(false);
+  const [spaces, setSpaces] = useState<KnowledgeSpace[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -102,6 +104,10 @@ export default function DocumentDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void apiClient.listKnowledgeSpaces().then((data) => setSpaces(data.items)).catch(() => undefined);
+  }, []);
 
   const closeReplace = () => {
     setReplaceOpen(false);
@@ -185,9 +191,34 @@ export default function DocumentDetailPage() {
         ← 返回文档列表
       </Link>
 
+      <PageHeader
+        icon={FileText}
+        title={doc.file_name}
+        description="查看发布状态、治理信息与切块内容"
+        actions={
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={Upload}
+            onClick={() => setReplaceOpen(true)}
+            disabled={!canReplace}
+            title={
+              isAdmin
+                ? ""
+                : user?.id && doc.uploaded_by === user.id
+                  ? "上传新版本替换当前文档"
+                  : doc?.uploaded_by
+                    ? "仅该文档的上传者或管理员可上传新版本"
+                    : "仅管理员可上传新版本（未知上传者）"
+            }
+          >
+            上传新版本
+          </Button>
+        }
+      />
+
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-base font-semibold text-slate-800">{doc.file_name}</h1>
           {(() => {
             const meta = getFileTypeMeta(doc.file_name);
             const Icon = meta.icon;
@@ -212,25 +243,6 @@ export default function DocumentDetailPage() {
           <span className={`rounded px-2 py-0.5 text-xs font-medium ${doc.publication_status === "published" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
             {PUBLICATION_LABELS[doc.publication_status] || doc.publication_status}
           </span>
-          <Button
-            variant="secondary"
-            size="sm"
-            icon={Upload}
-            className="ml-auto"
-            onClick={() => setReplaceOpen(true)}
-            disabled={!canReplace}
-            title={
-              isAdmin
-                ? ""
-                : user?.id && doc.uploaded_by === user.id
-                  ? "上传新版本替换当前文档"
-                  : doc?.uploaded_by
-                    ? "仅该文档的上传者或管理员可上传新版本"
-                    : "仅管理员可上传新版本（未知上传者）"
-            }
-          >
-            上传新版本
-          </Button>
         </div>
 
         {replaced && (
@@ -247,7 +259,7 @@ export default function DocumentDetailPage() {
         <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
 		  <div>
 			<dt className="text-xs text-slate-400">知识空间</dt>
-			<dd>{doc.knowledge_space_id || "—"}</dd>
+			<dd>{spaceLabel(doc.knowledge_space_id, spaces)}</dd>
 		  </div>
           <div>
             <dt className="text-xs text-slate-400">文档 ID</dt>
@@ -266,7 +278,7 @@ export default function DocumentDetailPage() {
             <dd>{formatDurationMs(doc.stage_timings?.parse_ms)}</dd>
           </div>
           <div>
-            <dt className="text-xs text-slate-400">OCR</dt>
+            <dt className="text-xs text-slate-400">扫描识别</dt>
             <dd>{formatDurationMs(doc.stage_timings?.ocr_ms)}</dd>
           </div>
           <div>
@@ -274,7 +286,7 @@ export default function DocumentDetailPage() {
             <dd>{formatDurationMs(doc.stage_timings?.embed_ms)}</dd>
           </div>
           <div>
-            <dt className="text-xs text-slate-400">写入</dt>
+            <dt className="text-xs text-slate-400">入库</dt>
             <dd>{formatDurationMs(doc.stage_timings?.store_ms)}</dd>
           </div>
           <div>
@@ -375,7 +387,7 @@ export default function DocumentDetailPage() {
           <div className="space-y-3">
             <label className="block text-xs font-medium text-slate-600">责任人<input value={governanceForm.owner} onChange={(e) => setGovernanceForm((v) => ({ ...v, owner: e.target.value }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" /></label>
             <label className="block text-xs font-medium text-slate-600">生效日期<input type="date" value={governanceForm.effective_date} onChange={(e) => setGovernanceForm((v) => ({ ...v, effective_date: e.target.value }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" /></label>
-            <label className="block text-xs font-medium text-slate-600">文档状态<select value={governanceForm.doc_status} onChange={(e) => setGovernanceForm((v) => ({ ...v, doc_status: e.target.value as typeof governanceForm.doc_status }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"><option value="active">active（有效）</option><option value="superseded">superseded（已替代）</option><option value="archived">archived（归档）</option></select></label>
+            <label className="block text-xs font-medium text-slate-600">文档状态<select value={governanceForm.doc_status} onChange={(e) => setGovernanceForm((v) => ({ ...v, doc_status: e.target.value as typeof governanceForm.doc_status }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"><option value="active">有效</option><option value="superseded">已替代</option><option value="archived">归档</option></select></label>
             <label className="block text-xs font-medium text-slate-600">替代文档（可选）<input value={governanceForm.supersedes} onChange={(e) => setGovernanceForm((v) => ({ ...v, supersedes: e.target.value }))} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" /></label>
             <div className="flex justify-end gap-2 pt-2"><Button variant="secondary" onClick={() => setEditingGovernance(false)}>取消</Button><Button loading={savingGovernance} disabled={!governanceForm.owner.trim() || !governanceForm.effective_date} onClick={() => void saveGovernance()}>保存治理信息</Button></div>
           </div>
@@ -431,10 +443,9 @@ export default function DocumentDetailPage() {
         >
           <div className="space-y-3 text-sm text-slate-600">
             <p>
-              新文件将替换文档
-              <span className="mx-1 font-mono text-xs text-blue-600">{doc.doc_id}</span>
-              的内容。文档编号、密级（{PERMISSION_LABELS[doc.permission] || doc.permission}）保持不变，引用该编号的链接依然有效。
+              新文件将替换「{doc.file_name}」的内容。密级（{PERMISSION_LABELS[doc.permission] || doc.permission}）保持不变，原文档链接仍然有效。
             </p>
+            <p className="font-mono text-[11px] text-slate-400">{doc.doc_id}</p>
             <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
               旧版本的切块与向量将在新版本入库后被清理，此操作不可撤销。
             </p>
