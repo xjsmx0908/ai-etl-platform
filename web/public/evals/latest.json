@@ -1,25 +1,25 @@
 {
-  "source_report": "eval-20260910-214233.json",
-  "timestamp": "2026-09-10T13:42:33Z",
+  "source_report": "eval-20260910-221343.json",
+  "timestamp": "2026-09-10T14:13:43Z",
   "model_mode": "real",
   "embed_model": "bge-m3",
   "embed_dimension": 1024,
   "llm_model": "deepseek-v4-flash",
-  "dataset": "演示栈企业技术候选（有效 60 题）",
+  "dataset": "演示栈企业技术候选（有效 60 题，中文 reranker）",
   "recall": [
     {
       "k": 1,
-      "value": 71,
+      "value": 80,
       "note": "第一名是否就是目标文档"
     },
     {
       "k": 3,
-      "value": 91,
+      "value": 100,
       "note": "目标在前 3 名"
     },
     {
       "k": 5,
-      "value": 98,
+      "value": 100,
       "note": "目标在前 5 名（可找到）"
     }
   ],
@@ -28,13 +28,13 @@
     {
       "title": "可找到性",
       "verdict": "达标",
-      "detail": "有效正样本 Recall@5 97.8%、hit_rate 97.8%，超过仓库 90% 技术门槛",
+      "detail": "有效正样本 Recall@5 100%、hit_rate 100%，超过仓库 90% 技术门槛",
       "good": true
     },
     {
       "title": "第一名稳定性",
       "verdict": "改善中",
-      "detail": "Recall@1 62%→71%。已降低与问句零重叠的长文档抢位；相似制度互抢仍在",
+      "detail": "Recall@1 71%→80%。已开中文 bge-reranker-base；剩余 9 题是相似制度互抢，不要求 Recall@1 也到 90%",
       "good": false
     },
     {

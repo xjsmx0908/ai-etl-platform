@@ -389,3 +389,10 @@
 - Reason：按词面加分会把“通知/员工”类文档抬过头，Recall@5 从 95.6% 掉到 64%。只对“别人有重叠、自己接近 0”的候选降权。
 - Act：`stabilizeRanking` 放在 exact pin 之前；缓存键 `retrieval:cache:v3`。单测覆盖短制度压长文档、精确命中仍钉住。
 - Refine：演示栈有效 60 题 Recall@1/3/5 = 71.1%/91.1%/97.8%，负样本 100%。未停站，未开英文 reranker。
+
+## 2026-09-10 - 中文 reranker 抬 Recall@1
+
+- Perceive：用户问质量页要不要更新、第一名不稳能不能解决，并明确不要 P1.9 签字。
+- Reason：技术门槛是 Recall@5/hit_rate ≥ 90%，不是 Recall@1。剩余 miss 是相似制度互抢，不是题集过期。演示栈 `--api-base` 可重考，不必停站。
+- Act：现网打开 `BAAI/bge-reranker-base`，有效 60 题重跑 `eval-20260910-221343`。质量页改挂 80/100/100。
+- Refine：Recall@1/3/5 = 80%/100%/100%，负样本 100%。剩余 9 题第一名仍被同类制度抢走。不停站、不走 P1.9。
