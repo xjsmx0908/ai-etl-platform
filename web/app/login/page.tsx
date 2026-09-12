@@ -11,8 +11,8 @@ import { Button } from "@/components/ui/Button";
 import { Eye, EyeOff, Lock, ShieldCheck, Sparkles, User } from "lucide-react";
 
 const FEATURES = [
-  { icon: Sparkles, label: "多路召回 · 语义检索" },
-  { icon: ShieldCheck, label: "忠实度校验 · 权限隔离" },
+  { icon: Sparkles, label: "多路召回 · 只回答已发布知识" },
+  { icon: ShieldCheck, label: "权限隔离 · 引用可追溯" },
 ];
 
 export default function LoginPage() {
@@ -24,6 +24,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [passwordEnabled, setPasswordEnabled] = useState(true);
   const [oidcEnabled, setOIDCEnabled] = useState(false);
+  const [demoLoginEnabled, setDemoLoginEnabled] = useState(false);
+  const [demoAccount, setDemoAccount] = useState<"" | "user" | "admin">("");
 
   useEffect(() => {
     if (getUser()) router.replace("/");
@@ -32,9 +34,10 @@ export default function LoginPage() {
   useEffect(() => {
     fetch("/api/auth/methods", { cache: "no-store" })
       .then((response) => response.json())
-      .then((methods: { password_enabled?: boolean; oidc_enabled?: boolean }) => {
+      .then((methods: { password_enabled?: boolean; oidc_enabled?: boolean; demo_login_enabled?: boolean }) => {
         setPasswordEnabled(methods.password_enabled !== false);
         setOIDCEnabled(methods.oidc_enabled === true);
+        setDemoLoginEnabled(methods.demo_login_enabled === true);
       })
       .catch(() => undefined);
   }, []);
@@ -52,7 +55,7 @@ export default function LoginPage() {
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password || loading) return;
+    if (!username.trim() || !password || loading || demoAccount) return;
     setLoading(true);
     setError("");
     try {
@@ -62,6 +65,20 @@ export default function LoginPage() {
       setError(localizeLoginError((err as Error).message));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const onDemo = async (account: "user" | "admin") => {
+    if (loading || demoAccount) return;
+    setDemoAccount(account);
+    setError("");
+    try {
+      await apiClient.demoLogin(account);
+      router.replace(account === "admin" ? "/release-center" : "/qa");
+    } catch (err) {
+      setError(localizeLoginError((err as Error).message));
+    } finally {
+      setDemoAccount("");
     }
   };
 
@@ -80,7 +97,7 @@ export default function LoginPage() {
 
         <div className="relative">
           <p className="text-xs font-semibold uppercase tracking-widest text-blue-100/80">企业智能知识平台</p>
-          <h1 className="mt-3 text-3xl font-semibold leading-tight">让文档沉淀为<br />可检索、可问答、可量化的知识资产</h1>
+          <h1 className="mt-3 text-3xl font-semibold leading-tight">让文档沉淀为<br />可检索、可问答、可发布的知识资产</h1>
           <div className="mt-8 space-y-3">
             {FEATURES.map(({ icon: Icon, label }) => (
               <div key={label} className="flex items-center gap-3 text-sm text-blue-100">
@@ -163,10 +180,25 @@ export default function LoginPage() {
               {error && (
                 <div className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700">{error}</div>
               )}
-              <Button type="submit" className="w-full" size="lg" loading={loading} disabled={!username.trim() || !password}>
+              <Button type="submit" className="w-full" size="lg" loading={loading} disabled={!username.trim() || !password || !!demoAccount}>
                 {loading ? "登录中…" : "登录"}
               </Button>
             </form>}
+            {demoLoginEnabled && (
+              <div className={passwordEnabled || oidcEnabled ? "mt-5 space-y-2" : "mt-6 space-y-2"}>
+                {(passwordEnabled || oidcEnabled) && (
+                  <div className="my-1 flex items-center gap-3 text-xs text-slate-400">
+                    <span className="h-px flex-1 bg-slate-200" />体验演示<span className="h-px flex-1 bg-slate-200" />
+                  </div>
+                )}
+                <Button type="button" variant="secondary" className="w-full" loading={demoAccount === "user"} disabled={loading || !!demoAccount} onClick={() => void onDemo("user")}>
+                  体验问答（普通账号）
+                </Button>
+                <Button type="button" variant="secondary" className="w-full" loading={demoAccount === "admin"} disabled={loading || !!demoAccount} onClick={() => void onDemo("admin")}>
+                  体验发布预审（管理员）
+                </Button>
+              </div>
+            )}
           </div>
           <p className="mt-6 text-center text-xs text-slate-400">
             问题或账户需协助，请联系系统管理员

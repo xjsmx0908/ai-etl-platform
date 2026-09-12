@@ -304,3 +304,175 @@ func TestHandleLoginRateLimitsBeforeLookup(t *testing.T) {
 		t.Fatalf("lock/limit must not change the error text: %s", rec.Body.String())
 	}
 }
+
+func demoLoginConfig() config.Config {
+	cfg := testAuthConfig()
+	cfg.Environment = "dev"
+	cfg.DemoLoginEnabled = true
+	cfg.DemoTenantID = "demo"
+	cfg.DemoUserUsername = "demo-user"
+	cfg.DemoAdminUsername = "demo-admin"
+	cfg.BootstrapAdminTenant = "default"
+	cfg.BootstrapAdminUsername = "admin"
+	return cfg
+}
+
+func doDemoLogin(handler http.HandlerFunc, account string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(demoLoginRequest{Account: account})
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/demo-login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	return rec
+}
+
+func TestHandleAuthMethods_IncludesDemoLogin(t *testing.T) {
+	cfg := demoLoginConfig()
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/methods", nil)
+	rec := httptest.NewRecorder()
+	handleAuthMethods(cfg).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"demo_login_enabled":true`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	cfg.DemoLoginEnabled = false
+	rec = httptest.NewRecorder()
+	handleAuthMethods(cfg).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"demo_login_enabled":false`) {
+		t.Fatalf("disabled status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	cfg.DemoLoginEnabled = true
+	cfg.Environment = "production"
+	rec = httptest.NewRecorder()
+	handleAuthMethods(cfg).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"demo_login_enabled":false`) {
+		t.Fatalf("production must hide demo login, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestEnsureDemoAccounts_SeedsIsolatedTenant(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := demoLoginConfig()
+	if err := ensureDemoAccounts(context.Background(), cfg, store); err != nil {
+		t.Fatalf("ensure demo accounts: %v", err)
+	}
+	user, found, err := store.GetByUsername(context.Background(), "demo-user")
+	if err != nil || !found || user.Role != userstore.RoleUser || user.TenantID != "demo" || !user.Active {
+		t.Fatalf("unexpected demo user: found=%v err=%v user=%+v", found, err, user)
+	}
+	admin, found, err := store.GetByUsername(context.Background(), "demo-admin")
+	if err != nil || !found || admin.Role != userstore.RoleAdmin || admin.TenantID != "demo" || !admin.Active {
+		t.Fatalf("unexpected demo admin: found=%v err=%v user=%+v", found, err, admin)
+	}
+	if err := ensureDemoAccounts(context.Background(), cfg, store); err != nil {
+		t.Fatalf("idempotent ensure: %v", err)
+	}
+}
+
+func TestEnsureDemoAccounts_NoopWhenDisabled(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := demoLoginConfig()
+	cfg.DemoLoginEnabled = false
+	if err := ensureDemoAccounts(context.Background(), cfg, store); err != nil {
+		t.Fatalf("disabled ensure: %v", err)
+	}
+	if _, found, _ := store.GetByUsername(context.Background(), "demo-user"); found {
+		t.Fatal("disabled demo login must not create users")
+	}
+}
+
+func TestEnsureDemoAccounts_RejectsHijackedUsername(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "demo-user", "pw", userstore.RoleAdmin, "acme", true)
+	if err := ensureDemoAccounts(context.Background(), demoLoginConfig(), store); err == nil {
+		t.Fatal("expected hijacked demo username to fail")
+	}
+}
+
+func TestHandleDemoLogin_Success(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := demoLoginConfig()
+	if err := ensureDemoAccounts(context.Background(), cfg, store); err != nil {
+		t.Fatalf("ensure demo accounts: %v", err)
+	}
+	handler := handleDemoLogin(cfg, store, nil, nil)
+
+	userRec := doDemoLogin(handler, "user")
+	if userRec.Code != http.StatusOK {
+		t.Fatalf("user status=%d body=%s", userRec.Code, userRec.Body.String())
+	}
+	var userResp loginResponse
+	if err := json.Unmarshal(userRec.Body.Bytes(), &userResp); err != nil {
+		t.Fatalf("decode user: %v", err)
+	}
+	if userResp.Token == "" || userResp.User.Username != "demo-user" || userResp.User.Role != userstore.RoleUser || userResp.User.TenantID != "demo" {
+		t.Fatalf("unexpected demo user login: %+v", userResp)
+	}
+
+	adminRec := doDemoLogin(handler, "admin")
+	if adminRec.Code != http.StatusOK {
+		t.Fatalf("admin status=%d body=%s", adminRec.Code, adminRec.Body.String())
+	}
+	var adminResp loginResponse
+	if err := json.Unmarshal(adminRec.Body.Bytes(), &adminResp); err != nil {
+		t.Fatalf("decode admin: %v", err)
+	}
+	if adminResp.Token == "" || adminResp.User.Username != "demo-admin" || adminResp.User.Role != userstore.RoleAdmin || adminResp.User.TenantID != "demo" {
+		t.Fatalf("unexpected demo admin login: %+v", adminResp)
+	}
+	if strings.Contains(adminRec.Body.String(), "password") {
+		t.Fatalf("demo login must not return a password: %s", adminRec.Body.String())
+	}
+}
+
+func TestHandleDemoLogin_Disabled(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := demoLoginConfig()
+	cfg.DemoLoginEnabled = false
+	rec := doDemoLogin(handleDemoLogin(cfg, store, nil, nil), "user")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDemoLogin_ProductionHidden(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := demoLoginConfig()
+	cfg.Environment = "production"
+	rec := doDemoLogin(handleDemoLogin(cfg, store, nil, nil), "admin")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDemoLogin_InvalidAccount(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := demoLoginConfig()
+	if err := ensureDemoAccounts(context.Background(), cfg, store); err != nil {
+		t.Fatalf("ensure demo accounts: %v", err)
+	}
+	rec := doDemoLogin(handleDemoLogin(cfg, store, nil, nil), "root")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDemoLogin_MissingAccount(t *testing.T) {
+	store := newFakeUserStore()
+	cfg := demoLoginConfig()
+	if err := ensureDemoAccounts(context.Background(), cfg, store); err != nil {
+		t.Fatalf("ensure demo accounts: %v", err)
+	}
+	admin, found, err := store.GetByUsername(context.Background(), "demo-admin")
+	if err != nil || !found {
+		t.Fatal("expected demo admin")
+	}
+	if err := store.Delete(context.Background(), admin.ID); err != nil {
+		t.Fatalf("delete demo admin: %v", err)
+	}
+	rec := doDemoLogin(handleDemoLogin(cfg, store, nil, nil), "admin")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}

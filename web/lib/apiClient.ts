@@ -104,6 +104,16 @@ export async function login(username: string, password: string): Promise<User> {
   return resp.user;
 }
 
+export async function demoLogin(account: "user" | "admin"): Promise<User> {
+  const resp = await request<LoginResponse>("/auth/demo-login", {
+    method: "POST",
+    body: JSON.stringify({ account }),
+    redirectOn401: false,
+  });
+  setUser(resp.user);
+  return resp.user;
+}
+
 export async function currentSession(): Promise<User> {
   const resp = await request<{ user: User }>("/auth/session", { redirectOn401: false });
   setUser(resp.user);
@@ -393,6 +403,7 @@ export async function querySSE(
 
 export const apiClient = {
   login,
+  demoLogin,
   currentSession,
   logout,
   listDocuments,

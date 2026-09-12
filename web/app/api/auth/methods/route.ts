@@ -5,10 +5,10 @@ export async function GET() {
   try {
     const upstream = await fetch(`${backend}/v1/auth/methods`, { cache: "no-store" });
     if (!upstream.ok) {
-      return NextResponse.json({ password_enabled: true, oidc_enabled: false }, { status: 200 });
+      return NextResponse.json({ password_enabled: true, oidc_enabled: false, demo_login_enabled: false }, { status: 200 });
     }
     return NextResponse.json(await upstream.json(), { status: 200 });
   } catch {
-    return NextResponse.json({ password_enabled: true, oidc_enabled: false }, { status: 200 });
+    return NextResponse.json({ password_enabled: true, oidc_enabled: false, demo_login_enabled: false }, { status: 200 });
   }
 }

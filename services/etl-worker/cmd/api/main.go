@@ -138,6 +138,10 @@ func main() {
 		slog.Error("failed to bootstrap admin", "error", err)
 		os.Exit(1)
 	}
+	if err := ensureDemoAccounts(context.Background(), cfg, userStore); err != nil {
+		slog.Error("failed to ensure demo accounts", "error", err)
+		os.Exit(1)
+	}
 	docStore := docstore.New(pgPool)
 	admissionStore := ingestion.NewPostgresStore(pgPool)
 	auditStore := audit.New(pgPool)
@@ -397,6 +401,8 @@ func main() {
 	mux.Handle("/v1/auth/methods", middleware.CORS(cfg.CORSAllowedOrigins)(handleAuthMethods(cfg)))
 	mux.Handle("/v1/auth/login", middleware.CORS(cfg.CORSAllowedOrigins)(
 		middleware.Timeout(60*time.Second)(handleLoginWithGuard(cfg, userStore, auditStore, sessionManager, loginGuard))))
+	mux.Handle("/v1/auth/demo-login", middleware.CORS(cfg.CORSAllowedOrigins)(
+		middleware.Timeout(60*time.Second)(handleDemoLoginWithGuard(cfg, userStore, auditStore, sessionManager, loginGuard))))
 	mux.Handle("/v1/auth/logout", middleware.CORS(cfg.CORSAllowedOrigins)(
 		middleware.Timeout(30*time.Second)(handleLogout(sessionManager, oidcFlow, auditStore))))
 	if oidcFlow != nil {

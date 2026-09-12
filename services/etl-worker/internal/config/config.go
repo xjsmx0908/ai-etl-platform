@@ -265,6 +265,12 @@ type Config struct {
 	BootstrapAdminUsername string
 	BootstrapAdminPassword string
 	BootstrapAdminTenant   string
+	// DemoLogin* provision an isolated interview/demo tenant with one-click
+	// login. Disabled by default and forbidden in production.
+	DemoLoginEnabled  bool
+	DemoTenantID      string
+	DemoUserUsername  string
+	DemoAdminUsername string
 	// ReconcileDocsOnStartup backfills the documents registry from Qdrant on
 	// startup (opt-in, one-shot for pre-existing data).
 	ReconcileDocsOnStartup bool
@@ -489,6 +495,10 @@ func Load() Config {
 		BootstrapAdminUsername: EnvStr("BOOTSTRAP_ADMIN_USERNAME", "admin"),
 		BootstrapAdminPassword: EnvSecret("BOOTSTRAP_ADMIN_PASSWORD", ""),
 		BootstrapAdminTenant:   EnvStr("BOOTSTRAP_ADMIN_TENANT", "default"),
+		DemoLoginEnabled:       EnvBool("DEMO_LOGIN_ENABLED", false),
+		DemoTenantID:           EnvStr("DEMO_TENANT_ID", "demo"),
+		DemoUserUsername:       EnvStr("DEMO_USER_USERNAME", "demo-user"),
+		DemoAdminUsername:      EnvStr("DEMO_ADMIN_USERNAME", "demo-admin"),
 		ReconcileDocsOnStartup: EnvBool("RECONCILE_DOCS_ON_STARTUP", false),
 
 		// Runtime
@@ -727,6 +737,35 @@ func (c Config) validateAgentConfig() error {
 	return nil
 }
 
+func (c Config) validateDemoLogin() error {
+	if strings.EqualFold(strings.TrimSpace(c.Environment), "production") && c.DemoLoginEnabled {
+		return fmt.Errorf("DEMO_LOGIN_ENABLED is not allowed in production")
+	}
+	if !c.DemoLoginEnabled {
+		return nil
+	}
+	tenant := strings.TrimSpace(c.DemoTenantID)
+	userName := strings.TrimSpace(c.DemoUserUsername)
+	adminName := strings.TrimSpace(c.DemoAdminUsername)
+	if tenant == "" {
+		return fmt.Errorf("DEMO_TENANT_ID is required when DEMO_LOGIN_ENABLED=true")
+	}
+	if strings.EqualFold(tenant, strings.TrimSpace(c.BootstrapAdminTenant)) {
+		return fmt.Errorf("DEMO_TENANT_ID must differ from BOOTSTRAP_ADMIN_TENANT")
+	}
+	if userName == "" || adminName == "" {
+		return fmt.Errorf("DEMO_USER_USERNAME and DEMO_ADMIN_USERNAME are required when DEMO_LOGIN_ENABLED=true")
+	}
+	if strings.EqualFold(userName, adminName) {
+		return fmt.Errorf("DEMO_USER_USERNAME and DEMO_ADMIN_USERNAME must differ")
+	}
+	bootstrapUser := strings.TrimSpace(c.BootstrapAdminUsername)
+	if strings.EqualFold(userName, bootstrapUser) || strings.EqualFold(adminName, bootstrapUser) {
+		return fmt.Errorf("demo usernames must differ from BOOTSTRAP_ADMIN_USERNAME")
+	}
+	return nil
+}
+
 // IsDev returns true if running in development environment.
 func (c Config) IsDev() bool {
 	return c.Environment == "dev"
@@ -804,6 +843,9 @@ func (c Config) ValidateAPI() error {
 		if c.SCIMMaxBodyBytes <= 0 || c.SCIMMaxBodyBytes > 1<<20 {
 			return fmt.Errorf("SCIM_MAX_BODY_KB must produce a limit greater than zero and at most 1 MiB")
 		}
+	}
+	if err := c.validateDemoLogin(); err != nil {
+		return err
 	}
 	if !c.IsDev() {
 		if strings.TrimSpace(c.MetricsToken) == "" {

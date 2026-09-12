@@ -451,3 +451,10 @@
 - Reason: close the network first, then unauthenticated HTTP, then real data-plane passwords, then authenticated concurrency caps, then Nginx and output-side secret refusal.
 - Act: bind host ports to `127.0.0.1` via `COMPOSE_BIND`; rate-limit login before bcrypt; require `METRICS_TOKEN` outside dev; enable Redis `requirepass`, MinIO/Qdrant secrets; cap query/upload/agent concurrency; reuse publish-time sensitive-data regexes on answers.
 - Verify: `gofmt`, `go test` on affected packages, `docker compose config`, and `scripts/tests/test_security_hardening.py`. Residual risk: prompt injection is still heuristic; ES/Kafka stay plaintext on the Docker network.
+
+## 2026-09-12 - Login page one-click demo accounts
+
+- Perceive: 面试体验需要普通账号和管理员账号，但不能公开 BOOTSTRAP_ADMIN 密码。
+- Reason: 登录页一键进入独立演示租户；密码不出现在页面或接口响应；生产强制关闭。
+- Act: DEMO_LOGIN_ENABLED + ensureDemoAccounts + POST /v1/auth/demo-login；登录页体验问答/体验发布预审。
+- Verify: go test ./internal/config ./cmd/api, python3 -m unittest discover -s scripts/tests -p test_demo_login.py -q. Residual: demo tenant has no seeded release requests, so admin may see an empty release center.

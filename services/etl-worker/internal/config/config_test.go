@@ -190,6 +190,18 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.BootstrapAdminTenant != "default" {
 		t.Errorf("expected BootstrapAdminTenant=default, got %s", cfg.BootstrapAdminTenant)
 	}
+	if cfg.DemoLoginEnabled {
+		t.Error("expected DemoLoginEnabled=false default")
+	}
+	if cfg.DemoTenantID != "demo" {
+		t.Errorf("expected DemoTenantID=demo, got %s", cfg.DemoTenantID)
+	}
+	if cfg.DemoUserUsername != "demo-user" {
+		t.Errorf("expected DemoUserUsername=demo-user, got %s", cfg.DemoUserUsername)
+	}
+	if cfg.DemoAdminUsername != "demo-admin" {
+		t.Errorf("expected DemoAdminUsername=demo-admin, got %s", cfg.DemoAdminUsername)
+	}
 	if cfg.ReconcileDocsOnStartup {
 		t.Error("expected ReconcileDocsOnStartup=false default")
 	}
@@ -246,6 +258,10 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("BOOTSTRAP_ADMIN_USERNAME", "root")
 	os.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "s3cr3t-password")
 	os.Setenv("BOOTSTRAP_ADMIN_TENANT", "acme")
+	os.Setenv("DEMO_LOGIN_ENABLED", "true")
+	os.Setenv("DEMO_TENANT_ID", "showcase")
+	os.Setenv("DEMO_USER_USERNAME", "guest")
+	os.Setenv("DEMO_ADMIN_USERNAME", "reviewer")
 	os.Setenv("RECONCILE_DOCS_ON_STARTUP", "true")
 	defer func() {
 		os.Unsetenv("PIPELINE_MAX_WORKERS")
@@ -298,6 +314,10 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("BOOTSTRAP_ADMIN_USERNAME")
 		os.Unsetenv("BOOTSTRAP_ADMIN_PASSWORD")
 		os.Unsetenv("BOOTSTRAP_ADMIN_TENANT")
+		os.Unsetenv("DEMO_LOGIN_ENABLED")
+		os.Unsetenv("DEMO_TENANT_ID")
+		os.Unsetenv("DEMO_USER_USERNAME")
+		os.Unsetenv("DEMO_ADMIN_USERNAME")
 		os.Unsetenv("RECONCILE_DOCS_ON_STARTUP")
 	}()
 
@@ -458,6 +478,18 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.BootstrapAdminTenant != "acme" {
 		t.Errorf("expected BootstrapAdminTenant=acme, got %s", cfg.BootstrapAdminTenant)
+	}
+	if !cfg.DemoLoginEnabled {
+		t.Error("expected DemoLoginEnabled override")
+	}
+	if cfg.DemoTenantID != "showcase" {
+		t.Errorf("expected DemoTenantID=showcase, got %s", cfg.DemoTenantID)
+	}
+	if cfg.DemoUserUsername != "guest" {
+		t.Errorf("expected DemoUserUsername=guest, got %s", cfg.DemoUserUsername)
+	}
+	if cfg.DemoAdminUsername != "reviewer" {
+		t.Errorf("expected DemoAdminUsername=reviewer, got %s", cfg.DemoAdminUsername)
 	}
 	if !cfg.ReconcileDocsOnStartup {
 		t.Error("expected ReconcileDocsOnStartup=true")
@@ -1324,5 +1356,42 @@ func TestLoad_CORSDefaultsByEnvironment(t *testing.T) {
 	cfgStaging := Load()
 	if len(cfgStaging.CORSAllowedOrigins) != 0 {
 		t.Fatalf("expected non-dev default cors empty, got %#v", cfgStaging.CORSAllowedOrigins)
+	}
+}
+
+func TestValidateAPI_RejectsDemoLoginInProduction(t *testing.T) {
+	cfg := Load()
+	cfg.Environment = "production"
+	cfg.EmbedAPIKey = "sk-test"
+	cfg.KafkaBrokers = "kafka.internal:9092"
+	cfg.StoreEndpoint = "http://qdrant.internal:6333"
+	cfg.RedisAddr = "redis-cache.internal:6379"
+	cfg.RedisCacheAddr = "redis-cache.internal:6379"
+	cfg.RedisStateAddr = "redis-state.internal:6379"
+	cfg.AgentPlannerEndpoint = "http://planner.internal/v1/chat/completions"
+	cfg.JWTSecret = "12345678901234567890123456789012"
+	cfg.S3AccessKey = "prod-access"
+	cfg.S3SecretKey = "prod-secret"
+	cfg.CORSAllowedOrigins = []string{"https://console.example.com"}
+	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
+	cfg.BootstrapAdminPassword = "initial-admin-password"
+	cfg.DemoLoginEnabled = true
+	applyHardeningSecrets(&cfg)
+	if err := cfg.ValidateAPI(); err == nil || !strings.Contains(err.Error(), "DEMO_LOGIN_ENABLED") {
+		t.Fatalf("expected production demo login to be rejected, got %v", err)
+	}
+}
+
+func TestValidateAPI_DemoLoginRequiresIsolatedTenant(t *testing.T) {
+	cfg := Load()
+	cfg.DemoLoginEnabled = true
+	cfg.DemoTenantID = cfg.BootstrapAdminTenant
+	if err := cfg.ValidateAPI(); err == nil || !strings.Contains(err.Error(), "DEMO_TENANT_ID") {
+		t.Fatalf("expected shared demo tenant to be rejected, got %v", err)
+	}
+	cfg.DemoTenantID = "demo"
+	cfg.DemoUserUsername = cfg.BootstrapAdminUsername
+	if err := cfg.ValidateAPI(); err == nil || !strings.Contains(err.Error(), "BOOTSTRAP_ADMIN_USERNAME") {
+		t.Fatalf("expected bootstrap username collision to be rejected, got %v", err)
 	}
 }
