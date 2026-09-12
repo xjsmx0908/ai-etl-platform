@@ -372,6 +372,9 @@ func main() {
 		chunkStorerForReview = chunkStorer
 		defer chunkStorer.Close()
 	}
+	if err := indexDemoShowcase(context.Background(), cfg, chunkStorerForReview); err != nil {
+		slog.Warn("demo showcase index unavailable", "error", err)
+	}
 	agentSvc, err := agentapi.NewServiceWithDependencies(cfg, qs, taskStatusStore, prom, agentapi.Dependencies{
 		ApprovalStore:       agent.NewPostgresApprovalStore(pgPool),
 		PublicationWorkflow: publicationWorkflow,

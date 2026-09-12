@@ -11,6 +11,11 @@ import (
 
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/db"
+	"ai-etl-pipeline/internal/embedder"
+	"ai-etl-pipeline/internal/es"
+	"ai-etl-pipeline/internal/indexmanifest"
+	"ai-etl-pipeline/internal/model"
+	"ai-etl-pipeline/internal/sparse"
 )
 
 const (
@@ -41,10 +46,6 @@ func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier) er
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("check demo showcase: %w", err)
 	}
-	if exists {
-		return tx.Commit(ctx)
-	}
-
 	var adminID, userID string
 	if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE lower(username)=lower($1)`, cfg.DemoAdminUsername).Scan(&adminID); err != nil {
 		return fmt.Errorf("load demo admin: %w", err)
@@ -62,6 +63,15 @@ func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier) er
 		VALUES ($1,$2,$3::uuid,'manager'), ($1,$2,$4::uuid,'contributor')
 		ON CONFLICT (tenant_id, space_id, user_id) DO NOTHING`, cfg.DemoTenantID, demoSpaceID, adminID, userID); err != nil {
 		return fmt.Errorf("seed demo space members: %w", err)
+	}
+	if err := ensureDemoDefaultSpace(tx, ctx, cfg.DemoTenantID); err != nil {
+		return err
+	}
+	if exists {
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	now := time.Now().UTC()
@@ -172,4 +182,97 @@ func seedDemoRequest(tx pgx.Tx, ctx context.Context, tenantID, docID, versionID,
 		return fmt.Errorf("seed demo request %s: %w", requestID, err)
 	}
 	return nil
+}
+
+func demoHandbookChunks() []string {
+	return []string{
+		"知境企业知识库员工手册。问答工作台只回答已经发布的知识，草稿、退役和未发布文档不得作为回答证据。",
+		"知识发布前必须经过确定性门禁和 Agent 预审。普通文档由一名管理员审批，机密或高风险文档需要两名管理员审批。Agent 只能给出建议，不能自行批准或发布。",
+		"演示知识库与生产租户隔离。普通用户可以检索已发布的公开和内部知识，不能查看机密文档，也不能改发布状态。",
+	}
+}
+
+func ensureDemoDefaultSpace(tx pgx.Tx, ctx context.Context, tenantID string) error {
+	if _, err := tx.Exec(ctx, `UPDATE knowledge_spaces SET is_default=false, updated_at=now()
+		WHERE tenant_id=$1 AND is_default AND id<>$2`, tenantID, demoSpaceID); err != nil {
+		return fmt.Errorf("clear demo default space: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE knowledge_spaces SET is_default=true, updated_at=now()
+		WHERE tenant_id=$1 AND id=$2`, tenantID, demoSpaceID); err != nil {
+		return fmt.Errorf("set demo default space: %w", err)
+	}
+	return nil
+}
+
+type demoChunkIndexer interface {
+	UpsertGeneration(context.Context, indexmanifest.GenerationIdentity, model.Chunk) error
+	ObserveGeneration(context.Context, indexmanifest.GenerationIdentity) (indexmanifest.BackendObservation, error)
+}
+
+func ensureDemoShowcaseIndex(ctx context.Context, cfg config.Config, qdrant, elastic demoChunkIndexer, embed embedder.Embedder) error {
+	if !demoLoginEnabled(cfg) || qdrant == nil || elastic == nil || embed == nil {
+		return nil
+	}
+	identity := indexmanifest.GenerationIdentity{
+		VersionIdentity: indexmanifest.VersionIdentity{
+			TenantID: cfg.DemoTenantID, DocumentID: demoPublishedDocID, DocumentVersionID: demoPublishedVersionID,
+		},
+		GenerationID: demoPublishedGeneration,
+	}
+	observed, err := qdrant.ObserveGeneration(ctx, identity)
+	if err == nil && observed.Count >= len(demoHandbookChunks()) {
+		return nil
+	}
+	encoder := sparse.NewEncoder(sparse.DefaultParams())
+	for i, content := range demoHandbookChunks() {
+		chunk := model.Chunk{
+			ChunkID:    fmt.Sprintf("%s-%d", demoPublishedDocID, i),
+			DocID:      demoPublishedDocID,
+			TenantID:   cfg.DemoTenantID,
+			Content:    content,
+			Index:      i,
+			Permission: "public",
+			FileHash:   "sha256:demo-handbook",
+			CreatedAt:  time.Now().UTC(),
+			Metadata: map[string]string{
+				"knowledge_base_id": demoSpaceID,
+				"applicable_scope":  "production",
+			},
+			SparseVector: encoder.Encode(content),
+		}
+		if err := embed.Embed(ctx, &chunk); err != nil {
+			return fmt.Errorf("embed demo handbook chunk %d: %w", i, err)
+		}
+		if err := qdrant.UpsertGeneration(ctx, identity, chunk); err != nil {
+			return fmt.Errorf("index demo handbook in qdrant: %w", err)
+		}
+		if err := elastic.UpsertGeneration(ctx, identity, chunk); err != nil {
+			return fmt.Errorf("index demo handbook in elasticsearch: %w", err)
+		}
+	}
+	slog.Info("provisioned demo handbook retrieval index", "tenant", cfg.DemoTenantID, "document", demoPublishedDocID)
+	return nil
+}
+
+func indexDemoShowcase(ctx context.Context, cfg config.Config, qdrant demoChunkIndexer) error {
+	if !demoLoginEnabled(cfg) || qdrant == nil {
+		return nil
+	}
+	esIndexer, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+	if err != nil {
+		return err
+	}
+	defer esIndexer.Close()
+	emb, err := embedder.NewHTTPEmbedder(cfg)
+	if err != nil {
+		return err
+	}
+	defer emb.Close()
+	timeout := cfg.EmbedTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout*time.Duration(len(demoHandbookChunks())+1))
+	defer cancel()
+	return ensureDemoShowcaseIndex(ctx, cfg, qdrant, esIndexer, emb)
 }

@@ -31,6 +31,9 @@ class DemoLoginContractTests(unittest.TestCase):
         self.assertIn("sensitive_data_detected", source)
         self.assertIn("approval_pending", source)
         self.assertNotIn("BOOTSTRAP_ADMIN", source)
+        self.assertIn("问答工作台只回答已经发布的知识", source)
+        self.assertIn("ensureDemoShowcaseIndex", source)
+        self.assertIn("is_default=true", source)
 
 
 if __name__ == "__main__":

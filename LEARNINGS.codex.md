@@ -465,3 +465,10 @@
 - Reason: 启动时幂等写入独立演示空间的样例单据，已存在则不覆盖，避免重置面试官的审批结果。
 - Act: ensureDemoShowcase 预置已发布手册、待审批入职指南、高风险薪酬说明（含敏感信息发现和双人审批）。
 - Verify: go test ./cmd/api, live overview 返回 3 条单据。Residual: 演示租户没有向量，普通账号问答仍可能无证据。
+
+## 2026-09-12 - Demo handbook retrieval index
+
+- Perceive: 演示管理员能看发布中心，但普通账号问答没有向量证据。
+- Reason: 把 demo-kb 设为默认生产空间，并把已发布员工手册的 3 个 chunk 写入 Qdrant/ES。
+- Act: ensureDemoDefaultSpace + ensureDemoShowcaseIndex；embed 失败只告警不阻断 API。
+- Verify: go test ./cmd/api; live query “问答工作台只回答什么知识？” 引用 demo-doc-handbook。
