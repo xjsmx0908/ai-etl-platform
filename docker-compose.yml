@@ -2,6 +2,9 @@
 # AI-ETL Platform - 统一服务编排
 # 架构: ETL Worker + Query API + Parser Service + 基础设施
 # 启动: docker compose up -d
+# 默认把主机端口绑到 127.0.0.1。局域网直连用
+#   docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
+# 紧急调试才设 COMPOSE_BIND=0.0.0.0。生产公网只走 Nginx :443。
 # ============================================================
 
 services:
@@ -12,7 +15,7 @@ services:
   kafka:
     image: bitnamilegacy/kafka:3.7.1
     ports:
-      - "${KAFKA_HOST_PORT:-9092}:9092"
+      - "${COMPOSE_BIND:-127.0.0.1}:${KAFKA_HOST_PORT:-9092}:9092"
     environment:
       - KAFKA_CFG_NODE_ID=0
       - KAFKA_CFG_PROCESS_ROLES=controller,broker
@@ -57,12 +60,17 @@ services:
   redis-cache:
     image: redis:7-alpine
     ports:
-      - "${REDIS_CACHE_HOST_PORT:-6379}:6379"
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+      - "${COMPOSE_BIND:-127.0.0.1}:${REDIS_CACHE_HOST_PORT:-6379}:6379"
+    command:
+      - /bin/sh
+      - -c
+      - exec redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass "$$(tr -d '\r\n' < /run/secrets/redis_password)"
     volumes:
       - redis_cache_data:/data
+    secrets:
+      - redis_password
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(tr -d '\r\n' < /run/secrets/redis_password) redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 3
@@ -75,17 +83,17 @@ services:
   redis-state:
     image: redis:7-alpine
     ports:
-      - "${REDIS_STATE_HOST_PORT:-6380}:6379"
-    command: >
-      redis-server
-      --maxmemory 512mb
-      --maxmemory-policy noeviction
-      --appendonly yes
-      --appendfsync everysec
+      - "${COMPOSE_BIND:-127.0.0.1}:${REDIS_STATE_HOST_PORT:-6380}:6379"
+    command:
+      - /bin/sh
+      - -c
+      - exec redis-server --maxmemory 512mb --maxmemory-policy noeviction --appendonly yes --appendfsync everysec --requirepass "$$(tr -d '\r\n' < /run/secrets/redis_password)"
     volumes:
       - redis_state_data:/data
+    secrets:
+      - redis_password
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(tr -d '\r\n' < /run/secrets/redis_password) redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 3
@@ -94,7 +102,7 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "${PG_HOST_PORT:-5432}:5432"
+      - "${COMPOSE_BIND:-127.0.0.1}:${PG_HOST_PORT:-5432}:5432"
     environment:
       - POSTGRES_USER=${PG_USER:-app}
       - POSTGRES_DB=${PG_DB:-ai_etl}
@@ -113,10 +121,15 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.14.1
     ports:
-      - "${QDRANT_HTTP_HOST_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_HOST_PORT:-6334}:6334"
+      - "${COMPOSE_BIND:-127.0.0.1}:${QDRANT_HTTP_HOST_PORT:-6333}:6333"
+      - "${COMPOSE_BIND:-127.0.0.1}:${QDRANT_GRPC_HOST_PORT:-6334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
+    secrets:
+      - store_api_key
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - export QDRANT__SERVICE__API_KEY="$$(tr -d '\r\n' < /run/secrets/store_api_key)"; exec ./entrypoint.sh
     healthcheck:
       test: ["CMD-SHELL", "bash -lc 'cat < /dev/null > /dev/tcp/127.0.0.1/6333'"]
       interval: 10s
@@ -126,7 +139,7 @@ services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
     ports:
-      - "${ELASTICSEARCH_HOST_PORT:-9200}:9200"
+      - "${COMPOSE_BIND:-127.0.0.1}:${ELASTICSEARCH_HOST_PORT:-9200}:9200"
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -145,14 +158,17 @@ services:
   minio:
     image: minio/minio:latest
     ports:
-      - "${MINIO_API_HOST_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+      - "${COMPOSE_BIND:-127.0.0.1}:${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${COMPOSE_BIND:-127.0.0.1}:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
     environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - MINIO_ROOT_USER_FILE=/run/secrets/s3_access_key
+      - MINIO_ROOT_PASSWORD_FILE=/run/secrets/s3_secret_key
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
+    secrets:
+      - s3_access_key
+      - s3_secret_key
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
@@ -166,19 +182,22 @@ services:
   jaeger:
     image: jaegertracing/all-in-one:latest
     ports:
-      - "${JAEGER_UI_HOST_PORT:-16686}:16686"  # UI
-      - "${JAEGER_OTLP_GRPC_HOST_PORT:-4317}:4317"  # OTLP gRPC
-      - "${JAEGER_OTLP_HTTP_HOST_PORT:-4318}:4318"  # OTLP HTTP
+      - "${COMPOSE_BIND:-127.0.0.1}:${JAEGER_UI_HOST_PORT:-16686}:16686"  # UI
+      - "${COMPOSE_BIND:-127.0.0.1}:${JAEGER_OTLP_GRPC_HOST_PORT:-4317}:4317"  # OTLP gRPC
+      - "${COMPOSE_BIND:-127.0.0.1}:${JAEGER_OTLP_HTTP_HOST_PORT:-4318}:4318"  # OTLP HTTP
     environment:
       - COLLECTOR_OTLP_ENABLED=true
 
   prometheus:
     image: prom/prometheus:latest
     ports:
-      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+      - "${COMPOSE_BIND:-127.0.0.1}:${PROMETHEUS_HOST_PORT:-9090}:9090"
     volumes:
       - ./infrastructure/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./infrastructure/rules:/etc/prometheus/rules:ro
+    secrets:
+      - metrics_token
+      - store_api_key
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
     depends_on:
@@ -250,7 +269,7 @@ services:
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     ports:
-      - "${KAFKA_UI_HOST_PORT:-8090}:8080"
+      - "${COMPOSE_BIND:-127.0.0.1}:${KAFKA_UI_HOST_PORT:-8090}:8080"
     environment:
       - KAFKA_CLUSTERS_0_NAME=local
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
@@ -286,6 +305,8 @@ services:
       - LOG_LEVEL=INFO
     secrets:
       - parser_internal_token
+    mem_limit: 2g
+    cpus: "2.0"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 10s
@@ -411,10 +432,24 @@ services:
       context: ./services/etl-worker
       dockerfile: Dockerfile.api
     ports:
-      - "${QUERY_API_HOST_PORT:-8080}:8080"
+      - "${COMPOSE_BIND:-127.0.0.1}:${QUERY_API_HOST_PORT:-8080}:8080"
     environment:
       - ENVIRONMENT=${ENVIRONMENT:-staging}
       - HEALTH_PORT=8080
+      - API_REPLICAS=${API_REPLICAS:-1}
+      - METRICS_TOKEN=${METRICS_TOKEN:-}
+      - METRICS_TOKEN_FILE=/run/secrets/metrics_token
+      - LOGIN_RATE_LIMIT_STORE=${LOGIN_RATE_LIMIT_STORE:-auto}
+      - LOGIN_RATE_LIMIT_PER_IP=${LOGIN_RATE_LIMIT_PER_IP:-20}
+      - LOGIN_RATE_LIMIT_PER_USER=${LOGIN_RATE_LIMIT_PER_USER:-5}
+      - LOGIN_LOCK_THRESHOLD=${LOGIN_LOCK_THRESHOLD:-10}
+      - LOGIN_LOCK_DURATION=${LOGIN_LOCK_DURATION:-15m}
+      - QUERY_MAX_CONCURRENCY=${QUERY_MAX_CONCURRENCY:-4}
+      - UPLOAD_MAX_CONCURRENCY=${UPLOAD_MAX_CONCURRENCY:-2}
+      - AGENT_MAX_CONCURRENCY=${AGENT_MAX_CONCURRENCY:-2}
+      - QUESTION_MAX_RUNES=${QUESTION_MAX_RUNES:-2000}
+      - QUERY_MAX_BODY_KB=${QUERY_MAX_BODY_KB:-64}
+      - JSON_MAX_BODY_KB=${JSON_MAX_BODY_KB:-16}
       - WORKER_HEALTH_URL=http://etl-worker:8081
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       - HTTP_READ_TIMEOUT=${HTTP_READ_TIMEOUT:-15s}
@@ -552,6 +587,7 @@ services:
       - s3_secret_key
       - pg_dsn
       - alert_webhook_token
+      - metrics_token
     depends_on:
       kafka:
         condition: service_healthy
@@ -596,7 +632,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       SESSION_CORE_ENABLED: ${SESSION_CORE_ENABLED:-false}
     ports:
-      - "${WEB_HOST_PORT:-3100}:3000"
+      - "${COMPOSE_BIND:-127.0.0.1}:${WEB_HOST_PORT:-3100}:3000"
     volumes:
       # Optional live eval summary. Do not overlay /app/public/evals with the
       # reports directory: an empty host dir hides the baked latest.json and
@@ -692,3 +728,5 @@ secrets:
     file: ${DINGTALK_SECRET_FILE_PATH:-./secrets/examples/dingtalk_secret}
   grafana_admin_password:
     file: ${GRAFANA_ADMIN_PASSWORD_FILE_PATH:-./secrets/examples/grafana_admin_password}
+  metrics_token:
+    file: ${METRICS_TOKEN_FILE_PATH:-./secrets/examples/metrics_token}

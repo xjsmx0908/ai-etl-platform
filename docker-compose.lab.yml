@@ -1,0 +1,9 @@
+# Optional LAN overlay. Data-plane ports stay on loopback from the base file.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d
+services:
+  web:
+    ports:
+      - "0.0.0.0:${WEB_HOST_PORT:-3100}:3000"
+  query-api:
+    ports:
+      - "0.0.0.0:${QUERY_API_HOST_PORT:-8080}:8080"

@@ -445,3 +445,9 @@
 - Reason：先收网络再补应用。P-SEC-0 把端口绑回环；P-SEC-1 在 bcrypt 前限流并给 metrics 加 token；P-SEC-2 让 Redis/MinIO/Qdrant 密码真正生效；P-SEC-3 给问答/上传加并发帽；P-SEC-5 收紧已有 Nginx；P-SEC-4 只做输出侧敏感信息拒答，不承诺提示词注入根治。
 - Act：新增 `docs/security-hardening-plan.md`，更新 `docs/security.md`、`docs/backlog.md`、`README.md`。未改 Compose 与服务代码。
 - Refine：完成标准是五条可验证条件，不是“加了 WAF”这种口号。下一步等用户指定从 P-SEC-0 开始落地。
+## 2026-09-12 - Security hardening P-SEC-0 to P-SEC-5
+
+- Perceive: the default Compose stack published data-plane and Query API ports on every interface; login and `/metrics` were unauthenticated; Redis/MinIO/Qdrant used empty or default secrets.
+- Reason: close the network first, then unauthenticated HTTP, then real data-plane passwords, then authenticated concurrency caps, then Nginx and output-side secret refusal.
+- Act: bind host ports to `127.0.0.1` via `COMPOSE_BIND`; rate-limit login before bcrypt; require `METRICS_TOKEN` outside dev; enable Redis `requirepass`, MinIO/Qdrant secrets; cap query/upload/agent concurrency; reuse publish-time sensitive-data regexes on answers.
+- Verify: `gofmt`, `go test` on affected packages, `docker compose config`, and `scripts/tests/test_security_hardening.py`. Residual risk: prompt injection is still heuristic; ES/Kafka stay plaintext on the Docker network.

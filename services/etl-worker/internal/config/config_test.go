@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+func applyHardeningSecrets(cfg *Config) {
+	cfg.RedisPassword = "prod-redis-cache-password"
+	cfg.RedisCachePassword = "prod-redis-cache-password"
+	cfg.RedisStatePassword = "prod-redis-state-password"
+	cfg.StoreAPIKey = "prod-qdrant-api-key"
+	cfg.MetricsToken = "prod-metrics-token-value"
+}
+
 func TestLoad_Defaults(t *testing.T) {
 	cfg := Load()
 
@@ -595,6 +603,7 @@ func TestValidate_ProductionMissingKey(t *testing.T) {
 	cfg.Environment = "production"
 	cfg.EmbedAPIKey = ""
 
+	applyHardeningSecrets(&cfg)
 	err := cfg.Validate()
 	if err == nil {
 		t.Error("expected validation error for missing EMBED_API_KEY in production")
@@ -854,6 +863,7 @@ func TestValidate_ProductionAgentPlanner(t *testing.T) {
 	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
 	cfg.BootstrapAdminPassword = "initial-admin-password"
 
+	applyHardeningSecrets(&cfg)
 	if err := cfg.ValidateAPI(); err != nil {
 		t.Fatalf("expected production auto planner to resolve to llm, got %v", err)
 	}
@@ -899,6 +909,7 @@ func TestValidateAllowsSessionCoreOnlyForPersonalDemoDevProfile(t *testing.T) {
 
 	cfg.SessionCoreEnabled = true
 	cfg.IdentityPolicyProfile = ""
+	applyHardeningSecrets(&cfg)
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("enabled session core must require an explicit profile")
 	}
@@ -960,6 +971,7 @@ func TestValidateAPI_ProductionWeakJWTRejected(t *testing.T) {
 	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
 	cfg.BootstrapAdminPassword = "initial-admin-password"
 
+	applyHardeningSecrets(&cfg)
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Fatal("expected weak JWT secret to be rejected in production")
 	}
@@ -981,6 +993,7 @@ func TestValidateAPI_ProductionDefaultS3Rejected(t *testing.T) {
 	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
 	cfg.BootstrapAdminPassword = "initial-admin-password"
 
+	applyHardeningSecrets(&cfg)
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Fatal("expected default S3 credentials to be rejected in production")
 	}
@@ -1003,6 +1016,7 @@ func TestValidateAPI_ProductionStrongSecretsPass(t *testing.T) {
 	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
 	cfg.BootstrapAdminPassword = "initial-admin-password"
 
+	applyHardeningSecrets(&cfg)
 	if err := cfg.ValidateAPI(); err != nil {
 		t.Fatalf("expected strong production config to pass, got: %v", err)
 	}
@@ -1074,6 +1088,7 @@ func TestValidateAPI_ProductionMissingPGDSN(t *testing.T) {
 	cfg.BootstrapAdminPassword = "initial-admin-password"
 	// PGDSN left empty.
 
+	applyHardeningSecrets(&cfg)
 	err := cfg.ValidateAPI()
 	if err == nil {
 		t.Fatal("expected missing PG_DSN to be rejected in production")
@@ -1100,6 +1115,7 @@ func TestValidateAPI_ProductionWeakBootstrapPassword(t *testing.T) {
 	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
 	cfg.BootstrapAdminPassword = "short"
 
+	applyHardeningSecrets(&cfg)
 	err := cfg.ValidateAPI()
 	if err == nil {
 		t.Fatal("expected weak bootstrap password to be rejected in production")
@@ -1126,6 +1142,7 @@ func TestValidateAPI_ProductionWildcardCORSRejected(t *testing.T) {
 	cfg.PGDSN = "postgres://app:prod@pg.internal:5432/ai_etl"
 	cfg.BootstrapAdminPassword = "initial-admin-password"
 
+	applyHardeningSecrets(&cfg)
 	if err := cfg.ValidateAPI(); err == nil {
 		t.Fatal("expected wildcard CORS to be rejected in production")
 	}
@@ -1185,6 +1202,7 @@ func TestValidate_ProductionRejectsSharedRedisForStateAndCache(t *testing.T) {
 	cfg.RedisStateAddr = "redis-prod:6379"
 	cfg.RedisStateDB = 0
 
+	applyHardeningSecrets(&cfg)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error when state and cache share the same Redis instance and DB")
@@ -1204,6 +1222,7 @@ func TestValidate_ProductionAcceptsSeparateRedisInstances(t *testing.T) {
 	cfg.RedisCacheAddr = "redis-cache-prod:6379"
 	cfg.RedisStateAddr = "redis-state-prod:6379"
 
+	applyHardeningSecrets(&cfg)
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("separate cache/state instances should pass validation, got: %v", err)
 	}
@@ -1219,6 +1238,7 @@ func TestValidate_ProductionRequiresConfiguredStateAddr(t *testing.T) {
 	cfg.RedisCacheAddr = "redis-cache-prod:6379"
 	cfg.RedisStateAddr = "localhost:6379"
 
+	applyHardeningSecrets(&cfg)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for default REDIS_STATE_ADDR in production")

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -260,8 +259,7 @@ func handleDocument(cfg config.Config, qs *query.Service, s3Client documentObjec
 				DocStatus         string `json:"doc_status"`
 				Supersedes        string `json:"supersedes"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				writeError(w, http.StatusBadRequest, "invalid request body")
+			if !decodeJSONBody(w, r, &input, defaultJSONBodyBytes, "invalid request body") {
 				return
 			}
 			if input.PublicationStatus != "" && input.PublicationStatus != "draft" && input.PublicationStatus != "published" && input.PublicationStatus != "retired" {

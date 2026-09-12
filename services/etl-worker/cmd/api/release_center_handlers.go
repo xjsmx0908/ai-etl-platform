@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -51,8 +50,7 @@ func handleReleaseCenterApprovalGroups(manager releasecenter.ApprovalPolicyManag
 				Name   string `json:"name"`
 				Active *bool  `json:"active"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				writeError(w, http.StatusBadRequest, "invalid request body")
+			if !decodeJSONBody(w, r, &body, defaultJSONBodyBytes, "invalid request body") {
 				return
 			}
 			active := true
@@ -73,8 +71,7 @@ func handleReleaseCenterApprovalGroups(manager releasecenter.ApprovalPolicyManag
 				UserID string `json:"user_id"`
 				Active *bool  `json:"active"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				writeError(w, http.StatusBadRequest, "invalid request body")
+			if !decodeJSONBody(w, r, &body, defaultJSONBodyBytes, "invalid request body") {
 				return
 			}
 			active := true
@@ -125,8 +122,7 @@ func handleReleaseCenterApprovalPolicies(manager releasecenter.ApprovalPolicyMan
 			Priority               int                     `json:"priority"`
 			Active                 *bool                   `json:"active"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
+		if !decodeJSONBody(w, r, &body, defaultJSONBodyBytes, "invalid request body") {
 			return
 		}
 		policy := releasecenter.ApprovalPolicy{ID: body.ID, TenantID: auth.GetTenantID(r.Context()), KnowledgeSpaceID: body.KnowledgeSpaceID,
@@ -277,8 +273,7 @@ func handleReleaseCenterDecision(store releasecenter.Store, workflow releasecent
 			Decision string `json:"decision"`
 			Reason   string `json:"reason,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
+		if !decodeJSONBody(w, r, &body, defaultJSONBodyBytes, "invalid request body") {
 			return
 		}
 		result, err := approval.Decide(r.Context(), publicationworkflow.Actor{TenantID: auth.GetTenantID(r.Context()), UserID: auth.GetUserID(r.Context()), Role: auth.GetPermission(r.Context())}, parts[3], body.Decision, body.Reason)

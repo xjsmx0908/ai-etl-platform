@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -128,8 +127,7 @@ func handleListUsers(w http.ResponseWriter, r *http.Request, users userstore.Sto
 
 func handleCreateUser(w http.ResponseWriter, r *http.Request, users userstore.Store) {
 	var req createUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req, defaultJSONBodyBytes, "invalid JSON body") {
 		return
 	}
 	if req.Username == "" || req.Password == "" {
@@ -217,8 +215,7 @@ func handleGetUser(w http.ResponseWriter, r *http.Request, users userstore.Store
 
 func handleUpdateUser(w http.ResponseWriter, r *http.Request, users userstore.Store, id string) {
 	var req updateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req, defaultJSONBodyBytes, "invalid JSON body") {
 		return
 	}
 	if req.Role != nil && !validRole(*req.Role) {
@@ -276,8 +273,7 @@ func handleDeleteUser(w http.ResponseWriter, r *http.Request, users userstore.St
 
 func handleSetPassword(w http.ResponseWriter, r *http.Request, users userstore.Store, id string) {
 	var req setPasswordRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSONBody(w, r, &req, defaultJSONBodyBytes, "invalid JSON body") {
 		return
 	}
 	if req.Password == "" {
@@ -329,8 +325,7 @@ func handleTenants(users userstore.Store) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, map[string]any{"items": tenants})
 		case http.MethodPost:
 			var req tenantRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				writeError(w, http.StatusBadRequest, "invalid JSON body")
+			if !decodeJSONBody(w, r, &req, defaultJSONBodyBytes, "invalid JSON body") {
 				return
 			}
 			if req.ID == "" {

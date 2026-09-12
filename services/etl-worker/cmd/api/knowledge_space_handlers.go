@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -32,8 +31,7 @@ func handleKnowledgeSpaces(catalog *knowledgecatalog.Catalog) http.HandlerFunc {
 				Kind    knowledgecatalog.SpaceKind `json:"kind"`
 				Purpose string                     `json:"purpose"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				writeError(w, http.StatusBadRequest, "invalid request body")
+			if !decodeJSONBody(w, r, &input, defaultJSONBodyBytes, "invalid request body") {
 				return
 			}
 			space, err := catalog.Create(r.Context(), principal, knowledgecatalog.Space{ID: input.ID, Name: input.Name, Kind: input.Kind, Purpose: input.Purpose})
@@ -74,8 +72,7 @@ func handleKnowledgeSpace(catalog *knowledgecatalog.Catalog) http.HandlerFunc {
 		var input struct {
 			Purpose string `json:"purpose"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
+		if !decodeJSONBody(w, r, &input, defaultJSONBodyBytes, "invalid request body") {
 			return
 		}
 		space, err := catalog.UpdatePurpose(r.Context(), principal, spaceID, input.Purpose)

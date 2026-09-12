@@ -29,6 +29,7 @@ import (
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/knowledgecatalog"
+	"ai-etl-pipeline/internal/releasecenter"
 	"ai-etl-pipeline/internal/retrieval"
 	"ai-etl-pipeline/internal/tracing"
 )
@@ -56,6 +57,8 @@ type Service struct {
 	governance governanceLookup
 	documents  documentLister
 	catalog    *knowledgecatalog.Catalog
+
+	sensitiveAnswerHook func(context.Context, AccessContext, string)
 
 	// Per-1k-token USD prices for cost estimation (LLM_PRICE_*). Zero means no
 	// cost is reported.
@@ -100,6 +103,13 @@ func (s *Service) WithKnowledgeCatalog(catalog *knowledgecatalog.Catalog) *Servi
 // the exact published-release gate before it can become query evidence.
 func (s *Service) WithReleaseVisibility(resolver retrieval.VisibilityResolver) *Service {
 	s.retriever.WithVisibilityResolver(resolver)
+	return s
+}
+
+// WithSensitiveAnswerHook records blocked answers that matched deterministic
+// secret/id/phone patterns. The raw answer must not be persisted by the hook.
+func (s *Service) WithSensitiveAnswerHook(hook func(context.Context, AccessContext, string)) *Service {
+	s.sensitiveAnswerHook = hook
 	return s
 }
 
@@ -346,12 +356,55 @@ func clampTopK(topK int) int {
 
 var (
 	ErrQuestionRequired     = errors.New("question is required")
+	ErrQuestionTooLong      = errors.New("question is too long")
 	ErrUnauthorized         = errors.New("unauthorized")
 	ErrSearchFailed         = errors.New("search failed")
 	ErrGenerationFailed     = errors.New("generation failed")
 	ErrKnowledgeForbidden   = errors.New("knowledge space forbidden")
 	ErrKnowledgeUnavailable = errors.New("knowledge catalog unavailable")
 )
+
+const (
+	defaultQuestionMaxRunes = 2000
+	defaultQueryBodyBytes   = int64(64 << 10)
+	// SensitiveAnswerRefusal replaces generated text that matched credential-like patterns.
+	SensitiveAnswerRefusal = "抱歉，该回答包含疑似敏感信息，已拒绝输出。"
+)
+
+func clampQuestion(question string, maxRunes int) (string, error) {
+	question = strings.TrimSpace(question)
+	if question == "" {
+		return "", ErrQuestionRequired
+	}
+	if maxRunes <= 0 {
+		maxRunes = defaultQuestionMaxRunes
+	}
+	if utf8.RuneCountInString(question) > maxRunes {
+		return "", ErrQuestionTooLong
+	}
+	return question, nil
+}
+
+func queryBodyLimit(cfg config.Config) int64 {
+	if cfg.QueryMaxBodyBytes > 0 {
+		return cfg.QueryMaxBodyBytes
+	}
+	return defaultQueryBodyBytes
+}
+
+func isMaxBytesError(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+func decodeQueryRequest(r *http.Request, cfg config.Config) (Request, error) {
+	r.Body = http.MaxBytesReader(nil, r.Body, queryBodyLimit(cfg))
+	var req Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return Request{}, err
+	}
+	return req, nil
+}
 
 var roleAllowedDocPermissions = map[string][]string{
 	"admin":    {"public", "internal", "confidential"},
@@ -458,8 +511,12 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	ctx, span := s.tracer.Start(r.Context(), "HandleQuery")
 	defer span.End()
 
-	var req Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := decodeQueryRequest(r, s.cfg)
+	if err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -473,6 +530,9 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 	case errors.Is(err, ErrQuestionRequired):
 		http.Error(w, "question is required", http.StatusBadRequest)
+		return
+	case errors.Is(err, ErrQuestionTooLong):
+		http.Error(w, "question too long", http.StatusBadRequest)
 		return
 	case errors.Is(err, ErrUnauthorized):
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -519,9 +579,11 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 		askSpan.End()
 	}()
 
-	if strings.TrimSpace(req.Question) == "" {
-		return Response{}, ErrQuestionRequired
+	question, qerr := clampQuestion(req.Question, s.cfg.QuestionMaxRunes)
+	if qerr != nil {
+		return Response{}, qerr
 	}
+	req.Question = question
 	if strings.TrimSpace(access.TenantID) == "" {
 		return Response{}, ErrUnauthorized
 	}
@@ -806,6 +868,16 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	retrievalInfo.GroundingPassed = groundingPassed
 	retrievalInfo.GroundingUnavailable = groundingUnavailable
 
+	if releasecenter.ContainsSensitiveData(answer) {
+		if s.sensitiveAnswerHook != nil {
+			s.sensitiveAnswerHook(ctx, access, answer)
+		}
+		emit("refused", "回答包含敏感信息，已拒绝输出", "completed")
+		span.SetAttributes(attribute.Bool("llm.sensitive_answer_blocked", true))
+		answer = SensitiveAnswerRefusal
+		sources = []SourceContext{}
+	}
+
 	resp := Response{
 		Answer:           answer,
 		Sources:          sources,
@@ -857,13 +929,26 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.cfg.HTTPHandlerTimeout > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), s.cfg.HTTPHandlerTimeout)
+		defer cancel()
+		r = r.WithContext(ctx)
+	}
 
-	var req Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := decodeQueryRequest(r, s.cfg)
+	if err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Question) == "" {
+	if _, qerr := clampQuestion(req.Question, s.cfg.QuestionMaxRunes); qerr != nil {
+		if errors.Is(qerr, ErrQuestionTooLong) {
+			http.Error(w, "question too long", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "question is required", http.StatusBadRequest)
 		return
 	}

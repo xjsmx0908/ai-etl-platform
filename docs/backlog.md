@@ -18,16 +18,16 @@
 
 ## Security hardening
 
-应用层已有 JWT/租户隔离，但默认 Compose 把数据面挂到 `0.0.0.0`，登录和 `/metrics` 无限流。完整方案与验收见 [`docs/security-hardening-plan.md`](security-hardening-plan.md)。用户已要求写出计划；未再指定前不自动改 Compose 或限流代码。
+P-SEC-0 到 P-SEC-5 已落地。默认 Compose 绑回环、登录限流、`/metrics` token、Redis/MinIO/Qdrant 真密码、问答/上传并发帽、Nginx 登录限流与安全头、答案敏感信息拒答。验收见 [`security-hardening-plan.md`](security-hardening-plan.md)。更换 MinIO 示例口令后需重建 `minio_data`。
 
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
-| P-SEC-0 | 网络收口 | planned | 默认 `COMPOSE_BIND=127.0.0.1`；数据面与 Query API 不再映射到所有网卡；本机冒烟仍走 localhost | [`security-hardening-plan.md`](security-hardening-plan.md) |
-| P-SEC-1 | 未鉴权 HTTP 入口 | planned | 登录限流发生在 bcrypt 之前；`/metrics` 需 token；登录/查询 JSON 有 `MaxBytesReader` | 同上 |
-| P-SEC-2 | 数据面凭据 | planned | Redis `--requirepass` 真正启用；非 dev 拒绝默认 MinIO 与空 Qdrant key | 同上 |
-| P-SEC-3 | 已登录并发帽 | planned | 每租户问答/上传并发上限；超限 429；Parser 有内存限额 | 同上 |
-| P-SEC-4 | 输出侧敏感信息拒答 | planned | 复用发布扫描规则；不承诺提示词注入根治 | 同上 |
-| P-SEC-5 | 生产边缘 | planned | Nginx 限流与安全头；`COOKIE_SECURE=true`；公网只开放 80/443 | 同上 |
+| P-SEC-0 | 网络收口 | done | 默认 `COMPOSE_BIND=127.0.0.1`；lab overlay 才把 Web/Query API 绑到 `0.0.0.0` | [`security-hardening-plan.md`](security-hardening-plan.md) |
+| P-SEC-1 | 未鉴权 HTTP 入口 | done | 登录限流发生在 bcrypt 之前；`/metrics` 需 token；超大 JSON 返回 413 | 同上 |
+| P-SEC-2 | 数据面凭据 | done | Redis `--requirepass`；MinIO/Qdrant 走 secrets；非 dev 拒绝空 key / minioadmin | 同上 |
+| P-SEC-3 | 已登录并发帽 | done | 每租户问答 4 / 上传 2 / Agent 2；Parser 2G；超限 429 | 同上 |
+| P-SEC-4 | 输出侧敏感信息拒答 | done | 复用发布扫描规则；不承诺提示词注入根治 | 同上 |
+| P-SEC-5 | 生产边缘 | done | Nginx 登录限流与安全头；prod overlay 取消数据面端口；`COOKIE_SECURE` 需生产开启 | 同上 |
 
 ## Real-model and ingestion capacity
 

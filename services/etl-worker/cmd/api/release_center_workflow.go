@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/hmac"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -45,8 +44,7 @@ func handleReleaseCenterWorkflowDecision(
 			return
 		}
 		var body workflowDecisionRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
+		if !decodeJSONBody(w, r, &body, defaultJSONBodyBytes, "invalid request body") {
 			return
 		}
 		body.TenantID = strings.TrimSpace(body.TenantID)

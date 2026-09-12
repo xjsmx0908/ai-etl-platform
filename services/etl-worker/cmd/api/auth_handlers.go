@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/db"
+	"ai-etl-pipeline/internal/middleware"
 	"ai-etl-pipeline/internal/migrations"
 	"ai-etl-pipeline/internal/session"
 	"ai-etl-pipeline/internal/userstore"
@@ -108,6 +108,10 @@ func openPostgres(ctx context.Context, cfg config.Config) (*db.Pool, error) {
 // middleware) so it can be reached without a credential. Unknown usernames pay a
 // dummy bcrypt compare to blunt enumeration. Every attempt is written to the audit log.
 func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store, sessions *session.Manager) http.HandlerFunc {
+	return handleLoginWithGuard(cfg, users, audits, sessions, nil)
+}
+
+func handleLoginWithGuard(cfg config.Config, users userstore.Store, audits audit.Store, sessions *session.Manager, guard middleware.LoginGuard) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !passwordLoginEnabled(cfg) {
 			writeError(w, http.StatusNotFound, "password login is unavailable")
@@ -118,13 +122,20 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store, s
 			return
 		}
 		var req loginRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		if !decodeJSONBody(w, r, &req, jsonBodyLimit(cfg), "invalid JSON body") {
 			return
 		}
 		if req.Username == "" || req.Password == "" {
 			writeError(w, http.StatusBadRequest, "username and password are required")
 			return
+		}
+		ip := middleware.RequestIP(r)
+		if guard != nil {
+			if ok, retryAfter := guard.Allow(ip, req.Username); !ok {
+				w.Header().Set("Retry-After", middleware.RetryAfterSeconds(retryAfter))
+				writeError(w, http.StatusTooManyRequests, "invalid credentials")
+				return
+			}
 		}
 
 		user, found, err := users.GetByUsername(r.Context(), req.Username)
@@ -135,6 +146,9 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store, s
 		}
 		if !found {
 			auth.VerifyPassword("", req.Password) // constant-time dummy compare
+			if guard != nil {
+				guard.RecordFailure(ip, req.Username)
+			}
 			recordAudit(r.Context(), audits, audit.Entry{
 				Action: "login", Result: audit.ResultFailure,
 				Detail: map[string]any{"username": req.Username, "reason": "invalid_credentials"},
@@ -144,6 +158,9 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store, s
 		}
 		if user.Origin != "" && user.Origin != userstore.OriginLocal {
 			auth.VerifyPassword("", req.Password)
+			if guard != nil {
+				guard.RecordFailure(ip, req.Username)
+			}
 			recordAudit(r.Context(), audits, audit.Entry{
 				TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,
 				Action: "login", Result: audit.ResultFailure,
@@ -153,6 +170,9 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store, s
 			return
 		}
 		if !auth.VerifyPassword(user.PasswordHash, req.Password) {
+			if guard != nil {
+				guard.RecordFailure(ip, req.Username)
+			}
 			recordAudit(r.Context(), audits, audit.Entry{
 				TenantID: user.TenantID, Action: "login", Result: audit.ResultFailure,
 				Detail: map[string]any{"username": user.Username, "reason": "invalid_credentials"},
@@ -203,6 +223,9 @@ func handleLogin(cfg config.Config, users userstore.Store, audits audit.Store, s
 				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
+		}
+		if guard != nil {
+			guard.RecordSuccess(ip, req.Username)
 		}
 		recordAudit(r.Context(), audits, audit.Entry{
 			TenantID: user.TenantID, ActorUserID: user.ID, ActorRole: user.Role,

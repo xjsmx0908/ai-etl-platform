@@ -113,6 +113,17 @@ func riskRank(risk RiskLevel) int {
 	}
 }
 
+// ContainsSensitiveData reports whether text matches the publish-time secret,
+// national-id, or phone patterns. Prompt-injection heuristics are excluded so
+// generated answers are only blocked for credential-like leaks.
+func ContainsSensitiveData(text string) bool {
+	content := strings.TrimSpace(text)
+	if content == "" {
+		return false
+	}
+	return secretPattern.MatchString(content) || idPattern.MatchString(content) || phonePattern.MatchString(content)
+}
+
 func findingCodes(findings []Finding) []string {
 	codes := make([]string, 0, len(findings))
 	for _, finding := range findings {

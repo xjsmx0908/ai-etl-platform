@@ -12,6 +12,7 @@ import (
 
 	"ai-etl-pipeline/internal/auth"
 	"ai-etl-pipeline/internal/config"
+	"ai-etl-pipeline/internal/middleware"
 	"ai-etl-pipeline/internal/session"
 	"ai-etl-pipeline/internal/userstore"
 )
@@ -262,5 +263,44 @@ func TestHandleCurrentSessionReturnsCurrentInternalUser(t *testing.T) {
 	}
 	if response.User.ID != user.ID || response.User.Username != "alice" || response.User.TenantID != "acme" {
 		t.Fatalf("unexpected user: %+v", response.User)
+	}
+}
+
+func TestHandleLoginRejectsOversizedBody(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", "admin", "acme", true)
+	handler := handleLogin(testAuthConfig(), store, nil, nil)
+	body := `{"username":"` + strings.Repeat("a", 20*1024) + `","password":"x"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleLoginRateLimitsBeforeLookup(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "s3cret-pw", "admin", "acme", true)
+	guard := middleware.NewMemoryLoginGuard(middleware.LoginGuardConfig{
+		PerIP: 20, PerUser: 5, LockThreshold: 10, Window: time.Minute,
+	})
+	handler := handleLoginWithGuard(testAuthConfig(), store, nil, nil, guard)
+	for i := 0; i < 5; i++ {
+		rec := doLogin(handler, "alice", "wrong-pw")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	rec := doLogin(handler, "alice", "wrong-pw")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("sixth attempt status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("missing Retry-After")
+	}
+	if !strings.Contains(rec.Body.String(), "invalid credentials") {
+		t.Fatalf("lock/limit must not change the error text: %s", rec.Body.String())
 	}
 }

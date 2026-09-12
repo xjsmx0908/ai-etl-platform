@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -58,7 +57,10 @@ func handleExternalIdentities(manager externalidentity.Manager) http.HandlerFunc
 			writeJSON(w, http.StatusOK, map[string]any{"items": views})
 		case r.Method == http.MethodPost && bindingID == "":
 			var request externalIdentityRequest
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Issuer == "" || request.Subject == "" {
+			if !decodeJSONBody(w, r, &request, defaultJSONBodyBytes, "issuer and subject are required") {
+				return
+			}
+			if request.Issuer == "" || request.Subject == "" {
 				writeError(w, http.StatusBadRequest, "issuer and subject are required")
 				return
 			}

@@ -1,0 +1,33 @@
+# Production overlay. Public traffic enters via host Nginx -> 127.0.0.1:3100.
+# Do not publish Query API :8080 or data-plane ports on the security group.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  kafka:
+    ports: !reset []
+  redis-cache:
+    ports: !reset []
+  redis-state:
+    ports: !reset []
+  postgres:
+    ports: !reset []
+  qdrant:
+    ports: !reset []
+  elasticsearch:
+    ports: !reset []
+  minio:
+    ports: !reset []
+  jaeger:
+    ports: !reset []
+  prometheus:
+    ports: !reset []
+  kafka-ui:
+    ports: !reset []
+  query-api:
+    ports: !reset []
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+  web:
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-3100}:3000"
+    environment:
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}

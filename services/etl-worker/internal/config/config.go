@@ -215,6 +215,19 @@ type Config struct {
 	IdempotencyTTL        time.Duration
 	TaskStatusStore       string
 	TaskStatusTTL         time.Duration
+	MetricsToken          string
+	LoginRateLimitPerIP   int
+	LoginRateLimitPerUser int
+	LoginLockThreshold    int
+	LoginLockDuration     time.Duration
+	LoginRateLimitStore   string
+	APIReplicas           int
+	QueryMaxConcurrency   int
+	UploadMaxConcurrency  int
+	AgentMaxConcurrency   int
+	QueryMaxBodyBytes     int64
+	JSONMaxBodyBytes      int64
+	QuestionMaxRunes      int
 
 	// Gateway (file upload)
 	UploadDir                string
@@ -428,6 +441,19 @@ func Load() Config {
 		IdempotencyTTL:        EnvDuration("IDEMPOTENCY_TTL", 24*time.Hour),
 		TaskStatusStore:       strings.ToLower(strings.TrimSpace(EnvStr("TASK_STATUS_STORE", TaskStatusStoreAuto))),
 		TaskStatusTTL:         EnvDuration("TASK_STATUS_TTL", 7*24*time.Hour),
+		MetricsToken:          EnvSecret("METRICS_TOKEN", ""),
+		LoginRateLimitPerIP:   loginRateLimitPerIP(),
+		LoginRateLimitPerUser: loginRateLimitPerUser(),
+		LoginLockThreshold:    EnvInt("LOGIN_LOCK_THRESHOLD", 10),
+		LoginLockDuration:     EnvDuration("LOGIN_LOCK_DURATION", 15*time.Minute),
+		LoginRateLimitStore:   strings.ToLower(strings.TrimSpace(EnvStr("LOGIN_RATE_LIMIT_STORE", "auto"))),
+		APIReplicas:           EnvInt("API_REPLICAS", 1),
+		QueryMaxConcurrency:   EnvInt("QUERY_MAX_CONCURRENCY", 4),
+		UploadMaxConcurrency:  EnvInt("UPLOAD_MAX_CONCURRENCY", 2),
+		AgentMaxConcurrency:   EnvInt("AGENT_MAX_CONCURRENCY", 2),
+		QueryMaxBodyBytes:     int64(EnvInt("QUERY_MAX_BODY_KB", 64)) * 1024,
+		JSONMaxBodyBytes:      int64(EnvInt("JSON_MAX_BODY_KB", 16)) * 1024,
+		QuestionMaxRunes:      EnvInt("QUESTION_MAX_RUNES", 2000),
 
 		// Gateway
 		UploadDir:                EnvStr("UPLOAD_DIR", "/data/uploads"),
@@ -509,6 +535,12 @@ func (c Config) Validate() error {
 		// and fencing tokens.
 		if c.RedisStateAddr == c.RedisCacheAddr && c.RedisStateDB == c.RedisCacheDB {
 			return fmt.Errorf("REDIS_STATE_ADDR/DB must not equal REDIS_CACHE_ADDR/DB in production: durable Agent state cannot share an evictable cache instance")
+		}
+		if weakSecret(c.RedisCachePassword) || weakSecret(c.RedisStatePassword) {
+			return fmt.Errorf("REDIS_PASSWORD must be strong in production")
+		}
+		if strings.TrimSpace(c.StoreAPIKey) == "" || weakSecret(c.StoreAPIKey) {
+			return fmt.Errorf("STORE_API_KEY is required in production")
 		}
 	}
 	if c.MaxWorkers < 1 || c.MaxWorkers > 100 {
@@ -773,8 +805,28 @@ func (c Config) ValidateAPI() error {
 			return fmt.Errorf("SCIM_MAX_BODY_KB must produce a limit greater than zero and at most 1 MiB")
 		}
 	}
+	if !c.IsDev() {
+		if strings.TrimSpace(c.MetricsToken) == "" {
+			return fmt.Errorf("METRICS_TOKEN is required outside development")
+		}
+		if strings.TrimSpace(c.StoreAPIKey) == "" {
+			return fmt.Errorf("STORE_API_KEY is required outside development")
+		}
+		if c.S3AccessKey == "minioadmin" || c.S3SecretKey == "minioadmin" {
+			return fmt.Errorf("S3 credentials must not use default values outside development")
+		}
+	}
 	if c.Environment != "production" {
 		return nil
+	}
+	if c.LoginRateLimitPerIP <= 0 || c.LoginRateLimitPerUser <= 0 {
+		return fmt.Errorf("LOGIN_RATE_LIMIT must be enabled in production")
+	}
+	if weakSecret(c.MetricsToken) {
+		return fmt.Errorf("METRICS_TOKEN must be strong in production")
+	}
+	if c.QueryMaxConcurrency < 1 || c.UploadMaxConcurrency < 1 {
+		return fmt.Errorf("QUERY_MAX_CONCURRENCY and UPLOAD_MAX_CONCURRENCY must be at least 1 in production")
 	}
 	if weakSecret(c.JWTSecret) || len(c.JWTSecret) < 32 {
 		return fmt.Errorf("JWT_SECRET must be strong in production (>=32 chars and not default value)")
@@ -811,11 +863,43 @@ func sameURLOrigin(first, second string) bool {
 
 func weakSecret(secret string) bool {
 	v := strings.TrimSpace(secret)
-	switch v {
-	case "", "change-me-in-production", "your-jwt-secret-change-in-production", "dev-secret", "secret":
+	switch strings.ToLower(v) {
+	case "", "change-me-in-production", "your-jwt-secret-change-in-production", "dev-secret", "secret",
+		"password", "redis", "change-me-redis-password", "change-me-store-api-key",
+		"change-me-metrics-token", "change-me-minio-secret", "aietlminio":
 		return true
 	default:
 		return false
+	}
+}
+
+func loginRateLimitDisabled() bool {
+	return EnvStr("LOGIN_RATE_LIMIT", "1") == "0"
+}
+
+func loginRateLimitPerIP() int {
+	if loginRateLimitDisabled() {
+		return 0
+	}
+	return EnvInt("LOGIN_RATE_LIMIT_PER_IP", 20)
+}
+
+func loginRateLimitPerUser() int {
+	if loginRateLimitDisabled() {
+		return 0
+	}
+	return EnvInt("LOGIN_RATE_LIMIT_PER_USER", 5)
+}
+
+// UseRedisLoginGuard reports whether login counters should live in redis-state.
+func (c Config) UseRedisLoginGuard() bool {
+	switch strings.ToLower(strings.TrimSpace(c.LoginRateLimitStore)) {
+	case "redis":
+		return true
+	case "memory":
+		return false
+	default:
+		return c.APIReplicas > 1
 	}
 }
 

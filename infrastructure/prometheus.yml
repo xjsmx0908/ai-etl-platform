@@ -20,6 +20,9 @@ scrape_configs:
 
   - job_name: query-api
     metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/metrics_token
     static_configs:
       - targets:
           - query-api:8080
@@ -32,6 +35,9 @@ scrape_configs:
 
   - job_name: qdrant
     metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/store_api_key
     static_configs:
       - targets:
           - qdrant:6333

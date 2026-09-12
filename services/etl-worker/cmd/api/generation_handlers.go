@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -38,8 +37,7 @@ func handleGenerationRollback(rollbacker generationRollbacker, qs *query.Service
 			TargetGenerationID         string `json:"target_generation_id"`
 			ExpectedActiveGenerationID string `json:"expected_active_generation_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
+		if !decodeJSONBody(w, r, &input, defaultJSONBodyBytes, "invalid request body") {
 			return
 		}
 		request := indexmanifest.RollbackRequest{

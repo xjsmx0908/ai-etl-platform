@@ -74,6 +74,28 @@ func scopeAllowed(scopes []string, required string) bool {
 	return false
 }
 
+func newLoginGuard(cfg config.Config) middleware.LoginGuard {
+	guardCfg := middleware.LoginGuardConfig{
+		PerIP:         cfg.LoginRateLimitPerIP,
+		PerUser:       cfg.LoginRateLimitPerUser,
+		LockThreshold: cfg.LoginLockThreshold,
+		LockDuration:  cfg.LoginLockDuration,
+	}
+	if cfg.UseRedisLoginGuard() {
+		guard, err := middleware.NewRedisLoginGuard(cfg.RedisStateAddr, cfg.RedisStatePassword, cfg.RedisStateDB, guardCfg)
+		if err != nil {
+			if !cfg.IsDev() && cfg.APIReplicas > 1 {
+				slog.Error("redis login guard unavailable", "error", err)
+				os.Exit(1)
+			}
+			slog.Warn("falling back to memory login guard", "error", err)
+		} else {
+			return guard
+		}
+	}
+	return middleware.NewMemoryLoginGuard(guardCfg)
+}
+
 func main() {
 	cfg := config.Load()
 	if err := cfg.ValidateAPI(); err != nil {
@@ -274,7 +296,14 @@ func main() {
 		WithGovernance(docStore).
 		WithDocuments(docStore).
 		WithKnowledgeCatalog(knowledgeCatalog).
-		WithReleaseVisibility(releaseVisibility)
+		WithReleaseVisibility(releaseVisibility).
+		WithSensitiveAnswerHook(func(ctx context.Context, access query.AccessContext, _ string) {
+			recordAudit(ctx, auditStore, audit.Entry{
+				TenantID: access.TenantID, ActorUserID: access.UserID, ActorRole: access.Role,
+				Action: "query_sensitive_answer_blocked", Result: audit.ResultFailure,
+				Detail: map[string]any{"reason": "sensitive_data_detected"},
+			})
+		})
 	go func() {
 		warmCtx, warmCancel := context.WithTimeout(context.Background(), cfg.EmbedTimeout)
 		defer warmCancel()
@@ -349,21 +378,25 @@ func main() {
 	// releaseCoordinator is wired after the long-lived chunk reader below.
 	defer agentSvc.Close()
 	rateLimiter := middleware.NewTenantRateLimiter(cfg.EmbedRateLimit, 100)
+	loginGuard := newLoginGuard(cfg)
+	queryConcurrency := middleware.NewTenantConcurrencyLimiter(cfg.QueryMaxConcurrency)
+	uploadConcurrency := middleware.NewTenantConcurrencyLimiter(cfg.UploadMaxConcurrency)
+	agentConcurrency := middleware.NewTenantConcurrencyLimiter(cfg.AgentMaxConcurrency)
 
 	// Build HTTP server with enterprise middleware
 	mux := http.NewServeMux()
 
-	// Health checks (no auth required)
+	// Health checks stay anonymous and must not leak config or versions.
 	mux.HandleFunc("/healthz", handleHealthz)
 	mux.HandleFunc("/readyz", handleReadyz)
-	mux.Handle("/metrics", prom.Handler())
-	mux.HandleFunc("/version", handleVersion)
+	mux.Handle("/metrics", middleware.RequireBearerToken(cfg.MetricsToken)(prom.Handler()))
+	mux.Handle("/version", middleware.RequireBearerToken(cfg.MetricsToken)(http.HandlerFunc(handleVersion)))
 
 	// Login is unauthenticated. Registering on the outer mux (longest-prefix
 	// match beats "/") lets it bypass the JWT middleware chain.
 	mux.Handle("/v1/auth/methods", middleware.CORS(cfg.CORSAllowedOrigins)(handleAuthMethods(cfg)))
 	mux.Handle("/v1/auth/login", middleware.CORS(cfg.CORSAllowedOrigins)(
-		middleware.Timeout(60*time.Second)(http.HandlerFunc(handleLogin(cfg, userStore, auditStore, sessionManager)))))
+		middleware.Timeout(60*time.Second)(handleLoginWithGuard(cfg, userStore, auditStore, sessionManager, loginGuard))))
 	mux.Handle("/v1/auth/logout", middleware.CORS(cfg.CORSAllowedOrigins)(
 		middleware.Timeout(30*time.Second)(handleLogout(sessionManager, oidcFlow, auditStore))))
 	if oidcFlow != nil {
@@ -397,15 +430,15 @@ func main() {
 		apiV1.Handle("/v1/auth/reauth/start", handleReauthenticationStart(oidcFlow, sessionManager, userStore, auditStore))
 		apiV1.Handle("/v1/auth/reauth/callback", handleReauthenticationCallback(oidcFlow, sessionManager, userStore, auditStore))
 	}
-	apiV1.Handle("/v1/upload", requireScopes("upload")(http.HandlerFunc(handleUploadWithAdmission(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, auditStore, admissionStore))))
-	apiV1.Handle("/v1/query", requireScopes("query")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	apiV1.Handle("/v1/upload", requireScopes("upload")(uploadConcurrency.Middleware(http.HandlerFunc(handleUploadWithAdmission(cfg, qs, producer, s3Client, idemStore, taskStatusStore, docStore, auditStore, admissionStore)))))
+	apiV1.Handle("/v1/query", requireScopes("query")(queryConcurrency.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 			qs.HandleQueryStreaming(w, r)
 			return
 		}
 		qs.HandleQuery(w, r)
-	})))
-	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRuns)))
+	}))))
+	apiV1.Handle("/v1/agent/runs", requireScopes("agent", "query")(agentConcurrency.Middleware(http.HandlerFunc(agentSvc.HandleRuns))))
 	apiV1.Handle("/v1/agent/runs/", requireScopes("agent", "query")(http.HandlerFunc(agentSvc.HandleRun)))
 	apiV1.Handle("/v1/release-center/requests", requireScopes(auth.ScopeAdmin)(handleReleaseCenterRequests(releaseCenterStore)))
 	apiV1.Handle("/v1/release-center/overview", requireScopes(auth.ScopeAdmin)(handleReleaseCenterOverview(releaseCenterStore)))
