@@ -458,3 +458,10 @@
 - Reason: 登录页一键进入独立演示租户；密码不出现在页面或接口响应；生产强制关闭。
 - Act: DEMO_LOGIN_ENABLED + ensureDemoAccounts + POST /v1/auth/demo-login；登录页体验问答/体验发布预审。
 - Verify: go test ./internal/config ./cmd/api, python3 -m unittest discover -s scripts/tests -p test_demo_login.py -q. Residual: demo tenant has no seeded release requests, so admin may see an empty release center.
+
+## 2026-09-12 - Demo release-center showcase
+
+- Perceive: 一键演示管理员能进发布中心，但租户是空的，面试官看不到 Agent 预审。
+- Reason: 启动时幂等写入独立演示空间的样例单据，已存在则不覆盖，避免重置面试官的审批结果。
+- Act: ensureDemoShowcase 预置已发布手册、待审批入职指南、高风险薪酬说明（含敏感信息发现和双人审批）。
+- Verify: go test ./cmd/api, live overview 返回 3 条单据。Residual: 演示租户没有向量，普通账号问答仍可能无证据。

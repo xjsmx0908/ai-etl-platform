@@ -24,6 +24,14 @@ class DemoLoginContractTests(unittest.TestCase):
         self.assertIn("/v1/auth/demo-login", route)
         self.assertIn("ai_etl_token", route)
 
+    def test_demo_showcase_seeds_release_center_samples(self):
+        source = (ROOT / "services/etl-worker/cmd/api/demo_showcase.go").read_text(encoding="utf-8")
+        self.assertIn("demo-doc-onboarding", source)
+        self.assertIn("demo-doc-payroll", source)
+        self.assertIn("sensitive_data_detected", source)
+        self.assertIn("approval_pending", source)
+        self.assertNotIn("BOOTSTRAP_ADMIN", source)
+
 
 if __name__ == "__main__":
     unittest.main()

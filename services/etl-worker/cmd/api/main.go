@@ -142,6 +142,10 @@ func main() {
 		slog.Error("failed to ensure demo accounts", "error", err)
 		os.Exit(1)
 	}
+	if err := ensureDemoShowcase(context.Background(), cfg, pgPool); err != nil {
+		slog.Error("failed to ensure demo showcase", "error", err)
+		os.Exit(1)
+	}
 	docStore := docstore.New(pgPool)
 	admissionStore := ingestion.NewPostgresStore(pgPool)
 	auditStore := audit.New(pgPool)
