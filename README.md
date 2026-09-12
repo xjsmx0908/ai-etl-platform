@@ -60,6 +60,10 @@ bash scripts/e2e-smoke.sh
 前端默认 `http://localhost:3100`。密钥模板在 `secrets/examples/`，本地真实密钥放
 `secrets/dev/`，不要提交。
 
+默认 Compose 是本机/内网拓扑，不是公网堡垒。安全现状与分阶段加固计划见
+[`docs/security.md`](docs/security.md) 和
+[`docs/security-hardening-plan.md`](docs/security-hardening-plan.md)。
+
 ## 常用验证
 
 | 目的 | 命令 / 文档 |

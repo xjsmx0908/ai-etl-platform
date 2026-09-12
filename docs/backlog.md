@@ -1,6 +1,6 @@
 # Backlog
 
-最后核验：2026-09-11。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
+最后核验：2026-09-12。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
 仓库规则维护：已将 `AGENTS.md` 的自然语言指令统一为中文，并明确简洁回答与最小上下文原则。
 已完成的阶段计划和历史实验报告已移出工作树；当前状态以本文件和对应设计/验收文档为准。
 
@@ -16,6 +16,18 @@
 
 以上事项保留在 backlog 中用于生产准入跟踪，但不属于当前 Agent 审计功能路线；除非用户重新指定，不得自动启动。
 
+## Security hardening
+
+应用层已有 JWT/租户隔离，但默认 Compose 把数据面挂到 `0.0.0.0`，登录和 `/metrics` 无限流。完整方案与验收见 [`docs/security-hardening-plan.md`](security-hardening-plan.md)。用户已要求写出计划；未再指定前不自动改 Compose 或限流代码。
+
+| ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
+| --- | --- | --- | --- | --- |
+| P-SEC-0 | 网络收口 | planned | 默认 `COMPOSE_BIND=127.0.0.1`；数据面与 Query API 不再映射到所有网卡；本机冒烟仍走 localhost | [`security-hardening-plan.md`](security-hardening-plan.md) |
+| P-SEC-1 | 未鉴权 HTTP 入口 | planned | 登录限流发生在 bcrypt 之前；`/metrics` 需 token；登录/查询 JSON 有 `MaxBytesReader` | 同上 |
+| P-SEC-2 | 数据面凭据 | planned | Redis `--requirepass` 真正启用；非 dev 拒绝默认 MinIO 与空 Qdrant key | 同上 |
+| P-SEC-3 | 已登录并发帽 | planned | 每租户问答/上传并发上限；超限 429；Parser 有内存限额 | 同上 |
+| P-SEC-4 | 输出侧敏感信息拒答 | planned | 复用发布扫描规则；不承诺提示词注入根治 | 同上 |
+| P-SEC-5 | 生产边缘 | planned | Nginx 限流与安全头；`COOKIE_SECURE=true`；公网只开放 80/443 | 同上 |
 
 ## Real-model and ingestion capacity
 

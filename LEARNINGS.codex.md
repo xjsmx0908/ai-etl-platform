@@ -438,3 +438,10 @@
 - Reason：验收中途不改代码。用 px-admin 截九页加文档详情，对照产品稿只记 S3。
 - Act：证据 `artifacts/product-experience-acceptance/2026-09-11-ux-retest/`。UAT-016 现网通过。开放 UAT-017～020。
 - Refine：壳层/中文主路径已合理。未做视觉重设计。未改发布策略。
+
+## 2026-09-12 - 安全加固计划
+
+- Perceive：用户确认当前栈挡得住一部分应用层乱调，但默认 Compose 数据面暴露、登录无限流、`/metrics` 匿名，外部玩家能打崩或绕到 ES/MinIO。要求写出详细解决方式和计划，不要求立刻改代码。
+- Reason：先收网络再补应用。P-SEC-0 把端口绑回环；P-SEC-1 在 bcrypt 前限流并给 metrics 加 token；P-SEC-2 让 Redis/MinIO/Qdrant 密码真正生效；P-SEC-3 给问答/上传加并发帽；P-SEC-5 收紧已有 Nginx；P-SEC-4 只做输出侧敏感信息拒答，不承诺提示词注入根治。
+- Act：新增 `docs/security-hardening-plan.md`，更新 `docs/security.md`、`docs/backlog.md`、`README.md`。未改 Compose 与服务代码。
+- Refine：完成标准是五条可验证条件，不是“加了 WAF”这种口号。下一步等用户指定从 P-SEC-0 开始落地。
