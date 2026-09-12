@@ -8,7 +8,7 @@ import { getUser } from "@/lib/auth";
 import { Logo } from "@/components/ui/Logo";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
-import { Eye, EyeOff, Lock, ShieldCheck, Sparkles, User } from "lucide-react";
+import { Bot, Eye, EyeOff, Lock, MessageSquareText, ShieldCheck, Sparkles, User } from "lucide-react";
 
 const FEATURES = [
   { icon: Sparkles, label: "多路召回 · 只回答已发布知识" },
@@ -185,18 +185,20 @@ export default function LoginPage() {
               </Button>
             </form>}
             {demoLoginEnabled && (
-              <div className={passwordEnabled || oidcEnabled ? "mt-5 space-y-2" : "mt-6 space-y-2"}>
+              <div className={passwordEnabled || oidcEnabled ? "mt-4" : "mt-6"}>
                 {(passwordEnabled || oidcEnabled) && (
-                  <div className="my-1 flex items-center gap-3 text-xs text-slate-400">
+                  <div className="mb-2 flex items-center gap-3 text-[11px] text-slate-400">
                     <span className="h-px flex-1 bg-slate-200" />体验演示<span className="h-px flex-1 bg-slate-200" />
                   </div>
                 )}
-                <Button type="button" variant="secondary" className="w-full" loading={demoAccount === "user"} disabled={loading || !!demoAccount} onClick={() => void onDemo("user")}>
-                  体验问答（普通账号）
-                </Button>
-                <Button type="button" variant="secondary" className="w-full" loading={demoAccount === "admin"} disabled={loading || !!demoAccount} onClick={() => void onDemo("admin")}>
-                  体验发布预审（管理员）
-                </Button>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button type="button" variant="secondary" size="sm" className="w-full" icon={MessageSquareText} loading={demoAccount === "user"} disabled={loading || !!demoAccount} aria-label="体验问答（普通账号）" onClick={() => void onDemo("user")}>
+                    体验问答
+                  </Button>
+                  <Button type="button" variant="secondary" size="sm" className="w-full" icon={Bot} loading={demoAccount === "admin"} disabled={loading || !!demoAccount} aria-label="体验发布预审（管理员）" onClick={() => void onDemo("admin")}>
+                    体验发布预审
+                  </Button>
+                </div>
               </div>
             )}
           </div>
