@@ -21,6 +21,12 @@ const META: Record<string, FileTypeMeta> = {
   jpeg: { label: "JPEG", icon: FileImage, iconClass: "text-emerald-600", badgeClass: "bg-emerald-50 text-emerald-700" },
   webp: { label: "WEBP", icon: FileImage, iconClass: "text-emerald-600", badgeClass: "bg-emerald-50 text-emerald-700" },
   bmp: { label: "BMP", icon: FileImage, iconClass: "text-emerald-600", badgeClass: "bg-emerald-50 text-emerald-700" },
+  xls: { label: "XLS", icon: FileType2, iconClass: "text-emerald-700", badgeClass: "bg-emerald-50 text-emerald-700" },
+  xlsx: { label: "XLSX", icon: FileType2, iconClass: "text-emerald-700", badgeClass: "bg-emerald-50 text-emerald-700" },
+  xlsm: { label: "XLSM", icon: FileType2, iconClass: "text-emerald-700", badgeClass: "bg-emerald-50 text-emerald-700" },
+  ppt: { label: "PPT", icon: FileType2, iconClass: "text-orange-600", badgeClass: "bg-orange-50 text-orange-700" },
+  pptx: { label: "PPTX", icon: FileType2, iconClass: "text-orange-600", badgeClass: "bg-orange-50 text-orange-700" },
+  pptm: { label: "PPTM", icon: FileType2, iconClass: "text-orange-600", badgeClass: "bg-orange-50 text-orange-700" },
 };
 
 const FALLBACK: FileTypeMeta = {
@@ -57,8 +63,35 @@ export function formatDurationMs(ms?: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+const PERMISSION_LABELS: Record<string, string> = {
+  public: "公开",
+  internal: "内部",
+  confidential: "机密",
+};
+
+const SPACE_FALLBACKS: Record<string, string> = {
+  "user-uploads": "个人上传",
+  production: "生产库",
+  "enterprise-demo": "企业演示",
+};
+
 /** Display a knowledge-space id as its human name when the list is available. */
 export function spaceLabel(id: string | undefined, spaces: { id: string; name: string }[]): string {
   if (!id) return "—";
-  return spaces.find((space) => space.id === id)?.name || (id === "user-uploads" ? "个人上传" : id);
+  return spaces.find((space) => space.id === id)?.name || SPACE_FALLBACKS[id] || id;
+}
+
+/** Render document permission as a Chinese product label. */
+export function permissionLabel(permission?: string): string {
+  if (!permission) return "—";
+  return PERMISSION_LABELS[permission] || permission;
+}
+
+/** Prefer a username for audit/operator columns; keep the raw id as title. */
+export function actorDisplay(id?: string, users: { id: string; username: string }[] = []): { label: string; title?: string } {
+  if (!id) return { label: "—" };
+  const match = users.find((user) => user.id === id);
+  if (match?.username) return { label: match.username, title: id };
+  if (UUID_RE.test(id)) return { label: `${id.slice(0, 8)}…`, title: id };
+  return { label: id };
 }

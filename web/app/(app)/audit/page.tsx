@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
+import { actorDisplay } from "@/lib/docDisplay";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ChevronLeft, ChevronRight, RotateCcw, Search, ScrollText } from "lucide-react";
-import type { AuditEntry } from "@/lib/types";
+import type { AuditEntry, User } from "@/lib/types";
 
 const ACTION_LABELS: Record<string, string> = {
   login: "登录",
@@ -54,8 +55,13 @@ export default function AuditPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [users, setUsers] = useState<User[]>([]);
 
   useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    if (!isAdmin) return;
+    void apiClient.listUsers({ limit: 200 }).then((data) => setUsers(data.items)).catch(() => undefined);
+  }, [isAdmin]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -205,7 +211,9 @@ export default function AuditPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {items.map((entry, idx) => (
+                {items.map((entry, idx) => {
+                  const actor = actorDisplay(entry.actor_user_id, users);
+                  return (
                   <tr key={`${entry.created_at}-${idx}`} className="align-top transition-colors hover:bg-blue-50/30">
                     <td className="whitespace-nowrap px-4 py-2.5 text-xs text-slate-500">
                       {formatDate(entry.created_at)}
@@ -228,7 +236,7 @@ export default function AuditPage() {
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-xs text-slate-600">
-                      <span className="font-mono">{entry.actor_user_id || "—"}</span>
+                      <span title={actor.title}>{actor.label}</span>
                       {entry.actor_role ? (
                         <span className="ml-1.5 text-slate-400">{ROLE_LABELS[entry.actor_role] || entry.actor_role}</span>
                       ) : null}
@@ -255,7 +263,7 @@ export default function AuditPage() {
                           </button>
                           {expanded.has(idx) && (
                             <pre className="mt-2 max-w-xs overflow-x-auto rounded-lg bg-slate-50 p-2 font-mono text-xs text-slate-600">
-                              {JSON.stringify(entry.detail, null, 2)}
+                              {JSON.stringify({ actor_user_id: entry.actor_user_id, ...entry.detail }, null, 2)}
                             </pre>
                           )}
                         </>
@@ -264,7 +272,8 @@ export default function AuditPage() {
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

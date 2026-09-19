@@ -32,7 +32,8 @@ class ProductShellTests(unittest.TestCase):
         helper = (ROOT / "web/lib/docDisplay.ts").read_text(encoding="utf-8")
         self.assertLess(page.find("{doc.file_name}"), page.find("{doc.doc_id}"))
         self.assertIn("spaceLabel(doc.knowledge_space_id, spaces)", page)
-        self.assertIn('id === "user-uploads" ? "个人上传"', helper)
+        self.assertIn('user-uploads": "个人上传"', helper)
+        self.assertIn('production: "生产库"', helper)
         self.assertNotIn("{doc.knowledge_space_id || \"—\"}", page)
 
     def test_document_detail_uses_page_header_and_chinese_governance(self):
@@ -56,6 +57,34 @@ class ProductShellTests(unittest.TestCase):
         page = (ROOT / "web/app/(app)/quality/page.tsx").read_text(encoding="utf-8")
         self.assertIn("离线评测回归", page)
         self.assertNotIn("docs/evals/reports", page)
+
+    def test_release_center_uses_chinese_space_and_permission(self):
+        page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
+        helper = (ROOT / "web/lib/docDisplay.ts").read_text(encoding="utf-8")
+        self.assertIn("spaceLabel(item.knowledge_space_id, spaces)", page)
+        self.assertIn("permissionLabel(selectedDocument?.permission || selectedOverview?.permission)", page)
+        self.assertIn("listKnowledgeSpaces", page)
+        self.assertIn('internal: "内部"', helper)
+        self.assertNotIn("{item.knowledge_space_id} ·", page)
+
+    def test_audit_prefers_username_over_raw_uuid(self):
+        page = (ROOT / "web/app/(app)/audit/page.tsx").read_text(encoding="utf-8")
+        self.assertIn("actorDisplay(entry.actor_user_id, users)", page)
+        self.assertIn("listUsers", page)
+        self.assertNotIn("{entry.actor_user_id || \"—\"}", page)
+
+    def test_file_type_covers_office_docs(self):
+        helper = (ROOT / "web/lib/docDisplay.ts").read_text(encoding="utf-8")
+        self.assertIn('xls: { label: "XLS"', helper)
+        self.assertIn('pptx: { label: "PPTX"', helper)
+
+    def test_login_copy_matches_product_draft(self):
+        page = (ROOT / "web/app/login/page.tsx").read_text(encoding="utf-8")
+        self.assertIn("可检索、可问答、可发布的知识资产", page)
+        self.assertIn("多路召回 · 只回答已发布知识", page)
+        self.assertIn("权限隔离 · 引用可追溯", page)
+        self.assertNotIn("可量化", page)
+        self.assertNotIn("语义检索", page)
 
 
 if __name__ == "__main__":
