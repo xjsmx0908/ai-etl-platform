@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,7 +36,7 @@ const (
 	demoConfidentialGeneration = "demo-gen-payroll"
 )
 
-func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier) error {
+func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier, objects demoSourceObjectStore) error {
 	if !demoLoginEnabled(cfg) || q == nil {
 		return nil
 	}
@@ -70,6 +75,15 @@ func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier) er
 	now := time.Now().UTC()
 	expires := now.Add(168 * time.Hour)
 	docs := demoShowcaseDocuments()
+	// The catalog row below advertises a source object. Write that object first,
+	// or the seed manufactures exactly the state it cannot describe: a document
+	// that is `completed`, whose manifest is healthy, whose chunks answer
+	// questions, and whose source object does not exist. Nothing else in the
+	// platform notices that — a repair replays an ingestion event, and the replay
+	// is the first thing that fails.
+	if err := syncDemoShowcaseSourceObjects(ctx, objects, docs); err != nil {
+		return err
+	}
 	byID := make(map[string]demoShowcaseDocument, len(docs))
 	// Converge the seeded projections on every boot, not only on first
 	// provisioning. A manifest written by an older seed can disagree with the
@@ -122,6 +136,71 @@ func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier) er
 	return nil
 }
 
+// demoSourceObjectStore is the slice of the object store the showcase seed
+// needs. Kept narrow so the seed can be exercised without MinIO.
+type demoSourceObjectStore interface {
+	Upload(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
+	Exists(ctx context.Context, key string) (bool, error)
+}
+
+const demoSourceContentType = "text/markdown; charset=utf-8"
+
+// demoShowcaseSourceKey is the object key the catalog advertises for a showcase
+// document. It is derived in one place so the row and the object cannot drift.
+func demoShowcaseSourceKey(doc demoShowcaseDocument) string {
+	return "demo/" + doc.docID + ".md"
+}
+
+// demoShowcaseSourceBytes renders the archived source document from the same
+// chunk models the retrieval seed writes. Deriving both from one source is the
+// point: the object and the index have to describe the same document, or a
+// re-ingest from the object would produce different chunks than the manifest
+// already records.
+func demoShowcaseSourceBytes(doc demoShowcaseDocument) []byte {
+	var builder strings.Builder
+	for i, content := range doc.chunks {
+		if i > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(content)
+	}
+	builder.WriteString("\n")
+	return []byte(builder.String())
+}
+
+// demoShowcaseSourceHash is the SHA-256 of the archived object, so the catalog
+// size and hash can be checked against the store instead of asserted.
+func demoShowcaseSourceHash(doc demoShowcaseDocument) string {
+	sum := sha256.Sum256(demoShowcaseSourceBytes(doc))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// syncDemoShowcaseSourceObjects writes every showcase document's source object
+// and reads it back, so a boot that cannot materialize the object fails loudly
+// instead of leaving the catalog pointing at nothing. A missing object store is
+// an error rather than a no-op: skipping the write is precisely how the catalog
+// ended up advertising source objects that did not exist.
+func syncDemoShowcaseSourceObjects(ctx context.Context, objects demoSourceObjectStore, docs []demoShowcaseDocument) error {
+	if objects == nil {
+		return errors.New("demo showcase seed requires an object store")
+	}
+	for _, doc := range docs {
+		key := demoShowcaseSourceKey(doc)
+		content := demoShowcaseSourceBytes(doc)
+		if err := objects.Upload(ctx, key, bytes.NewReader(content), int64(len(content)), demoSourceContentType); err != nil {
+			return fmt.Errorf("seed demo source object %s: %w", key, err)
+		}
+		exists, err := objects.Exists(ctx, key)
+		if err != nil {
+			return fmt.Errorf("verify demo source object %s: %w", key, err)
+		}
+		if !exists {
+			return fmt.Errorf("demo source object %s is absent after upload", key)
+		}
+	}
+	return nil
+}
+
 // ensureDemoShowcaseDocument converges one showcase document's durable rows.
 //
 // Every derived value here comes from demoShowcaseChunks, the same chunk models
@@ -140,12 +219,21 @@ func ensureDemoShowcaseDocument(tx pgx.Tx, ctx context.Context, cfg config.Confi
 	if err != nil {
 		return fmt.Errorf("derive demo manifest digest %s: %w", doc.docID, err)
 	}
+	sourceKey := demoShowcaseSourceKey(doc)
+	// The declared size is measured, not asserted: a row claiming 2048 bytes for
+	// a 111-byte object is the same lie in a smaller place.
+	sourceSize := int64(len(demoShowcaseSourceBytes(doc)))
 	if _, err := tx.Exec(ctx, `INSERT INTO documents (
 			tenant_id,doc_id,file_name,object_key,file_hash,file_size,content_type,permission,status,stage,
 			chunks_done,chunks_total,uploaded_by,completed_at,doc_status,effective_date,owner,knowledge_space_id,publication_status,deletion_status
-		) VALUES ($1,$2,$3,$4,$5,2048,'text/markdown',$6,'completed','completed',$12,$12,$7,$8,'active',CURRENT_DATE,$9,$10,$11,'active')
-		ON CONFLICT (tenant_id, doc_id) DO NOTHING`,
-		cfg.DemoTenantID, doc.docID, doc.fileName, "demo/"+doc.docID+".md", doc.digest, doc.permission,
+		) VALUES ($1,$2,$3,$4,$5,$6,'text/markdown',$7,'completed','completed',$13,$13,$8,$9,'active',CURRENT_DATE,$10,$11,$12,'active')
+		ON CONFLICT (tenant_id, doc_id) DO UPDATE SET
+			object_key=EXCLUDED.object_key,
+			file_size=EXCLUDED.file_size,
+			updated_at=now()
+		WHERE documents.object_key IS DISTINCT FROM EXCLUDED.object_key
+		   OR documents.file_size IS DISTINCT FROM EXCLUDED.file_size`,
+		cfg.DemoTenantID, doc.docID, doc.fileName, sourceKey, doc.digest, sourceSize, doc.permission,
 		userID, now, adminID, demoSpaceID, doc.publication, len(doc.chunks)); err != nil {
 		return fmt.Errorf("seed demo document %s: %w", doc.docID, err)
 	}

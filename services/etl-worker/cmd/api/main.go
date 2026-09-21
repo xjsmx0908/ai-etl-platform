@@ -142,10 +142,6 @@ func main() {
 		slog.Error("failed to ensure demo accounts", "error", err)
 		os.Exit(1)
 	}
-	if err := ensureDemoShowcase(context.Background(), cfg, pgPool); err != nil {
-		slog.Error("failed to ensure demo showcase", "error", err)
-		os.Exit(1)
-	}
 	docStore := docstore.New(pgPool)
 	admissionStore := ingestion.NewPostgresStore(pgPool)
 	auditStore := audit.New(pgPool)
@@ -235,6 +231,15 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("failed to create S3 client", "error", err)
+		os.Exit(1)
+	}
+
+	// Seeding the showcase documents depends on the object store: every catalog
+	// row it writes advertises a source object, so the object has to exist first.
+	// Running this after s3.New is what makes that ordering enforceable instead of
+	// a convention — the previous order could only write the row.
+	if err := ensureDemoShowcase(context.Background(), cfg, pgPool, s3Client); err != nil {
+		slog.Error("failed to ensure demo showcase", "error", err)
 		os.Exit(1)
 	}
 

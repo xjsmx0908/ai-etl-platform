@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +21,10 @@ import (
 func TestEnsureDemoShowcase_NoopWhenDisabledOrUnconfigured(t *testing.T) {
 	cfg := demoLoginConfig()
 	cfg.DemoLoginEnabled = false
-	if err := ensureDemoShowcase(context.Background(), cfg, nil); err != nil {
+	if err := ensureDemoShowcase(context.Background(), cfg, nil, nil); err != nil {
 		t.Fatalf("disabled showcase: %v", err)
 	}
-	if err := ensureDemoShowcase(context.Background(), demoLoginConfig(), nil); err != nil {
+	if err := ensureDemoShowcase(context.Background(), demoLoginConfig(), nil, nil); err != nil {
 		t.Fatalf("nil store showcase: %v", err)
 	}
 }
@@ -192,7 +196,8 @@ func TestEnsureDemoShowcaseDocumentSeedsDerivedDigestAndOutbox(t *testing.T) {
 	task := fmt.Sprintf(`{"file_path":"demo/%s.md"}`, doc.docID)
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT INTO documents").WithArgs(
-		cfg.DemoTenantID, doc.docID, doc.fileName, "demo/"+doc.docID+".md", doc.digest, doc.permission,
+		cfg.DemoTenantID, doc.docID, doc.fileName, demoShowcaseSourceKey(doc), doc.digest,
+		int64(len(demoShowcaseSourceBytes(doc))), doc.permission,
 		"user-1", now, "admin-1", demoSpaceID, doc.publication, len(doc.chunks),
 	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO ingestion_jobs").WithArgs(
@@ -228,5 +233,101 @@ func TestDemoPayrollChunksCarrySensitiveEvidence(t *testing.T) {
 		if !strings.Contains(joined, needle) {
 			t.Fatalf("payroll chunks missing %q in %q", needle, joined)
 		}
+	}
+}
+
+// recordingObjectStore is a minimal object store that remembers what it was
+// given, and can be told to report a key as absent afterwards — which is how a
+// real store behaves when the write silently did not land.
+type recordingObjectStore struct {
+	uploads map[string][]byte
+	absent  map[string]bool
+}
+
+func newRecordingObjectStore() *recordingObjectStore {
+	return &recordingObjectStore{uploads: map[string][]byte{}, absent: map[string]bool{}}
+}
+
+func (s *recordingObjectStore) Upload(_ context.Context, key string, reader io.Reader, size int64, _ string) error {
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	if int64(len(content)) != size {
+		return fmt.Errorf("declared %d bytes for %s but wrote %d", size, key, len(content))
+	}
+	s.uploads[key] = content
+	return nil
+}
+
+func (s *recordingObjectStore) Exists(_ context.Context, key string) (bool, error) {
+	if s.absent[key] {
+		return false, nil
+	}
+	_, ok := s.uploads[key]
+	return ok, nil
+}
+
+// The catalog row and the object have to describe one document. The seed used to
+// write object_key and a hard-coded file_size without putting anything in the
+// object store, so every showcase document claimed a source object that did not
+// exist — and nothing noticed, because retrieval reads the index, not the object.
+func TestDemoShowcaseSourceObjectMatchesCatalogClaim(t *testing.T) {
+	docs := demoShowcaseDocuments()
+	objects := newRecordingObjectStore()
+	if err := syncDemoShowcaseSourceObjects(context.Background(), objects, docs); err != nil {
+		t.Fatalf("seed source objects: %v", err)
+	}
+	if len(objects.uploads) != len(docs) {
+		t.Fatalf("wrote %d objects for %d documents", len(objects.uploads), len(docs))
+	}
+	for _, doc := range docs {
+		key := demoShowcaseSourceKey(doc)
+		content, ok := objects.uploads[key]
+		if !ok {
+			t.Fatalf("%s: no object written under %q", doc.docID, key)
+		}
+		// The declared size must be the size of the object that was written, not
+		// a constant that happens to look plausible.
+		if int64(len(content)) != int64(len(demoShowcaseSourceBytes(doc))) {
+			t.Fatalf("%s: wrote %d bytes, catalog declares %d",
+				doc.docID, len(content), len(demoShowcaseSourceBytes(doc)))
+		}
+		sum := sha256.Sum256(content)
+		if want := "sha256:" + hex.EncodeToString(sum[:]); want != demoShowcaseSourceHash(doc) {
+			t.Fatalf("%s: declared hash %s, object hash %s", doc.docID, demoShowcaseSourceHash(doc), want)
+		}
+		// The object and the index must describe the same document, or a
+		// re-ingest from the object would produce chunks the manifest does not
+		// expect.
+		for i, chunk := range doc.chunks {
+			if !bytes.Contains(content, []byte(chunk)) {
+				t.Fatalf("%s: object does not contain chunk %d", doc.docID, i)
+			}
+		}
+	}
+}
+
+// A store that accepts the upload but does not hold the object afterwards is the
+// failure this seed has to survive: the catalog must not be written for a
+// document whose source object is not there.
+func TestSyncDemoShowcaseSourceObjectsFailsWhenTheObjectIsAbsent(t *testing.T) {
+	docs := demoShowcaseDocuments()
+	objects := newRecordingObjectStore()
+	objects.absent[demoShowcaseSourceKey(docs[0])] = true
+	err := syncDemoShowcaseSourceObjects(context.Background(), objects, docs)
+	if err == nil {
+		t.Fatal("expected an error when the object store does not hold the object it accepted")
+	}
+	if !strings.Contains(err.Error(), demoShowcaseSourceKey(docs[0])) {
+		t.Fatalf("error %q does not name the missing object %q", err, demoShowcaseSourceKey(docs[0]))
+	}
+}
+
+// Without an object store there is nothing to verify against, and writing the
+// catalog anyway is exactly the defect. Fail instead of skipping.
+func TestSyncDemoShowcaseSourceObjectsRequiresAStore(t *testing.T) {
+	if err := syncDemoShowcaseSourceObjects(context.Background(), nil, demoShowcaseDocuments()); err == nil {
+		t.Fatal("expected an error when no object store is configured")
 	}
 }
