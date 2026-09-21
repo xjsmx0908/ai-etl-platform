@@ -148,8 +148,13 @@ type Config struct {
 	AgentPlannerTimeout       time.Duration
 	AgentPlannerMaxTokens     int
 	AgentReviewMaxTokenBudget int64
-	ReleaseReviewTTL          time.Duration
-	ReleaseReviewRetention    time.Duration
+	// AgentReviewMaxAttempts bounds the durable review runs started for one
+	// exact candidate. 1 disables retries (a failed review is final, the
+	// historical behaviour); higher values let a transient planner failure be
+	// retried with a fresh run instead of replaying the recorded error.
+	AgentReviewMaxAttempts int
+	ReleaseReviewTTL       time.Duration
+	ReleaseReviewRetention time.Duration
 
 	// Kafka
 	KafkaBrokers               string
@@ -390,6 +395,7 @@ func Load() Config {
 		AgentPlannerTimeout:       EnvDuration("AGENT_PLANNER_TIMEOUT", 30*time.Second),
 		AgentPlannerMaxTokens:     EnvInt("AGENT_PLANNER_MAX_TOKENS", 512),
 		AgentReviewMaxTokenBudget: int64(EnvInt("AGENT_REVIEW_MAX_TOKEN_BUDGET", 32000)),
+		AgentReviewMaxAttempts:    EnvInt("AGENT_REVIEW_MAX_ATTEMPTS", 3),
 		ReleaseReviewTTL:          EnvDuration("RELEASE_REVIEW_TTL", 168*time.Hour),
 		ReleaseReviewRetention:    EnvDuration("RELEASE_REVIEW_RETENTION", 2160*time.Hour),
 
@@ -717,6 +723,9 @@ func (c Config) validateAgentConfig() error {
 	}
 	if c.AgentReviewMaxTokenBudget < 1 || c.AgentReviewMaxTokenBudget > 10_000_000 {
 		return fmt.Errorf("AGENT_REVIEW_MAX_TOKEN_BUDGET must be between 1 and 10000000, got %d", c.AgentReviewMaxTokenBudget)
+	}
+	if c.AgentReviewMaxAttempts < 1 || c.AgentReviewMaxAttempts > 10 {
+		return fmt.Errorf("AGENT_REVIEW_MAX_ATTEMPTS must be between 1 and 10, got %d", c.AgentReviewMaxAttempts)
 	}
 	if c.ReleaseReviewTTL < 0 {
 		return fmt.Errorf("RELEASE_REVIEW_TTL must be >= 0, got %s", c.ReleaseReviewTTL)

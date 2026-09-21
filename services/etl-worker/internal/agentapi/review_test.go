@@ -3,6 +3,7 @@ package agentapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,7 +85,7 @@ func TestAutonomousReviewResumesPersistedRunWithoutDuplicatingSteps(t *testing.T
 	}
 	actor := agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
 	first := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
-	started, err := first.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
+	started, err := first.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestAutonomousReviewRejectsCandidateDriftDuringResume(t *testing.T) {
 	}
 	actor := agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
 	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
-	started, err := orchestrator.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
+	started, err := orchestrator.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +184,7 @@ func TestAutonomousReviewRedisRestartResumesSameRun(t *testing.T) {
 		_ = firstLocks.Close()
 		t.Fatal(err)
 	}
-	runID := reviewRunID(actor.TenantID, candidate)
+	runID := reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1)
 	run, err := first.StartOrResume(context.Background(), actor, runID, documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
 	if err != nil {
 		_ = firstStore.Close()
@@ -585,6 +586,123 @@ func (s reviewSpaceStub) Space(context.Context, string, string) (knowledgecatalo
 func reviewCandidate() publicationworkflow.Candidate {
 
 	return publicationworkflow.Candidate{DocumentID: "doc-1", DocumentVersionID: "version-1", GenerationID: "generation-1", ExpectedChunkCount: 1, ExpectedChunkDigest: "sha256:digest", ReleaseRevision: 1}
+}
+
+// flakyReviewPlanner fails its first `failures` planning calls and then behaves
+// like the deterministic rule planner. It models a transient planner outage (a
+// gateway timeout or a 5xx) rather than a permanently unreviewable document.
+type flakyReviewPlanner struct {
+	failures int
+	calls    int
+	inner    ReviewRulePlanner
+}
+
+func (p *flakyReviewPlanner) Plan(ctx context.Context, run agent.Run) (agent.PlanDecision, error) {
+	p.calls++
+	if p.calls <= p.failures {
+		return agent.PlanDecision{}, fmt.Errorf("planner request failed: context deadline exceeded")
+	}
+	return p.inner.Plan(ctx, run)
+}
+
+func newReviewTestService(t *testing.T, planner agent.Planner) (*Service, agent.Store, publicationworkflow.Candidate, agent.Actor) {
+	t.Helper()
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}, runStore); err != nil {
+		t.Fatal(err)
+	}
+	orchestrator := newTestOrchestrator(t, runStore, registry, planner, 8)
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
+	return service, runStore, candidate, agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
+}
+
+// TestAutonomousReviewRetriesTransientFailureInAFreshRun pins the recovery path
+// for a transient planner outage.
+//
+// The review run used to be keyed on the exact candidate alone. A run that
+// reached StateFailed is terminal and ExecuteNext short-circuits on it, so
+// resuming that run replayed the recorded error without ever asking the planner
+// again: the document stayed in manual_exception forever and the automatic
+// re-review path burned a review TTL per attempt without re-running the Agent.
+// A retry must therefore start a new run and leave the failed one intact as
+// evidence.
+func TestAutonomousReviewRetriesTransientFailureInAFreshRun(t *testing.T) {
+	planner := &flakyReviewPlanner{failures: 1}
+	service, runStore, candidate, actor := newReviewTestService(t, planner)
+
+	first, err := service.ReviewPublicationReport(context.Background(), actor, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "failed" {
+		t.Fatalf("expected the transient planner failure to surface as a failed review: %+v", first)
+	}
+	failed, err := runStore.LoadRun(context.Background(), first.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != agent.StateFailed {
+		t.Fatalf("first attempt state=%q", failed.State)
+	}
+
+	// The planner is healthy again.
+	second, err := service.ReviewPublicationReport(context.Background(), actor, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Status != "completed" || second.Recommendation != "publish" {
+		t.Fatalf("retry did not recover: %+v", second)
+	}
+	if second.RunID == first.RunID {
+		t.Fatalf("retry replayed the failed run %q instead of starting a new attempt", second.RunID)
+	}
+	recovered, err := runStore.LoadRun(context.Background(), second.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.State != agent.StateCompleted {
+		t.Fatalf("retry run state=%q", recovered.State)
+	}
+	if preserved, err := runStore.LoadRun(context.Background(), first.RunID); err != nil || preserved.State != agent.StateFailed {
+		t.Fatalf("failed attempt was overwritten: run=%+v err=%v", preserved, err)
+	}
+}
+
+// TestAutonomousReviewStopsRetryingAfterMaxAttempts keeps the retry bounded: a
+// permanently broken planner must not spend tokens on every queue tick.
+func TestAutonomousReviewStopsRetryingAfterMaxAttempts(t *testing.T) {
+	planner := &flakyReviewPlanner{failures: 1000}
+	service, runStore, candidate, actor := newReviewTestService(t, planner)
+	service.reviewMaxAttempts = 2
+
+	for round := 0; round < 3; round++ {
+		report, err := service.ReviewPublicationReport(context.Background(), actor, candidate.DocumentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Status != "failed" {
+			t.Fatalf("round %d: report=%+v", round, report)
+		}
+	}
+	if planner.calls != 2 {
+		t.Fatalf("planner calls=%d, want 2 (one per allowed attempt, none after the budget is spent)", planner.calls)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		runID := reviewRunID(actor.TenantID, candidate, reviewPromptVersion, attempt)
+		if _, err := runStore.LoadRun(context.Background(), runID); err != nil {
+			t.Fatalf("attempt %d run %q missing: %v", attempt, runID, err)
+		}
+	}
+	if _, err := runStore.LoadRun(context.Background(), reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 3)); err == nil {
+		t.Fatal("a third attempt run was created beyond AGENT_REVIEW_MAX_ATTEMPTS")
+	}
 }
 
 type usagePlannerForReview struct {

@@ -46,6 +46,7 @@ type Service struct {
 	reviewOrchestrator *agent.Orchestrator
 	reviewWorkflow     PublicationWorkflow
 	reviewModel        string
+	reviewMaxAttempts  int
 	store              agent.Store
 	approvalStore      agent.ApprovalStore
 	observer           Observer
@@ -198,6 +199,7 @@ func NewServiceWithDependencies(cfg config.Config, qs QueryService, taskStatusSt
 		}
 		service.reviewOrchestrator = reviewOrchestrator
 		service.reviewWorkflow = dependencies.PublicationWorkflow
+		service.reviewMaxAttempts = cfg.AgentReviewMaxAttempts
 		if cfg.AgentPlannerType != config.AgentPlannerRule {
 			service.reviewModel = configuredReviewModel()
 		}
@@ -223,11 +225,28 @@ func (s *Service) ReviewPublicationReport(ctx context.Context, actor agent.Actor
 		return releasecenter.AgentReview{}, publicationworkflow.ErrNotReady
 	}
 	candidate := *assessment.Candidate
-	run, err := s.reviewOrchestrator.StartOrResume(ctx, actor, reviewRunID(actor.TenantID, candidate), documentReviewTaskPrefix+documentID, map[string]interface{}{
-		"review_candidate": structMap(candidate),
-	})
-	if err != nil {
-		return releasecenter.AgentReview{}, err
+	task := documentReviewTaskPrefix + documentID
+	memory := map[string]interface{}{"review_candidate": structMap(candidate)}
+	maxAttempts := s.reviewMaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = defaultReviewMaxAttempts
+	}
+	var run agent.Run
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Each attempt has its own durable run, so a run that already failed is
+		// left untouched as evidence and the next attempt starts from scratch.
+		// Resuming a failed run instead would replay the recorded error verbatim:
+		// terminalState() short-circuits ExecuteNext, so no planner call would
+		// ever happen and the review could never recover from a transient
+		// failure. On the last attempt the recorded failure is the answer.
+		current, startErr := s.reviewOrchestrator.StartOrResume(ctx, actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, attempt), task, memory)
+		if startErr != nil {
+			return releasecenter.AgentReview{}, startErr
+		}
+		run = current
+		if run.State != agent.StateFailed || attempt == maxAttempts {
+			break
+		}
 	}
 	return s.resumePublicationReview(ctx, actor, run.ID)
 }

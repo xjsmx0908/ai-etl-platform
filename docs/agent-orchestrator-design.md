@@ -315,6 +315,7 @@ AGENT_PLANNER_MODEL
 AGENT_PLANNER_TIMEOUT
 AGENT_PLANNER_MAX_TOKENS
 AGENT_REVIEW_MAX_TOKEN_BUDGET
+AGENT_REVIEW_MAX_ATTEMPTS
 ```
 
 The LLM can propose a plan, but it cannot bypass the core guardrails. The
@@ -327,6 +328,21 @@ reported by a run's planner calls. Usage is persisted on the Run and each
 Planner step; providers that omit usage are charged a conservative byte-based
 upper-bound estimate. Exceeding the budget fails the run closed and routes publication
 review to manual handling.
+
+`AGENT_REVIEW_MAX_ATTEMPTS` bounds how many durable review runs may be started for
+one exact candidate. The review run id is derived from the candidate, the review
+prompt version, and the attempt index, because a run is a cache of "this
+candidate, reviewed by this prompt". Keying it on the candidate alone made that
+cache permanent in the worst way: a run that reached `failed` is terminal and
+`ExecuteNext` short-circuits on it, so resuming it replayed the recorded error
+without ever calling the planner again. A transient failure (a gateway timeout,
+a 5xx) then left the document in `manual_exception` for good, and the automatic
+re-review path — review expires, request returns to `needs_info`, the queue
+re-lists the document — burned one review TTL per attempt without re-running the
+Agent. With a budget above 1 the next attempt starts a fresh run and the failed
+one stays on disk as evidence; once the budget is spent the recorded failure is
+the answer, so a permanently broken endpoint cannot spend tokens on every queue
+tick. `1` reproduces the historical single-attempt behaviour.
 
 ## Document Publication Governance
 
