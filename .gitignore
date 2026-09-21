@@ -16,6 +16,10 @@ build/
 bin/
 *.exe
 
+# Go build caches created locally via GOCACHE/GOMODCACHE overrides (never commit)
+.gocache/
+.gomod/
+
 # IDE
 .vscode/
 .idea/
@@ -66,6 +70,7 @@ TOOLS.md
 USER.md
 openclaw-workspace-state.json
 state/
+.workbuddy-ai/
 
 # Accidental local session artifacts
 :memory:.ses
