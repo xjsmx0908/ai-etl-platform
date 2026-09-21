@@ -71,6 +71,8 @@ USER.md
 openclaw-workspace-state.json
 state/
 .workbuddy-ai/
+.autonomy/
+PROGRESS.md
 
 # Accidental local session artifacts
 :memory:.ses
