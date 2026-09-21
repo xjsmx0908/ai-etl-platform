@@ -10,10 +10,11 @@
 
 ## 0. 结论摘要
 
-一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 五处缺陷都是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它。**
+一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的六处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了。**
 
-> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了一轮
-> 缺陷排查，找到并修复了 5 个**功能/可靠性**缺陷（见 §1.3），全部属于「失败被固化、重试变成复读」。
+> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了两轮
+> 缺陷排查，找到并修复了 6 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
+> 第 6 个属于「不一致的数据被当真源，而失败路径把证据回滚掉」。
 > 原结论因此**不成立**，已按下表修订。
 
 | 类别 | 结论 |
@@ -22,7 +23,7 @@
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **全栈无任何备份**（§1.2）；磁盘距 ES 只读阈值 15GB（§1.1.2，清理已完成） |
-| 已修复项 | 5 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）。见 §1.1、§1.3 |
+| 已修复项 | 6 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）。见 §1.1、§1.3 |
 
 ---
 
@@ -123,7 +124,7 @@ $ ls ~/backups                                  → 仅 openclaw-upgrade-2026032
 
 ---
 
-### 1.3 已修复的 5 个缺陷（共同形状：失败被固化，重试变成复读）
+### 1.3 已修复的 6 个缺陷（共同形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -134,6 +135,14 @@ $ ls ~/backups                                  → 仅 openclaw-upgrade-2026032
 | 3 | 文档清单的块数恒显示「—」 | `documents` 表 119 行里大 `.txt`/`.md`/PDF 全为 `n/0` | 文本路径的 `totalChunks` 只在走 parser 服务分支时才从 channel 读到；PDF 路径先写对又被「第 x / y 页」的进度写回覆盖成 0 | `4cf5963` |
 | 4 | 演示文档的 `index_manifests` 撒谎 → Agent 预审永远失败 | ES 实测 handbook=3 / onboarding=0 / payroll=0，但清单声称各 3；run 的 `error="exact candidate content is unavailable"` | `ensureDemoShowcaseIndex` 只索引 handbook，清单却给三份文档都写了 3 条；预审按 `document_version_id`+`generation_id` 精确取块得 0 条 | `624d936` |
 | 5 | 预审的瞬时失败被永久缓存，重试变成复读 | 计划器 30s 超时后，Redis 里的 run 永久 `failed`；只能手工删 key 才恢复 | 预审 run id 只由候选派生，而 `failed` 是终态且 `ExecuteNext` 对终态直接短路 → 重试复读旧错误，从不重新调用计划器。自动恢复路径（预审过期 → `needs_info` → 队列重新拾取）每轮只消耗一个 `RELEASE_REVIEW_TTL`，Agent 一次都没重跑 | `91a47fc` |
+| 6 | 演示清单的期望摘要是占位串，索引对账每 5 分钟永久报错 | `etl-worker` 每 5 分钟一条 `index manifest reconciliation failed … load repair ingestion job: no rows in result set` | 种子把**文件哈希**（`sha256:demo-handbook` 这类占位串）同时写进 `expected_chunk_digest` 与两个投影摘要；按 `IdentityDigest` 复算真实值是 `sha256:e4adc7b7…` / `sha256:c9241b97…` / `sha256:4f2b1bb0…`。种子又只插 `ingestion_jobs`、不插 `ingestion_outbox`，而 `FinishReconciliation` 靠两者 JOIN 找重放目标 → 差异永远无法修复。失败路径 `tx.Rollback()` 把 `last_reconcile_error` 与 `last_reconciled_at` 一起回滚，于是清单看起来健康、可发布（`CurrentCandidate` 读的就是这个谓词），却永不收敛；而认领顺序是「最久未对账优先」，它们因此每轮都排在队首 | `3f1deb5` |
+
+**缺陷 6 的一个细节，值得记住**：三张表之间存在**每 5 秒生效一次**的强耦合 ——
+`index_manifests.expected_chunk_digest`、`release_center_requests.expected_chunk_digest`、
+以及真实投影的观测摘要必须完全一致。`ReconcileStaleRequests` 每轮比对它们，不一致就把请求
+从 `approval_pending` 降级为 `needs_info`；`ApprovalService.Decide` 在审批时再比对一次，不一致
+直接返回 `ErrStaleReview`。所以**只改清单不改请求**，会让演示里的审批队列在 5 秒内塌掉。
+这类"看起来只动了一处"的改动，必须先查清所有读取方再动手。
 
 **缺陷 5 的一个细节，值得记住**：`AGENT_RUN_TTL=24h` 让这个 bug 看起来「过一阵会自己好」——
 run 记录 24 小时后过期，下一次重试才是真的重跑。也就是说恢复靠的是**缓存过期这个副作用**，
@@ -296,6 +305,46 @@ docker exec ai-etl-platform-web-1 grep -rl 可量化的知识资产 /app/.next  
 
 **这些不是技术债，是决策债**。在决策到位前动手只会白做。
 
+### 4.6 ES 词法检索的标题加权是死代码（已确认，未修）
+
+**证据**
+
+```
+$ curl :9200/documents_text_v2/_mapping
+  properties → chunk_id chunk_index content content_hash created_at doc_id
+               document_version_id file_hash generation_id metadata permission tenant_id
+                                     ↑ 没有 file_name
+
+$ internal/es/indexer.go:522  esChunkDoc{ChunkID,DocID,TenantID,Content,Permission,
+                                ChunkIndex,FileHash,DocumentVersionID,GenerationID,
+                                ContentHash,Metadata,CreatedAt}
+                                     ↑ 也没有 file_name
+
+$ internal/retrieval/elastic.go:183-198  titleAwareShouldClauses() 发出两条
+  {"match_phrase":{"file_name":{...,"boost":6.0}}} 与 {"match":{"file_name":{...,"boost":3.0}}}
+                                     ↑ 查询一个永远不会被索引的字段
+
+$ internal/retrieval/elastic_test.go:109  断言这两条子句「存在」
+                                     ↑ 只断言了子句形状，没有任何测试断言该字段被写入索引
+```
+
+**机制**：`ElasticRetriever` 的词法分支里权重最高的两个信号（boost 6.0 / 3.0）都打在
+`file_name` 上，而 `esChunkDoc` 从不写入该字段、ES mapping 里也没有它。ES 对未映射字段的
+`match`/`match_phrase` 不报错、只是永不匹配，所以这条链路**静默降级**为「只有正文匹配」。
+
+**影响**：用户按文档名提问（「员工手册里怎么说」）时，词法分支拿不到任何标题信号。
+不影响功能正确性（`minimum_should_match: 1` 仍由 `content` 子句满足），
+所以不会报错、不会失败，只会让召回质量比设计意图低一档。
+
+**为什么现在不修**：修它需要三件事一起做，不是一处小改 ——
+① `model.Chunk` 加 `FileName` 并在入库链路里填上（`model.Task` 目前也没有该字段）；
+② `esChunkDoc` 与 ES mapping 加 `file_name`；
+③ **重建既有索引**（`documents_text_v2` 现 4719 条）。只做 ①② 的话，存量文档仍然查不到。
+
+**验收判据**（如果做）：`GET documents_text_v2/_mapping` 含 `file_name`；
+用文档标题作为查询时，`backend_candidate_counts.elasticsearch > 0`；
+新增一条「索引里有 file_name」的断言，而不只是「查询里有 file_name 子句」。
+
 ---
 
 ## 5. P2 —— 代码结构
@@ -361,7 +410,8 @@ docker exec ai-etl-platform-web-1 grep -rl 可量化的知识资产 /app/.next  
 ## 7. 建议执行顺序
 
 ```
-第 1 步（今天）   1.1.1 ES 单节点副本（已完成，见下） + 1.1.2 磁盘回收（已完成）
+第 1 步（今天）   1.1.1 ES 单节点副本（已完成） + 1.1.2 磁盘回收（已完成）
+                 §1.3 的 6 个功能缺陷（已全部修复并线上验证）
                  1.1.2 剩余：ES 水位改百分比 + 磁盘告警
 第 2 步（本周）   1.2 备份脚本 + 恢复演练；2.1 Go 工具链权限修复
 第 3 步（本周）   3.  状态文档三源归一 + 一致性契约测试
@@ -374,9 +424,11 @@ docker exec ai-etl-platform-web-1 grep -rl 可量化的知识资产 /app/.next  
 
 ---
 
-## 8. 我没有做的事（避免误解）
+## 8. 边界与未做的事（避免误解）
 
-- **没有修改任何代码或配置**。本文只有调查结论。
-- **没有删除任何东西**。远端 734MB 的 `.gomod`/`.gocache` 是承重结构，我反而在本次确认了它不能被删。
-- **没有执行磁盘清理**。108.7GB 镜像里大部分是你其他项目的，且可回收卷里可能有数据 —— 这类操作我不会未经确认执行。
+- **代码改动只限 §1.3 列出的 6 个缺陷**（含各自的回归测试）。本文其余章节仍是调查结论，未据此改代码。
+- **没有删除任何东西**。远端 734MB 的 `.gomod`/`.gocache` 是承重结构，本次确认了它不能被删。
+- **没有清理你其他项目的镜像/卷**。108.7GB 镜像里大部分不属于本项目，且可回收卷里可能有数据 ——
+  这类操作我不会未经确认执行。已回收的只有 `docker builder prune` 与 9 个本项目一次性验收镜像。
 - **UAT-017～020 没有标记为「已关闭」**，因为只做了产物层验证，未做章程要求的真实页面复验。
+- **§4.5 与 §4.6 没有动手**，理由分别写在各自小节里（前者被外部决策阻塞，后者需要重建 4719 条索引）。
