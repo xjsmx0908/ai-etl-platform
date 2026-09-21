@@ -330,7 +330,7 @@ func main() {
 
 	if cfg.IndexRetentionWindow > 0 {
 		rollbackQdrant, rollbackQdrantErr := store.NewQdrantStorer(cfg.StoreEndpoint, cfg.StoreAPIKey, cfg.StoreCollection, cfg.EmbedDimension)
-		rollbackElasticsearch, rollbackElasticsearchErr := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+		rollbackElasticsearch, rollbackElasticsearchErr := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, es.WithReplicas(cfg.ESIndexReplicas))
 		if rollbackQdrantErr != nil || rollbackElasticsearchErr != nil {
 			slog.Warn("generation rollback unavailable", "qdrant_error", rollbackQdrantErr, "elasticsearch_error", rollbackElasticsearchErr)
 			if rollbackQdrant != nil {

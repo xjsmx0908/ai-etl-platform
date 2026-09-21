@@ -258,7 +258,7 @@ func indexDemoShowcase(ctx context.Context, cfg config.Config, qdrant demoChunkI
 	if !demoLoginEnabled(cfg) || qdrant == nil {
 		return nil
 	}
-	esIndexer, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+	esIndexer, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, es.WithReplicas(cfg.ESIndexReplicas))
 	if err != nil {
 		return err
 	}

@@ -81,6 +81,7 @@ type Config struct {
 	ESAddress          string
 	ESAPIKey           string
 	ESIndex            string
+	ESIndexReplicas    int
 	ESQueueKey         string
 	ESDeadLetterKey    string
 	ESReplayPeriod     time.Duration
@@ -336,6 +337,10 @@ func Load() Config {
 		ESAddress:          EnvStr("ES_ADDRESS", "http://elasticsearch:9200"),
 		ESAPIKey:           EnvSecret("ES_API_KEY", ""),
 		ESIndex:            EnvStr("ES_INDEX", "documents_text"),
+		// Default 0 because the shipped Compose stack runs a single Elasticsearch
+		// node, where a replica shard can never be allocated and the cluster would
+		// stay yellow. Multi-node deployments should set 1 or more.
+		ESIndexReplicas: EnvInt("ES_INDEX_REPLICAS", 0),
 		ESQueueKey:         EnvStr("ES_QUEUE_KEY", "es:index:retry"),
 		ESDeadLetterKey:    EnvStr("ES_DEADLETTER_KEY", "es:index:deadletter"),
 		ESReplayPeriod:     EnvDuration("ES_REPLAY_PERIOD", 2*time.Second),

@@ -23,6 +23,7 @@ type HTTPIndexer struct {
 	address               string
 	apiKey                string
 	index                 string
+	replicas              int
 	client                *http.Client
 	generationMappingOnce sync.Once
 	generationMappingErr  error
@@ -30,8 +31,27 @@ type HTTPIndexer struct {
 
 const cjkIndexVersion = "v2"
 
+// IndexerOption customizes how the physical index is created.
+type IndexerOption func(*HTTPIndexer)
+
+// WithReplicas sets index.number_of_replicas on newly created physical indices.
+//
+// Elasticsearch defaults to one replica. On a single-node cluster that replica
+// can never be allocated (the allocator refuses to place a shard copy on a node
+// that already holds the primary), so the cluster stays yellow forever and the
+// unassigned shard keeps reporting `same_shard`. Single-node deployments must
+// therefore pass 0; multi-node deployments can pass 1 or more.
+func WithReplicas(n int) IndexerOption {
+	return func(i *HTTPIndexer) {
+		if n < 0 {
+			n = 0
+		}
+		i.replicas = n
+	}
+}
+
 // NewHTTPIndexer creates an indexer and ensures target index exists.
-func NewHTTPIndexer(address, apiKey, index string) (*HTTPIndexer, error) {
+func NewHTTPIndexer(address, apiKey, index string, opts ...IndexerOption) (*HTTPIndexer, error) {
 	address = strings.TrimRight(strings.TrimSpace(address), "/")
 	index = strings.TrimSpace(index)
 
@@ -49,6 +69,9 @@ func NewHTTPIndexer(address, apiKey, index string) (*HTTPIndexer, error) {
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
+	}
+	for _, opt := range opts {
+		opt(idx)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -362,6 +385,11 @@ func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 
 	physicalIndex := i.index + "_" + cjkIndexVersion
 	createBody := map[string]interface{}{
+		"settings": map[string]interface{}{
+			// Explicitly pinned: Elasticsearch would otherwise default to one
+			// replica, which a single-node cluster can never allocate.
+			"number_of_replicas": i.replicas,
+		},
 		"mappings": map[string]interface{}{
 			"properties": map[string]interface{}{
 				"chunk_id":  map[string]string{"type": "keyword"},

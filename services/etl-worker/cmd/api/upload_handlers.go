@@ -146,7 +146,7 @@ func cascadeDeleteDocExcept(ctx context.Context, cfg config.Config, s3Client doc
 		_ = qs.Close()
 	}
 
-	idx, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+	idx, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, es.WithReplicas(cfg.ESIndexReplicas))
 	if err != nil {
 		errs = append(errs, "es init: "+err.Error())
 	} else {

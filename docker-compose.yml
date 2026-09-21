@@ -348,6 +348,7 @@ services:
       - ES_API_KEY=${ES_API_KEY:-}
       - ES_API_KEY_FILE=/run/secrets/es_api_key
       - ES_INDEX=${ES_INDEX:-documents_text}
+      - ES_INDEX_REPLICAS=${ES_INDEX_REPLICAS:-0}
       - ES_QUEUE_KEY=${ES_QUEUE_KEY:-es:index:retry}
       - ES_DEADLETTER_KEY=${ES_DEADLETTER_KEY:-es:index:deadletter}
       - ES_REPLAY_PERIOD=${ES_REPLAY_PERIOD:-2s}
@@ -503,6 +504,7 @@ services:
       - ES_API_KEY=${ES_API_KEY:-}
       - ES_API_KEY_FILE=/run/secrets/es_api_key
       - ES_INDEX=${ES_INDEX:-documents_text}
+      - ES_INDEX_REPLICAS=${ES_INDEX_REPLICAS:-0}
       - EMBED_ENDPOINT=${EMBED_ENDPOINT:-http://host.docker.internal:11434/api/embeddings}
       - EMBED_API_KEY=${EMBED_API_KEY:-}
       - EMBED_API_KEY_FILE=/run/secrets/embed_api_key

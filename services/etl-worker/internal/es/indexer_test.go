@@ -102,10 +102,60 @@ func TestNewHTTPIndexerCreatesVersionedCJKIndexAndWriteAlias(t *testing.T) {
 	if content["analyzer"] != "cjk" || content["search_analyzer"] != "cjk" {
 		t.Fatalf("expected CJK analyzer mapping, got %#v", content)
 	}
+	settings := created["settings"].(map[string]interface{})
+	if settings["number_of_replicas"] != float64(0) {
+		t.Fatalf("expected number_of_replicas 0 by default, got %#v", settings["number_of_replicas"])
+	}
 	actions := aliased["actions"].([]interface{})
 	add := actions[0].(map[string]interface{})["add"].(map[string]interface{})
 	if add["alias"] != "documents_text" || add["index"] != "documents_text_v2" || add["is_write_index"] != true {
 		t.Fatalf("unexpected alias action: %#v", add)
+	}
+}
+
+// A single-node cluster can never allocate a replica shard, so the create body
+// must pin number_of_replicas explicitly instead of inheriting the ES default.
+func TestNewHTTPIndexerPinsReplicaCount(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		opts     []IndexerOption
+		expected float64
+	}{
+		{name: "single node default", opts: nil, expected: 0},
+		{name: "explicit multi node", opts: []IndexerOption{WithReplicas(2)}, expected: 2},
+		{name: "negative clamps to zero", opts: []IndexerOption{WithReplicas(-3)}, expected: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var created map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodHead && r.URL.Path == "/documents_text":
+					w.WriteHeader(http.StatusNotFound)
+				case r.Method == http.MethodPut && r.URL.Path == "/documents_text_v2":
+					_ = json.NewDecoder(r.Body).Decode(&created)
+					w.WriteHeader(http.StatusOK)
+				case r.Method == http.MethodPost && r.URL.Path == "/_aliases":
+					w.WriteHeader(http.StatusOK)
+				default:
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			idx, err := NewHTTPIndexer(srv.URL, "", "documents_text", tc.opts...)
+			if err != nil {
+				t.Fatalf("new indexer: %v", err)
+			}
+			defer idx.Close()
+
+			settings, ok := created["settings"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected settings in create body, got %#v", created)
+			}
+			if settings["number_of_replicas"] != tc.expected {
+				t.Fatalf("expected number_of_replicas %v, got %#v", tc.expected, settings["number_of_replicas"])
+			}
+		})
 	}
 }
 

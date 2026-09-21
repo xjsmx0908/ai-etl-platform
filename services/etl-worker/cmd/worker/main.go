@@ -427,7 +427,7 @@ func newTaskSource(cfg config.Config, dlq model.DLQStore) (model.TaskSource, err
 }
 
 func newFullTextSink(cfg config.Config) (*es.AsyncSink, error) {
-	indexer, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex)
+	indexer, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex, es.WithReplicas(cfg.ESIndexReplicas))
 	if err != nil {
 		return nil, err
 	}
