@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"ai-etl-pipeline/internal/db"
+	"ai-etl-pipeline/internal/publicationworkflow"
 )
 
 // Store is the durable release-center seam. Implementations must preserve
@@ -22,6 +23,14 @@ type Store interface {
 	GetReview(context.Context, string, string) (ReviewReport, error)
 	SaveRequest(context.Context, ReleaseRequest) error
 	GetRequest(context.Context, string, string) (ReleaseRequest, error)
+	// FindRequestByCandidate resolves the durable request bound to an exact
+	// candidate regardless of which request id it was created under.
+	//
+	// release_center_requests is unique on the exact candidate, not only on
+	// request_id, so a row may legitimately exist under an id this code did not
+	// derive (an operator seed, a migration, or an older id scheme). Callers must
+	// adopt that id instead of inserting a second row for the same candidate.
+	FindRequestByCandidate(context.Context, string, publicationworkflow.Candidate) (ReleaseRequest, bool, error)
 	ListRequests(context.Context, string, int) ([]ReleaseRequest, error)
 	ListReviewJobs(context.Context, int) ([]ReviewJob, error)
 	RecordDecision(context.Context, Decision) error
@@ -265,6 +274,43 @@ func (s *PostgresStore) GetRequest(ctx context.Context, tenantID, requestID stri
 	}
 	request.Candidate.DocumentID = request.DocumentID
 	return request, nil
+}
+
+// FindRequestByCandidate loads the request whose exact candidate identity
+// matches, independent of request id. It exists so a caller that derived a
+// different id does not attempt a second insert: release_center_requests is
+// unique on (tenant, document, version, generation, revision), so that insert
+// would fail with a duplicate-key error and, in the automatic review loop, abort
+// every other pending document.
+func (s *PostgresStore) FindRequestByCandidate(ctx context.Context, tenantID string, candidate publicationworkflow.Candidate) (ReleaseRequest, bool, error) {
+	if s == nil || s.q == nil || strings.TrimSpace(tenantID) == "" ||
+		strings.TrimSpace(candidate.DocumentID) == "" ||
+		strings.TrimSpace(candidate.DocumentVersionID) == "" ||
+		strings.TrimSpace(candidate.GenerationID) == "" ||
+		candidate.ReleaseRevision <= 0 {
+		return ReleaseRequest{}, false, ErrInvalidReview
+	}
+	var request ReleaseRequest
+	err := s.q.QueryRow(ctx, `SELECT request_id,tenant_id,document_id,document_version_id,generation_id,
+		expected_chunk_count,expected_chunk_digest,release_revision,review_id,
+		COALESCE(policy_id,''),COALESCE(approver_group_id,''),allow_requester_approval,required_approvals,state,requested_by,created_at,updated_at
+		FROM release_center_requests WHERE tenant_id=$1 AND document_id=$2 AND document_version_id=$3
+			AND generation_id=$4 AND release_revision=$5`, tenantID, candidate.DocumentID,
+		candidate.DocumentVersionID, candidate.GenerationID, candidate.ReleaseRevision).Scan(
+		&request.ID, &request.TenantID, &request.DocumentID,
+		&request.Candidate.DocumentVersionID, &request.Candidate.GenerationID,
+		&request.Candidate.ExpectedChunkCount, &request.Candidate.ExpectedChunkDigest,
+		&request.Candidate.ReleaseRevision, &request.ReviewID, &request.PolicyID, &request.ApproverGroupID,
+		&request.AllowRequesterApproval, &request.RequiredApprovals,
+		&request.State, &request.RequestedBy, &request.CreatedAt, &request.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReleaseRequest{}, false, nil
+	}
+	if err != nil {
+		return ReleaseRequest{}, false, fmt.Errorf("find release request by candidate: %w", err)
+	}
+	request.Candidate.DocumentID = request.DocumentID
+	return request, true, nil
 }
 
 // ListReviewJobs returns managed documents whose current version is not the

@@ -84,6 +84,16 @@ func (s *memoryStore) GetRequest(_ context.Context, _, id string) (ReleaseReques
 	}
 	return request, nil
 }
+
+func (s *memoryStore) FindRequestByCandidate(_ context.Context, tenantID string, candidate publicationworkflow.Candidate) (ReleaseRequest, bool, error) {
+	for _, request := range s.requests {
+		if request.TenantID != tenantID || request.Candidate != candidate {
+			continue
+		}
+		return request, true, nil
+	}
+	return ReleaseRequest{}, false, nil
+}
 func (s *memoryStore) ListRequests(context.Context, string, int) ([]ReleaseRequest, error) {
 	return nil, nil
 }
@@ -717,5 +727,97 @@ func TestCoordinatorPurgesUnreferencedExpiredReviews(t *testing.T) {
 	}
 	if _, ok := store.reviews[kept.ID]; !ok {
 		t.Fatal("referenced expired review was purged")
+	}
+}
+
+// perDocumentWorkflowStub fails assessment for one document and succeeds for the
+// rest, so a test can place a broken document ahead of healthy ones.
+type perDocumentWorkflowStub struct {
+	failFor string
+}
+
+func (s *perDocumentWorkflowStub) Assess(_ context.Context, _ publicationworkflow.Actor, documentID string) (publicationworkflow.Assessment, error) {
+	if documentID == s.failFor {
+		return publicationworkflow.Assessment{}, fmt.Errorf("assessment unavailable for %s", documentID)
+	}
+	candidate := publicationworkflow.Candidate{
+		DocumentID: documentID, DocumentVersionID: "job-" + documentID, GenerationID: "gen-" + documentID,
+		ExpectedChunkCount: 3, ExpectedChunkDigest: "sha256:" + documentID, ReleaseRevision: 1,
+	}
+	return publicationworkflow.Assessment{DocumentID: documentID, Ready: true, Candidate: &candidate}, nil
+}
+
+func (s *perDocumentWorkflowStub) PublishApproved(context.Context, publicationworkflow.Actor, publicationworkflow.Candidate, string) (publicationworkflow.PublicationResult, error) {
+	return publicationworkflow.PublicationResult{}, nil
+}
+
+// orderedReviewJobStore hands back review jobs in the order the test declared,
+// because the in-memory store iterates a map and would make ordering random.
+type orderedReviewJobStore struct {
+	*memoryStore
+	jobs []ReviewJob
+}
+
+func (s *orderedReviewJobStore) ListReviewJobs(context.Context, int) ([]ReviewJob, error) {
+	return s.jobs, nil
+}
+
+// A request row can legitimately exist under an id this code did not derive (an
+// operator seed, a migration, an older id scheme). release_center_requests is
+// unique on the exact candidate, so a second insert is rejected with a
+// duplicate-key error. The coordinator must adopt the existing row instead.
+func TestCoordinatorAdoptsRequestBoundToSameCandidateUnderAnotherID(t *testing.T) {
+	candidate := readyCandidate()
+	now := time.Date(2026, 9, 21, 8, 0, 0, 0, time.UTC)
+	store := newMemoryStore()
+	store.requests["seeded-request"] = ReleaseRequest{
+		ID: "seeded-request", TenantID: "acme", DocumentID: candidate.DocumentID,
+		Candidate: candidate, ReviewID: "review-seeded", RequiredApprovals: 1,
+		State: RequestNeedsInfo, RequestedBy: "uploader", CreatedAt: now, UpdatedAt: now,
+	}
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{RunID: "run-1", Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, Summary: "checks passed"}}, store)
+
+	report, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatalf("adopting an existing exact-candidate request must not fail: %v", err)
+	}
+	if request.ID != "seeded-request" {
+		t.Fatalf("expected the persisted request id to be adopted, got %q", request.ID)
+	}
+	if len(store.requests) != 1 {
+		t.Fatalf("a second row was created for the same exact candidate: %d rows", len(store.requests))
+	}
+	persisted := store.requests["seeded-request"]
+	if persisted.State != RequestApprovalPending || persisted.ReviewID != report.ID {
+		t.Fatalf("adopted request was not advanced: %+v", persisted)
+	}
+}
+
+// One document that cannot be reviewed must not stop the rest of the queue.
+func TestRunPendingReviewsContinuesAfterOneDocumentFails(t *testing.T) {
+	store := &orderedReviewJobStore{memoryStore: newMemoryStore()}
+	store.jobs = []ReviewJob{
+		{TenantID: "acme", DocumentID: "doc-broken", RequestedBy: "uploader"},
+		{TenantID: "acme", DocumentID: "doc-healthy", RequestedBy: "uploader"},
+	}
+	workflow := &perDocumentWorkflowStub{failFor: "doc-broken"}
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{RunID: "run-1", Status: "completed", Recommendation: "publish", RiskLevel: RiskLow, Summary: "checks passed"}}, store)
+
+	err := coordinator.RunPendingReviews(context.Background(), publicationworkflow.Actor{UserID: "system", Role: "admin"}, 10)
+	if err == nil {
+		t.Fatal("expected the failed document to be reported")
+	}
+	if !strings.Contains(err.Error(), "doc-broken") {
+		t.Fatalf("expected the failure to name the offending document, got %v", err)
+	}
+	reviewed := false
+	for _, request := range store.requests {
+		if request.DocumentID == "doc-healthy" {
+			reviewed = true
+		}
+	}
+	if !reviewed {
+		t.Fatal("a failing document stopped the healthy document from being reviewed")
 	}
 }

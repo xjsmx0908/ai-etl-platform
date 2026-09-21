@@ -136,6 +136,22 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	if existingErr != nil && !errors.Is(existingErr, ErrRequestNotFound) {
 		return ReviewReport{}, ReleaseRequest{}, existingErr
 	}
+	if errors.Is(existingErr, ErrRequestNotFound) {
+		// The table is unique on the exact candidate, not only on request_id, so
+		// a row can already exist under an id this code did not derive (an
+		// operator seed, a migration, or an older id scheme). Adopt it: inserting
+		// a second row for the same candidate violates that constraint, and in
+		// the automatic review loop one such document would abort the whole
+		// queue on every tick.
+		adopted, found, err := c.store.FindRequestByCandidate(ctx, actor.TenantID, candidate)
+		if err != nil {
+			return ReviewReport{}, ReleaseRequest{}, err
+		}
+		if found {
+			requestID = adopted.ID
+			existing, existingErr = adopted, nil
+		}
+	}
 	if existingErr == nil {
 		switch existing.State {
 		case RequestPublished, RequestRejected:
@@ -311,14 +327,22 @@ func (c *Coordinator) RunPendingReviews(ctx context.Context, actor publicationwo
 	if err != nil {
 		return err
 	}
+	// One document that cannot be reviewed must not stop every other document
+	// from being reviewed. Collect per-document failures, keep draining the
+	// queue, and return the aggregate so the collector still reports trouble
+	// instead of the failure being invisible.
+	var failures []error
 	for _, job := range jobs {
 		requestedBy := strings.TrimSpace(job.RequestedBy)
 		if requestedBy == "" {
 			requestedBy = actor.UserID
 		}
 		if _, _, err := c.StartManagedReview(ctx, publicationworkflow.Actor{TenantID: job.TenantID, UserID: requestedBy, Role: actor.Role}, job.DocumentID); err != nil {
-			return err
+			failures = append(failures, fmt.Errorf("review document %s: %w", job.DocumentID, err))
 		}
+	}
+	if len(failures) > 0 {
+		return errors.Join(failures...)
 	}
 	if c.reviewRetention > 0 {
 		if _, err := c.store.PurgeExpiredReviews(ctx, now, c.reviewRetention, limit); err != nil {

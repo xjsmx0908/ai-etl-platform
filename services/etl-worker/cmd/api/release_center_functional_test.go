@@ -83,6 +83,16 @@ func (s *functionalReleaseStore) GetRequest(_ context.Context, tenantID, request
 	return request, nil
 }
 
+func (s *functionalReleaseStore) FindRequestByCandidate(_ context.Context, tenantID string, candidate publicationworkflow.Candidate) (releasecenter.ReleaseRequest, bool, error) {
+	for _, request := range s.requests {
+		if request.TenantID != tenantID || request.Candidate != candidate {
+			continue
+		}
+		return request, true, nil
+	}
+	return releasecenter.ReleaseRequest{}, false, nil
+}
+
 func (s *functionalReleaseStore) ListRequests(context.Context, string, int) ([]releasecenter.ReleaseRequest, error) {
 	return nil, nil
 }
