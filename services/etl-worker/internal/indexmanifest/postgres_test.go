@@ -769,3 +769,201 @@ func TestPostgresStoreGenerationOperationsSnapshotIsBoundedAndDurable(t *testing
 		t.Fatal(err)
 	}
 }
+
+// A failed generation is never active, so ClaimReconciliation cannot reach it.
+// Without its own claim it is never revisited: last_reconciled_at stays NULL,
+// repair_attempts stays 0, and a transient build failure is permanent.
+func TestPostgresStoreClaimsFailedRepairsWithinTheBudget(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State = StateFailed
+	m.ExpectedChunkCount = 0
+	m.ExpectedChunkDigest = ""
+	mock.ExpectQuery("WITH candidates AS.*state='failed' AND repair_attempts < \\$1.*FOR UPDATE SKIP LOCKED.*UPDATE index_manifests").
+		WithArgs(3, 25, "45s", "claim-1").
+		WillReturnRows(immutableManifestRowNullable(m, nil, nil))
+
+	got, err := NewPostgresStore(mock).ClaimFailedRepairs(context.Background(),
+		ReconciliationClaim{Limit: 25, Lease: 45 * time.Second, Token: "claim-1"}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].GenerationID != m.GenerationID || got[0].State != StateFailed ||
+		got[0].ReconcileClaimToken != "claim-1" {
+		t.Fatalf("claimed failed manifests = %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A budget of zero would claim every failed generation on every pass forever,
+// which is the opposite of a bounded repair.
+func TestPostgresStoreRejectsClaimingFailedRepairsWithoutABudget(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	store := NewPostgresStore(mock)
+	for _, tc := range []struct {
+		name   string
+		claim  ReconciliationClaim
+		budget int
+	}{
+		{"zero budget", ReconciliationClaim{Limit: 1, Lease: time.Minute, Token: "claim-1"}, 0},
+		{"negative budget", ReconciliationClaim{Limit: 1, Lease: time.Minute, Token: "claim-1"}, -1},
+		{"missing token", ReconciliationClaim{Limit: 1, Lease: time.Minute}, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.ClaimFailedRepairs(context.Background(), tc.claim, tc.budget); !errors.Is(err, ErrInvalidManifest) {
+				t.Fatalf("err = %v, want ErrInvalidManifest", err)
+			}
+		})
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("invalid claims must not reach the database: %v", err)
+	}
+}
+
+// SealExpected refuses to overwrite an existing seal and Build.Complete
+// compares the seal it asked for against the one it got back. A retry that
+// leaves the failed attempt's seal in place therefore fails with a
+// compare-and-set conflict whenever the rebuild does not reproduce the exact
+// same chunk set — the one case a retry exists for.
+func TestPostgresStoreRetryClearsTheSealOfTheFailedAttempt(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectExec("UPDATE index_manifests SET state='building'.*expected_chunk_count=NULL, expected_chunk_digest=NULL.*WHERE generation_id=\\$1 AND state='failed'").
+		WithArgs("gen-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	if err := NewPostgresStore(mock).Retry(context.Background(), "gen-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The replay has to reopen the same durable path the worker already consumes:
+// the job back to published and its outbox event back in the relay, in one
+// transaction with the manifest, so a crash cannot leave a reopened job with a
+// manifest that is still failed.
+func TestPostgresStoreSchedulesFailedRepairThroughTheIngestionOutbox(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State = StateFailed
+	m.ReconcileClaimToken = "claim-1"
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'.*status IN \\('completed','failed'\\)").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE ingestion_outbox SET published_at=NULL,claimed_at=NULL,available_at=now\\(\\)").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE index_manifests SET state='building'.*reconcile_lease_until=NULL, reconcile_claim_token=''").
+		WithArgs(m.GenerationID, "claim-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	if err := NewPostgresStore(mock).ScheduleFailedRepair(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A failed generation with no ingestion job cannot be rebuilt. Charging the
+// budget anyway is what makes it escalate to repair_exhausted instead of being
+// claimed again on every pass; leaving the manifest failed keeps the alert
+// honest rather than parking it in a building state nothing will ever finish.
+func TestPostgresStoreRecordsUnrepairableFailedGenerationWithoutReopeningAJob(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State = StateFailed
+	m.ReconcileClaimToken = "claim-1"
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectExec("UPDATE index_manifests SET repair_attempts=repair_attempts\\+1.*state='failed'").
+		WithArgs(m.GenerationID, ErrNoReplayPath.Error(), "claim-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	err = NewPostgresStore(mock).ScheduleFailedRepair(context.Background(), m)
+	if !errors.Is(err, ErrNoReplayPath) {
+		t.Fatalf("err = %v, want ErrNoReplayPath", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A stale claim must not reopen a job for a generation another pass already
+// moved on, and the transaction must be rolled back rather than half-applied.
+func TestPostgresStoreRejectsStaleFailedRepairClaim(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State = StateFailed
+	m.ReconcileClaimToken = "claim-stale"
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE ingestion_outbox SET published_at=NULL").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE index_manifests SET state='building'").
+		WithArgs(m.GenerationID, "claim-stale").WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectRollback()
+
+	err = NewPostgresStore(mock).ScheduleFailedRepair(context.Background(), m)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// repair_exhausted is the signal that automatic repair has given up. Counting
+// only active generations made six permanently dead ones invisible while the
+// alert for them kept firing.
+func TestPostgresStoreCountsExhaustedFailedGenerationsInDiagnostics(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery("SELECT state,count\\(\\*\\),.*FROM index_manifests").
+		WillReturnRows(pgxmock.NewRows([]string{"state", "count", "oldest_age_seconds"}).AddRow("failed", 6, 360.0))
+	mock.ExpectQuery("SELECT.*state='failed' AND repair_attempts >= \\$1.*retention_failed").
+		WithArgs(3).WillReturnRows(pgxmock.NewRows([]string{
+		"backend_diverged", "repair_exhausted", "retention_failed",
+	}).AddRow(0, 6, 0))
+
+	got, err := NewPostgresStore(mock).OperationsSnapshot(context.Background(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Manifests[StateFailed] != 6 || got.RepairExhausted != 6 {
+		t.Fatalf("snapshot = %+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -112,6 +112,10 @@ var (
 	ErrInvalidManifest = errors.New("indexmanifest: invalid manifest")
 	ErrNotReady        = errors.New("indexmanifest: manifest is not ready")
 	ErrConflict        = errors.New("indexmanifest: compare-and-set conflict")
+	// ErrNoReplayPath reports a failed generation that has no ingestion job to
+	// reopen. There is no automatic route back to a projection for it, so it is
+	// counted separately from a scheduling error rather than retried forever.
+	ErrNoReplayPath = errors.New("indexmanifest: failed generation has no ingestion job to replay")
 )
 
 // ChunkIdentityDigest returns a stable digest of chunk identities and content

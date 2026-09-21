@@ -335,6 +335,131 @@ WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3`, m.DocumentVersionID, m.TenantID
 	return RepairScheduled, nil
 }
 
+// ClaimFailedRepairs leases generations whose build failed and whose bounded
+// repair budget is not yet spent.
+//
+// ClaimReconciliation deliberately only looks at active generations: those are
+// the ones with a live projection to compare across backends. A failed
+// generation has no projection to compare, so it needs its own claim. Without
+// one it is never revisited at all — last_reconciled_at stays NULL,
+// repair_attempts stays 0, and a build that hit a transient failure is dead
+// until an operator edits the database by hand.
+func (s *PostgresStore) ClaimFailedRepairs(ctx context.Context, claim ReconciliationClaim, maxRepairs int) ([]Manifest, error) {
+	if claim.Limit <= 0 {
+		claim.Limit = 100
+	}
+	if claim.Lease <= 0 {
+		claim.Lease = time.Minute
+	}
+	if claim.Token == "" || maxRepairs <= 0 {
+		return nil, ErrInvalidManifest
+	}
+	rows, err := s.q.Query(ctx, `WITH candidates AS (
+	SELECT generation_id FROM index_manifests
+	WHERE state='failed' AND repair_attempts < $1
+	AND (reconcile_lease_until IS NULL OR reconcile_lease_until <= now())
+	ORDER BY last_attempt_at, created_at
+	FOR UPDATE SKIP LOCKED LIMIT $2
+)
+UPDATE index_manifests AS m SET reconcile_lease_until=now()+$3::interval,reconcile_claim_token=$4
+FROM candidates AS c WHERE m.generation_id=c.generation_id
+RETURNING m.generation_id,m.tenant_id,m.document_id,m.document_version_id,
+m.chunker_version,m.embedding_model,m.vector_dimension,m.schema_version,
+m.collection_version,m.index_version,m.expected_active_generation_id,
+m.expected_chunk_count,m.expected_chunk_digest,m.state`, maxRepairs, claim.Limit, claim.Lease.String(), claim.Token)
+	if err != nil {
+		return nil, fmt.Errorf("claim failed generation repairs: %w", err)
+	}
+	defer rows.Close()
+	manifests := make([]Manifest, 0, claim.Limit)
+	for rows.Next() {
+		manifest, err := scanManifest(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan claimed failed manifest: %w", err)
+		}
+		manifest.ReconcileClaimToken = claim.Token
+		manifests = append(manifests, manifest)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimed failed manifests: %w", err)
+	}
+	return manifests, nil
+}
+
+// ScheduleFailedRepair reopens the durable ingestion path for a generation
+// whose build failed, so the worker rebuilds it instead of leaving the
+// projection permanently dead.
+//
+// It is the failed-state counterpart of the replay scheduling in
+// FinishReconciliation and reuses the same durable mechanism rather than
+// inventing a second one: reopen the ingestion job, put its outbox event back
+// in the relay, and let the normal pipeline run. The repair budget is charged
+// exactly once per attempt — including when there is no job to reopen, because
+// a generation that can never be rebuilt must reach repair_exhausted and
+// escalate rather than be re-claimed on every pass forever.
+func (s *PostgresStore) ScheduleFailedRepair(ctx context.Context, manifest Manifest) error {
+	if manifest.GenerationID == "" || manifest.TenantID == "" || manifest.DocumentID == "" ||
+		manifest.DocumentVersionID == "" || manifest.ReconcileClaimToken == "" {
+		return ErrInvalidManifest
+	}
+	tx, err := s.q.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin failed generation repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	replayable := true
+	tag, err := tx.Exec(ctx, `UPDATE ingestion_jobs SET status='published',lease_until=NULL,completed_at=NULL,error='',updated_at=now()
+WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3 AND status IN ('completed','failed')`,
+		manifest.DocumentVersionID, manifest.TenantID, manifest.DocumentID)
+	if err != nil {
+		return fmt.Errorf("reopen failed ingestion job: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		replayable = false
+	}
+	if replayable {
+		tag, err = tx.Exec(ctx, `UPDATE ingestion_outbox SET published_at=NULL,claimed_at=NULL,available_at=now()
+WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3`, manifest.DocumentVersionID, manifest.TenantID, manifest.DocumentID)
+		if err != nil {
+			return fmt.Errorf("reopen failed ingestion outbox: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			replayable = false
+		}
+	}
+	if replayable {
+		tag, err = tx.Exec(ctx, retryFailedManifestSQL+`, reconcile_lease_until=NULL, reconcile_claim_token=''
+WHERE generation_id=$1 AND reconcile_claim_token=$2 AND state='failed'`, manifest.GenerationID, manifest.ReconcileClaimToken)
+		if err != nil {
+			return fmt.Errorf("reopen failed generation manifest: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit failed generation repair: %w", err)
+		}
+		return nil
+	}
+	// No ingestion job to reopen: nothing can rebuild this generation, so the
+	// projection stays unavailable. Record why, release the lease and charge one
+	// unit of the budget so the state escalates to repair_exhausted.
+	tag, err = tx.Exec(ctx, `UPDATE index_manifests SET repair_attempts=repair_attempts+1,
+reconcile_lease_until=NULL,reconcile_claim_token='',last_reconcile_error=$2
+WHERE generation_id=$1 AND reconcile_claim_token=$3 AND state='failed'`,
+		manifest.GenerationID, ErrNoReplayPath.Error(), manifest.ReconcileClaimToken)
+	if err != nil {
+		return fmt.Errorf("record unrepairable failed generation: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit unrepairable failed generation: %w", err)
+	}
+	return fmt.Errorf("%w: generation %s", ErrNoReplayPath, manifest.GenerationID)
+}
+
 func (s *PostgresStore) Ensure(ctx context.Context, manifest Manifest) error {
 	if err := validateBuildDefinition(manifest); err != nil {
 		return err
@@ -406,11 +531,7 @@ func (s *PostgresStore) Retry(ctx context.Context, generationID string) error {
 	if generationID == "" {
 		return ErrInvalidManifest
 	}
-	tag, err := s.q.Exec(ctx, `UPDATE index_manifests SET state='building', attempts=attempts+1,
-last_error='', last_attempt_at=now(), qdrant_count=NULL, qdrant_digest=NULL,
-qdrant_observed_at=NULL, elasticsearch_count=NULL, elasticsearch_digest=NULL,
-elasticsearch_observed_at=NULL, verified_at=NULL
-WHERE generation_id=$1 AND state='failed'`, generationID)
+	tag, err := s.q.Exec(ctx, retryFailedManifestSQL+" WHERE generation_id=$1 AND state='failed'", generationID)
 	if err != nil {
 		return fmt.Errorf("retry index manifest: %w", err)
 	}
@@ -419,6 +540,21 @@ WHERE generation_id=$1 AND state='failed'`, generationID)
 	}
 	return nil
 }
+
+// retryFailedManifestSQL reopens a failed generation for another build attempt.
+//
+// It clears the sealed chunk identity of the failed attempt as well as the
+// observations. SealExpected refuses to overwrite an existing seal, and
+// Build.Complete compares the seal it just asked for against the one it got
+// back, so leaving the failed attempt's seal in place would make every retry
+// that does not reproduce the exact same chunk set fail with a compare-and-set
+// conflict instead of recording the new identity — which is precisely the case
+// a retry exists for. The seal describes one attempt's output; a new attempt
+// has to be free to produce its own.
+const retryFailedManifestSQL = `UPDATE index_manifests SET state='building', attempts=attempts+1,
+last_error='', last_attempt_at=now(), expected_chunk_count=NULL, expected_chunk_digest=NULL,
+qdrant_count=NULL, qdrant_digest=NULL, qdrant_observed_at=NULL, elasticsearch_count=NULL,
+elasticsearch_digest=NULL, elasticsearch_observed_at=NULL, verified_at=NULL`
 
 func (s *PostgresStore) MarkReady(ctx context.Context, generationID string) error {
 	if generationID == "" {
@@ -725,8 +861,9 @@ FROM index_manifests GROUP BY state`)
 	}
 	err = s.q.QueryRow(ctx, `SELECT
 	count(*) FILTER (WHERE state='active' AND last_reconcile_error<>'') AS backend_diverged,
-count(*) FILTER (WHERE state='active' AND last_reconcile_error<>'' AND repair_attempts >= $1) AS repair_exhausted,
-count(*) FILTER (WHERE state='retired' AND retention_last_error<>'') AS retention_failed
+	count(*) FILTER (WHERE (state='active' AND last_reconcile_error<>'' AND repair_attempts >= $1)
+	                    OR (state='failed' AND repair_attempts >= $1)) AS repair_exhausted,
+	count(*) FILTER (WHERE state='retired' AND retention_last_error<>'') AS retention_failed
 FROM index_manifests`, maxRepairs).Scan(
 		&snapshot.BackendDiverged, &snapshot.RepairExhausted, &snapshot.RetentionFailed,
 	)

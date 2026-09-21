@@ -16,6 +16,15 @@ type reconciliationStoreStub struct {
 	results      []ReconciliationResult
 	disposition  RepairDisposition
 	finishErrors map[string]error
+	// Failed generations are claimed through a separate call so the active
+	// observation pass can be asserted to leave them alone.
+	failed          []Manifest
+	claimedBudgets  []int
+	scheduled       []string
+	scheduleErrors  map[string]error
+	claimFailedErr  error
+	scheduleCalls   int
+	claimFailedCall int
 }
 
 type reconciliationObserverStub struct {
@@ -41,6 +50,24 @@ func (s *reconciliationStoreStub) FinishReconciliation(_ context.Context, result
 		return s.disposition, nil
 	}
 	return RepairNotNeeded, nil
+}
+
+func (s *reconciliationStoreStub) ClaimFailedRepairs(_ context.Context, _ ReconciliationClaim, maxRepairs int) ([]Manifest, error) {
+	s.claimFailedCall++
+	s.claimedBudgets = append(s.claimedBudgets, maxRepairs)
+	if s.claimFailedErr != nil {
+		return nil, s.claimFailedErr
+	}
+	return s.failed, nil
+}
+
+func (s *reconciliationStoreStub) ScheduleFailedRepair(_ context.Context, manifest Manifest) error {
+	s.scheduleCalls++
+	if err := s.scheduleErrors[manifest.GenerationID]; err != nil {
+		return err
+	}
+	s.scheduled = append(s.scheduled, manifest.GenerationID)
+	return nil
 }
 
 func TestReconcilerContinuesAfterStaleClaimConflict(t *testing.T) {
@@ -191,5 +218,128 @@ func TestReconcilerPublishesOneBoundedReportPerPass(t *testing.T) {
 	}
 	if len(observer.reports) != 1 || !reflect.DeepEqual(observer.reports[0], report) || observer.errors[0] != nil {
 		t.Fatalf("observed reports=%+v errors=%+v", observer.reports, observer.errors)
+	}
+}
+
+// A generation whose build failed is not active, so the observation pass never
+// claims it and the outbox row that carried its one delivery is already
+// published. Without a replay pass it stays failed forever while every health
+// signal reports the platform as healthy.
+func TestReconcilerReplaysFailedGenerationsThroughTheirIngestionJob(t *testing.T) {
+	failed := []Manifest{
+		{GenerationID: "gen-dead-1", TenantID: "acme", DocumentID: "doc-1", DocumentVersionID: "job-1", State: StateFailed},
+		{GenerationID: "gen-dead-2", TenantID: "acme", DocumentID: "doc-2", DocumentVersionID: "job-2", State: StateFailed},
+	}
+	store := &reconciliationStoreStub{failed: failed}
+	empty := reconciliationProjectionStub{byGeneration: map[string]BackendObservation{}}
+	reconciler := NewReconciler(store, empty, empty, ReconcilerOptions{
+		BatchSize: 10, Interval: time.Minute, Lease: 30 * time.Second, MaxRepairs: 3,
+	})
+
+	report, err := reconciler.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Checked != 2 || report.RepairReplayed != 2 || report.RepairUnavailable != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if !reflect.DeepEqual(store.scheduled, []string{"gen-dead-1", "gen-dead-2"}) {
+		t.Fatalf("scheduled = %v", store.scheduled)
+	}
+	// A failed generation has no projection to observe, so the active pass must
+	// not have touched it: no finish results, no health accounting.
+	if len(store.results) != 0 || report.Healthy != 0 || report.Diverged != 0 {
+		t.Fatalf("failed generations were observed as active: results=%+v report=%+v", store.results, report)
+	}
+}
+
+// The bound has to reach the claim, otherwise "bounded repair" is only a name:
+// a generation whose budget is spent would be replayed on every pass forever.
+func TestReconcilerAsksTheStoreForTheConfiguredBoundedRepairBudget(t *testing.T) {
+	store := &reconciliationStoreStub{}
+	empty := reconciliationProjectionStub{byGeneration: map[string]BackendObservation{}}
+	reconciler := NewReconciler(store, empty, empty, ReconcilerOptions{
+		BatchSize: 10, Interval: time.Minute, Lease: 30 * time.Second, MaxRepairs: 7,
+	})
+
+	report, err := reconciler.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.claimFailedCall != 1 || !reflect.DeepEqual(store.claimedBudgets, []int{7}) {
+		t.Fatalf("claim budgets = %v calls = %d", store.claimedBudgets, store.claimFailedCall)
+	}
+	if report.RepairReplayed != 0 || report.Checked != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+// An unconfigured reconciler must still bound its budget rather than ask the
+// store to claim with a budget of zero, which the store rejects as invalid.
+func TestReconcilerDefaultsTheRepairBudgetWhenUnconfigured(t *testing.T) {
+	store := &reconciliationStoreStub{}
+	empty := reconciliationProjectionStub{byGeneration: map[string]BackendObservation{}}
+	reconciler := NewReconciler(store, empty, empty, ReconcilerOptions{BatchSize: 1, Lease: time.Minute})
+
+	if _, err := reconciler.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(store.claimedBudgets, []int{3}) {
+		t.Fatalf("claim budgets = %v", store.claimedBudgets)
+	}
+}
+
+// A failed generation with no ingestion job has no automatic route back to a
+// projection. That is a different outcome from a scheduling failure and must be
+// reported as such: the repair budget is still charged so the state escalates
+// to repair_exhausted instead of being re-claimed on every pass.
+func TestReconcilerCountsFailedGenerationsWithoutAReplayPathSeparately(t *testing.T) {
+	store := &reconciliationStoreStub{
+		failed:         []Manifest{{GenerationID: "gen-orphan", TenantID: "acme", DocumentID: "doc-1", DocumentVersionID: "job-1", State: StateFailed}},
+		scheduleErrors: map[string]error{"gen-orphan": ErrNoReplayPath},
+	}
+	empty := reconciliationProjectionStub{byGeneration: map[string]BackendObservation{}}
+	reconciler := NewReconciler(store, empty, empty, ReconcilerOptions{
+		BatchSize: 10, Interval: time.Minute, Lease: time.Minute, MaxRepairs: 3,
+	})
+
+	report, err := reconciler.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("an unavailable replay path is a recorded outcome, not a pass failure: %v", err)
+	}
+	if report.RepairUnavailable != 1 || report.RepairReplayed != 0 || report.Conflicted != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+// A failure to claim failed generations must not stop the active pass from
+// being reported: the two claims are independent, and losing the active
+// observation would hide live divergence behind a replay problem.
+func TestReconcilerStillReportsActivePassWhenTheFailedClaimFails(t *testing.T) {
+	active := Manifest{
+		GenerationID: "gen-1", TenantID: "acme", DocumentID: "doc-1", DocumentVersionID: "job-1",
+		ExpectedChunkCount: 1, ExpectedChunkDigest: "expected", State: StateActive,
+	}
+	store := &reconciliationStoreStub{
+		manifests:      []Manifest{active},
+		claimFailedErr: errors.New("claim failed repairs: connection refused"),
+	}
+	matching := reconciliationProjectionStub{byGeneration: map[string]BackendObservation{
+		"gen-1": {Count: 1, Digest: "expected"},
+	}}
+	observer := &reconciliationObserverStub{}
+	reconciler := NewReconciler(store, matching, matching, ReconcilerOptions{
+		BatchSize: 10, Interval: time.Minute, Lease: time.Minute, MaxRepairs: 3,
+	}).WithObserver(observer)
+
+	report, err := reconciler.RunOnce(context.Background())
+	if err == nil {
+		t.Fatal("expected the claim failure to reach the caller")
+	}
+	if report.Healthy != 1 || report.Checked != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(observer.reports) != 1 || observer.reports[0].Healthy != 1 {
+		t.Fatalf("observed reports=%+v", observer.reports)
 	}
 }

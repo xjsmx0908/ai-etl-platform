@@ -554,6 +554,7 @@ func (m *Metrics) ObserveReconciliation(report indexmanifest.ReconciliationRepor
 		"healthy": report.Healthy, "diverged": report.Diverged,
 		"repair_scheduled": report.RepairScheduled, "repair_pending": report.RepairPending,
 		"repair_exhausted": report.RepairExhausted, "conflicted": report.Conflicted,
+		"repair_replayed": report.RepairReplayed, "repair_unavailable": report.RepairUnavailable,
 	} {
 		m.GenerationReconciliations.WithLabelValues(outcome).Add(float64(count))
 	}

@@ -38,6 +38,8 @@ const (
 type ReconciliationStore interface {
 	ClaimReconciliation(context.Context, ReconciliationClaim) ([]Manifest, error)
 	FinishReconciliation(context.Context, ReconciliationResult, int) (RepairDisposition, error)
+	ClaimFailedRepairs(context.Context, ReconciliationClaim, int) ([]Manifest, error)
+	ScheduleFailedRepair(context.Context, Manifest) error
 }
 
 type ReconcilerOptions struct {
@@ -55,6 +57,13 @@ type ReconciliationReport struct {
 	RepairPending   int
 	RepairExhausted int
 	Conflicted      int
+	// RepairReplayed counts failed generations whose durable ingestion path was
+	// reopened for another build attempt.
+	RepairReplayed int
+	// RepairUnavailable counts failed generations that have no ingestion job to
+	// replay. Their repair budget is consumed without a rebuild, so they reach
+	// repair_exhausted and escalate instead of being re-claimed forever.
+	RepairUnavailable int
 }
 
 type ReconciliationObserver interface {
@@ -80,6 +89,14 @@ func NewReconciler(store ReconciliationStore, qdrant, elasticsearch Projection, 
 	return &Reconciler{store: store, qdrant: qdrant, elasticsearch: elasticsearch, options: options}
 }
 
+// RunOnce performs one pass over both kinds of durable generation damage.
+//
+// Active generations are observed across backends and divergences are replayed
+// through their ingestion outbox. Failed generations are a different decision:
+// there is no projection to observe and nothing to compare, only a build that
+// never finished. They are claimed separately and replayed through the same
+// durable path, bounded by the same repair budget, so a build that cannot
+// succeed escalates instead of sitting dead forever.
 func (r *Reconciler) RunOnce(ctx context.Context) (ReconciliationReport, error) {
 	var report ReconciliationReport
 	var runErr error
@@ -92,13 +109,35 @@ func (r *Reconciler) RunOnce(ctx context.Context) (ReconciliationReport, error) 
 		runErr = ErrInvalidManifest
 		return report, runErr
 	}
+	active, activeErr := r.reconcileActive(ctx)
+	replayed, replayErr := r.replayFailed(ctx)
+	report = mergeReconciliationReports(active, replayed)
+	runErr = errors.Join(activeErr, replayErr)
+	return report, runErr
+}
+
+func mergeReconciliationReports(a, b ReconciliationReport) ReconciliationReport {
+	return ReconciliationReport{
+		Checked:           a.Checked + b.Checked,
+		Healthy:           a.Healthy + b.Healthy,
+		Diverged:          a.Diverged + b.Diverged,
+		RepairScheduled:   a.RepairScheduled + b.RepairScheduled,
+		RepairPending:     a.RepairPending + b.RepairPending,
+		RepairExhausted:   a.RepairExhausted + b.RepairExhausted,
+		Conflicted:        a.Conflicted + b.Conflicted,
+		RepairReplayed:    a.RepairReplayed + b.RepairReplayed,
+		RepairUnavailable: a.RepairUnavailable + b.RepairUnavailable,
+	}
+}
+
+func (r *Reconciler) reconcileActive(ctx context.Context) (ReconciliationReport, error) {
+	var report ReconciliationReport
 	claim := ReconciliationClaim{Limit: r.options.BatchSize, Lease: r.options.Lease, Token: newReconciliationToken()}
 	manifests, err := r.store.ClaimReconciliation(ctx, claim)
 	if err != nil {
-		runErr = fmt.Errorf("claim manifest reconciliation: %w", err)
-		return report, runErr
+		return report, fmt.Errorf("claim manifest reconciliation: %w", err)
 	}
-	report = ReconciliationReport{Checked: len(manifests)}
+	report.Checked = len(manifests)
 	// One manifest whose durable bookkeeping cannot be written must not stop the
 	// rest of the batch. Every claimed manifest is already leased, so returning
 	// here would leave all the later ones unobserved until their lease expires:
@@ -149,8 +188,40 @@ func (r *Reconciler) RunOnce(ctx context.Context) (ReconciliationReport, error) 
 			report.RepairExhausted++
 		}
 	}
-	runErr = errors.Join(finishFailures...)
-	return report, runErr
+	return report, errors.Join(finishFailures...)
+}
+
+// replayFailed reopens the durable ingestion path for generations whose build
+// failed. Nothing else does: a failed generation is not active, so the active
+// pass never claims it, and the outbox row that carried its one delivery is
+// already published, so the relay never picks it up again. Left alone it stays
+// failed for good while every health signal reports the platform as healthy.
+func (r *Reconciler) replayFailed(ctx context.Context) (ReconciliationReport, error) {
+	var report ReconciliationReport
+	claim := ReconciliationClaim{Limit: r.options.BatchSize, Lease: r.options.Lease, Token: newReconciliationToken()}
+	manifests, err := r.store.ClaimFailedRepairs(ctx, claim, r.maxRepairs())
+	if err != nil {
+		return report, fmt.Errorf("claim failed generation repairs: %w", err)
+	}
+	report.Checked = len(manifests)
+	var failures []error
+	for _, manifest := range manifests {
+		scheduleErr := r.store.ScheduleFailedRepair(ctx, manifest)
+		if scheduleErr == nil {
+			report.RepairReplayed++
+			continue
+		}
+		if errors.Is(scheduleErr, ErrConflict) {
+			report.Conflicted++
+			continue
+		}
+		if errors.Is(scheduleErr, ErrNoReplayPath) {
+			report.RepairUnavailable++
+			continue
+		}
+		failures = append(failures, fmt.Errorf("schedule failed generation repair %s: %w", manifest.GenerationID, scheduleErr))
+	}
+	return report, errors.Join(failures...)
 }
 
 // Run performs an immediate pass, then reconciles periodically until shutdown.
@@ -173,6 +244,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 				"checked", report.Checked, "healthy", report.Healthy,
 				"diverged", report.Diverged, "repair_scheduled", report.RepairScheduled,
 				"repair_pending", report.RepairPending, "repair_exhausted", report.RepairExhausted,
+				"repair_replayed", report.RepairReplayed, "repair_unavailable", report.RepairUnavailable,
 				"conflicted", report.Conflicted)
 		}
 		select {
@@ -185,6 +257,16 @@ func (r *Reconciler) Run(ctx context.Context) {
 
 func newReconciliationToken() string {
 	return "reconcile-" + uuid.NewString()
+}
+
+// maxRepairs applies the same default the store uses, so an unconfigured
+// reconciler still bounds its replay budget instead of asking the store to
+// claim with a budget of zero.
+func (r *Reconciler) maxRepairs() int {
+	if r.options.MaxRepairs <= 0 {
+		return 3
+	}
+	return r.options.MaxRepairs
 }
 
 func observationMatches(manifest Manifest, observation BackendObservation) bool {
