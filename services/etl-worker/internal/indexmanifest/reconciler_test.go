@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,48 @@ func TestReconcilerContinuesAfterStaleClaimConflict(t *testing.T) {
 	}
 	if len(store.results) != 2 {
 		t.Fatalf("finished %d manifests, want 2", len(store.results))
+	}
+}
+
+// A manifest whose durable bookkeeping cannot be written must not stop the rest
+// of the batch. Every claimed manifest is already leased, so returning early
+// would leave all the later ones unobserved until their lease expires, and one
+// unrepairable row would quietly reduce the pass to whatever was claimed before
+// it. The failure must still reach the caller.
+func TestReconcilerReportsFinishFailureWithoutStoppingTheBatch(t *testing.T) {
+	manifests := []Manifest{
+		{GenerationID: "gen-broken", TenantID: "acme", DocumentID: "doc-1", DocumentVersionID: "job-1", ExpectedChunkCount: 1, ExpectedChunkDigest: "expected", State: StateActive},
+		{GenerationID: "gen-next", TenantID: "acme", DocumentID: "doc-2", DocumentVersionID: "job-2", ExpectedChunkCount: 1, ExpectedChunkDigest: "expected", State: StateActive},
+		{GenerationID: "gen-last", TenantID: "acme", DocumentID: "doc-3", DocumentVersionID: "job-3", ExpectedChunkCount: 1, ExpectedChunkDigest: "expected", State: StateActive},
+	}
+	store := &reconciliationStoreStub{manifests: manifests, finishErrors: map[string]error{
+		"gen-broken": errors.New("load repair ingestion job: no rows in result set"),
+	}}
+	matching := reconciliationProjectionStub{byGeneration: map[string]BackendObservation{
+		"gen-broken": {Count: 1, Digest: "expected"},
+		"gen-next":   {Count: 1, Digest: "expected"},
+		"gen-last":   {Count: 1, Digest: "expected"},
+	}}
+	observer := &reconciliationObserverStub{}
+	reconciler := NewReconciler(store, matching, matching, ReconcilerOptions{
+		BatchSize: 3, Interval: time.Minute, Lease: time.Minute, MaxRepairs: 3,
+	}).WithObserver(observer)
+
+	report, err := reconciler.RunOnce(context.Background())
+	if err == nil {
+		t.Fatal("finish failure was not reported to the caller")
+	}
+	if !strings.Contains(err.Error(), "gen-broken") {
+		t.Fatalf("error does not name the failing manifest: %v", err)
+	}
+	if report.Checked != 3 || report.Healthy != 2 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(store.results) != 3 {
+		t.Fatalf("finished %d manifests, want all 3", len(store.results))
+	}
+	if len(observer.errors) != 1 || observer.errors[0] == nil {
+		t.Fatalf("observer errors = %+v", observer.errors)
 	}
 }
 

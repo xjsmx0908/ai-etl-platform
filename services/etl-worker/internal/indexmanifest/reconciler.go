@@ -99,6 +99,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) (ReconciliationReport, error) 
 		return report, runErr
 	}
 	report = ReconciliationReport{Checked: len(manifests)}
+	// One manifest whose durable bookkeeping cannot be written must not stop the
+	// rest of the batch. Every claimed manifest is already leased, so returning
+	// here would leave all the later ones unobserved until their lease expires:
+	// a single unrepairable row would silently reduce the whole reconciliation
+	// pass to whatever happened to be claimed before it. Collect the failures and
+	// keep draining; the caller still receives them.
+	var finishFailures []error
 	for _, manifest := range manifests {
 		identity := GenerationIdentity{GenerationID: manifest.GenerationID, VersionIdentity: VersionIdentity{
 			TenantID: manifest.TenantID, DocumentID: manifest.DocumentID, DocumentVersionID: manifest.DocumentVersionID,
@@ -125,8 +132,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) (ReconciliationReport, error) 
 				report.Conflicted++
 				continue
 			}
-			runErr = fmt.Errorf("finish manifest reconciliation: %w", finishErr)
-			return report, runErr
+			finishFailures = append(finishFailures, fmt.Errorf("finish manifest reconciliation %s: %w", manifest.GenerationID, finishErr))
+			continue
 		}
 		if result.Healthy {
 			report.Healthy++
@@ -142,7 +149,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) (ReconciliationReport, error) 
 			report.RepairExhausted++
 		}
 	}
-	return report, nil
+	runErr = errors.Join(finishFailures...)
+	return report, runErr
 }
 
 // Run performs an immediate pass, then reconciles periodically until shutdown.

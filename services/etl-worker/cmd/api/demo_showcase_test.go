@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	pgxmock "github.com/pashagolub/pgxmock/v5"
 
 	"ai-etl-pipeline/internal/indexmanifest"
 	"ai-etl-pipeline/internal/model"
@@ -120,6 +124,99 @@ func TestEnsureDemoShowcaseIndex_IndexesEveryShowcaseDocument(t *testing.T) {
 					backend.name, observed.Count, doc.docID, len(doc.chunks))
 			}
 		}
+	}
+}
+
+// The seeded manifest expectation must equal the identity digest of the chunks
+// the retrieval index actually holds. indexmanifest.observationMatches compares
+// exactly these two values on every reconciliation pass, so a placeholder digest
+// makes the showcase permanently divergent — and because the reconciliation
+// failure path used to roll back, the divergence was also invisible.
+func TestDemoShowcaseManifestExpectationMatchesIndexedChunks(t *testing.T) {
+	cfg := demoLoginConfig()
+	qdrant := store.NewMemoryStorer()
+	elastic := store.NewMemoryStorer()
+	if err := ensureDemoShowcaseIndex(context.Background(), cfg, qdrant, elastic, stubEmbedder{}); err != nil {
+		t.Fatalf("index showcase: %v", err)
+	}
+	backends := []struct {
+		name  string
+		store *store.MemoryStorer
+	}{{"qdrant", qdrant}, {"elasticsearch", elastic}}
+	for _, doc := range demoShowcaseDocuments() {
+		expected, err := demoShowcaseExpectedDigest(cfg, doc)
+		if err != nil {
+			t.Fatalf("derive expected digest %s: %v", doc.docID, err)
+		}
+		if expected == doc.digest {
+			t.Fatalf("%s: manifest digest %q is the document file hash, not the chunk identity digest",
+				doc.docID, expected)
+		}
+		if !strings.HasPrefix(expected, "sha256:") || len(expected) != len("sha256:")+64 {
+			t.Fatalf("%s: digest %q is not a sha256 identity digest", doc.docID, expected)
+		}
+		for _, backend := range backends {
+			observed, err := backend.store.ObserveGeneration(context.Background(), demoShowcaseIdentity(cfg, doc))
+			if err != nil {
+				t.Fatalf("observe %s/%s: %v", backend.name, doc.docID, err)
+			}
+			if observed.Count != len(doc.chunks) || observed.Digest != expected {
+				t.Fatalf("%s/%s: observed count=%d digest=%s, manifest expects count=%d digest=%s",
+					backend.name, doc.docID, observed.Count, observed.Digest, len(doc.chunks), expected)
+			}
+		}
+	}
+}
+
+// The SQL seed is the half that writes index_manifests and ingestion_outbox, so
+// the digest it stores has to be the derived one and the outbox event has to
+// exist: FinishReconciliation joins ingestion_jobs to ingestion_outbox to
+// resolve a repair target, and a manifest seeded without an outbox row has no
+// replay path at all.
+func TestEnsureDemoShowcaseDocumentSeedsDerivedDigestAndOutbox(t *testing.T) {
+	cfg := demoLoginConfig()
+	doc := demoShowcaseDocuments()[1]
+	digest, err := demoShowcaseExpectedDigest(cfg, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest == doc.digest || !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("seed digest %q is not a derived chunk identity digest", digest)
+	}
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	task := fmt.Sprintf(`{"file_path":"demo/%s.md"}`, doc.docID)
+	mock.ExpectBegin()
+	mock.ExpectExec("INSERT INTO documents").WithArgs(
+		cfg.DemoTenantID, doc.docID, doc.fileName, "demo/"+doc.docID+".md", doc.digest, doc.permission,
+		"user-1", now, "admin-1", demoSpaceID, doc.publication, len(doc.chunks),
+	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO ingestion_jobs").WithArgs(
+		doc.versionID, doc.eventID, cfg.DemoTenantID, doc.docID, "demo-sig-"+doc.docID, task, now,
+	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO ingestion_outbox").WithArgs(
+		doc.eventID, doc.versionID, cfg.DemoTenantID, doc.docID, task, now,
+	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO index_manifests").WithArgs(
+		doc.generationID, cfg.DemoTenantID, doc.docID, doc.versionID, len(doc.chunks), digest, now,
+	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO document_releases").WithArgs(
+		cfg.DemoTenantID, doc.docID, doc.versionID,
+	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	tx, err := mock.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDemoShowcaseDocument(tx, context.Background(), cfg, doc, "admin-1", "user-1", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

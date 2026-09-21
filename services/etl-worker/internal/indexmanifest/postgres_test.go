@@ -634,6 +634,50 @@ func TestPostgresStoreSchedulesOneAtomicRepairReplay(t *testing.T) {
 	}
 }
 
+// A divergent manifest whose ingestion outbox row is missing can never be
+// repaired: FinishReconciliation resolves the replay target by joining
+// ingestion_jobs to ingestion_outbox, and there is nothing to replay.
+//
+// The divergence must still be committed rather than rolled back. The claim
+// order is "least recently reconciled first", so a manifest whose
+// last_reconciled_at never advances stays at the head of every pass, and an
+// empty last_reconcile_error is the same predicate that lets CurrentCandidate
+// offer the document for approval. A projection that disagrees with its manifest
+// must not look healthy or publishable. The failure must still reach the caller.
+func TestPostgresStoreCommitsUnrepairableDivergence(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State, m.ReconcileClaimToken = StateActive, "claim-1"
+	result := ReconciliationResult{Manifest: m, Reason: "projection identity mismatch",
+		Qdrant:         BackendObservation{Count: 1, Digest: "wrong"},
+		Elasticsearch:  BackendObservation{Count: 2, Digest: "sha256:digest"},
+		ReconcileAfter: 5 * time.Minute,
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery("UPDATE index_manifests SET qdrant_count").WithArgs(
+		m.GenerationID, m.ReconcileClaimToken, 1, "wrong", 2, "sha256:digest", result.Reason, "5m0s",
+	).WillReturnRows(pgxmock.NewRows([]string{"repair_attempts"}).AddRow(0))
+	mock.ExpectQuery("SELECT j.status,o.published_at IS NULL").WithArgs(
+		m.DocumentVersionID, m.TenantID, m.DocumentID,
+	).WillReturnError(pgx.ErrNoRows)
+	mock.ExpectCommit()
+
+	got, err := NewPostgresStore(mock).FinishReconciliation(context.Background(), result, 3)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("error = %v, want wrapped pgx.ErrNoRows", err)
+	}
+	if got != "" {
+		t.Fatalf("disposition = %q, want empty", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgresStoreRejectsStaleReconciliationClaim(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

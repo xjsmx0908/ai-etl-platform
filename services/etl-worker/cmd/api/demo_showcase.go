@@ -67,88 +67,183 @@ func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier) er
 	if err := ensureDemoDefaultSpace(tx, ctx, cfg.DemoTenantID); err != nil {
 		return err
 	}
-	if exists {
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		return nil
-	}
-
 	now := time.Now().UTC()
 	expires := now.Add(168 * time.Hour)
 	docs := demoShowcaseDocuments()
+	byID := make(map[string]demoShowcaseDocument, len(docs))
+	// Converge the seeded projections on every boot, not only on first
+	// provisioning. A manifest written by an older seed can disagree with the
+	// retrieval index it claims to describe, and the reconciler cannot repair that
+	// difference on its own: a repair replays an ingestion outbox event, and the
+	// seed has to create that event as well. Re-running these inserts is the only
+	// place that converges an environment which was provisioned before.
 	for _, doc := range docs {
-		if _, err := tx.Exec(ctx, `INSERT INTO documents (
-				tenant_id,doc_id,file_name,object_key,file_hash,file_size,content_type,permission,status,stage,
-				chunks_done,chunks_total,uploaded_by,completed_at,doc_status,effective_date,owner,knowledge_space_id,publication_status,deletion_status
-			) VALUES ($1,$2,$3,$4,$5,2048,'text/markdown',$6,'completed','completed',$12,$12,$7,$8,'active',CURRENT_DATE,$9,$10,$11,'active')
-			ON CONFLICT (tenant_id, doc_id) DO NOTHING`,
-			cfg.DemoTenantID, doc.docID, doc.fileName, "demo/"+doc.docID+".md", doc.digest, doc.permission,
-			userID, now, adminID, demoSpaceID, doc.publication, len(doc.chunks)); err != nil {
-			return fmt.Errorf("seed demo document %s: %w", doc.docID, err)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO ingestion_jobs (
-				job_id,event_id,tenant_id,doc_id,request_signature,task,status,completed_at
-			) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'completed',$7)
-			ON CONFLICT (job_id) DO NOTHING`,
-			doc.versionID, doc.eventID, cfg.DemoTenantID, doc.docID, "demo-sig-"+doc.docID,
-			fmt.Sprintf(`{"file_path":"demo/%s.md"}`, doc.docID), now); err != nil {
-			return fmt.Errorf("seed demo ingestion job %s: %w", doc.versionID, err)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO index_manifests (
-				generation_id,tenant_id,document_id,document_version_id,chunker_version,embedding_model,vector_dimension,
-				schema_version,collection_version,index_version,expected_chunk_count,expected_chunk_digest,
-				qdrant_count,qdrant_digest,elasticsearch_count,elasticsearch_digest,state,activated_at
-			) VALUES ($1,$2,$3,$4,'v1','demo',1536,'v1','v1','v1',$5,$6,$5,$6,$5,$6,'active',$7)
-			ON CONFLICT (generation_id) DO NOTHING`,
-			doc.generationID, cfg.DemoTenantID, doc.docID, doc.versionID, len(doc.chunks), doc.digest, now); err != nil {
-			return fmt.Errorf("seed demo generation %s: %w", doc.generationID, err)
-		}
-		if doc.published {
-			if _, err := tx.Exec(ctx, `INSERT INTO document_releases (
-					tenant_id,document_id,current_version_id,published_version_id,published_generation_id,revision,resolution_status
-				) VALUES ($1,$2,$3,$3,$4,1,'resolved')
-				ON CONFLICT (tenant_id, document_id) DO NOTHING`,
-				cfg.DemoTenantID, doc.docID, doc.versionID, doc.generationID); err != nil {
-				return fmt.Errorf("seed demo release %s: %w", doc.docID, err)
-			}
-			continue
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO document_releases (
-				tenant_id,document_id,current_version_id,revision,resolution_status
-			) VALUES ($1,$2,$3,1,'resolved')
-			ON CONFLICT (tenant_id, document_id) DO NOTHING`,
-			cfg.DemoTenantID, doc.docID, doc.versionID); err != nil {
-			return fmt.Errorf("seed demo release %s: %w", doc.docID, err)
+		byID[doc.docID] = doc
+		if err := ensureDemoShowcaseDocument(tx, ctx, cfg, doc, adminID, userID, now); err != nil {
+			return err
 		}
 	}
-
-	if err := seedDemoReview(tx, ctx, cfg.DemoTenantID, demoPendingDocID, demoPendingVersionID, demoPendingGeneration,
-		"demo-review-onboarding", "completed", "publish", "low",
-		"材料完整，适合作为入职知识发布。", "[]", "match", "usable", "制度", expires, now); err != nil {
+	// The request carries the exact candidate an approver binds to, so it tracks
+	// the manifest instead of being written once: ReconcileStaleRequests compares
+	// the two on every collector tick and demotes the request to needs_info while
+	// they disagree.
+	if !exists {
+		if err := seedDemoReview(tx, ctx, cfg.DemoTenantID, demoPendingDocID, demoPendingVersionID, demoPendingGeneration,
+			"demo-review-onboarding", "completed", "publish", "low",
+			"材料完整，适合作为入职知识发布。", "[]", "match", "usable", "制度", expires, now); err != nil {
+			return err
+		}
+	}
+	if err := seedDemoRequest(tx, ctx, cfg, byID[demoPendingDocID],
+		"demo-request-onboarding", "demo-review-onboarding", 1, "approval_pending", userID, now); err != nil {
 		return err
 	}
-	if err := seedDemoRequest(tx, ctx, cfg.DemoTenantID, demoPendingDocID, demoPendingVersionID, demoPendingGeneration,
-		"demo-request-onboarding", "demo-review-onboarding", 1, "approval_pending", userID, "sha256:demo-onboarding", now); err != nil {
-		return err
+	if !exists {
+		if err := seedDemoReview(tx, ctx, cfg.DemoTenantID, demoConfidentialDocID, demoConfidentialVersionID, demoConfidentialGeneration,
+			"demo-review-payroll", "completed", "manual_review", "high",
+			"检测到薪酬敏感信息，建议转人工并保持双人审批。",
+			`[{"code":"sensitive_data_detected","severity":"high","summary":"文档含薪酬与账号类敏感字段，发布前需双人确认。","evidence_ref":"chunk-1"}]`,
+			"match", "usable", "制度", expires, now); err != nil {
+			return err
+		}
 	}
-	if err := seedDemoReview(tx, ctx, cfg.DemoTenantID, demoConfidentialDocID, demoConfidentialVersionID, demoConfidentialGeneration,
-		"demo-review-payroll", "completed", "manual_review", "high",
-		"检测到薪酬敏感信息，建议转人工并保持双人审批。",
-		`[{"code":"sensitive_data_detected","severity":"high","summary":"文档含薪酬与账号类敏感字段，发布前需双人确认。","evidence_ref":"chunk-1"}]`,
-		"match", "usable", "制度", expires, now); err != nil {
-		return err
-	}
-	if err := seedDemoRequest(tx, ctx, cfg.DemoTenantID, demoConfidentialDocID, demoConfidentialVersionID, demoConfidentialGeneration,
-		"demo-request-payroll", "demo-review-payroll", 2, "approval_pending", userID, "sha256:demo-payroll", now); err != nil {
+	if err := seedDemoRequest(tx, ctx, cfg, byID[demoConfidentialDocID],
+		"demo-request-payroll", "demo-review-payroll", 2, "approval_pending", userID, now); err != nil {
 		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
+	if exists {
+		return nil
+	}
 	slog.Info("provisioned demo release-center showcase", "tenant", cfg.DemoTenantID, "space", demoSpaceID)
 	return nil
+}
+
+// ensureDemoShowcaseDocument converges one showcase document's durable rows.
+//
+// Every derived value here comes from demoShowcaseChunks, the same chunk models
+// the retrieval seed writes. That is the point: index_manifests.expected_chunk_digest
+// is the ground truth the reconciler compares both projections against, and the
+// release center only offers a document for approval while its manifest agrees
+// with its projections. A hand-written digest therefore does not merely look
+// untidy, it makes the manifest permanently divergent.
+//
+// The ingestion outbox event belongs to the same contract. FinishReconciliation
+// resolves the repair target by joining ingestion_jobs to ingestion_outbox, so a
+// manifest seeded without an outbox row has no replay path at all: the divergence
+// can never be scheduled, and the same failure is reported on every pass.
+func ensureDemoShowcaseDocument(tx pgx.Tx, ctx context.Context, cfg config.Config, doc demoShowcaseDocument, adminID, userID string, now time.Time) error {
+	digest, err := demoShowcaseExpectedDigest(cfg, doc)
+	if err != nil {
+		return fmt.Errorf("derive demo manifest digest %s: %w", doc.docID, err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO documents (
+			tenant_id,doc_id,file_name,object_key,file_hash,file_size,content_type,permission,status,stage,
+			chunks_done,chunks_total,uploaded_by,completed_at,doc_status,effective_date,owner,knowledge_space_id,publication_status,deletion_status
+		) VALUES ($1,$2,$3,$4,$5,2048,'text/markdown',$6,'completed','completed',$12,$12,$7,$8,'active',CURRENT_DATE,$9,$10,$11,'active')
+		ON CONFLICT (tenant_id, doc_id) DO NOTHING`,
+		cfg.DemoTenantID, doc.docID, doc.fileName, "demo/"+doc.docID+".md", doc.digest, doc.permission,
+		userID, now, adminID, demoSpaceID, doc.publication, len(doc.chunks)); err != nil {
+		return fmt.Errorf("seed demo document %s: %w", doc.docID, err)
+	}
+	// A completed job is a published one, so the terminal fixture sets
+	// published_at. The update is additive: an already-provisioned row keeps its
+	// original timestamp.
+	if _, err := tx.Exec(ctx, `INSERT INTO ingestion_jobs (
+			job_id,event_id,tenant_id,doc_id,request_signature,task,status,completed_at,published_at
+		) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'completed',$7,$7)
+		ON CONFLICT (job_id) DO UPDATE SET published_at=COALESCE(ingestion_jobs.published_at, EXCLUDED.published_at)`,
+		doc.versionID, doc.eventID, cfg.DemoTenantID, doc.docID, "demo-sig-"+doc.docID,
+		fmt.Sprintf(`{"file_path":"demo/%s.md"}`, doc.docID), now); err != nil {
+		return fmt.Errorf("seed demo ingestion job %s: %w", doc.versionID, err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO ingestion_outbox (
+			event_id,job_id,tenant_id,doc_id,task,published_at
+		) VALUES ($1,$2,$3,$4,$5::jsonb,$6)
+		ON CONFLICT (event_id) DO NOTHING`,
+		doc.eventID, doc.versionID, cfg.DemoTenantID, doc.docID,
+		fmt.Sprintf(`{"file_path":"demo/%s.md"}`, doc.docID), now); err != nil {
+		return fmt.Errorf("seed demo ingestion outbox %s: %w", doc.eventID, err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO index_manifests (
+			generation_id,tenant_id,document_id,document_version_id,chunker_version,embedding_model,vector_dimension,
+			schema_version,collection_version,index_version,expected_chunk_count,expected_chunk_digest,
+			qdrant_count,qdrant_digest,elasticsearch_count,elasticsearch_digest,state,activated_at
+		) VALUES ($1,$2,$3,$4,'v1','demo',1536,'v1','v1','v1',$5,$6,$5,$6,$5,$6,'active',$7)
+		ON CONFLICT (generation_id) DO UPDATE SET
+			expected_chunk_count=EXCLUDED.expected_chunk_count,
+			expected_chunk_digest=EXCLUDED.expected_chunk_digest,
+			qdrant_count=EXCLUDED.qdrant_count,qdrant_digest=EXCLUDED.qdrant_digest,
+			elasticsearch_count=EXCLUDED.elasticsearch_count,elasticsearch_digest=EXCLUDED.elasticsearch_digest
+		WHERE index_manifests.expected_chunk_count IS DISTINCT FROM EXCLUDED.expected_chunk_count
+			OR index_manifests.expected_chunk_digest IS DISTINCT FROM EXCLUDED.expected_chunk_digest`,
+		doc.generationID, cfg.DemoTenantID, doc.docID, doc.versionID, len(doc.chunks), digest, now); err != nil {
+		return fmt.Errorf("seed demo generation %s: %w", doc.generationID, err)
+	}
+	if doc.published {
+		if _, err := tx.Exec(ctx, `INSERT INTO document_releases (
+				tenant_id,document_id,current_version_id,published_version_id,published_generation_id,revision,resolution_status
+			) VALUES ($1,$2,$3,$3,$4,1,'resolved')
+			ON CONFLICT (tenant_id, document_id) DO NOTHING`,
+			cfg.DemoTenantID, doc.docID, doc.versionID, doc.generationID); err != nil {
+			return fmt.Errorf("seed demo release %s: %w", doc.docID, err)
+		}
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO document_releases (
+			tenant_id,document_id,current_version_id,revision,resolution_status
+		) VALUES ($1,$2,$3,1,'resolved')
+		ON CONFLICT (tenant_id, document_id) DO NOTHING`,
+		cfg.DemoTenantID, doc.docID, doc.versionID); err != nil {
+		return fmt.Errorf("seed demo release %s: %w", doc.docID, err)
+	}
+	return nil
+}
+
+// demoShowcaseIdentity names the projection generation one showcase document
+// owns. It is shared by the SQL seed and the index seed so the manifest, the
+// Qdrant points and the Elasticsearch documents cannot disagree about identity.
+func demoShowcaseIdentity(cfg config.Config, doc demoShowcaseDocument) indexmanifest.GenerationIdentity {
+	return indexmanifest.GenerationIdentity{
+		VersionIdentity: indexmanifest.VersionIdentity{
+			TenantID: cfg.DemoTenantID, DocumentID: doc.docID, DocumentVersionID: doc.versionID,
+		},
+		GenerationID: doc.generationID,
+	}
+}
+
+// demoShowcaseChunks is the single source of truth for the chunks of one
+// showcase document. The SQL seed derives the manifest digest from it and the
+// index seed writes exactly these models, so the expectation can never describe
+// content the projections do not hold.
+func demoShowcaseChunks(cfg config.Config, doc demoShowcaseDocument) []model.Chunk {
+	chunks := make([]model.Chunk, 0, len(doc.chunks))
+	for i, content := range doc.chunks {
+		chunks = append(chunks, model.Chunk{
+			ChunkID:    fmt.Sprintf("%s-%d", doc.docID, i),
+			DocID:      doc.docID,
+			TenantID:   cfg.DemoTenantID,
+			Content:    content,
+			Index:      i,
+			Permission: doc.permission,
+			FileHash:   doc.digest,
+			Metadata: map[string]string{
+				"knowledge_base_id": demoSpaceID,
+				"applicable_scope":  "production",
+			},
+		})
+	}
+	return chunks
+}
+
+// demoShowcaseExpectedDigest is the value both index_manifests and the release
+// center request must carry: the identity digest of the chunks the retrieval
+// seed actually writes.
+func demoShowcaseExpectedDigest(cfg config.Config, doc demoShowcaseDocument) (string, error) {
+	return indexmanifest.ChunkIdentityDigest(demoShowcaseIdentity(cfg, doc), demoShowcaseChunks(cfg, doc))
 }
 
 func seedDemoReview(tx pgx.Tx, ctx context.Context, tenantID, docID, versionID, generationID, reviewID, status, recommendation, risk, summary, findings, spaceFit, usable, kind string, expires, now time.Time) error {
@@ -164,14 +259,33 @@ func seedDemoReview(tx pgx.Tx, ctx context.Context, tenantID, docID, versionID, 
 	return nil
 }
 
-func seedDemoRequest(tx pgx.Tx, ctx context.Context, tenantID, docID, versionID, generationID, requestID, reviewID string, required int, state, requestedBy, digest string, now time.Time) error {
-	_, err := tx.Exec(ctx, `INSERT INTO release_center_requests (
+// seedDemoRequest converges the release request that carries one showcase
+// document's exact candidate.
+//
+// The expected count and digest are derived from the document rather than passed
+// in, because the approver re-derives the candidate from index_manifests and
+// rejects the request when the two disagree (ApprovalService.Decide compares
+// them for equality, and ReconcileStaleRequests demotes the request while they
+// differ). A request seeded with a literal would therefore diverge from its
+// manifest the moment either side changed. The update is deliberately narrow:
+// review_id and state belong to the running release workflow, not to the seed.
+func seedDemoRequest(tx pgx.Tx, ctx context.Context, cfg config.Config, doc demoShowcaseDocument, requestID, reviewID string, required int, state, requestedBy string, now time.Time) error {
+	digest, err := demoShowcaseExpectedDigest(cfg, doc)
+	if err != nil {
+		return fmt.Errorf("derive demo request digest %s: %w", doc.docID, err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO release_center_requests (
 			request_id,tenant_id,document_id,document_version_id,generation_id,expected_chunk_count,expected_chunk_digest,
 			release_revision,review_id,required_approvals,state,requested_by,created_at,updated_at
-		) VALUES ($1,$2,$3,$4,$5,3,$6,1,$7,$8,$9,$10,$11,$11)
-		ON CONFLICT (request_id) DO NOTHING`,
-		requestID, tenantID, docID, versionID, generationID, digest, reviewID, required, state, requestedBy, now)
-	if err != nil {
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9,$10,$11,$12,$12)
+		ON CONFLICT (request_id) DO UPDATE SET
+			expected_chunk_count=EXCLUDED.expected_chunk_count,
+			expected_chunk_digest=EXCLUDED.expected_chunk_digest
+		WHERE release_center_requests.state NOT IN ('published','rejected')
+		  AND (release_center_requests.expected_chunk_count IS DISTINCT FROM EXCLUDED.expected_chunk_count
+		    OR release_center_requests.expected_chunk_digest IS DISTINCT FROM EXCLUDED.expected_chunk_digest)`,
+		requestID, cfg.DemoTenantID, doc.docID, doc.versionID, doc.generationID,
+		len(doc.chunks), digest, reviewID, required, state, requestedBy, now); err != nil {
 		return fmt.Errorf("seed demo request %s: %w", requestID, err)
 	}
 	return nil
@@ -265,33 +379,15 @@ func ensureDemoShowcaseIndex(ctx context.Context, cfg config.Config, qdrant, ela
 	}
 	encoder := sparse.NewEncoder(sparse.DefaultParams())
 	for _, doc := range demoShowcaseDocuments() {
-		identity := indexmanifest.GenerationIdentity{
-			VersionIdentity: indexmanifest.VersionIdentity{
-				TenantID: cfg.DemoTenantID, DocumentID: doc.docID, DocumentVersionID: doc.versionID,
-			},
-			GenerationID: doc.generationID,
-		}
+		identity := demoShowcaseIdentity(cfg, doc)
 		if observed, err := qdrant.ObserveGeneration(ctx, identity); err == nil && observed.Count >= len(doc.chunks) {
 			continue
 		}
-		for i, content := range doc.chunks {
-			chunk := model.Chunk{
-				ChunkID:    fmt.Sprintf("%s-%d", doc.docID, i),
-				DocID:      doc.docID,
-				TenantID:   cfg.DemoTenantID,
-				Content:    content,
-				Index:      i,
-				Permission: doc.permission,
-				FileHash:   doc.digest,
-				CreatedAt:  time.Now().UTC(),
-				Metadata: map[string]string{
-					"knowledge_base_id": demoSpaceID,
-					"applicable_scope":  "production",
-				},
-				SparseVector: encoder.Encode(content),
-			}
+		for _, chunk := range demoShowcaseChunks(cfg, doc) {
+			chunk.CreatedAt = time.Now().UTC()
+			chunk.SparseVector = encoder.Encode(chunk.Content)
 			if err := embed.Embed(ctx, &chunk); err != nil {
-				return fmt.Errorf("embed demo chunk %s/%d: %w", doc.docID, i, err)
+				return fmt.Errorf("embed demo chunk %s/%d: %w", doc.docID, chunk.Index, err)
 			}
 			if err := qdrant.UpsertGeneration(ctx, identity, chunk); err != nil {
 				return fmt.Errorf("index demo document %s in qdrant: %w", doc.docID, err)

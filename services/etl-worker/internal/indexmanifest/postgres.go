@@ -279,6 +279,21 @@ FROM ingestion_jobs AS j JOIN ingestion_outbox AS o ON o.job_id=j.job_id
 WHERE j.job_id=$1 AND j.tenant_id=$2 AND j.doc_id=$3 FOR UPDATE OF j,o`,
 		m.DocumentVersionID, m.TenantID, m.DocumentID).Scan(&status, &pending)
 	if err != nil {
+		// A manifest with no ingestion outbox row has no replay path: no repair can
+		// ever be scheduled for it. Commit the divergence recorded above instead of
+		// rolling it back. The rollback is what made this state invisible: the claim
+		// order is "least recently reconciled first", so a manifest whose
+		// last_reconciled_at never advances stays at the head of every batch, and
+		// last_reconcile_error stays empty, which is the same predicate that lets
+		// CurrentCandidate offer the document for approval and lets
+		// ReconcileStaleRequests leave the request queued. The projection does not
+		// match its manifest, so it must not look publishable. The error is still
+		// returned: an unrepairable projection needs an operator.
+		if errors.Is(err, pgx.ErrNoRows) {
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				return "", fmt.Errorf("commit unrepairable reconciliation: %w", commitErr)
+			}
+		}
 		return "", fmt.Errorf("load repair ingestion job: %w", err)
 	}
 	if pending || status == "published" || status == "processing" || status == "queued" {
