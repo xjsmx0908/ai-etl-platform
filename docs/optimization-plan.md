@@ -24,8 +24,8 @@
 | 功能完善度 | 主链路（上传→解析→向量化→检索→问答→发布审批）已闭环；缺口集中在**自助能力**、**合规审查深度**两处（**备份恢复**已由 §1.2 补齐） |
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
-| 最紧急项 | **磁盘告警仍然缺失**（§1.1.2）—— `/` 可用 9.3 GB，距 ES 的 `low` 水位（8 GB，即「拒绝分配新分片」）只剩 1.3 GB。备份（§1.2）已完成，不再是空白 |
-| 已修复项 | 7 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）。见 §1.1、§1.2、§1.3 |
+| 最紧急项 | **磁盘只剩 9.2 GB（4.64% free）**（§1.1.2）—— 告警与水位已落地：两条磁盘告警**正在 firing**，ES 水位改为百分比且实测**仍可写**；剩下的一步是真正腾空间，而它需要你决定动哪些其他项目的镜像/卷 |
+| 已修复项 | 7 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化与宿主机磁盘告警（§1.1.2）。见 §1.1、§1.2、§1.3 |
 
 ---
 
@@ -63,20 +63,21 @@ $ PUT /documents_text_v2/_settings {"index":{"number_of_replicas":0}} → green 
 
 **验收判据**：`ES _cluster/health` → `status: green`、`unassigned_shards: 0`、`active_shards_percent: 100%`。**已达成。**
 
-#### 1.1.2 磁盘濒满 —— 真实风险，清理已完成，告警仍缺
+#### 1.1.2 磁盘濒满 —— 水位与告警已落地，**磁盘本身还没腾出来**（部分完成）
 
 **证据**
 
 ```
 $ df -h /            → /dev/vda2  197G  182G  7.3G  97%     （清理前）
                      → 可用 19G                              （清理后）
-$ docker system df   → Images 108.7GB(可回收 79.55GB) / Build Cache 60.64GB(可回收 9.91GB)
-                       Local Volumes 24.64GB(可回收 19.98GB)
+                     → 可用 9.2G   96%                       （2026-09-21 傍晚，又掉回去了）
+$ docker system df   → Images 106.3GB(可回收 81.71GB) / Build Cache 58.18GB(可回收 1.45GB)
+                       Local Volumes 24.67GB(可回收 19.98GB)
 ```
 
-**机制**：`docker-compose.yml:147-149` 把 ES 水位设为**绝对值** —— `low=8gb` / `high=6gb` /
-`flood_stage=4gb`（远端 `.env` 未覆盖，走 compose 默认）。可用空间 7.3GB 时确实低于 `low`，
-但实测证明这**没有**导致 unassigned shard（见 §1.1.1）。真正的后果是另一条：
+**机制**：`docker-compose.yml` 原先把 ES 水位设为**绝对值** —— `low=8gb` / `high=6gb` /
+`flood_stage=4gb`。可用空间 7.3GB 时确实低于 `low`，但实测证明这**没有**导致 unassigned shard
+（见 §1.1.1）。真正的后果是另一条：
 
 | 可用空间 | ES 行为 | 清理前 | 清理后 |
 | --- | --- | --- | --- |
@@ -84,26 +85,73 @@ $ docker system df   → Images 108.7GB(可回收 79.55GB) / Build Cache 60.64GB
 | < 6GB | 尝试迁移分片（单节点无法迁移） | 还剩 1.3GB | 已解除 |
 | < 4GB | **全部索引转只读，写入被拒** | 还剩 3.3GB | 还剩 15GB |
 
-**这个缓冲已经在缩小**：清理后是 19GB，2026-09-21 傍晚实测只剩 **9.3GB**（构建镜像与 build cache 又长回来）。
-距 `low`（8GB，即「拒绝分配新分片」）只有 1.3GB，距 `flood_stage`（4GB，即「全部索引转只读」）5.3GB。
-**所以清理不是解法，告警才是** —— 这正是下面「仍要做」第 1、2 条的理由。
+**绝对值为什么是错的**：ES 实际看到的容量是 **211.25 GB**，`flood_stage=4gb` 只占 **2%**。
+磁盘越满，这个「保护」相对越小 —— 等于磁盘快满了 ES 还在继续分配分片。百分比表达的是固定预留。
 
-**已完成**：`docker builder prune` 回收 9.911GB + 删除 9 个本项目一次性验收镜像（删前逐个
-验证 0 容器引用）；未动 volumes、未动其他项目镜像。可用空间 7.3G → 19G。
+**已完成（水位）**：`docker-compose.yml` 改为 `low=95%` / `high=96%` / `flood_stage=97%`
+（仍可用 `ES_DISK_WATERMARK_*` 覆盖），`.env.example` 同步。
 
-**仍要做**
+**一个必须避开的坑（差点把演示栈打停）**：ES 自己的默认百分比是 `85/90/95%`。照抄会把索引
+**立刻打成只读**，因为实测已用 **95.36%** > 95%。所以取值不能凭默认值，必须先读 ES 看到的真实
+数字再定。改完的升序是这样（free 百分比）：
 
-1. **把水位改成百分比**，别用绝对值 —— 单节点 ES 用 `8gb/6gb/4gb` 意味着机器越满越危险，
-   且与宿主机总容量脱钩。
-2. **加磁盘告警**：Prometheus 已有，加一条 `node_filesystem_avail_bytes` 规则，阈值
-   15% / 10% 两档，接现有 alertmanager。
-3. 108.7GB 镜像里**大部分是其他项目的**：`openclaw:custom-lobster-backup-20260721` 5.65GB、
-   `ghcr.io/openclaw/openclaw:latest` 4.55GB、`openclaw-codex-worker:local` 4.15GB、
-   `mcr.microsoft.com/playwright` 3.2GB 等。**不能整体 `docker image prune -a`**，
-   那会打断你其他项目的可重启性。`Local Volumes` 同理，逐个人工确认，不做批量 prune。
+```
+告警 warning  15%  free  → 31.7 GB      早期预警
+告警 critical 10%  free  → 21.1 GB      该动手了
+ES low        95% used → 5% free        ES 不再接收新分片
+ES high       96% used → 4% free        尝试迁走（单节点迁不动）
+ES flood      97% used → 3% free        全部索引转只读
+```
 
-**验收判据**：`df -h /` 可用空间 > 25GB（当前 9.3GB，未达标）；ES 水位改为百分比且
-`_cluster/settings` 可读回；告警规则在 Prometheus 里 `up` 且能触发一次测试告警。
+当前 free **4.64%** 落在 `low` 与 `high` 之间：ES 拒绝新分片，但**仍然可写** —— 演示不断。
+这一条是实测的，不是推断（见下方验收判据的写入探针）。
+
+**已完成（告警）—— 计划里漏掉的前提**：原计划写「Prometheus 已有，加一条规则即可」。
+**实际 Prometheus 根本没有 `node_filesystem_avail_bytes`**：`infrastructure/prometheus.yml` 只抓
+prometheus / query-api / etl-worker / qdrant，没有 node-exporter。所以规则写出来也永远不会响。
+补的东西：
+
+1. `docker-compose.yml` 新增 `node-exporter`（只读挂 `/proc`、`/sys`、`/`，`--path.rootfs`），
+   端口 `NODE_EXPORTER_HOST_PORT`（默认 9100）。
+2. `infrastructure/prometheus.yml` 新增 `node-exporter` 抓取任务。
+3. `infrastructure/rules/host-alerts.yml`：两条规则，`HostRootDiskSpaceLow`（<15%，warning，for 10m）
+   与 `HostRootDiskSpaceCritical`（<10%，critical，for 5m）。表达式用 `min by (mountpoint)` 收敛标签 ——
+   直接写两个指标的比值会把 `device`/`fstype`/`device_error` 带进告警标签，而 `device_error` 在健康挂载上是空值，
+   导致健康主机与故障主机的标签集不同，去重和静默规则都会错。
+4. `infrastructure/tests/alert-rules.test.yml` 新增 3 个用例（15% 只 warning 不升级、10% 升级为
+   critical、腾出空间后消解）。顺带记一个坑：**在一个 `values` 字符串里混写两个 `value xN`
+   会静默产生另一条序列**，恢复用例因此一开始根本没在测消解 —— 改成显式样本列表才对。
+5. `docker-compose.eval.yml` 给 `node-exporter` 也加 `ports: !reset []`，否则隔离栈
+   （smoke / restore）会和演示栈抢 9100。两个脚本的 `COMPOSE_FILE` 都含 eval 覆盖，所以一处即可。
+6. `infrastructure/rules/README.md` 与规则测试说明同步。
+
+**仍要做：把磁盘真正腾出来（需要你的决定）**
+
+可用空间 9.2GB，判据 > 25GB，**未达标**。而且我无法单方面达成：
+`docker system df` 显示 build cache 只剩 **1.45GB** 可回收（早先那次 prune 已经把大头拿走，
+剩下的在用），其余 81.71GB 可回收镜像与 19.98GB 可回收卷**大部分属于你的其他项目** ——
+`openclaw`、`umami`、`p_blog_2` 等。我不会未经确认动它们（见 §8）。
+所以这一项的终态是：**告警已经能替你看住它，但腾空间这一步得你点头**。
+
+**验收判据（已满足的部分）**
+
+- ES 水位为百分比、升序正确、且**改完仍可写**：6 项断言全 PASS（`watermarks_are_percentages` /
+  `watermarks_are_ordered` / `cluster_green` / `index_not_read_only` / `write_accepted` / `count_moved`），
+  写入探针走真实别名 `POST /documents_text/_doc` → `201 created`，计数 4684 → 4685 → 删除后回到 4684。
+- 反向验证：把绝对值以 transient 覆盖写回（等价于修复前的行为）→ `watermarks_are_percentages` **必 FAIL**；
+  清除覆盖 → 全 PASS。
+- `promtool test rules` **SUCCESS**；反向验证：删掉规则文件 → FAILED，把阈值改成 50%/5% → FAILED，
+  恢复 → SUCCESS（sha256 一致）。
+- 抓取目标 `node-exporter: health=up`；`/api/v1/rules` 有 `ai-etl-platform-host` 组、两条规则 `health=ok`。
+- 告警**真的在 firing**：两条都从 `pending` 转 `firing`（见 §1.1.2 末），
+  Alertmanager `/api/v2/alerts` 能收到。**它现在响着是对的** —— 磁盘确实就剩 4.64%，
+  在腾出空间之前它不该安静。
+
+**未满足的判据**：`df -h /` 可用空间 > 25GB（当前 9.2GB）。
+
+**顺带看到的一条线索**：Alertmanager 里另有一条 `IndexGenerationFailed` 在 active
+（`state="failed"`），与 `documents` 表里 7 行 `status='failed'` 相呼应。这是告警体系本来就该报的，
+但此前没人处理 —— 已记入 PROGRESS 作为下一条待查项。
 
 ---
 
@@ -526,29 +574,36 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 ```
 第 1 步（已完成） 1.1.1 ES 单节点副本 + 1.1.2 磁盘回收 + §1.3 的 7 个功能缺陷
 第 2 步（已完成） 1.2 备份脚本 + 恢复演练（隔离栈 8 项断言全 PASS，RTO 79.7 秒实测）
-第 3 步（下一步） 1.1.2 剩余：ES 水位改百分比 + 磁盘告警；2.1 Go 工具链权限修复
-第 4 步           3.  状态文档三源归一 + 一致性契约测试
-第 5 步           2.2 / 2.3 配置一致性修复 + 契约测试
-第 6 步           4.1 邀请式自助开户（需你先确认产品口径）
-第 7 步           5.1 query/service.go 机械拆分
+第 3 步（已完成） 1.1.2 剩余：ES 水位改百分比 + 宿主机磁盘告警（含补 node-exporter）
+第 4 步（等你决定）1.1.2 终态：把磁盘腾到 > 25GB —— 需要动你其他项目的镜像/卷
+第 5 步           2.1 Go 工具链权限修复
+第 6 步           3.  状态文档三源归一 + 一致性契约测试
+第 7 步           2.2 / 2.3 配置一致性修复 + 契约测试
+第 8 步           4.1 邀请式自助开户（需你先确认产品口径）
+第 9 步           5.1 query/service.go 机械拆分
 ```
 
-**为什么是这个顺序**：第 1、2 步是「不做会丢数据」，已完成。第 3 步里**磁盘告警是唯一还在增长的
-P0** —— 可用空间已从清理后的 19GB 掉回 9.3GB，再少 1.3GB 就到 ES 的 `low` 水位（拒绝分配新分片），
-而告警缺失意味着这个下滑没人看得见；2.1 则是「不做则每次改动都在踩坑」。第 4 步是「不做则后面
-所有状态判断都不可信」；第 5 步成本最低收益明确；第 6 步需要你的产品决策；第 7 步是纯收益优化，随时可做。
+**为什么是这个顺序**：第 1–3 步是「不做会丢数据或停服」，已完成 —— 其中第 3 步把「磁盘快满了」
+从一件没人看得见的事，变成了两条正在 firing 的告警。第 4 步是唯一还挂着的 P0，而它卡在**决定**上
+而不是技术上：可回收的镜像与卷大部分属于你的其他项目，批量 prune 会打断它们的可重启性。
+第 5 步是「不做则每次改动都在踩坑」；第 6 步是「不做则后面所有状态判断都不可信」；
+第 7 步成本最低收益明确；第 8 步需要你的产品决策；第 9 步是纯收益优化，随时可做。
 
 ---
 
 ## 8. 边界与未做的事（避免误解）
 
-- **代码改动只限 §1.3 列出的 7 个缺陷**（含各自的回归测试）。本文其余章节仍是调查结论，未据此改代码。
+- **代码改动限于两处**：§1.3 列出的 7 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
+  （含补上的 `node-exporter`）。其余章节仍是调查结论，未据此改代码。
 - **§1.2 不只是文档**：`scripts/backup-stack.sh`、`scripts/restore-stack.sh`、3 个单职责助手脚本、
   `docker-compose.restore.yml`、16 个契约测试都已提交，并在隔离项目 `ai-etl-restore` 上真跑过
   （`down -v` 只作用于该隔离项目，碰不到演示栈的卷）。
+- **新增了一个服务**：`node-exporter`。它不是可选的装饰 —— 没有它就没有任何磁盘信号，
+  告警规则写出来也是死的。端口 9100 只在 `127.0.0.1`，隔离栈通过 eval 覆盖把它收起来。
 - **没有删除任何东西**。远端 734MB 的 `.gomod`/`.gocache` 是承重结构，本次确认了它不能被删。
-- **没有清理你其他项目的镜像/卷**。108.7GB 镜像里大部分不属于本项目，且可回收卷里可能有数据 ——
-  这类操作我不会未经确认执行。已回收的只有 `docker builder prune` 与 9 个本项目一次性验收镜像。
+- **没有清理你其他项目的镜像/卷**。106.3GB 镜像里大部分不属于本项目，且可回收卷里可能有数据 ——
+  这类操作我不会未经确认执行。本轮的 `docker builder prune` 只回收了 1.45GB（可回收部分已所剩不多），
+  这就是 §1.1.2 磁盘判据仍未达标的原因：**剩下要腾的空间全在你其他项目名下**。
 - **UAT-017～020 没有标记为「已关闭」**，因为只做了产物层验证，未做章程要求的真实页面复验。
 - **§4.5 与 §4.6 没有动手**，理由分别写在各自小节里（前者被外部决策阻塞，后者需要重建 4684 条索引）。
 - **§4.7 的 116 份源对象没有试图补救**。字节已不存在，脚本不做假造；它被降级为「由完整性门禁
