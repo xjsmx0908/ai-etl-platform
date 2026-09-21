@@ -49,6 +49,14 @@ class BackupStackContractTests(unittest.TestCase):
         # Consecutive failures have to be discoverable, not just logged once.
         self.assertIn("consecutive_failures", self.script)
 
+    def test_a_failed_run_cannot_rotate_away_a_good_backup(self):
+        # Only directories holding a manifest count towards RETENTION, and a run
+        # that died halfway is renamed out of the way.
+        self.assertIn("manifest.json", self.script)
+        self.assertIn(".partial", self.script)
+        rotation = self.script[self.script.index("5. Rotation"):]
+        self.assertIn("-exec test -f", rotation)
+
 
 class RestoreStackContractTests(unittest.TestCase):
     def setUp(self):

@@ -140,6 +140,13 @@ PY
 
 on_exit() {
     local code=$?
+    # A run that died halfway leaves a directory without a manifest. Keeping it
+    # under a timestamped name would let it count towards the retention window,
+    # so a week of failing backups could rotate away the last good one. Rename it
+    # instead: still on disk for diagnosis, no longer mistakable for a backup.
+    if [[ ${code} -ne 0 && -d "${BACKUP_DIR}" && ! -f "${BACKUP_DIR}/manifest.json" ]]; then
+        mv -- "${BACKUP_DIR}" "${BACKUP_DIR}.partial" 2>/dev/null || true
+    fi
     record_state "${code}" || true
     if [[ ${code} -eq 0 && ${FAILURES} -gt 0 ]]; then
         log "WARN completed with ${FAILURES} non-fatal problem(s)"
@@ -283,9 +290,10 @@ if [[ ${manifest_code} -eq 3 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Rotation. Keeps the newest RETENTION timestamped directories.
+# 5. Rotation. Keeps the newest RETENTION *complete* backups; a run that died
+#    halfway is named .partial and never counts as one.
 # ---------------------------------------------------------------------------
-mapfile -t existing < <(find "${BACKUP_ROOT}" -maxdepth 1 -type d -name '20*T*Z' -printf '%f\n' | sort)
+mapfile -t existing < <(find "${BACKUP_ROOT}" -maxdepth 1 -type d -name '20*T*Z' -exec test -f '{}/manifest.json' \; -printf '%f\n' | sort)
 if (( ${#existing[@]} > RETENTION )); then
     for stale in "${existing[@]:0:$(( ${#existing[@]} - RETENTION ))}"; do
         log "rotating out ${stale}"
