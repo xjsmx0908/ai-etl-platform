@@ -23,6 +23,7 @@
 - `python3 scripts/run-evals.py`：运行确定性 RAG 回归检查。
 - `python3 scripts/ingestion-capacity.py --profile short-text`：在已运行的 Query API 上串行测量入库容量；不要与 L1 查询门禁或第二套 Compose 混用。
 - `uv run --with-requirements scripts/requirements-test.txt python -m unittest discover -s scripts/tests -p 'test_*.py' -q`：在隔离 Python 环境中运行评测、治理和证据结构契约测试。
+- `docker run --rm -v "$PWD/infrastructure:/work" -w /work/tests --entrypoint promtool prom/prometheus:latest test rules alert-rules.test.yml`：运行 Prometheus 告警规则单元测试。改动 `infrastructure/rules/` 下任何规则后必须运行；新增规则文件要同步登记到 `alert-rules.test.yml` 的 `rule_files`，否则测试跑不到它而结果仍是绿的。
 - `cd services/etl-worker && make build`：构建两个 Go 二进制程序。
 - `cd services/etl-worker && make test`：运行 `internal/...` 的 Go 竞态测试和覆盖率测试。
 - `cd services/doc-parser-service && pip install -r requirements.txt && pytest -q`：安装 Parser 依赖并运行 Python 测试。
