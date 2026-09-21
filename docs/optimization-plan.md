@@ -124,7 +124,7 @@ $ ls ~/backups                                  → 仅 openclaw-upgrade-2026032
 
 ---
 
-### 1.3 已修复的 6 个缺陷（共同形状：失败被固化，重试变成复读）
+### 1.3 已修复的 6 个缺陷（前五处同一形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -135,7 +135,23 @@ $ ls ~/backups                                  → 仅 openclaw-upgrade-2026032
 | 3 | 文档清单的块数恒显示「—」 | `documents` 表 119 行里大 `.txt`/`.md`/PDF 全为 `n/0` | 文本路径的 `totalChunks` 只在走 parser 服务分支时才从 channel 读到；PDF 路径先写对又被「第 x / y 页」的进度写回覆盖成 0 | `4cf5963` |
 | 4 | 演示文档的 `index_manifests` 撒谎 → Agent 预审永远失败 | ES 实测 handbook=3 / onboarding=0 / payroll=0，但清单声称各 3；run 的 `error="exact candidate content is unavailable"` | `ensureDemoShowcaseIndex` 只索引 handbook，清单却给三份文档都写了 3 条；预审按 `document_version_id`+`generation_id` 精确取块得 0 条 | `624d936` |
 | 5 | 预审的瞬时失败被永久缓存，重试变成复读 | 计划器 30s 超时后，Redis 里的 run 永久 `failed`；只能手工删 key 才恢复 | 预审 run id 只由候选派生，而 `failed` 是终态且 `ExecuteNext` 对终态直接短路 → 重试复读旧错误，从不重新调用计划器。自动恢复路径（预审过期 → `needs_info` → 队列重新拾取）每轮只消耗一个 `RELEASE_REVIEW_TTL`，Agent 一次都没重跑 | `91a47fc` |
-| 6 | 演示清单的期望摘要是占位串，索引对账每 5 分钟永久报错 | `etl-worker` 每 5 分钟一条 `index manifest reconciliation failed … load repair ingestion job: no rows in result set` | 种子把**文件哈希**（`sha256:demo-handbook` 这类占位串）同时写进 `expected_chunk_digest` 与两个投影摘要；按 `IdentityDigest` 复算真实值是 `sha256:e4adc7b7…` / `sha256:c9241b97…` / `sha256:4f2b1bb0…`。种子又只插 `ingestion_jobs`、不插 `ingestion_outbox`，而 `FinishReconciliation` 靠两者 JOIN 找重放目标 → 差异永远无法修复。失败路径 `tx.Rollback()` 把 `last_reconcile_error` 与 `last_reconciled_at` 一起回滚，于是清单看起来健康、可发布（`CurrentCandidate` 读的就是这个谓词），却永不收敛；而认领顺序是「最久未对账优先」，它们因此每轮都排在队首 | `3f1deb5` |
+| 6 | 演示清单的期望摘要是占位串，索引对账**周期性**永久报错 | `etl-worker` 每 30 分钟一条 `index manifest reconciliation failed … load repair ingestion job: no rows in result set`（08:30:03 / 09:00:03 / 09:30:03，间隔恰为 `INDEX_RECONCILE_LEASE`） | 种子把**文件哈希**（`sha256:demo-handbook` 这类占位串）同时写进 `expected_chunk_digest` 与两个投影摘要；按 `IdentityDigest` 复算真实值是 `sha256:e4adc7b7…` / `sha256:c9241b97…` / `sha256:4f2b1bb0…`。种子又只插 `ingestion_jobs`、不插 `ingestion_outbox`，而 `FinishReconciliation` 靠两者 JOIN 找重放目标 → 差异永远无法修复。失败路径 `tx.Rollback()` 把 `last_reconcile_error` 与 `last_reconciled_at` 一起回滚，于是清单看起来健康、可发布（`CurrentCandidate` 读的就是这个谓词），却永不收敛；而认领顺序是「最久未对账优先」，它们因此每轮都排在队首 | `3f1deb5` |
+
+**缺陷 6 的报错周期，实测与直觉相反**：对账每 5 分钟跑一轮，但**报错每 30 分钟才出现一次**。
+原因在租约：`ClaimReconciliation` 把 `reconcile_lease_until` 推到 `now()+INDEX_RECONCILE_LEASE`（30m）
+并**提交**，而失败分支的 `tx.Rollback()` 只回滚了自己那一份写入、清不掉这个租约。于是这三份清单
+被认领一次、失败一次，然后被自己的租约挡住 29 分钟，期间每轮对账都报 `healthy: 20/20`。
+这解释了为什么它看起来"时好时坏"：**故障在 29/30 的时间里是自我隐藏的**，唯一症状是那条周期性的
+ERROR 日志。排查时不能只看"最近一次对账是否成功"，必须看 `last_reconciled_at` 是否在推进。
+
+**缺陷 6 修复后的线上状态（2026-09-21 09:35 UTC 实测）**：三份清单的
+`expected_chunk_digest = qdrant_digest = elasticsearch_digest`，值分别为
+`sha256:e4adc7b7…` / `sha256:c9241b97…` / `sha256:4f2b1bb0…`；`last_reconciled_at` 开始推进，
+`last_reconcile_error` 为空，`repair_attempts=0`。全表 `state='active'` 的 105 份清单
+`diverged=0` 且 `never_reconciled=0`；`ingestion_jobs` 中找不到 outbox 的行数为 **0**
+（修复前是 3）。对账日志从 ERROR 变为 `checked:20 healthy:20 diverged:0`，
+`query-api` 无 ERROR，演示租户仍是 3 份文档、2 条 `approval_pending`（需 1 / 2 名审批人），
+问答命中 `demo-doc-handbook`。
 
 **缺陷 6 的一个细节，值得记住**：三张表之间存在**每 5 秒生效一次**的强耦合 ——
 `index_manifests.expected_chunk_digest`、`release_center_requests.expected_chunk_digest`、
