@@ -76,47 +76,40 @@ func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier) er
 
 	now := time.Now().UTC()
 	expires := now.Add(168 * time.Hour)
-	docs := []struct {
-		docID, fileName, permission, publication, jobID, eventID, generation, digest string
-		published                                                                    bool
-	}{
-		{demoPublishedDocID, "员工手册.md", "public", "published", demoPublishedVersionID, "demo-event-handbook", demoPublishedGeneration, "sha256:demo-handbook", true},
-		{demoPendingDocID, "新员工入职指南.md", "internal", "draft", demoPendingVersionID, "demo-event-onboarding", demoPendingGeneration, "sha256:demo-onboarding", false},
-		{demoConfidentialDocID, "薪酬核算说明.md", "confidential", "draft", demoConfidentialVersionID, "demo-event-payroll", demoConfidentialGeneration, "sha256:demo-payroll", false},
-	}
+	docs := demoShowcaseDocuments()
 	for _, doc := range docs {
 		if _, err := tx.Exec(ctx, `INSERT INTO documents (
 				tenant_id,doc_id,file_name,object_key,file_hash,file_size,content_type,permission,status,stage,
 				chunks_done,chunks_total,uploaded_by,completed_at,doc_status,effective_date,owner,knowledge_space_id,publication_status,deletion_status
-			) VALUES ($1,$2,$3,$4,$5,2048,'text/markdown',$6,'completed','completed',3,3,$7,$8,'active',CURRENT_DATE,$9,$10,$11,'active')
+			) VALUES ($1,$2,$3,$4,$5,2048,'text/markdown',$6,'completed','completed',$12,$12,$7,$8,'active',CURRENT_DATE,$9,$10,$11,'active')
 			ON CONFLICT (tenant_id, doc_id) DO NOTHING`,
 			cfg.DemoTenantID, doc.docID, doc.fileName, "demo/"+doc.docID+".md", doc.digest, doc.permission,
-			userID, now, adminID, demoSpaceID, doc.publication); err != nil {
+			userID, now, adminID, demoSpaceID, doc.publication, len(doc.chunks)); err != nil {
 			return fmt.Errorf("seed demo document %s: %w", doc.docID, err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO ingestion_jobs (
 				job_id,event_id,tenant_id,doc_id,request_signature,task,status,completed_at
 			) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'completed',$7)
 			ON CONFLICT (job_id) DO NOTHING`,
-			doc.jobID, doc.eventID, cfg.DemoTenantID, doc.docID, "demo-sig-"+doc.docID,
+			doc.versionID, doc.eventID, cfg.DemoTenantID, doc.docID, "demo-sig-"+doc.docID,
 			fmt.Sprintf(`{"file_path":"demo/%s.md"}`, doc.docID), now); err != nil {
-			return fmt.Errorf("seed demo ingestion job %s: %w", doc.jobID, err)
+			return fmt.Errorf("seed demo ingestion job %s: %w", doc.versionID, err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO index_manifests (
 				generation_id,tenant_id,document_id,document_version_id,chunker_version,embedding_model,vector_dimension,
 				schema_version,collection_version,index_version,expected_chunk_count,expected_chunk_digest,
 				qdrant_count,qdrant_digest,elasticsearch_count,elasticsearch_digest,state,activated_at
-			) VALUES ($1,$2,$3,$4,'v1','demo',1536,'v1','v1','v1',3,$5,3,$5,3,$5,'active',$6)
+			) VALUES ($1,$2,$3,$4,'v1','demo',1536,'v1','v1','v1',$5,$6,$5,$6,$5,$6,'active',$7)
 			ON CONFLICT (generation_id) DO NOTHING`,
-			doc.generation, cfg.DemoTenantID, doc.docID, doc.jobID, doc.digest, now); err != nil {
-			return fmt.Errorf("seed demo generation %s: %w", doc.generation, err)
+			doc.generationID, cfg.DemoTenantID, doc.docID, doc.versionID, len(doc.chunks), doc.digest, now); err != nil {
+			return fmt.Errorf("seed demo generation %s: %w", doc.generationID, err)
 		}
 		if doc.published {
 			if _, err := tx.Exec(ctx, `INSERT INTO document_releases (
 					tenant_id,document_id,current_version_id,published_version_id,published_generation_id,revision,resolution_status
 				) VALUES ($1,$2,$3,$3,$4,1,'resolved')
 				ON CONFLICT (tenant_id, document_id) DO NOTHING`,
-				cfg.DemoTenantID, doc.docID, doc.jobID, doc.generation); err != nil {
+				cfg.DemoTenantID, doc.docID, doc.versionID, doc.generationID); err != nil {
 				return fmt.Errorf("seed demo release %s: %w", doc.docID, err)
 			}
 			continue
@@ -125,7 +118,7 @@ func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier) er
 				tenant_id,document_id,current_version_id,revision,resolution_status
 			) VALUES ($1,$2,$3,1,'resolved')
 			ON CONFLICT (tenant_id, document_id) DO NOTHING`,
-			cfg.DemoTenantID, doc.docID, doc.jobID); err != nil {
+			cfg.DemoTenantID, doc.docID, doc.versionID); err != nil {
 			return fmt.Errorf("seed demo release %s: %w", doc.docID, err)
 		}
 	}
@@ -192,6 +185,63 @@ func demoHandbookChunks() []string {
 	}
 }
 
+// demoShowcaseDocument is the single source of truth for a seeded showcase
+// document. The SQL seed and the retrieval-index seed both read this list, so a
+// manifest can never claim chunks that were never written to the stores.
+//
+// That drift is not cosmetic: the release center Agent pre-review binds to the
+// exact candidate by reading its stored chunks, so a manifest without chunks
+// makes every automatic review fail with "exact candidate content is
+// unavailable" and the document can never leave manual_exception.
+type demoShowcaseDocument struct {
+	docID        string
+	fileName     string
+	permission   string
+	publication  string
+	versionID    string
+	eventID      string
+	generationID string
+	digest       string
+	published    bool
+	chunks       []string
+}
+
+func demoShowcaseDocuments() []demoShowcaseDocument {
+	return []demoShowcaseDocument{
+		{
+			docID: demoPublishedDocID, fileName: "员工手册.md", permission: "public", publication: "published",
+			versionID: demoPublishedVersionID, eventID: "demo-event-handbook", generationID: demoPublishedGeneration,
+			digest: "sha256:demo-handbook", published: true, chunks: demoHandbookChunks(),
+		},
+		{
+			docID: demoPendingDocID, fileName: "新员工入职指南.md", permission: "internal", publication: "draft",
+			versionID: demoPendingVersionID, eventID: "demo-event-onboarding", generationID: demoPendingGeneration,
+			digest: "sha256:demo-onboarding", published: false, chunks: demoOnboardingChunks(),
+		},
+		{
+			docID: demoConfidentialDocID, fileName: "薪酬核算说明.md", permission: "confidential", publication: "draft",
+			versionID: demoConfidentialVersionID, eventID: "demo-event-payroll", generationID: demoConfidentialGeneration,
+			digest: "sha256:demo-payroll", published: false, chunks: demoPayrollChunks(),
+		},
+	}
+}
+
+func demoOnboardingChunks() []string {
+	return []string{
+		"新员工入职首日需到人力资源部完成身份核验，领取工牌、办公设备与内网账号，并现场签署保密协议。",
+		"入职第一周需完成信息安全、合规与部门业务三项培训，培训记录由直属主管确认后归档到员工档案。",
+		"试用期为三个月。期满前两周由直属主管发起转正评估，评估结果经部门负责人审批后生效。",
+	}
+}
+
+func demoPayrollChunks() []string {
+	return []string{
+		"月度薪酬于每月十五日发放，遇法定节假日提前至最近一个工作日。",
+		"薪酬结构由基本工资、绩效奖金与专项补贴组成，绩效奖金依据上一季度考核结果核定。",
+		"员工个人银行账号、社保公积金缴纳基数与个税专项附加扣除信息属于敏感信息，仅限人力资源部与财务部授权人员查看，不得对外提供。",
+	}
+}
+
 func ensureDemoDefaultSpace(tx pgx.Tx, ctx context.Context, tenantID string) error {
 	if _, err := tx.Exec(ctx, `UPDATE knowledge_spaces SET is_default=false, updated_at=now()
 		WHERE tenant_id=$1 AND is_default AND id<>$2`, tenantID, demoSpaceID); err != nil {
@@ -213,44 +263,45 @@ func ensureDemoShowcaseIndex(ctx context.Context, cfg config.Config, qdrant, ela
 	if !demoLoginEnabled(cfg) || qdrant == nil || elastic == nil || embed == nil {
 		return nil
 	}
-	identity := indexmanifest.GenerationIdentity{
-		VersionIdentity: indexmanifest.VersionIdentity{
-			TenantID: cfg.DemoTenantID, DocumentID: demoPublishedDocID, DocumentVersionID: demoPublishedVersionID,
-		},
-		GenerationID: demoPublishedGeneration,
-	}
-	observed, err := qdrant.ObserveGeneration(ctx, identity)
-	if err == nil && observed.Count >= len(demoHandbookChunks()) {
-		return nil
-	}
 	encoder := sparse.NewEncoder(sparse.DefaultParams())
-	for i, content := range demoHandbookChunks() {
-		chunk := model.Chunk{
-			ChunkID:    fmt.Sprintf("%s-%d", demoPublishedDocID, i),
-			DocID:      demoPublishedDocID,
-			TenantID:   cfg.DemoTenantID,
-			Content:    content,
-			Index:      i,
-			Permission: "public",
-			FileHash:   "sha256:demo-handbook",
-			CreatedAt:  time.Now().UTC(),
-			Metadata: map[string]string{
-				"knowledge_base_id": demoSpaceID,
-				"applicable_scope":  "production",
+	for _, doc := range demoShowcaseDocuments() {
+		identity := indexmanifest.GenerationIdentity{
+			VersionIdentity: indexmanifest.VersionIdentity{
+				TenantID: cfg.DemoTenantID, DocumentID: doc.docID, DocumentVersionID: doc.versionID,
 			},
-			SparseVector: encoder.Encode(content),
+			GenerationID: doc.generationID,
 		}
-		if err := embed.Embed(ctx, &chunk); err != nil {
-			return fmt.Errorf("embed demo handbook chunk %d: %w", i, err)
+		if observed, err := qdrant.ObserveGeneration(ctx, identity); err == nil && observed.Count >= len(doc.chunks) {
+			continue
 		}
-		if err := qdrant.UpsertGeneration(ctx, identity, chunk); err != nil {
-			return fmt.Errorf("index demo handbook in qdrant: %w", err)
+		for i, content := range doc.chunks {
+			chunk := model.Chunk{
+				ChunkID:    fmt.Sprintf("%s-%d", doc.docID, i),
+				DocID:      doc.docID,
+				TenantID:   cfg.DemoTenantID,
+				Content:    content,
+				Index:      i,
+				Permission: doc.permission,
+				FileHash:   doc.digest,
+				CreatedAt:  time.Now().UTC(),
+				Metadata: map[string]string{
+					"knowledge_base_id": demoSpaceID,
+					"applicable_scope":  "production",
+				},
+				SparseVector: encoder.Encode(content),
+			}
+			if err := embed.Embed(ctx, &chunk); err != nil {
+				return fmt.Errorf("embed demo chunk %s/%d: %w", doc.docID, i, err)
+			}
+			if err := qdrant.UpsertGeneration(ctx, identity, chunk); err != nil {
+				return fmt.Errorf("index demo document %s in qdrant: %w", doc.docID, err)
+			}
+			if err := elastic.UpsertGeneration(ctx, identity, chunk); err != nil {
+				return fmt.Errorf("index demo document %s in elasticsearch: %w", doc.docID, err)
+			}
 		}
-		if err := elastic.UpsertGeneration(ctx, identity, chunk); err != nil {
-			return fmt.Errorf("index demo handbook in elasticsearch: %w", err)
-		}
+		slog.Info("provisioned demo retrieval index", "tenant", cfg.DemoTenantID, "document", doc.docID, "chunks", len(doc.chunks))
 	}
-	slog.Info("provisioned demo handbook retrieval index", "tenant", cfg.DemoTenantID, "document", demoPublishedDocID)
 	return nil
 }
 
@@ -272,7 +323,15 @@ func indexDemoShowcase(ctx context.Context, cfg config.Config, qdrant demoChunkI
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout*time.Duration(len(demoHandbookChunks())+1))
+	ctx, cancel := context.WithTimeout(ctx, timeout*time.Duration(demoShowcaseChunkTotal()+1))
 	defer cancel()
 	return ensureDemoShowcaseIndex(ctx, cfg, qdrant, esIndexer, emb)
+}
+
+func demoShowcaseChunkTotal() int {
+	total := 0
+	for _, doc := range demoShowcaseDocuments() {
+		total += len(doc.chunks)
+	}
+	return total
 }

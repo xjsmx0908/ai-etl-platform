@@ -80,3 +80,56 @@ func TestIndexDemoShowcase_NoopWhenDisabled(t *testing.T) {
 		t.Fatalf("disabled index: %v", err)
 	}
 }
+
+// Every showcase document whose seeded manifest claims chunks must actually have
+// them in both retrieval backends. A manifest without chunks makes the release
+// center Agent pre-review fail with "exact candidate content is unavailable",
+// which pins the document in manual_exception forever.
+func TestEnsureDemoShowcaseIndex_IndexesEveryShowcaseDocument(t *testing.T) {
+	cfg := demoLoginConfig()
+	qdrant := store.NewMemoryStorer()
+	elastic := store.NewMemoryStorer()
+	if err := ensureDemoShowcaseIndex(context.Background(), cfg, qdrant, elastic, stubEmbedder{}); err != nil {
+		t.Fatalf("index showcase: %v", err)
+	}
+	docs := demoShowcaseDocuments()
+	if len(docs) != 3 {
+		t.Fatalf("showcase documents=%d, want 3", len(docs))
+	}
+	backends := []struct {
+		name  string
+		store *store.MemoryStorer
+	}{{"qdrant", qdrant}, {"elasticsearch", elastic}}
+	for _, doc := range docs {
+		if len(doc.chunks) == 0 {
+			t.Fatalf("showcase document %s declares no chunks", doc.docID)
+		}
+		identity := indexmanifest.GenerationIdentity{
+			VersionIdentity: indexmanifest.VersionIdentity{
+				TenantID: cfg.DemoTenantID, DocumentID: doc.docID, DocumentVersionID: doc.versionID,
+			},
+			GenerationID: doc.generationID,
+		}
+		for _, backend := range backends {
+			observed, err := backend.store.ObserveGeneration(context.Background(), identity)
+			if err != nil {
+				t.Fatalf("observe %s/%s: %v", backend.name, doc.docID, err)
+			}
+			if observed.Count != len(doc.chunks) {
+				t.Fatalf("%s holds %d chunks for %s but the manifest claims %d",
+					backend.name, observed.Count, doc.docID, len(doc.chunks))
+			}
+		}
+	}
+}
+
+// The confidential showcase document must contain the sensitive-data evidence
+// its seeded review finding refers to.
+func TestDemoPayrollChunksCarrySensitiveEvidence(t *testing.T) {
+	joined := strings.Join(demoPayrollChunks(), "\n")
+	for _, needle := range []string{"银行账号", "社保公积金", "不得对外提供"} {
+		if !strings.Contains(joined, needle) {
+			t.Fatalf("payroll chunks missing %q in %q", needle, joined)
+		}
+	}
+}
