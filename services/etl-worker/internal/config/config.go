@@ -334,13 +334,14 @@ func Load() Config {
 		StoreCollection: EnvStr("STORE_COLLECTION", "documents"),
 
 		// Elasticsearch (eventual consistency)
+		// ESIndexReplicas defaults to 0 because the shipped Compose stack runs a
+		// single Elasticsearch node, where a replica shard can never be allocated:
+		// the allocator refuses to place a copy on the node that already holds the
+		// primary, so the cluster would stay yellow. Multi-node deployments set 1+.
 		ESAddress:          EnvStr("ES_ADDRESS", "http://elasticsearch:9200"),
 		ESAPIKey:           EnvSecret("ES_API_KEY", ""),
 		ESIndex:            EnvStr("ES_INDEX", "documents_text"),
-		// Default 0 because the shipped Compose stack runs a single Elasticsearch
-		// node, where a replica shard can never be allocated and the cluster would
-		// stay yellow. Multi-node deployments should set 1 or more.
-		ESIndexReplicas: EnvInt("ES_INDEX_REPLICAS", 0),
+		ESIndexReplicas:    EnvInt("ES_INDEX_REPLICAS", 0),
 		ESQueueKey:         EnvStr("ES_QUEUE_KEY", "es:index:retry"),
 		ESDeadLetterKey:    EnvStr("ES_DEADLETTER_KEY", "es:index:deadletter"),
 		ESReplayPeriod:     EnvDuration("ES_REPLAY_PERIOD", 2*time.Second),
