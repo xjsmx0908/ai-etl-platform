@@ -18,6 +18,8 @@
 - `docker compose up -d`：启动完整本地服务栈。
 - `docker compose ps` / `docker compose logs -f`：检查运行中的服务。
 - `bash scripts/e2e-smoke.sh`：运行上传、解析、向量化、存储和查询的端到端冒烟流程。
+- `bash scripts/backup-stack.sh`：备份权威状态与投影到 `~/backups/ai-etl-platform/<UTC 时间戳>/`，写 `manifest.json`（含完整性门禁）。
+- `bash scripts/restore-stack.sh`：在隔离项目 `ai-etl-restore` 上恢复并断言（8 项）。脚本拒绝任何名字不含 `restore` 的项目，绝不碰演示栈的卷。
 - `python3 scripts/run-evals.py`：运行确定性 RAG 回归检查。
 - `python3 scripts/ingestion-capacity.py --profile short-text`：在已运行的 Query API 上串行测量入库容量；不要与 L1 查询门禁或第二套 Compose 混用。
 - `uv run --with-requirements scripts/requirements-test.txt python -m unittest discover -s scripts/tests -p 'test_*.py' -q`：在隔离 Python 环境中运行评测、治理和证据结构契约测试。

@@ -77,6 +77,8 @@ bash scripts/e2e-smoke.sh
 | 查询性能门禁 | `python3 scripts/load-test.py --profile cold-retrieval --requests 40 --concurrency 5`，说明见 [`docs/load-test.md`](docs/load-test.md) |
 | 入库容量包络 | `python3 scripts/ingestion-capacity.py --profile short-text`，说明见 [`docs/ingestion-capacity.md`](docs/ingestion-capacity.md) |
 | 个人身份演示 | `bash scripts/identity-demo-acceptance.sh` |
+| 全栈备份 | `bash scripts/backup-stack.sh`，说明见 [`docs/backup-and-recovery.md`](docs/backup-and-recovery.md) |
+| 恢复演练（隔离栈） | `bash scripts/restore-stack.sh` —— 在 `ai-etl-restore` 项目上恢复并跑 8 项断言，拒绝碰演示栈 |
 | 产品体验巡检 | [`docs/product-experience-acceptance.md`](docs/product-experience-acceptance.md) |
 
 发布中心、Agent 预审或 Web 工作台变更后，必须跑发布中心矩阵和产品体验验收，
@@ -115,6 +117,7 @@ cd web && npm install && npm run dev
 
 - 需求：[`docs/software-requirements-specification.md`](docs/software-requirements-specification.md)、[`docs/product-requirements-document.md`](docs/product-requirements-document.md)
 - 发布中心验收：[`docs/release-center-functional-acceptance.md`](docs/release-center-functional-acceptance.md)
+- 备份与恢复（权威状态边界、RPO/RTO、演练记录）：[`docs/backup-and-recovery.md`](docs/backup-and-recovery.md)
 - 企业身份（未生产启用）：[`docs/enterprise-identity-decision-register.md`](docs/enterprise-identity-decision-register.md)
 - CI：[`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 
