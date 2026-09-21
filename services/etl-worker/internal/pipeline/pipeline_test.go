@@ -633,6 +633,59 @@ func TestHandleTask_RecordsCompletedStatus(t *testing.T) {
 	if !foundProgress {
 		t.Fatalf("expected an embedding stage with ChunksDone=1, got %+v", statuses.statuses)
 	}
+	// The local text path learns its chunk total only once the stream drains.
+	// The completion record must carry it, otherwise the document inventory
+	// renders "—" instead of "n/n" for every text document.
+	final := statuses.statuses[len(statuses.statuses)-1]
+	if final.ChunksDone != 1 || final.TotalChunks != 1 {
+		t.Fatalf("completed status = done %d total %d, want 1/1", final.ChunksDone, final.TotalChunks)
+	}
+}
+
+// A PDF ingestion knows its chunk total once the page batches are embedded. The
+// per-range "pages completed" write used to pass total=0, which clobbered the
+// value that the embedding write had just persisted.
+func TestProcessTaskPDFPathPersistsChunkTotal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"doc_id": "doc-total", "page_count": 1, "status": "success",
+			"chunks": []map[string]interface{}{
+				{"chunk_id": "doc-total_0000", "doc_id": "doc-total", "tenant_id": "acme", "content": "alpha", "index": 0},
+				{"chunk_id": "doc-total_0001", "doc_id": "doc-total", "tenant_id": "acme", "content": "beta", "index": 1},
+				{"chunk_id": "doc-total_0002", "doc_id": "doc-total", "tenant_id": "acme", "content": "gamma", "index": 2},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	tmp, err := os.CreateTemp(t.TempDir(), "total-*.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	statuses := &taskStatusStub{}
+	cfg := baseTestConfig()
+	cfg.ParserEndpoint = srv.URL
+	cfg.OCRPageBatchSize = 25
+	cfg.PipelineTimeout = 5 * time.Second
+	cfg.StageTimeout = 5 * time.Second
+	p := New(cfg, vectorEmbedder{}, noopStorer{}, metrics.NewCollector(10), &noopCheckpoint{}, &dlqStub{}).WithTaskStatusStore(statuses)
+	if err := p.processTask(context.Background(), model.Task{DocID: "doc-total", TenantID: "acme", FilePath: tmp.Name()}); err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses.statuses) == 0 {
+		t.Fatal("expected progress statuses")
+	}
+	last := statuses.statuses[len(statuses.statuses)-1]
+	if last.ChunksDone != 3 || last.TotalChunks != 3 {
+		t.Fatalf("final progress = done %d total %d, want 3/3", last.ChunksDone, last.TotalChunks)
+	}
 }
 
 type delayEmbedder struct{ d time.Duration }

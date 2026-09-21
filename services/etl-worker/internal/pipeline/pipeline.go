@@ -691,6 +691,14 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr 
 	if total == 0 {
 		return errors.New("parser produced no chunks")
 	}
+	// The local text path streams chunks without ever learning a total up front,
+	// so every progress write for those documents carried total=0 and the
+	// inventory rendered "—" instead of "n/n". The stream has drained, so the
+	// produced count is now the document's chunk total.
+	if totalChunks == 0 {
+		totalChunks = total
+		p.saveTaskStatusProgress(taskCtx, task, model.TaskStatusProcessing, "embedding", "", total, totalChunks)
+	}
 	if generationBuild != nil {
 		if err := generationBuild.Complete(taskCtx); err != nil {
 			return fmt.Errorf("complete generation build: %w", err)
@@ -800,7 +808,7 @@ func (p *Pipeline) processPDFBatches(taskCtx context.Context, task model.Task, c
 			return totalChunks, fmt.Errorf("save OCR checkpoint: %w", err)
 		}
 		cp = checkpoint
-		p.saveTaskStatusProgressPages(taskCtx, task, model.TaskStatusProcessing, "ocr", fmt.Sprintf("已完成第 %d / %d 页", startPage, totalPages), totalChunks, 0, startPage, totalPages)
+		p.saveTaskStatusProgressPages(taskCtx, task, model.TaskStatusProcessing, "ocr", fmt.Sprintf("已完成第 %d / %d 页", startPage, totalPages), totalChunks, totalChunks, startPage, totalPages)
 		if startPage >= totalPages {
 			break
 		}
