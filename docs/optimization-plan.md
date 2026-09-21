@@ -10,52 +10,93 @@
 
 ## 0. 结论摘要
 
-一句话：**功能主线（企业级 Agent 预审 + 发布中心）代码是完整的，当前真正的风险不在功能，在运维底座。**
+一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 五处缺陷都是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它。**
+
+> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了一轮
+> 缺陷排查，找到并修复了 5 个**功能/可靠性**缺陷（见 §1.3），全部属于「失败被固化、重试变成复读」。
+> 原结论因此**不成立**，已按下表修订。
 
 | 类别 | 结论 |
 | --- | --- |
 | 功能完善度 | 主链路（上传→解析→向量化→检索→问答→发布审批）已闭环；缺口集中在**自助能力**、**备份恢复**、**合规审查深度**三处 |
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
-| 最紧急项 | **服务器磁盘 97%，Elasticsearch 已因磁盘水位拒绝分配分片，距只读阈值仅剩 3.3GB**，且**全栈无任何备份** |
+| 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
+| 最紧急项 | **全栈无任何备份**（§1.2）；磁盘距 ES 只读阈值 15GB（§1.1.2，清理已完成） |
+| 已修复项 | 5 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）。见 §1.1、§1.3 |
 
 ---
 
 ## 1. P0 —— 必须先处理，否则会停服
 
-### 1.1 磁盘濒满，Elasticsearch 已进入分配拒绝状态
+### 1.1 磁盘濒满 + Elasticsearch 永久 yellow（两个独立问题，都已处理）
+
+> **勘误（2026-09-21 深查后修正）**：本节初稿把 ES 的 unassigned shard 归因于磁盘水位，
+> **这个归因是错的**。真因是单节点集群配了 1 个副本。磁盘濒满是**另一个**独立风险，
+> 两者恰好同时存在，但互为因果的只有前者。
+
+#### 1.1.1 ES 永久 yellow —— 真因是单节点配了副本（已修复）
+
+**证据（推翻初稿的关键一步：看 decider，而不是看 `reason`）**
+
+```
+$ ES allocation/explain → can_allocate: "no", reason: "CLUSTER_RECOVERED"
+                          node_allocation_decisions[0].deciders →
+                            same_shard → "a copy of this shard is already allocated to this node"
+$ ES _cat/shards/documents_text_v2 → documents_text_v2 0 p STARTED / 0 r UNASSIGNED
+$ 清理出 19GB 可用空间后重新 explain → 仍然 can_allocate: no（排除磁盘水位）
+$ PUT /documents_text_v2/_settings {"index":{"number_of_replicas":0}} → green / 100% / 0 unassigned
+```
+
+`can_allocate` 的 `reason` 是节点级摘要，会盖住真正的 decider；必须下钻到
+`node_allocation_decisions[].deciders` 才能看到拒绝理由。
+
+**机制**：`internal/es/indexer.go` 的 `ensureIndex` 建索引时只发 `mappings`，ES 套用默认
+`number_of_replicas: 1`。单节点集群上这个副本永远分配不出去 —— 分配器不允许把分片副本放到
+已经持有主分片的节点上（`same_shard`），于是集群永久 yellow，`active_shards_percent` 卡在 50%。
+
+**修复**：commit `579d8b8` + `5516d00` 新增 `ES_INDEX_REPLICAS`（默认 0，即单节点语义），
+经 `es.WithReplicas()` 透传到建索引请求；`ES_INDEX_REPLICAS=1+` 供多节点部署使用。
+线上已对既有索引执行 `number_of_replicas: 0`，4681 篇文档未受影响。
+
+**验收判据**：`ES _cluster/health` → `status: green`、`unassigned_shards: 0`、`active_shards_percent: 100%`。**已达成。**
+
+#### 1.1.2 磁盘濒满 —— 真实风险，清理已完成，告警仍缺
 
 **证据**
 
 ```
-$ df -h /            → /dev/vda2  197G  182G  7.3G  97%
+$ df -h /            → /dev/vda2  197G  182G  7.3G  97%     （清理前）
+                     → 可用 19G                              （清理后）
 $ docker system df   → Images 108.7GB(可回收 79.55GB) / Build Cache 60.64GB(可回收 9.91GB)
                        Local Volumes 24.64GB(可回收 19.98GB)
-$ ES _cluster/health → status: yellow, unassigned_shards: 1, active_shards_percent: 50%
-$ ES allocation/explain → can_allocate: "no",
-                          reason: "CLUSTER_RECOVERED", at: 2026-09-12T06:56:23Z
 ```
 
-**机制**：`docker-compose.yml:147-149` 把 ES 水位设为**绝对值** —— `low=8gb` / `high=6gb` / `flood_stage=4gb`（远端 `.env` 未覆盖，走 compose 默认）。当前可用 7.3GB：
+**机制**：`docker-compose.yml:147-149` 把 ES 水位设为**绝对值** —— `low=8gb` / `high=6gb` /
+`flood_stage=4gb`（远端 `.env` 未覆盖，走 compose 默认）。可用空间 7.3GB 时确实低于 `low`，
+但实测证明这**没有**导致 unassigned shard（见 §1.1.1）。真正的后果是另一条：
 
-| 可用空间 | ES 行为 | 当前状态 |
-| --- | --- | --- |
-| < 8GB | 拒绝分配新分片 | **已触发**（`can_allocate: no`） |
-| < 6GB | 尝试迁移分片（单节点无法迁移） | 还剩 1.3GB |
-| < 4GB | **全部索引转只读，写入被拒** | 还剩 3.3GB |
+| 可用空间 | ES 行为 | 清理前 | 清理后 |
+| --- | --- | --- | --- |
+| < 8GB | 拒绝分配**新**分片 | 已触发 | 已解除 |
+| < 6GB | 尝试迁移分片（单节点无法迁移） | 还剩 1.3GB | 已解除 |
+| < 4GB | **全部索引转只读，写入被拒** | 还剩 3.3GB | 还剩 15GB |
 
-**影响**：再消耗约 3.3GB，上传→入库→问答全链路停止。Kafka 日志、ES 段合并、容器日志都在持续吃这部分空间，不是「会不会」的问题，是「还有多久」。
+**已完成**：`docker builder prune` 回收 9.911GB + 删除 9 个本项目一次性验收镜像（删前逐个
+验证 0 容器引用）；未动 volumes、未动其他项目镜像。可用空间 7.3G → 19G。
 
-**怎么做**
+**仍要做**
 
-1. **立即回收空间**（需你确认后再执行，我不会擅自动）：
-   - `docker builder prune` —— 回收构建缓存约 **9.9GB**，无风险。
-   - 悬空镜像当前为 **0 个**，所以「清悬空镜像」无效，别指望它。
-   - 108.7GB 镜像里**大部分是其他项目的**：`openclaw:custom-lobster-backup-20260721` 5.65GB、`ghcr.io/openclaw/openclaw:latest` 4.55GB、`openclaw-codex-worker:local` 4.15GB、`mcr.microsoft.com/playwright` 3.2GB 等。**不能整体 `docker image prune -a`**，那会打断你其他项目的可重启性。
-   - `Local Volumes` 可回收 19.98GB，但**卷里可能有其他项目的数据，我强烈建议逐个人工确认，不做批量 prune**。
-2. **把水位改成百分比**，别用绝对值 —— 单节点 ES 用 `8gb/6gb/4gb` 意味着机器越满越危险，且与宿主机总容量脱钩。
-3. **加磁盘告警**：Prometheus 已有，加一条 `node_filesystem_avail_bytes` 规则，阈值 15% / 10% 两档，接现有 alertmanager。
+1. **把水位改成百分比**，别用绝对值 —— 单节点 ES 用 `8gb/6gb/4gb` 意味着机器越满越危险，
+   且与宿主机总容量脱钩。
+2. **加磁盘告警**：Prometheus 已有，加一条 `node_filesystem_avail_bytes` 规则，阈值
+   15% / 10% 两档，接现有 alertmanager。
+3. 108.7GB 镜像里**大部分是其他项目的**：`openclaw:custom-lobster-backup-20260721` 5.65GB、
+   `ghcr.io/openclaw/openclaw:latest` 4.55GB、`openclaw-codex-worker:local` 4.15GB、
+   `mcr.microsoft.com/playwright` 3.2GB 等。**不能整体 `docker image prune -a`**，
+   那会打断你其他项目的可重启性。`Local Volumes` 同理，逐个人工确认，不做批量 prune。
 
-**验收判据**：`df -h /` 可用空间 > 25GB；`ES _cluster/health` 的 `unassigned_shards` 归零、`status: green`；告警规则在 Prometheus 里 `up` 且能触发一次测试告警。
+**验收判据**：`df -h /` 可用空间 > 25GB（当前 19GB，未达标）；ES 水位改为百分比且
+`_cluster/settings` 可读回；告警规则在 Prometheus 里 `up` 且能触发一次测试告警。
 
 ---
 
@@ -79,6 +120,29 @@ $ ls ~/backups                                  → 仅 openclaw-upgrade-2026032
 4. 明确 RPO/RTO 并写进 `docs/`。backlog 的 P2.6 把「备份恢复」列为生产准入门，但在那之前，**现在这台机器上的数据就已经没有保护了**。
 
 **验收判据**：恢复演练在隔离栈上跑通，恢复后的数据能通过一次真实问答（引用命中预期文档）；cron 条目存在且有成功日志。
+
+---
+
+### 1.3 已修复的 5 个缺陷（共同形状：失败被固化，重试变成复读）
+
+排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
+
+| # | 缺陷 | 线上证据 | 真因 | commit |
+| --- | --- | --- | --- | --- |
+| 1 | ES 集群永久 yellow | `_cat/shards` → `r UNASSIGNED`；`allocation/explain` 的 decider 是 `same_shard` | `ensureIndex` 建索引只发 `mappings`，ES 默认 `number_of_replicas: 1`，单节点永远分不出去 | `579d8b8` `5516d00` |
+| 2 | 发布中心预审队列被一行数据永久堵死 | 每 5 秒一条 `SQLSTATE 23505`（10 分钟 84 次） | 演示种子写死 `request_id`，而 `stableID` 把 count/digest/revision 算进哈希 → 派生 ID 不等 → 插入撞上第二个唯一约束；`RunPendingReviews` 首个失败即 `return err`，一行坏数据停摆整条队列 | `e6d1923` |
+| 3 | 文档清单的块数恒显示「—」 | `documents` 表 119 行里大 `.txt`/`.md`/PDF 全为 `n/0` | 文本路径的 `totalChunks` 只在走 parser 服务分支时才从 channel 读到；PDF 路径先写对又被「第 x / y 页」的进度写回覆盖成 0 | `4cf5963` |
+| 4 | 演示文档的 `index_manifests` 撒谎 → Agent 预审永远失败 | ES 实测 handbook=3 / onboarding=0 / payroll=0，但清单声称各 3；run 的 `error="exact candidate content is unavailable"` | `ensureDemoShowcaseIndex` 只索引 handbook，清单却给三份文档都写了 3 条；预审按 `document_version_id`+`generation_id` 精确取块得 0 条 | `624d936` |
+| 5 | 预审的瞬时失败被永久缓存，重试变成复读 | 计划器 30s 超时后，Redis 里的 run 永久 `failed`；只能手工删 key 才恢复 | 预审 run id 只由候选派生，而 `failed` 是终态且 `ExecuteNext` 对终态直接短路 → 重试复读旧错误，从不重新调用计划器。自动恢复路径（预审过期 → `needs_info` → 队列重新拾取）每轮只消耗一个 `RELEASE_REVIEW_TTL`，Agent 一次都没重跑 | `91a47fc` |
+
+**缺陷 5 的一个细节，值得记住**：`AGENT_RUN_TTL=24h` 让这个 bug 看起来「过一阵会自己好」——
+run 记录 24 小时后过期，下一次重试才是真的重跑。也就是说恢复靠的是**缓存过期这个副作用**，
+而不是任何重试逻辑。对演示场景，这意味着一个 30 秒的网关抖动能让文档卡住 24 小时，
+除非人工写「人工例外理由」放行。修复后 run id 含 prompt 版本与尝试序号，
+`AGENT_REVIEW_MAX_ATTEMPTS`（默认 3）给出有界重试，失败的 run 保留在盘上作为证据。
+
+**仍未修、已确认但未动手的**：`AGENT_RUN_TTL` 之内、prompt 未变、模型变了的情况——
+run id 不含模型，所以换模型不会让已缓存的裁决失效。影响面小于缺陷 5，未纳入本轮。
 
 ---
 
@@ -297,7 +361,8 @@ docker exec ai-etl-platform-web-1 grep -rl 可量化的知识资产 /app/.next  
 ## 7. 建议执行顺序
 
 ```
-第 1 步（今天）   1.1 磁盘回收 + ES 水位改百分比 + 磁盘告警
+第 1 步（今天）   1.1.1 ES 单节点副本（已完成，见下） + 1.1.2 磁盘回收（已完成）
+                 1.1.2 剩余：ES 水位改百分比 + 磁盘告警
 第 2 步（本周）   1.2 备份脚本 + 恢复演练；2.1 Go 工具链权限修复
 第 3 步（本周）   3.  状态文档三源归一 + 一致性契约测试
 第 4 步           2.2 / 2.3 配置一致性修复 + 契约测试
