@@ -116,6 +116,10 @@ var (
 	// reopen. There is no automatic route back to a projection for it, so it is
 	// counted separately from a scheduling error rather than retried forever.
 	ErrNoReplayPath = errors.New("indexmanifest: failed generation has no ingestion job to replay")
+	// ErrRepairInFlight reports a failed generation whose replay is already under
+	// way. It is a wait, not a failure: the repair budget is left untouched so a
+	// slow rebuild is not charged for the reconciliation passes it outlives.
+	ErrRepairInFlight = errors.New("indexmanifest: failed generation replay is already in flight")
 )
 
 // ChunkIdentityDigest returns a stable digest of chunk identities and content

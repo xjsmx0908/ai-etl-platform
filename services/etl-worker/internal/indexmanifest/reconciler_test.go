@@ -343,3 +343,24 @@ func TestReconcilerStillReportsActivePassWhenTheFailedClaimFails(t *testing.T) {
 		t.Fatalf("observed reports=%+v", observer.reports)
 	}
 }
+
+// A replay that is already under way is a wait, not an outcome: the budget was
+// left untouched, so the pass must not be reported as a replay it performed.
+func TestReconcilerCountsAnInFlightReplayAsPendingNotReplayed(t *testing.T) {
+	store := &reconciliationStoreStub{
+		failed:         []Manifest{{GenerationID: "gen-waiting", TenantID: "acme", DocumentID: "doc-1", DocumentVersionID: "job-1", State: StateFailed}},
+		scheduleErrors: map[string]error{"gen-waiting": ErrRepairInFlight},
+	}
+	empty := reconciliationProjectionStub{byGeneration: map[string]BackendObservation{}}
+	reconciler := NewReconciler(store, empty, empty, ReconcilerOptions{
+		BatchSize: 10, Interval: time.Minute, Lease: time.Minute, MaxRepairs: 3,
+	})
+
+	report, err := reconciler.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("a replay already in flight is not a pass failure: %v", err)
+	}
+	if report.RepairPending != 1 || report.RepairReplayed != 0 || report.RepairUnavailable != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+}

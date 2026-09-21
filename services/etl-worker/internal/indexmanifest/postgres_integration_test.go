@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ai-etl-pipeline/internal/db"
+	"ai-etl-pipeline/internal/migrations"
 )
 
 // TestPostgresConcurrentActivation requires a disposable PostgreSQL instance.
@@ -384,5 +387,205 @@ func TestPostgresRollbackAndRetentionLifecycle(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("retained manifest remained: %d", remaining)
+	}
+}
+
+// indexManifestMigrationPool creates a scratch schema with the real migrations
+// applied, so these tests exercise the deployed schema instead of a hand-rolled
+// subset of it.
+func indexManifestMigrationPool(t *testing.T) (*pgxpool.Pool, func()) {
+	t.Helper()
+	dsn := os.Getenv("INDEX_MANIFEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set INDEX_MANIFEST_TEST_DSN to run PostgreSQL index manifest integration tests")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("indexmanifest_migrated_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	if err := migrations.Up(ctx, &db.Pool{Pool: pool}); err != nil {
+		pool.Close()
+		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+		t.Fatalf("apply migrations: %v", err)
+	}
+	return pool, func() {
+		pool.Close()
+		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+	}
+}
+
+// seedFailedGeneration writes the four rows a failed generation is made of: the
+// tenant and document it belongs to, its ingestion job, the outbox event that
+// carried its one delivery, and the failed manifest itself. Each statement is
+// separate because pgx refuses to prepare a multi-statement query that takes
+// parameters.
+func seedFailedGeneration(t *testing.T, pool *pgxpool.Pool, generationID, jobID string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO tenants (id,name) VALUES ('acme','acme')`, nil},
+		{`INSERT INTO documents (tenant_id,doc_id,file_name,object_key,status)
+			VALUES ('acme','doc-1','handbook.md','acme/doc-1.md','failed')`, nil},
+		{`INSERT INTO ingestion_jobs (job_id,event_id,tenant_id,doc_id,request_signature,task,status,error)
+			VALUES ($1,$1||'-event','acme','doc-1','sig','{}'::jsonb,'failed','materialize object: missing')`,
+			[]any{jobID}},
+		{`INSERT INTO ingestion_outbox (event_id,job_id,tenant_id,doc_id,task,published_at)
+			VALUES ($1||'-event',$1,'acme','doc-1','{}'::jsonb,now())`, []any{jobID}},
+		{`INSERT INTO index_manifests (generation_id,tenant_id,document_id,document_version_id,
+			chunker_version,embedding_model,vector_dimension,schema_version,collection_version,
+			index_version,state,last_error)
+			VALUES ($2,'acme','doc-1',$1,'chunker-v1','embed-v1',3,'schema-v1','collection-v1',
+			'index-v1','failed','materialize object: missing')`, []any{jobID, generationID}},
+	} {
+		if _, err := pool.Exec(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatalf("seed %s: %v", generationID, err)
+		}
+	}
+}
+
+// The unit tests assert the shape of the SQL. This one asserts the property the
+// bound exists for, against the real schema: a generation whose rebuild keeps
+// failing is replayed exactly maxRepairs times, is then left alone, and the
+// diagnostics gauge says so.
+//
+// A budget that is never charged passes every shape-based assertion about the
+// claim and still re-drives a dead generation on every pass forever.
+func TestPostgresFailedRepairIsBoundedByTheRepairBudget(t *testing.T) {
+	pool, cleanup := indexManifestMigrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	seedFailedGeneration(t, pool, "gen-dead", "job-dead")
+	store := NewPostgresStore(pool)
+	const maxRepairs = 3
+
+	for attempt := 1; attempt <= maxRepairs; attempt++ {
+		claimed, err := store.ClaimFailedRepairs(ctx, ReconciliationClaim{
+			Limit: 10, Lease: time.Minute, Token: fmt.Sprintf("claim-%d", attempt),
+		}, maxRepairs)
+		if err != nil {
+			t.Fatalf("attempt %d: claim: %v", attempt, err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("attempt %d claimed %d generations, want 1", attempt, len(claimed))
+		}
+		if err := store.ScheduleFailedRepair(ctx, claimed[0]); err != nil {
+			t.Fatalf("attempt %d: schedule: %v", attempt, err)
+		}
+		var state string
+		var budget int
+		if err := pool.QueryRow(ctx, `SELECT state,repair_attempts FROM index_manifests
+			WHERE generation_id='gen-dead'`).Scan(&state, &budget); err != nil {
+			t.Fatal(err)
+		}
+		// Only a build may move a manifest out of failed. A row parked in
+		// building by the reconciler would be rebuilt by nothing.
+		if state != string(StateFailed) {
+			t.Fatalf("attempt %d left the manifest in %s, want failed", attempt, state)
+		}
+		if budget != attempt {
+			t.Fatalf("attempt %d charged %d units of the budget, want %d", attempt, budget, attempt)
+		}
+		var pending bool
+		if err := pool.QueryRow(ctx, `SELECT published_at IS NULL FROM ingestion_outbox
+			WHERE job_id='job-dead'`).Scan(&pending); err != nil {
+			t.Fatal(err)
+		}
+		if !pending {
+			t.Fatalf("attempt %d did not return the outbox event to the relay", attempt)
+		}
+		// The worker delivers it, fails again, and the job goes back to failed.
+		if _, err := pool.Exec(ctx, `UPDATE ingestion_jobs SET status='failed' WHERE job_id='job-dead'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE ingestion_outbox SET published_at=now(),claimed_at=NULL WHERE job_id='job-dead'`); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	claimed, err := store.ClaimFailedRepairs(ctx, ReconciliationClaim{
+		Limit: 10, Lease: time.Minute, Token: "claim-after-budget",
+	}, maxRepairs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("claimed %d generations after the budget was spent, want 0", len(claimed))
+	}
+	snapshot, err := store.OperationsSnapshot(ctx, maxRepairs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Manifests[StateFailed] != 1 || snapshot.RepairExhausted != 1 {
+		t.Fatalf("snapshot = %+v, want one exhausted failed generation", snapshot)
+	}
+}
+
+// A rebuild that outlives a reconciliation pass must not be charged for the
+// passes it outlives, or a slow document would spend its attempts before it
+// finished. The claim is handed back untouched instead.
+func TestPostgresFailedRepairWaitsForAnInFlightReplayWithoutSpendingBudget(t *testing.T) {
+	pool, cleanup := indexManifestMigrationPool(t)
+	defer cleanup()
+	ctx := context.Background()
+	seedFailedGeneration(t, pool, "gen-slow", "job-slow")
+	store := NewPostgresStore(pool)
+	const maxRepairs = 3
+
+	claimed, err := store.ClaimFailedRepairs(ctx, ReconciliationClaim{
+		Limit: 10, Lease: time.Minute, Token: "claim-1",
+	}, maxRepairs)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim = %v, %v", claimed, err)
+	}
+	if err := store.ScheduleFailedRepair(ctx, claimed[0]); err != nil {
+		t.Fatal(err)
+	}
+	// The relay has delivered the event and the worker is still on it.
+	if _, err := pool.Exec(ctx, `UPDATE ingestion_jobs SET status='processing' WHERE job_id='job-slow'`); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.ClaimFailedRepairs(ctx, ReconciliationClaim{
+		Limit: 10, Lease: time.Minute, Token: "claim-2",
+	}, maxRepairs)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("second claim = %v, %v", claimed, err)
+	}
+	err = store.ScheduleFailedRepair(ctx, claimed[0])
+	if !errors.Is(err, ErrRepairInFlight) {
+		t.Fatalf("err = %v, want ErrRepairInFlight", err)
+	}
+	var budget int
+	var leaseExpired bool
+	if err := pool.QueryRow(ctx, `SELECT repair_attempts, reconcile_lease_until IS NULL
+		FROM index_manifests WHERE generation_id='gen-slow'`).Scan(&budget, &leaseExpired); err != nil {
+		t.Fatal(err)
+	}
+	if budget != 1 {
+		t.Fatalf("repair_attempts = %d, want 1: an in-flight replay must not spend the budget", budget)
+	}
+	if !leaseExpired {
+		t.Fatal("the claim was not handed back, so the next pass would wait a full lease")
 	}
 }

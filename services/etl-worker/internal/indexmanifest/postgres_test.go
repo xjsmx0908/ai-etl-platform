@@ -854,8 +854,13 @@ func TestPostgresStoreRetryClearsTheSealOfTheFailedAttempt(t *testing.T) {
 
 // The replay has to reopen the same durable path the worker already consumes:
 // the job back to published and its outbox event back in the relay, in one
-// transaction with the manifest, so a crash cannot leave a reopened job with a
-// manifest that is still failed.
+// transaction with the manifest's budget, so a crash cannot leave a reopened
+// job with a manifest that was never charged for it.
+//
+// It must not move the manifest out of failed. A rebuild does not necessarily
+// produce the same generation — the generation id is derived from the build
+// definition — and a row parked in building by the reconciler would never be
+// rebuilt or failed by anything.
 func TestPostgresStoreSchedulesFailedRepairThroughTheIngestionOutbox(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -866,16 +871,86 @@ func TestPostgresStoreSchedulesFailedRepairThroughTheIngestionOutbox(t *testing.
 	m.State = StateFailed
 	m.ReconcileClaimToken = "claim-1"
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'.*status IN \\('completed','failed'\\)").
-		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectQuery("SELECT status FROM ingestion_jobs.*FOR UPDATE").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).
+		WillReturnRows(pgxmock.NewRows([]string{"status"}).AddRow("failed"))
 	mock.ExpectExec("UPDATE ingestion_outbox SET published_at=NULL,claimed_at=NULL,available_at=now\\(\\)").
 		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec("UPDATE index_manifests SET state='building'.*reconcile_lease_until=NULL, reconcile_claim_token=''").
-		WithArgs(m.GenerationID, "claim-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'.*status IN \\('completed','failed'\\)").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE index_manifests SET repair_attempts=repair_attempts\\+1").
+		WithArgs(m.GenerationID, "", "claim-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 
 	if err := NewPostgresStore(mock).ScheduleFailedRepair(context.Background(), m); err != nil {
 		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The budget is what bounds the replay, so it has to be spent on every
+// scheduled replay. Without this a failed generation is re-claimed on every
+// pass forever and the "bounded repair" is only a name.
+func TestPostgresStoreSpendsTheRepairBudgetForEveryScheduledReplay(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State = StateFailed
+	m.ReconcileClaimToken = "claim-1"
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT status FROM ingestion_jobs").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).
+		WillReturnRows(pgxmock.NewRows([]string{"status"}).AddRow("failed"))
+	mock.ExpectExec("UPDATE ingestion_outbox SET published_at=NULL").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// The budget update must not touch state: only a build may leave failed.
+	mock.ExpectExec("UPDATE index_manifests SET repair_attempts=repair_attempts\\+1, last_attempt_at=now\\(\\), reconcile_lease_until=NULL, reconcile_claim_token='', last_reconcile_error=\\$2 WHERE generation_id=\\$1 AND reconcile_claim_token=\\$3 AND state='failed'").
+		WithArgs(m.GenerationID, "", "claim-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	if err := NewPostgresStore(mock).ScheduleFailedRepair(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The budget counts scheduled replays, not passes. Charging it while the
+// previous replay is still being delivered would spend a slow rebuild's
+// attempts before it had a chance to finish, so the claim is released and the
+// budget left alone.
+func TestPostgresStoreDoesNotSpendBudgetWhileAReplayIsInFlight(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State = StateFailed
+	m.ReconcileClaimToken = "claim-1"
+	for _, status := range []string{"published", "processing", "queued"} {
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT status FROM ingestion_jobs").
+			WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).
+			WillReturnRows(pgxmock.NewRows([]string{"status"}).AddRow(status))
+		mock.ExpectExec("UPDATE index_manifests SET reconcile_lease_until=NULL, reconcile_claim_token=''").
+			WithArgs(m.GenerationID, "claim-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		mock.ExpectCommit()
+	}
+	store := NewPostgresStore(mock)
+	for _, status := range []string{"published", "processing", "queued"} {
+		err := store.ScheduleFailedRepair(context.Background(), m)
+		if !errors.Is(err, ErrRepairInFlight) {
+			t.Fatalf("status %s: err = %v, want ErrRepairInFlight", status, err)
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -896,9 +971,40 @@ func TestPostgresStoreRecordsUnrepairableFailedGenerationWithoutReopeningAJob(t 
 	m.State = StateFailed
 	m.ReconcileClaimToken = "claim-1"
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'").
-		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectQuery("SELECT status FROM ingestion_jobs").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnError(pgx.ErrNoRows)
 	mock.ExpectExec("UPDATE index_manifests SET repair_attempts=repair_attempts\\+1.*state='failed'").
+		WithArgs(m.GenerationID, ErrNoReplayPath.Error(), "claim-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	err = NewPostgresStore(mock).ScheduleFailedRepair(context.Background(), m)
+	if !errors.Is(err, ErrNoReplayPath) {
+		t.Fatalf("err = %v, want ErrNoReplayPath", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A job with no outbox event will never be delivered. Nothing has been written
+// yet at that point, so the transaction must spend the budget instead of
+// leaving a reopened job that no relay will ever pick up.
+func TestPostgresStoreChargesTheBudgetWhenTheOutboxEventIsMissing(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	m := testManifest()
+	m.State = StateFailed
+	m.ReconcileClaimToken = "claim-1"
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT status FROM ingestion_jobs").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).
+		WillReturnRows(pgxmock.NewRows([]string{"status"}).AddRow("failed"))
+	mock.ExpectExec("UPDATE ingestion_outbox SET published_at=NULL").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectExec("UPDATE index_manifests SET repair_attempts=repair_attempts\\+1").
 		WithArgs(m.GenerationID, ErrNoReplayPath.Error(), "claim-1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 
@@ -923,12 +1029,15 @@ func TestPostgresStoreRejectsStaleFailedRepairClaim(t *testing.T) {
 	m.State = StateFailed
 	m.ReconcileClaimToken = "claim-stale"
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'").
-		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectQuery("SELECT status FROM ingestion_jobs").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).
+		WillReturnRows(pgxmock.NewRows([]string{"status"}).AddRow("failed"))
 	mock.ExpectExec("UPDATE ingestion_outbox SET published_at=NULL").
 		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec("UPDATE index_manifests SET state='building'").
-		WithArgs(m.GenerationID, "claim-stale").WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectExec("UPDATE ingestion_jobs SET status='published'").
+		WithArgs(m.DocumentVersionID, m.TenantID, m.DocumentID).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE index_manifests SET repair_attempts=repair_attempts\\+1").
+		WithArgs(m.GenerationID, "", "claim-stale").WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectRollback()
 
 	err = NewPostgresStore(mock).ScheduleFailedRepair(context.Background(), m)

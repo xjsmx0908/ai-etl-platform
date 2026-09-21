@@ -393,10 +393,23 @@ m.expected_chunk_count,m.expected_chunk_digest,m.state`, maxRepairs, claim.Limit
 // It is the failed-state counterpart of the replay scheduling in
 // FinishReconciliation and reuses the same durable mechanism rather than
 // inventing a second one: reopen the ingestion job, put its outbox event back
-// in the relay, and let the normal pipeline run. The repair budget is charged
-// exactly once per attempt — including when there is no job to reopen, because
-// a generation that can never be rebuilt must reach repair_exhausted and
-// escalate rather than be re-claimed on every pass forever.
+// in the relay, and let the normal pipeline run.
+//
+// Two things it deliberately does not do.
+//
+// It does not move the manifest out of failed. Only a build moves a manifest,
+// and a rebuild does not necessarily produce the same generation: the
+// generation id is derived from the build definition, so a chunker or model
+// change makes the next attempt a different generation entirely. Flipping this
+// row to building first would leave it there for good — neither rebuilt nor
+// failed, invisible to IndexGenerationFailed and reported as stalled instead.
+//
+// It does not charge the repair budget while a replay is already in flight.
+// The budget counts scheduled replays, not reconciliation passes, so charging
+// it on every pass would spend a slow rebuild's attempts before it finished.
+// A generation with no job to reopen does charge the budget, because nothing
+// can ever rebuild it and it has to reach repair_exhausted rather than be
+// re-claimed on every pass forever.
 func (s *PostgresStore) ScheduleFailedRepair(ctx context.Context, manifest Manifest) error {
 	if manifest.GenerationID == "" || manifest.TenantID == "" || manifest.DocumentID == "" ||
 		manifest.DocumentVersionID == "" || manifest.ReconcileClaimToken == "" {
@@ -407,57 +420,95 @@ func (s *PostgresStore) ScheduleFailedRepair(ctx context.Context, manifest Manif
 		return fmt.Errorf("begin failed generation repair: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	replayable := true
-	tag, err := tx.Exec(ctx, `UPDATE ingestion_jobs SET status='published',lease_until=NULL,completed_at=NULL,error='',updated_at=now()
+
+	// Read the job status under a row lock: the decision below depends on it and
+	// a concurrent pass must not make the same decision twice. Locking the job
+	// first also keeps this transaction's lock order (job, then outbox) the same
+	// as FinishReconciliation's, so the two cannot deadlock against each other.
+	var status string
+	jobErr := tx.QueryRow(ctx, `SELECT status FROM ingestion_jobs
+WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3 FOR UPDATE`,
+		manifest.DocumentVersionID, manifest.TenantID, manifest.DocumentID).Scan(&status)
+	if jobErr != nil && !errors.Is(jobErr, pgx.ErrNoRows) {
+		return fmt.Errorf("load failed generation ingestion job: %w", jobErr)
+	}
+
+	// settle releases the lease and spends one unit of the repair budget,
+	// recording why. reason is empty for a scheduled replay and the reason a
+	// generation can never be rebuilt otherwise.
+	settle := func(reason string) error {
+		tag, execErr := tx.Exec(ctx, `UPDATE index_manifests SET repair_attempts=repair_attempts+1,
+last_attempt_at=now(), reconcile_lease_until=NULL, reconcile_claim_token='', last_reconcile_error=$2
+WHERE generation_id=$1 AND reconcile_claim_token=$3 AND state='failed'`,
+			manifest.GenerationID, reason, manifest.ReconcileClaimToken)
+		if execErr != nil {
+			return fmt.Errorf("charge failed generation repair budget: %w", execErr)
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrConflict
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return fmt.Errorf("commit failed generation repair: %w", commitErr)
+		}
+		return nil
+	}
+	// release hands the claim back without spending budget, for a pass that has
+	// nothing to do because the replay it wanted is already under way.
+	release := func() error {
+		tag, execErr := tx.Exec(ctx, `UPDATE index_manifests SET reconcile_lease_until=NULL, reconcile_claim_token=''
+WHERE generation_id=$1 AND reconcile_claim_token=$2 AND state='failed'`,
+			manifest.GenerationID, manifest.ReconcileClaimToken)
+		if execErr != nil {
+			return fmt.Errorf("release failed generation claim: %w", execErr)
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrConflict
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return fmt.Errorf("commit failed generation wait: %w", commitErr)
+		}
+		return nil
+	}
+
+	if errors.Is(jobErr, pgx.ErrNoRows) {
+		if settleErr := settle(ErrNoReplayPath.Error()); settleErr != nil {
+			return settleErr
+		}
+		return fmt.Errorf("%w: generation %s", ErrNoReplayPath, manifest.GenerationID)
+	}
+	if status == "published" || status == "processing" || status == "queued" {
+		if releaseErr := release(); releaseErr != nil {
+			return releaseErr
+		}
+		return fmt.Errorf("%w: generation %s ingestion is %s", ErrRepairInFlight, manifest.GenerationID, status)
+	}
+	if status != "failed" && status != "completed" {
+		return fmt.Errorf("%w: cannot replay ingestion state %s", ErrConflict, status)
+	}
+	// The outbox row is reopened before the job: if there is nothing to deliver,
+	// this transaction has not written anything yet and can spend the budget
+	// cleanly instead of leaving a reopened job no relay will ever pick up.
+	tag, err := tx.Exec(ctx, `UPDATE ingestion_outbox SET published_at=NULL,claimed_at=NULL,available_at=now()
+WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3`, manifest.DocumentVersionID, manifest.TenantID, manifest.DocumentID)
+	if err != nil {
+		return fmt.Errorf("reopen failed ingestion outbox: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		if settleErr := settle(ErrNoReplayPath.Error()); settleErr != nil {
+			return settleErr
+		}
+		return fmt.Errorf("%w: generation %s has no outbox event", ErrNoReplayPath, manifest.GenerationID)
+	}
+	tag, err = tx.Exec(ctx, `UPDATE ingestion_jobs SET status='published',lease_until=NULL,completed_at=NULL,error='',updated_at=now()
 WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3 AND status IN ('completed','failed')`,
 		manifest.DocumentVersionID, manifest.TenantID, manifest.DocumentID)
 	if err != nil {
 		return fmt.Errorf("reopen failed ingestion job: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		replayable = false
-	}
-	if replayable {
-		tag, err = tx.Exec(ctx, `UPDATE ingestion_outbox SET published_at=NULL,claimed_at=NULL,available_at=now()
-WHERE job_id=$1 AND tenant_id=$2 AND doc_id=$3`, manifest.DocumentVersionID, manifest.TenantID, manifest.DocumentID)
-		if err != nil {
-			return fmt.Errorf("reopen failed ingestion outbox: %w", err)
-		}
-		if tag.RowsAffected() != 1 {
-			replayable = false
-		}
-	}
-	if replayable {
-		tag, err = tx.Exec(ctx, retryFailedManifestSQL+`, reconcile_lease_until=NULL, reconcile_claim_token=''
-WHERE generation_id=$1 AND reconcile_claim_token=$2 AND state='failed'`, manifest.GenerationID, manifest.ReconcileClaimToken)
-		if err != nil {
-			return fmt.Errorf("reopen failed generation manifest: %w", err)
-		}
-		if tag.RowsAffected() != 1 {
-			return ErrConflict
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit failed generation repair: %w", err)
-		}
-		return nil
-	}
-	// No ingestion job to reopen: nothing can rebuild this generation, so the
-	// projection stays unavailable. Record why, release the lease and charge one
-	// unit of the budget so the state escalates to repair_exhausted.
-	tag, err = tx.Exec(ctx, `UPDATE index_manifests SET repair_attempts=repair_attempts+1,
-reconcile_lease_until=NULL,reconcile_claim_token='',last_reconcile_error=$2
-WHERE generation_id=$1 AND reconcile_claim_token=$3 AND state='failed'`,
-		manifest.GenerationID, ErrNoReplayPath.Error(), manifest.ReconcileClaimToken)
-	if err != nil {
-		return fmt.Errorf("record unrepairable failed generation: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
 		return ErrConflict
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit unrepairable failed generation: %w", err)
-	}
-	return fmt.Errorf("%w: generation %s", ErrNoReplayPath, manifest.GenerationID)
+	return settle("")
 }
 
 func (s *PostgresStore) Ensure(ctx context.Context, manifest Manifest) error {

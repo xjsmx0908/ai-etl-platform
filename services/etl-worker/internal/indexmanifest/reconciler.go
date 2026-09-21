@@ -219,6 +219,10 @@ func (r *Reconciler) replayFailed(ctx context.Context) (ReconciliationReport, er
 			report.RepairUnavailable++
 			continue
 		}
+		if errors.Is(scheduleErr, ErrRepairInFlight) {
+			report.RepairPending++
+			continue
+		}
 		failures = append(failures, fmt.Errorf("schedule failed generation repair %s: %w", manifest.GenerationID, scheduleErr))
 	}
 	return report, errors.Join(failures...)
