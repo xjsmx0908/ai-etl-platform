@@ -1,0 +1,51 @@
+groups:
+  - name: ai-etl-platform-host
+    rules:
+      # The host has one filesystem and everything shares it: Postgres data,
+      # Elasticsearch data, the Qdrant volume, 100+ container images and any
+      # other project on the box. Nothing in the application can see it, which
+      # is why this is a host-level signal rather than a service metric.
+      #
+      # Two thresholds, because there are two different deadlines:
+      #   * 15% free -- Elasticsearch's low watermark territory. The cluster
+      #     stops accepting new shards, so ingesting new documents is the first
+      #     thing to break. Recoverable.
+      #   * 10% free -- approaching Elasticsearch's flood_stage, after which
+      #     indices go read-only and the platform stops accepting writes. Below
+      #     here there is not enough runway left to reclaim space reactively.
+      #
+      # Reclaim with `docker builder prune` and by removing unused images of
+      # *this* project. Never run a blanket `docker image prune -a` here: most
+      # of the images on this host belong to other projects.
+      #
+      # `min by (mountpoint)` keeps the alert labels stable. The bare ratio of
+      # two metrics inherits device / fstype / device_error, and device_error is
+      # empty on healthy mounts, so the label set would differ between healthy
+      # and failing hosts.
+      - alert: HostRootDiskSpaceLow
+        expr: |
+          min by (mountpoint) (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs",mountpoint="/"}
+            /
+            node_filesystem_size_bytes{fstype!~"tmpfs|ramfs",mountpoint="/"}
+          ) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Host root filesystem is below 15% free
+          description: Elasticsearch will stop allocating new shards, so ingestion of new documents is the first thing to fail. Reclaim space with `docker builder prune` and by removing unused images of this project only.
+
+      - alert: HostRootDiskSpaceCritical
+        expr: |
+          min by (mountpoint) (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs",mountpoint="/"}
+            /
+            node_filesystem_size_bytes{fstype!~"tmpfs|ramfs",mountpoint="/"}
+          ) < 0.10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Host root filesystem is below 10% free
+          description: Elasticsearch's flood_stage watermark is the last line before indices become read-only and the platform stops accepting writes. There is no longer enough runway to reclaim space reactively; act now.

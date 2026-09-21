@@ -144,9 +144,17 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
-      - cluster.routing.allocation.disk.watermark.low=${ES_DISK_WATERMARK_LOW:-8gb}
-      - cluster.routing.allocation.disk.watermark.high=${ES_DISK_WATERMARK_HIGH:-6gb}
-      - cluster.routing.allocation.disk.watermark.flood_stage=${ES_DISK_WATERMARK_FLOOD_STAGE:-4gb}
+      # Percentages, not absolute sizes. With 8gb/6gb/4gb the reserve shrank as
+      # a fraction of the disk as the disk filled: on this 211GB host 4gb is 2%,
+      # so Elasticsearch would keep allocating until the host was nearly full.
+      # Expressed as usage percentages the reserve is constant: stop taking new
+      # shards above 95% used, start moving off above 96%, go read-only above
+      # 97%. That leaves 5% / 4% / 3% of the filesystem free respectively, and
+      # the host disk alert (infrastructure/rules/host-alerts.yml) warns at 15%
+      # and 10% free, so it always leads the Elasticsearch line.
+      - cluster.routing.allocation.disk.watermark.low=${ES_DISK_WATERMARK_LOW:-95%}
+      - cluster.routing.allocation.disk.watermark.high=${ES_DISK_WATERMARK_HIGH:-96%}
+      - cluster.routing.allocation.disk.watermark.flood_stage=${ES_DISK_WATERMARK_FLOOD_STAGE:-97%}
     volumes:
       - es_data:/usr/share/elasticsearch/data
     healthcheck:
@@ -187,6 +195,30 @@ services:
       - "${COMPOSE_BIND:-127.0.0.1}:${JAEGER_OTLP_HTTP_HOST_PORT:-4318}:4318"  # OTLP HTTP
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+
+  # Host-level metrics. Elasticsearch watermarks, Postgres, Kafka and the
+  # container images all share one filesystem, so "is the disk filling up" is a
+  # property of the host rather than of any single service. Without this there
+  # is no disk signal to alert on at all.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    ports:
+      - "${COMPOSE_BIND:-127.0.0.1}:${NODE_EXPORTER_HOST_PORT:-9100}:9100"
+    volumes:
+      # Read-only, and only the three pseudo-filesystems the collector needs.
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      # Without this the container's own bind mounts (/etc/hosts, /dev/shm,
+      # and one entry per overlay layer) show up as separate filesystems and
+      # drown the one that matters.
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker/.+)($$|/)'
+      - '--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$'
+    restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest

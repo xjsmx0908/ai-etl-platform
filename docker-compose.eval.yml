@@ -14,13 +14,19 @@ services:
     environment:
       # The isolated eval project is commonly run on a constrained CI host;
       # keep its single-node shard allocatable while still retaining a safety
-      # floor. The root development stack keeps its own thresholds.
+      # floor. Absolute sizes are deliberate here and differ from the
+      # percentage-based root stack: a throwaway project sharing a full host
+      # must not inherit the root stack's "stop allocating above 95% used"
+      # behaviour, or the eval would fail for disk reasons that have nothing to
+      # do with the code under test.
       - cluster.routing.allocation.disk.watermark.low=2gb
       - cluster.routing.allocation.disk.watermark.high=1gb
       - cluster.routing.allocation.disk.watermark.flood_stage=512mb
   minio:
     ports: !reset []
   jaeger:
+    ports: !reset []
+  node-exporter:
     ports: !reset []
   prometheus:
     ports: !reset []

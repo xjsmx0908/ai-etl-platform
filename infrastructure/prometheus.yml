@@ -41,3 +41,11 @@ scrape_configs:
     static_configs:
       - targets:
           - qdrant:6333
+
+  # Host filesystem and resource metrics. The disk alert in
+  # infrastructure/rules/host-alerts.yml is the only thing that notices the
+  # shared filesystem filling up, and it reads from here.
+  - job_name: node-exporter
+    static_configs:
+      - targets:
+          - node-exporter:9100

@@ -1,9 +1,83 @@
 rule_files:
   - ../rules/etl-alerts.yml
+  - ../rules/host-alerts.yml
 
 evaluation_interval: 1m
 
 tests:
+  - name: root filesystem below 15 percent warns without escalating to critical
+    interval: 1m
+    input_series:
+      # 24 GB of 200 GB is 12% free: past the warning threshold, short of the
+      # critical one. Both rules read the same series, so this case also proves
+      # the two thresholds do not collapse into each other.
+      - series: 'node_filesystem_avail_bytes{mountpoint="/",fstype="ext4",device="/dev/vda2"}'
+        values: '24e9x21'
+      - series: 'node_filesystem_size_bytes{mountpoint="/",fstype="ext4",device="/dev/vda2"}'
+        values: '200e9x21'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HostRootDiskSpaceLow
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: HostRootDiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              mountpoint: "/"
+            exp_annotations:
+              summary: Host root filesystem is below 15% free
+              description: Elasticsearch will stop allocating new shards, so ingestion of new documents is the first thing to fail. Reclaim space with `docker builder prune` and by removing unused images of this project only.
+      - eval_time: 20m
+        alertname: HostRootDiskSpaceCritical
+        exp_alerts: []
+
+  - name: root filesystem below 10 percent escalates to critical
+    interval: 1m
+    input_series:
+      # 16 GB of 200 GB is 8% free.
+      - series: 'node_filesystem_avail_bytes{mountpoint="/",fstype="ext4",device="/dev/vda2"}'
+        values: '16e9x21'
+      - series: 'node_filesystem_size_bytes{mountpoint="/",fstype="ext4",device="/dev/vda2"}'
+        values: '200e9x21'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HostRootDiskSpaceCritical
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: HostRootDiskSpaceCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              mountpoint: "/"
+            exp_annotations:
+              summary: Host root filesystem is below 10% free
+              description: Elasticsearch's flood_stage watermark is the last line before indices become read-only and the platform stops accepting writes. There is no longer enough runway to reclaim space reactively; act now.
+
+  - name: reclaiming space resolves the disk alert
+    interval: 1m
+    input_series:
+      # Samples are listed explicitly rather than with a repeat suffix: mixing
+      # two "value xN" tokens in one string silently yields a different series
+      # than it reads like, and the resolution assertion then tests nothing.
+      - series: 'node_filesystem_avail_bytes{mountpoint="/",fstype="ext4",device="/dev/vda2"}'
+        values: '16e9 16e9 16e9 16e9 16e9 16e9 100e9 100e9 100e9 100e9 100e9 100e9'
+      - series: 'node_filesystem_size_bytes{mountpoint="/",fstype="ext4",device="/dev/vda2"}'
+        values: '200e9x12'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HostRootDiskSpaceCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              mountpoint: "/"
+            exp_annotations:
+              summary: Host root filesystem is below 10% free
+              description: Elasticsearch's flood_stage watermark is the last line before indices become read-only and the platform stops accepting writes. There is no longer enough runway to reclaim space reactively; act now.
+      - eval_time: 6m
+        alertname: HostRootDiskSpaceCritical
+        exp_alerts: []
+
   - name: five consecutive LLM failures trigger a critical alert
     interval: 1m
     input_series:
