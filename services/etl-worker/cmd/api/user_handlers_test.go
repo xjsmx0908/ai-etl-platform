@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ai-etl-pipeline/internal/auth"
@@ -226,3 +227,127 @@ func TestHandleUserRejectsLifecycleChangesForSCIMUser(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// Regression tests for the missing password-length policy.
+//
+// Before the fix, a password longer than bcrypt's 72-byte limit reached
+// HashPassword, which returns ErrPasswordTooLong, which the handler reported as
+// 500 "failed to hash password". The user saw a server fault for typing too
+// much -- and nothing in the codebase rejected a 1-character password either.
+// The assertions below pin the status code, because that is the part the user
+// actually experiences; a test that only checked "an error was returned" would
+// have passed on the broken code too.
+
+func TestHandleSetPassword_RejectsPasswordPastBcryptLimit(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "alice-password", userstore.RoleUser, "t1", true)
+	u, found, _ := store.GetByUsername(context.Background(), "alice")
+	if !found {
+		t.Fatal("seedUser did not create alice")
+	}
+	before := u.PasswordHash
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleSetPassword(w, r, store, u.ID)
+	})
+	rec := doRequest(handler, http.MethodPost, "/v1/users/"+u.ID+"/password",
+		map[string]string{"password": strings.Repeat("a", auth.MaxPasswordBytes+1)},
+		ctxWithTenant("t1"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (a too-long password is a client error, not a server fault); body=%s",
+			rec.Code, rec.Body.String())
+	}
+	// A rejected request must not half-apply: the old hash has to survive.
+	after, _, _ := store.GetByUsername(context.Background(), "alice")
+	if after.PasswordHash != before {
+		t.Error("password hash changed even though the request was rejected")
+	}
+}
+
+// TestHandleSetPassword_DoesNotApplyTheSelfServiceMinimumLength pins a decision,
+// not a preference.
+//
+// There is no minimum password length on the administrator user API, and that is
+// deliberate: these endpoints have always accepted any non-empty password, so
+// adding a floor would change a shipped contract rather than fix a bug. The
+// floor (auth.MinPasswordRunes) lives on the self-service invite path instead,
+// where an end user chooses their own credential.
+//
+// If someone later decides to extend the floor here, this test is where the
+// change gets recorded: delete it and lengthen the short-password fixtures in
+// this file, rather than discovering the breakage somewhere downstream.
+func TestHandleSetPassword_DoesNotApplyTheSelfServiceMinimumLength(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "alice-password", userstore.RoleUser, "t1", true)
+	u, found, _ := store.GetByUsername(context.Background(), "alice")
+	if !found {
+		t.Fatal("seedUser did not create alice")
+	}
+
+	short := strings.Repeat("a", auth.MinPasswordRunes-1)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleSetPassword(w, r, store, u.ID)
+	})
+	rec := doRequest(handler, http.MethodPost, "/v1/users/"+u.ID+"/password",
+		map[string]string{"password": short}, ctxWithTenant("t1"))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 -- the administrator API accepts any non-empty "+
+			"password by design; body=%s", rec.Code, rec.Body.String())
+	}
+	after, _, _ := store.GetByUsername(context.Background(), "alice")
+	if !auth.VerifyPassword(after.PasswordHash, short) {
+		t.Error("the short password must be usable afterwards")
+	}
+}
+
+func TestHandleCreateUser_RejectsPasswordPastBcryptLimit(t *testing.T) {
+	store := newFakeUserStore()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleCreateUser(w, r, store)
+	})
+	rec := doRequest(handler, http.MethodPost, "/v1/users",
+		map[string]string{
+			"username": "bob",
+			"password": strings.Repeat("a", auth.MaxPasswordBytes+1),
+			"role":     userstore.RoleUser,
+		},
+		ctxWithTenant("t1"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	// The user must not exist: a rejected password cannot leave a half-created
+	// account with an empty or unset hash behind.
+	if _, found, _ := store.GetByUsername(context.Background(), "bob"); found {
+		t.Error("bob was created even though the password was rejected")
+	}
+}
+
+// TestHandleSetPassword_AcceptsBoundaryPassword is the guard against fixing the
+// 500 by simply tightening the limit past what bcrypt accepts. The longest
+// password bcrypt allows must still work end to end.
+func TestHandleSetPassword_AcceptsBoundaryPassword(t *testing.T) {
+	store := newFakeUserStore()
+	seedUser(t, store, "alice", "alice-password", userstore.RoleUser, "t1", true)
+	u, found, _ := store.GetByUsername(context.Background(), "alice")
+	if !found {
+		t.Fatal("seedUser did not create alice")
+	}
+
+	boundary := strings.Repeat("b", auth.MaxPasswordBytes)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleSetPassword(w, r, store, u.ID)
+	})
+	rec := doRequest(handler, http.MethodPost, "/v1/users/"+u.ID+"/password",
+		map[string]string{"password": boundary}, ctxWithTenant("t1"))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 for a password at the limit; body=%s", rec.Code, rec.Body.String())
+	}
+	after, _, _ := store.GetByUsername(context.Background(), "alice")
+	if !auth.VerifyPassword(after.PasswordHash, boundary) {
+		t.Error("the boundary-length password must be usable afterwards")
+	}
+}

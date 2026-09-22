@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +22,32 @@ func requireTenantUser(ctx context.Context, users userstore.Store, id, tenantID 
 		return userstore.User{}, false
 	}
 	return u, true
+}
+
+// rejectUnstorablePassword renders a storage-format violation as a 400 the user
+// can act on, and reports whether it wrote a response.
+//
+// This exists because bcrypt refuses inputs longer than 72 bytes and returns
+// ErrPasswordTooLong instead of truncating: without a check in front of
+// HashPassword, a long passphrase falls through and the handler reports 500
+// "failed to hash password" -- a server fault, for typing too much. Callers
+// must run this before HashPassword.
+//
+// It deliberately does not enforce a minimum length. These endpoints have always
+// accepted any non-empty password; adding a floor here would change a shipped
+// contract rather than fix a bug. The floor lives on the self-service invite
+// path, which uses auth.ValidatePassword instead.
+func rejectUnstorablePassword(w http.ResponseWriter, password string) bool {
+	err := auth.ValidatePasswordStorage(password)
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, auth.ErrPasswordTooLong):
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("密码不能超过 %d 个字节", auth.MaxPasswordBytes))
+	default:
+		writeError(w, http.StatusBadRequest, "密码不符合要求")
+	}
+	return true
 }
 
 const defaultPageSize = 20
@@ -150,6 +177,9 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request, users userstore.St
 		active = *req.Active
 	}
 
+	if rejectUnstorablePassword(w, req.Password) {
+		return
+	}
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to hash password")
@@ -293,6 +323,9 @@ func handleSetPassword(w http.ResponseWriter, r *http.Request, users userstore.S
 	// rotation — and the UI gets a clear 400 instead of a confusing gateway error.
 	if auth.VerifyPassword(user.PasswordHash, req.Password) {
 		writeError(w, http.StatusBadRequest, "新密码不能与当前密码相同")
+		return
+	}
+	if rejectUnstorablePassword(w, req.Password) {
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)

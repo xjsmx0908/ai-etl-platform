@@ -492,6 +492,7 @@ services:
       - HTTP_MAX_HEADER_BYTES=${HTTP_MAX_HEADER_BYTES:-1048576}
       - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-100}
       - IDEMPOTENCY_TTL=${IDEMPOTENCY_TTL:-24h}
+      - INVITE_TTL=${INVITE_TTL:-72h}
       # API uses both: evictable semantic cache and durable Agent/idempotency state.
       - REDIS_CACHE_ADDR=redis-cache:6379
       - REDIS_CACHE_PASSWORD=${REDIS_PASSWORD:-}

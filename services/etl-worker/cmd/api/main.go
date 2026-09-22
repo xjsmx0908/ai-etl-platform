@@ -415,6 +415,14 @@ func main() {
 		middleware.Timeout(60*time.Second)(handleLoginWithGuard(cfg, userStore, auditStore, sessionManager, loginGuard))))
 	mux.Handle("/v1/auth/demo-login", middleware.CORS(cfg.CORSAllowedOrigins)(
 		middleware.Timeout(60*time.Second)(handleDemoLoginWithGuard(cfg, userStore, auditStore, sessionManager, loginGuard))))
+	// Accepting an invitation is unauthenticated: the token in the link is the
+	// credential, so these bypass the JWT chain the same way login does. The
+	// lookup is read-only and must not consume the token -- mail scanners and
+	// page refreshes follow links.
+	mux.Handle("/v1/auth/invites/accept", middleware.CORS(cfg.CORSAllowedOrigins)(
+		middleware.Timeout(60*time.Second)(handleAcceptInvite(userStore, auditStore))))
+	mux.Handle("/v1/auth/invites/{token}", middleware.CORS(cfg.CORSAllowedOrigins)(
+		middleware.Timeout(30*time.Second)(handleInviteLookup(userStore))))
 	mux.Handle("/v1/auth/logout", middleware.CORS(cfg.CORSAllowedOrigins)(
 		middleware.Timeout(30*time.Second)(handleLogout(sessionManager, oidcFlow, auditStore))))
 	if oidcFlow != nil {
@@ -493,6 +501,15 @@ func main() {
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
 	apiV1.Handle("/v1/tasks/{docID}/cancel", requireScopes("upload")(http.HandlerFunc(handleTaskCancel(taskStatusStore, admissionStore))))
 	apiV1.Handle("/v1/users", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUsers(userStore))))
+	// Invitations live at /v1/invites, not under /v1/users/invites/{id}.
+	// Registering them as a sub-resource made the mux refuse to start:
+	// "/v1/users/invites/{inviteID}" and the pre-existing
+	// "/v1/users/{userID}/external-identities" match overlapping paths and
+	// neither is more specific, which is a panic in main() -- the API never
+	// boots. See TestRoutePatternsDoNotShadowEachOther, which registers this
+	// file's patterns on a fresh mux so the conflict cannot come back silently.
+	apiV1.Handle("/v1/invites", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleInvites(cfg, userStore, userStore, auditStore))))
+	apiV1.Handle("/v1/invites/{inviteID}", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleInvite(userStore, auditStore))))
 	apiV1.Handle("/v1/users/{userID}/external-identities", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleExternalIdentities(externalIdentityManager))))
 	apiV1.Handle("/v1/users/{userID}/external-identities/{bindingID}", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleExternalIdentities(externalIdentityManager))))
 	apiV1.Handle("/v1/users/", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleUser(userStore))))

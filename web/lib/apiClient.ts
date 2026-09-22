@@ -1,13 +1,18 @@
 import type {
+  AcceptedInvite,
   AgentApproval,
   AgentRun,
   AnswerMeta,
   AuditListResponse,
+  CreatedInvite,
+  CreateInviteParams,
   Document,
   DocumentChunksResponse,
   DocumentSearchResult,
   DocumentsResponse,
   Health,
+  InviteListResponse,
+  InviteLookup,
   LoginResponse,
   KnowledgeSpace,
   ReleaseRequestsResponse,
@@ -280,6 +285,43 @@ export async function setUserPassword(id: string, password: string): Promise<voi
   });
 }
 
+// ── Invitations ──────────────────────────────────────────────────────────
+//
+// Two halves with different auth. `createInvite` / `listInvites` /
+// `revokeInvite` are administrator actions and ride the session cookie like the
+// rest of `/api/users`. `getInvite` / `acceptInvite` are public -- the token is
+// the credential -- so they must not trigger the 401 redirect: an unusable
+// invite answers 404, and bouncing the visitor to the login page would hide the
+// only message that tells them what to do.
+
+export async function listInvites(params: { limit?: number; offset?: number } = {}): Promise<InviteListResponse> {
+  const sp = new URLSearchParams();
+  if (params.limit != null) sp.set("limit", String(params.limit));
+  if (params.offset != null) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return request<InviteListResponse>(`/invites${qs ? `?${qs}` : ""}`);
+}
+
+export async function createInvite(params: CreateInviteParams): Promise<CreatedInvite> {
+  return request<CreatedInvite>("/invites", { method: "POST", body: JSON.stringify(params) });
+}
+
+export async function revokeInvite(id: string): Promise<void> {
+  return request<void>(`/invites/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function getInvite(token: string): Promise<InviteLookup> {
+  return request<InviteLookup>(`/auth/invites/${encodeURIComponent(token)}`, { redirectOn401: false });
+}
+
+export async function acceptInvite(token: string, password: string): Promise<AcceptedInvite> {
+  return request<AcceptedInvite>("/auth/invites/accept", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
+    redirectOn401: false,
+  });
+}
+
 // ── Audit (admin only) ───────────────────────────────────────────────────
 
 export type ListAuditParams = {
@@ -424,6 +466,11 @@ export const apiClient = {
   updateUser,
   deleteUser,
   setUserPassword,
+  listInvites,
+  createInvite,
+  revokeInvite,
+  getInvite,
+  acceptInvite,
   listAudit,
   getHealth,
   createAgentRun,

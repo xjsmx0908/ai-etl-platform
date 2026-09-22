@@ -345,3 +345,63 @@ export type Health = {
   overall: string;
   services: Record<string, HealthService>;
 };
+
+// ── Invitations ──────────────────────────────────────────────────────────
+//
+// The token plaintext never appears in these types. It exists only in the
+// response that creates an invite (`CreatedInvite`); everything else works with
+// an id, and the database holds only a digest.
+export type InviteState = "pending" | "consumed" | "revoked" | "expired";
+
+export type Invite = {
+  id: string;
+  username: string;
+  display_name?: string;
+  email?: string;
+  role: Role;
+  state: InviteState;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  consumed_at?: string;
+  revoked_at?: string;
+};
+
+export type InviteListResponse = {
+  items: Invite[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type CreateInviteParams = {
+  username: string;
+  display_name?: string;
+  email?: string;
+  role: Role;
+};
+
+// The one response that carries the link. `accept_path` is relative to the web
+// app's origin, so the caller composes the absolute URL.
+export type CreatedInvite = {
+  invite: Invite;
+  token: string;
+  accept_path: string;
+  expires_at: string;
+  ttl_seconds: number;
+};
+
+// What the accept page needs before the invitee types anything.
+export type InviteLookup = {
+  username: string;
+  role: Role;
+  expires_at: string;
+  min_password_runes: number;
+  max_password_bytes: number;
+};
+
+export type AcceptedInvite = {
+  username: string;
+  role: Role;
+  login: string;
+};

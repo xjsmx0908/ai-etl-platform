@@ -161,11 +161,18 @@ func (s *PgStore) List(ctx context.Context, tenantID string, limit, offset int) 
 }
 
 // Create inserts a user and back-fills id/created_at/updated_at on the argument.
-func (s *PgStore) Create(ctx context.Context, u *User) error {
+// rowQuerier is the part of db.Querier a single-row statement needs. It exists so
+// the user insert can also run inside a caller's transaction (see ConsumeInvite)
+// without the store having to know which querier it was handed.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func insertUser(ctx context.Context, q rowQuerier, u *User) error {
 	if u.Origin == "" {
 		u.Origin = OriginLocal
 	}
-	err := s.q.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`INSERT INTO users (username, password_hash, role, tenant_id, active, origin, display_name, email)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING id, created_at, updated_at`,
@@ -178,6 +185,12 @@ func (s *PgStore) Create(ctx context.Context, u *User) error {
 		return fmt.Errorf("insert user: %w", err)
 	}
 	return nil
+}
+
+// Create inserts a user. The caller supplies an already-hashed password; the
+// store never sees a plaintext one.
+func (s *PgStore) Create(ctx context.Context, u *User) error {
+	return insertUser(ctx, s.q, u)
 }
 
 // Update applies a patch to role/tenant/active and returns the refreshed user.

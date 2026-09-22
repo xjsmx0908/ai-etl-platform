@@ -219,6 +219,11 @@ type Config struct {
 	HTTPMaxHeaderBytes    int
 	CORSAllowedOrigins    []string
 	IdempotencyTTL        time.Duration
+	// InviteTTL bounds how long a self-service invitation link stays usable.
+	// It is the only control on a link's lifetime: the token is not recoverable
+	// from the database, so an administrator cannot extend a link, only issue a
+	// new one.
+	InviteTTL             time.Duration
 	TaskStatusStore       string
 	TaskStatusTTL         time.Duration
 	MetricsToken          string
@@ -457,6 +462,7 @@ func Load() Config {
 		HTTPMaxHeaderBytes:    EnvInt("HTTP_MAX_HEADER_BYTES", 1<<20),
 		CORSAllowedOrigins:    EnvCSV("CORS_ALLOWED_ORIGINS", corsDefault),
 		IdempotencyTTL:        EnvDuration("IDEMPOTENCY_TTL", 24*time.Hour),
+		InviteTTL:             EnvDuration("INVITE_TTL", 72*time.Hour),
 		TaskStatusStore:       strings.ToLower(strings.TrimSpace(EnvStr("TASK_STATUS_STORE", TaskStatusStoreAuto))),
 		TaskStatusTTL:         EnvDuration("TASK_STATUS_TTL", 7*24*time.Hour),
 		MetricsToken:          EnvSecret("METRICS_TOKEN", ""),
@@ -647,6 +653,12 @@ func (c Config) Validate() error {
 	}
 	if c.TaskStatusTTL <= 0 {
 		return fmt.Errorf("TASK_STATUS_TTL must be > 0, got %s", c.TaskStatusTTL)
+	}
+	// An invitation link is the only credential a new account is created with, so
+	// a link that never expires would be a standing way into the tenant. The
+	// upper bound is a ceiling on that exposure, not a policy preference.
+	if c.InviteTTL <= 0 || c.InviteTTL > 30*24*time.Hour {
+		return fmt.Errorf("INVITE_TTL must be > 0 and at most 720h, got %s", c.InviteTTL)
 	}
 	if c.OutboxRelayBatchSize <= 0 || c.OutboxRelayPollInterval <= 0 || c.OutboxRelayLease <= 0 || c.IngestionJobLease <= 0 || c.IngestionMetricsInterval <= 0 {
 		return fmt.Errorf("outbox relay settings and ingestion job lease must be > 0")
