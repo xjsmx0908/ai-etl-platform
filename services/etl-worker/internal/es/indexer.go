@@ -400,6 +400,15 @@ func (i *HTTPIndexer) ensureIndex(ctx context.Context) error {
 					"analyzer":        "cjk",
 					"search_analyzer": "cjk",
 				},
+				// The retrieval layer boosts match_phrase/match on file_name above
+				// every other lexical signal. It must exist in the mapping and use
+				// the same analyzer as content, otherwise a CJK filename ("员工手册.md")
+				// would tokenize differently on the query side than on the index side.
+				"file_name": map[string]string{
+					"type":            "text",
+					"analyzer":        "cjk",
+					"search_analyzer": "cjk",
+				},
 				"permission": map[string]string{"type": "keyword"},
 				"chunk_index": map[string]string{
 					"type": "integer",
@@ -524,6 +533,7 @@ type esChunkDoc struct {
 	DocID             string            `json:"doc_id"`
 	TenantID          string            `json:"tenant_id"`
 	Content           string            `json:"content"`
+	FileName          string            `json:"file_name,omitempty"`
 	Permission        string            `json:"permission"`
 	ChunkIndex        int               `json:"chunk_index"`
 	FileHash          string            `json:"file_hash,omitempty"`
@@ -544,6 +554,7 @@ func mapChunkToESDoc(chunk model.Chunk) esChunkDoc {
 		DocID:      chunk.DocID,
 		TenantID:   chunk.TenantID,
 		Content:    chunk.Content,
+		FileName:   chunk.FileName,
 		Permission: normalizePermission(chunk.Permission),
 		ChunkIndex: chunk.Index,
 		FileHash:   chunk.FileHash,

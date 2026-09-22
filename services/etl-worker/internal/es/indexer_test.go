@@ -38,6 +38,34 @@ func TestMapChunkToESDoc_NormalizesPermissionAndCreatedAt(t *testing.T) {
 	}
 }
 
+// The lexical branch weights file_name highest, so the field has to reach the
+// index. A chunk that loses it here silently downgrades every title-ish query
+// to a content-only match.
+func TestMapChunkToESDoc_CarriesTheUploadFileName(t *testing.T) {
+	doc := mapChunkToESDoc(model.Chunk{
+		ChunkID:  "doc-1_0001",
+		DocID:    "doc-1",
+		TenantID: "tenant-a",
+		Content:  "hello",
+		FileName: "员工手册.md",
+	})
+
+	if doc.FileName != "员工手册.md" {
+		t.Fatalf("expected file_name to survive the mapping, got %q", doc.FileName)
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal es document: %v", err)
+	}
+	var round map[string]interface{}
+	if err := json.Unmarshal(raw, &round); err != nil {
+		t.Fatalf("unmarshal es document: %v", err)
+	}
+	if round["file_name"] != "员工手册.md" {
+		t.Fatalf("expected file_name in the serialized body, got %#v", round["file_name"])
+	}
+}
+
 func TestGenerationWriteUpdatesExistingIndexMappings(t *testing.T) {
 	var mapping map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +129,17 @@ func TestNewHTTPIndexerCreatesVersionedCJKIndexAndWriteAlias(t *testing.T) {
 	content := properties["content"].(map[string]interface{})
 	if content["analyzer"] != "cjk" || content["search_analyzer"] != "cjk" {
 		t.Fatalf("expected CJK analyzer mapping, got %#v", content)
+	}
+	// The retrieval layer boosts file_name above every other lexical signal.
+	// Asserting only that the *query* carries the clause (see the retrieval
+	// package) is not enough: a query against an unmapped field never matches
+	// anything and never errors, so the field has to exist on the index side.
+	fileName, ok := properties["file_name"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected file_name in the index mapping, got %#v", properties)
+	}
+	if fileName["type"] != "text" || fileName["analyzer"] != "cjk" || fileName["search_analyzer"] != "cjk" {
+		t.Fatalf("expected file_name to use the same CJK analyzer as content, got %#v", fileName)
 	}
 	settings := created["settings"].(map[string]interface{})
 	if settings["number_of_replicas"] != float64(0) {

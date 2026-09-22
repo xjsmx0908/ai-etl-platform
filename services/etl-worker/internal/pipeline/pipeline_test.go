@@ -688,6 +688,55 @@ func TestProcessTaskPDFPathPersistsChunkTotal(t *testing.T) {
 	}
 }
 
+// The ES lexical branch boosts file_name above every other signal, but the
+// parser only ever returns chunk_id/content/index. If the pipeline does not
+// carry the upload filename down, the indexed documents never have the field
+// and those clauses match nothing.
+func TestProcessTask_CarriesTheUploadFileNameIntoEveryChunk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"doc_id": "doc-name", "page_count": 1, "status": "success",
+			"chunks": []map[string]interface{}{
+				{"chunk_id": "doc-name_0000", "doc_id": "doc-name", "tenant_id": "acme", "content": "alpha", "index": 0},
+				{"chunk_id": "doc-name_0001", "doc_id": "doc-name", "tenant_id": "acme", "content": "beta", "index": 1},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	tmp, err := os.CreateTemp(t.TempDir(), "name-*.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	storer := &captureStorer{}
+	cfg := baseTestConfig()
+	cfg.ParserEndpoint = srv.URL
+	cfg.OCRPageBatchSize = 25
+	cfg.PipelineTimeout = 5 * time.Second
+	cfg.StageTimeout = 5 * time.Second
+	p := New(cfg, vectorEmbedder{}, storer, metrics.NewCollector(10), &noopCheckpoint{}, &dlqStub{})
+	if err := p.processTask(context.Background(), model.Task{
+		DocID: "doc-name", TenantID: "acme", FilePath: tmp.Name(), FileName: "员工手册.pdf",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(storer.chunks) != 2 {
+		t.Fatalf("expected 2 stored chunks, got %d", len(storer.chunks))
+	}
+	for _, chunk := range storer.chunks {
+		if chunk.FileName != "员工手册.pdf" {
+			t.Fatalf("chunk %s lost the upload file name, got %q", chunk.ChunkID, chunk.FileName)
+		}
+	}
+}
+
 type delayEmbedder struct{ d time.Duration }
 
 func (e delayEmbedder) Embed(_ context.Context, c *model.Chunk) error {

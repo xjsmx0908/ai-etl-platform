@@ -13,6 +13,7 @@ type Task struct {
 	JobID      string            `json:"job_id,omitempty"`
 	EventID    string            `json:"event_id,omitempty"`
 	FilePath   string            `json:"file_path"`
+	FileName   string            `json:"file_name,omitempty"` // Original upload filename; the ES title-aware boost reads it
 	DocID      string            `json:"doc_id"`
 	TenantID   string            `json:"tenant_id"`
 	Permission string            `json:"permission,omitempty"` // "public" | "internal" | "confidential"
@@ -42,6 +43,7 @@ type Chunk struct {
 	CreatedAt    time.Time         `json:"created_at"`           // Chunk creation timestamp
 	Permission   string            `json:"permission,omitempty"` // Inherited from Task
 	FileHash     string            `json:"file_hash,omitempty"`  // SHA-256 of source file
+	FileName     string            `json:"file_name,omitempty"`  // Original upload filename; inherited from Task
 	Metadata     map[string]string `json:"metadata,omitempty"`   // Business exact-match fields inherited from Task
 }
 

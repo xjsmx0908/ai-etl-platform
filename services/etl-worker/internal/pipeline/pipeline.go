@@ -655,6 +655,12 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr 
 		default:
 		}
 
+		// The ES lexical branch weights file_name highest (boost 6.0 / 3.0), but
+		// the field was never written to the index: esChunkDoc had no such field
+		// and the mapping had no such property, so those clauses silently never
+		// matched anything. Carry the original upload filename down from the task.
+		chunk.FileName = task.FileName
+
 		if hasCheckpoint && generationBuild == nil {
 			exists, err := p.storer.Exists(taskCtx, chunk.ChunkID)
 			if err != nil {
@@ -774,6 +780,12 @@ func (p *Pipeline) processPDFBatches(taskCtx context.Context, task model.Task, c
 		p.saveTaskStatusProgressPages(taskCtx, task, model.TaskStatusProcessing, "ocr", fmt.Sprintf("正在处理第 %d-%d 页", startPage+1, end), totalChunks, 0, startPage, totalPages)
 
 		batch := result.Chunks
+		// Same reason as the streaming path: the parser knows nothing about the
+		// upload filename, so the OCR/PDF batch has to be stamped here or those
+		// chunks reach Elasticsearch without the field the lexical branch boosts.
+		for i := range batch {
+			batch[i].FileName = task.FileName
+		}
 		if hasCheckpoint && (generationBuild == nil || len(cp.ChunkIdentities) == cp.ChunksDone) && startPage < cp.PagesDone {
 			startPage = end
 			continue

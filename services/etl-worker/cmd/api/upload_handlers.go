@@ -479,6 +479,7 @@ func handleUploadWithAdmission(cfg config.Config, qs *query.Service, producer up
 			JobID:      jobID,
 			EventID:    eventID,
 			FilePath:   objectKey,
+			FileName:   header.Filename,
 			DocID:      docID,
 			TenantID:   tenantID,
 			Permission: permission,

@@ -137,6 +137,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	// Build task
 	task := model.Task{
 		FilePath:   destPath,
+		FileName:   header.Filename,
 		DocID:      docID,
 		TenantID:   tenantID,
 		Permission: permission,

@@ -42,6 +42,7 @@ curl "${curl_args[@]}" -X PUT "$es_address/$target_index" -d @- <<'JSON'
       "doc_id": {"type": "keyword"},
       "tenant_id": {"type": "keyword"},
       "content": {"type": "text", "analyzer": "cjk", "search_analyzer": "cjk"},
+      "file_name": {"type": "text", "analyzer": "cjk", "search_analyzer": "cjk"},
       "permission": {"type": "keyword"},
       "chunk_index": {"type": "integer"},
       "file_hash": {"type": "keyword"},
