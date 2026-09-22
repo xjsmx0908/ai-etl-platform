@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,44 @@ class BackupStackContractTests(unittest.TestCase):
         self.assertIn(".partial", self.script)
         rotation = self.script[self.script.index("5. Rotation"):]
         self.assertIn("-exec test -f", rotation)
+
+    def test_require_integrity_reaches_the_exit_code(self):
+        # The header promises `REQUIRE_INTEGRITY 1 -> exit 3`, and the exit code
+        # is the only input to the consecutive-failure counter that writes
+        # ALERT.txt. Consuming the manifest's exit code into a log line made the
+        # flag a no-op: a degraded backup returned 0, so the counter never moved
+        # for exactly the condition the gate exists to detect.
+        self.assertIn("REQUIRE_INTEGRITY   1 -> exit 3", self.script)
+        self.assertIn("manifest_code", self.script)
+        # Both halves of the fix: the verdict has to raise the flag, and the
+        # exit ladder has to act on it. Dropping either one restores the no-op.
+        self.assertIn("INTEGRITY_DEGRADED=1", self.script)
+        ladder = self.script[self.script.index("5. Rotation"):]
+        self.assertIn("exit 3", ladder)
+        self.assertIn("INTEGRITY_DEGRADED", ladder)
+
+    @unittest.skipUnless(
+        os.environ.get("BACKUP_STACK_LIVE_TEST") == "1",
+        "set BACKUP_STACK_LIVE_TEST=1 to run backup-stack.sh against a deployed stack",
+    )
+    def test_require_integrity_exits_three_and_default_stays_zero(self):
+        # Behavioural counterpart of the guard above, against a real stack and a
+        # throwaway BACKUP_ROOT so the deployed backup root is untouched.
+        with tempfile.TemporaryDirectory() as tmp:
+            required = subprocess.run(
+                ["bash", str(SCRIPTS / "backup-stack.sh")],
+                capture_output=True, text=True, cwd=ROOT,
+                env={**os.environ, "BACKUP_ROOT": tmp, "REQUIRE_INTEGRITY": "1"},
+            )
+            self.assertEqual(required.returncode, 3, required.stdout[-2000:] + required.stderr[-2000:])
+            # The default has to stay 0: the accepted residual (known missing
+            # objects) must not make the daily cron fail every night.
+            relaxed = subprocess.run(
+                ["bash", str(SCRIPTS / "backup-stack.sh")],
+                capture_output=True, text=True, cwd=ROOT,
+                env={**os.environ, "BACKUP_ROOT": tmp, "REQUIRE_INTEGRITY": "0"},
+            )
+            self.assertEqual(relaxed.returncode, 0, relaxed.stdout[-2000:] + relaxed.stderr[-2000:])
 
 
 class RestoreStackContractTests(unittest.TestCase):

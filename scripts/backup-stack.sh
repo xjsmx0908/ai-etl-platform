@@ -91,6 +91,7 @@ STATE_FILE="${BACKUP_ROOT}/state.json"
 mkdir -p "${BACKUP_ROOT}"
 
 FAILURES=0
+INTEGRITY_DEGRADED=0
 INTEGRITY="unknown"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
@@ -285,7 +286,14 @@ set -e
 INTEGRITY="$("${PYTHON}" -c \
     'import json,sys; print(json.load(open(sys.argv[1]))["integrity"]["status"])' \
     "${BACKUP_DIR}/manifest.json")"
+# Carry the verdict to the exit ladder instead of consuming it here. The
+# manifest's exit code is the only thing that can turn "degraded" into a
+# failure, and the exit code is the only thing record_state counts. Logging the
+# verdict and returning 0 made REQUIRE_INTEGRITY=1 a no-op: a degraded backup
+# reported success, consecutive_failures stayed at 0, and ALERT.txt was never
+# written -- for exactly the condition the integrity gate exists to detect.
 if [[ ${manifest_code} -eq 3 ]]; then
+    INTEGRITY_DEGRADED=1
     log "ERROR integrity is degraded; see manifest.json integrity block"
 fi
 
@@ -305,5 +313,10 @@ ln -sfn "${BACKUP_DIR}" "${BACKUP_ROOT}/latest"
 log "backup finished: integrity=${INTEGRITY} dir=${BACKUP_DIR} keep=${RETENTION}"
 if [[ ${FAILURES} -gt 0 ]]; then
     exit 2
+fi
+# 2 outranks 3: a missing artifact means the backup itself is incomplete, which
+# is more urgent than a faithful backup of a source that was already degraded.
+if [[ ${INTEGRITY_DEGRADED} -eq 1 ]]; then
+    exit 3
 fi
 exit 0
