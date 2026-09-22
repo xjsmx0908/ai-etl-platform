@@ -10,13 +10,14 @@
 
 ## 0. 结论摘要
 
-一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的八处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方。**
+一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的九处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效。**
 
-> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了四轮
-> 缺陷排查，找到并修复了 8 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
+> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了五轮
+> 缺陷排查，找到并修复了 9 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
 > 第 6 个属于「不一致的数据被当真源，而失败路径把证据回滚掉」，
 > 第 7 个属于「目录声明了从不存在的源对象，且平台没有任何核对机制」，
-> 第 8 个属于「失败状态没有被任何自动流程认领，也没有被任何诊断指标统计」。
+> 第 8 个属于「失败状态没有被任何自动流程认领，也没有被任何诊断指标统计」，
+> 第 9 个属于「被声明、被加权、被测试过的检索信号，从未被写入索引」（§4.6）。
 > 原结论因此**不成立**，已按下表修订。
 > 同时 P0 的 §1.2（全栈无备份）已从「待做」变成「已做并在隔离栈上实测通过」。
 
@@ -26,7 +27,7 @@
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **没有 P0 挂着**。三项 P0 都已处理：ES 永久 yellow（§1.1.1）、全栈无备份（§1.2）、磁盘濒满（§1.1.2，可用空间 9.2GB → 63GB）。下一步按 §7 的执行顺序走 |
-| 已修复项 | 8 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
+| 已修复项 | 9 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
 
 ---
 
@@ -229,7 +230,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 ---
 
-### 1.3 已修复的 8 个缺陷（前五处同一形状：失败被固化，重试变成复读）
+### 1.3 已修复的 9 个缺陷（前五处同一形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -243,6 +244,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 | 6 | 演示清单的期望摘要是占位串，索引对账**周期性**永久报错 | `etl-worker` 每 30 分钟一条 `index manifest reconciliation failed … load repair ingestion job: no rows in result set`（08:30:03 / 09:00:03 / 09:30:03，间隔恰为 `INDEX_RECONCILE_LEASE`） | 种子把**文件哈希**（`sha256:demo-handbook` 这类占位串）同时写进 `expected_chunk_digest` 与两个投影摘要；按 `IdentityDigest` 复算真实值是 `sha256:e4adc7b7…` / `sha256:c9241b97…` / `sha256:4f2b1bb0…`。种子又只插 `ingestion_jobs`、不插 `ingestion_outbox`，而 `FinishReconciliation` 靠两者 JOIN 找重放目标 → 差异永远无法修复。失败路径 `tx.Rollback()` 把 `last_reconcile_error` 与 `last_reconciled_at` 一起回滚，于是清单看起来健康、可发布（`CurrentCandidate` 读的就是这个谓词），却永不收敛；而认领顺序是「最久未对账优先」，它们因此每轮都排在队首 | `3f1deb5` |
 | 7 | 演示种子声明了它**从未写入**的源对象 | 修复前：`ListObjectsV2` 权威返回对象存储 **0 个对象**，而 `documents` 表 **119 行全部** `object_key <> ''`、`file_size` 从 35 到 45,799,879 字节；用真实 `/v1/upload` 传探针 → 对象正常落盘（111 B），证明坏的不是链路而是历史对象 | `demo_showcase.go:146,148`（修复前）把 `object_key` 写成 `"demo/"+doc.docID+".md"`、`file_size` 写死 `2048`，**从不调用对象存储的 Upload**；且 `ensureDemoShowcase` 当时跑在 `s3.New` 之前，物理上拿不到客户端。目录因此只是一句声明 | `7cea45f` |
 | 8 | `state='failed'` 的生成没有任何自愈路径，且对诊断指标不可见 | `ai_etl_generation_manifests{state="failed"}=6`、`oldest_age_seconds{state="failed"}=1655531s`（≈19.2 天）；`IndexGenerationFailed` 自 2026-09-12T06:56:48Z firing 九天；这 6 份 `repair_attempts=0`、`last_reconciled_at` 恒为 `NULL`，而同一时间对账日志每 5 分钟稳定报 `checked:20 healthy:20 diverged:0 repair_exhausted:0` | 三处，都在 `indexmanifest/postgres.go`：① `ClaimReconciliation` 的 `WHERE state='active'` 让 failed 永不被认领 —— 这条本身是刻意的（只有 active 才有活投影可跨后端比对），但它**没有配套的接管路径**；② `OperationsSnapshot` 的 `repair_exhausted` 只数 `state='active'`，死生成对信号完全不可见；③ `Retry` 不清 `expected_chunk_count/expected_chunk_digest`，而 `SealExpected` 以 `IS NULL` 为守卫，封印过的失败再重试必 `ErrConflict` | `8b5e2f8` `7307e54` |
+| 9 | ES 词法检索里权重最高的 `file_name` 加权是死代码 | `documents_text_v2` 的 mapping 无 `file_name`，`chunks with file_name = 0 / 4684`；`match_phrase(file_name,"员工手册")` 命中 0，而同一查询在正文侧命中 5；`backend_candidate_counts.elasticsearch` 对只靠标题才该命中的问句恒为 0 | 四处：`model.Task` / `model.Chunk` 没有 `FileName` 字段；`esChunkDoc` 没有该字段；ES mapping 没有该 property；入库链路（流式与 OCR/PDF 两条产出路径）从不填充。`titleAwareShouldClauses` 却发出 `match_phrase(file_name, boost 6.0)` 与 `match(file_name, boost 3.0)` —— ES 对未映射字段不报错、只是永不匹配，于是**静默降级**为「只有正文匹配」；`elastic_test.go` 只断言了子句存在，没有任何测试断言该字段被写入索引 | `5e172bb` |
 
 **缺陷 6 的报错周期，实测与直觉相反**：对账每 5 分钟跑一轮，但**报错每 30 分钟才出现一次**。
 原因在租约：`ClaimReconciliation` 把 `reconcile_lease_until` 推到 `now()+INDEX_RECONCILE_LEASE`（30m）
@@ -284,7 +286,7 @@ ingestion 事件去重新物化对象，而没有对象可重放时它只能报�
 `demo-doc-payroll.md` 395 B，`documents.file_size` 与观测字节数**逐一相等**；
 缺失计数从 119 降到 116（那 3 份是唯一能确定性重建的）。剩余 116 份见 §4.7。
 
-**缺陷 8 是前七处的反面，也是唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
+**缺陷 8 是前七处的反面，也是九处里唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
 在错误的时刻做了错误的事，这一处是**代码根本不存在**。`ClaimReconciliation` 只认领
 `state='active'`（这条本身是刻意的：只有 active 才有活投影可跨后端比对），而承载那份生成唯一
 一次投递的 `ingestion_outbox` 行早已 `published_at` 非空，relay 也不会再取它。于是这批生成
@@ -319,6 +321,55 @@ Alertmanager `IndexGenerationRepairExhausted` 自 13:52:48Z 起 `active`。
 （`materialize object: copy object to temp file: The specified key does not exist.`，即 §4.7 的
 116 份缺失），重放不可能成功。修复保证的是**有界重试 + 耗尽可见**，不是「一定能自愈」——
 把不可恢复的失败从「静默」变成「响亮且不再重试」，才是这条路径该做的事。
+
+**缺陷 9 是缺陷 7 在检索侧的重演：声明与实现之间隔着一整个测试的盲区。** 缺陷 7 里，
+种子声明了源对象却从不写入；这里，`titleAwareShouldClauses` 声明了 `file_name` 的加权却从不写入，
+而唯一的测试（`elastic_test.go`）只断言「查询里有这两条子句」—— 声明方被测试覆盖，
+写入方连字段都不存在。两处的共同点是：**断言停在了发出请求的那一侧**。
+
+它的静默程度比缺陷 7 更高：缺陷 7 至少能被备份的完整性门禁逼出来（要备份就得先知道东西在不在），
+这一处没有任何门禁会碰它 —— 词法分支的 `minimum_should_match: 1` 由 `content` 子句兜底，
+所以查询照常返回、答案照常生成，只是召回质量比设计意图低一档。用户按文档名提问时，
+权重最高（boost 6.0）的那条信号从未参与过打分。
+
+**修复的形状**：把「上传时的原始文件名」从任务一路带到索引，并让存量数据不必重传即可补上。
+
+- `model.Task` / `model.Chunk` 增加 `FileName`，在 `cmd/api/upload_handlers.go` 与
+  `internal/gateway/gateway.go` 两个 task 构造点填入 `header.Filename`。
+- **两条 chunk 产出路径都要打标**：流式路径（parser 服务，`chunkCh` 消费循环）与 OCR/PDF 批路径
+  （`processPDFBatches` 的 `result.Chunks`）是**互相独立**的，只改前者会让 PDF 文档仍然没有该字段 ——
+  这是回归测试当场抓出来的（`chunk doc-name_0000 lost the upload file name, got ""`）。
+- `esChunkDoc` 加字段、`mapChunkToESDoc` 填值、建索引 mapping 加 `file_name`
+  （`type=text, analyzer=cjk, search_analyzer=cjk`，与 `content` 同 analyzer，否则查询侧与索引侧切词不一致）。
+- 存量数据用 `scripts/backfill-es-file-name.sh` 回填，**不重建索引**：`documents` 表里已有权威文件名，
+  逐文档 `_update_by_query` 幂等写入即可，比重建 4684 条索引风险低得多。
+  `scripts/migrate-es-cjk-index.sh` 的 mapping 也同步加上该字段，供未来重建时使用。
+
+**线上断言（2026-09-22 01:2x UTC，部署 `5e172bb` 之后）**：回填 `documents=119 chunks_updated=4684
+chunks_with_file_name=4684/4684`；`match_phrase(file_name,"员工手册")` 命中 **0 → 5**。
+
+端到端反向验证用一个**只可能由 `file_name` 子句命中**的问句构造（「手册里有哪些规定」：
+不含连续的「员工手册」故不触发 title 匹配，正文两条子句实测命中 0，唯一命中来自
+`match(file_name, boost 3.0)`）：
+
+| 步骤 | `chunks_with_file_name` | `backend_candidate_counts.elasticsearch` |
+| --- | --- | --- |
+| A 基线（`file_name` 在位） | 9 | **3** |
+| B 移除 demo 全部 `file_name`（= 还原修复前的索引状态） | 0 | **0** |
+| C 重跑回填脚本 | 9 | **3** |
+
+这是**在部署环境上**做的反向验证：不是还原代码，而是还原线上索引，观测到的差异只能来自该字段。
+它同时证明了回填脚本幂等（A→C 结果一致）。代码级反向验证另做三项，还原后守卫测试全部失败：
+`esChunkDoc` 去字段 → `TestMapChunkToESDoc_CarriesTheUploadFileName` FAIL；mapping 去属性 →
+`TestNewHTTPIndexerCreatesVersionedCJKIndexAndWriteAlias` FAIL；`processPDFBatches` 去打标 →
+`TestProcessTask_CarriesTheUploadFileNameIntoEveryChunk` FAIL。
+
+**排查中的一个假警报，值得记下来**：`入职指南什么时候生效` / `薪酬核算的周期是多久` 这两个问句
+在 ES 直查能命中 3 条，而线上 API 报 `elasticsearch: 0`，看起来像又一处缺陷。
+查清后是**正确行为**：那 3 条来自 `demo-doc-onboarding`（`documents.publication_status='draft'`），
+而 `publicationrelease.ResolveVisibility` 要求候选精确匹配 `document_releases` 里已发布的
+version/generation —— 草稿文档被正确挡在证据之外。另外 `backend_candidate_counts` 是在可见性过滤
+**之后**统计的（`retrieval/engine.go:297-301`），所以 0 表示「候选被丢弃」，不表示「ES 没返回」。
 
 **仍未修、已确认但未动手的**：`AGENT_RUN_TTL` 之内、prompt 未变、模型变了的情况——
 run id 不含模型，所以换模型不会让已缓存的裁决失效。影响面小于缺陷 5，未纳入本轮。
@@ -475,9 +526,11 @@ docker exec ai-etl-platform-web-1 grep -rl 可量化的知识资产 /app/.next  
 
 **这些不是技术债，是决策债**。在决策到位前动手只会白做。
 
-### 4.6 ES 词法检索的标题加权是死代码（已确认，未修）
+### 4.6 ES 词法检索的标题加权是死代码（已修复，见 §1.3 缺陷 9）
 
-**证据**
+> 本节保留修复前的证据与机制分析；修复形状、线上断言与端到端反向验证在 §1.3 缺陷 9。
+
+**证据（修复前实测）**
 
 ```
 $ curl :9200/documents_text_v2/_mapping
@@ -506,14 +559,32 @@ $ internal/retrieval/elastic_test.go:109  断言这两条子句「存在」
 不影响功能正确性（`minimum_should_match: 1` 仍由 `content` 子句满足），
 所以不会报错、不会失败，只会让召回质量比设计意图低一档。
 
-**为什么现在不修**：修它需要三件事一起做，不是一处小改 ——
-① `model.Chunk` 加 `FileName` 并在入库链路里填上（`model.Task` 目前也没有该字段）；
-② `esChunkDoc` 与 ES mapping 加 `file_name`；
-③ **重建既有索引**（`documents_text_v2` 现 4684 条）。只做 ①② 的话，存量文档仍然查不到。
+**修复**：三件事都做了，但第三件换了做法 —— 没有重建索引，而是回填。
 
-**验收判据**（如果做）：`GET documents_text_v2/_mapping` 含 `file_name`；
-用文档标题作为查询时，`backend_candidate_counts.elasticsearch > 0`；
-新增一条「索引里有 file_name」的断言，而不只是「查询里有 file_name 子句」。
+① `model.Task` / `model.Chunk` 加 `FileName`，在两个 task 构造点（`cmd/api/upload_handlers.go`、
+`internal/gateway/gateway.go`）填入 `header.Filename`，并在**两条独立的 chunk 产出路径**
+（流式 parser 路径与 `processPDFBatches`）上打标；
+② `esChunkDoc` 加字段、`mapChunkToESDoc` 填值、建索引 mapping 加 `file_name`；
+③ 存量 4684 条**不回传、不重建** —— `documents` 表里已有权威文件名，
+`scripts/backfill-es-file-name.sh` 逐文档 `_update_by_query` 幂等写入即可。
+`scripts/migrate-es-cjk-index.sh` 的 mapping 也同步加上该字段，供未来重建时使用。
+
+**实测结果**
+
+| 判据 | 结果 |
+| --- | --- |
+| `GET documents_text_v2/_mapping` 含 `file_name` | 含，且 `type=text / analyzer=cjk / search_analyzer=cjk` |
+| `match_phrase(file_name,"员工手册")` 命中数 | **0 → 5** |
+| 回填 | `chunks_with_file_name = 0/4684 → 4684/4684`（119 份文档） |
+| 端到端反向验证（移除 `file_name` → 回填） | 线上 API 的 `backend_candidate_counts.elasticsearch` **3 → 0 → 3** |
+| 「索引里有 file_name」的断言 | 新增 `TestMapChunkToESDoc_CarriesTheUploadFileName` + 建索引测试的 mapping 断言 |
+
+**这条判据本身是错的，已纠正**：初稿写的是「用文档标题作为查询时
+`backend_candidate_counts.elasticsearch > 0`」。实测发现该指标**不能**证明本缺陷已修 ——
+`query/title.go` 的 `titleMatchedDocIDs` 会在问句包含文件名时追加一条 `terms: {doc_id: [...]}` 子句，
+命中完全绕开 `file_name` 字段。用「员工手册讲了哪些内容」做验证时，即使把索引里全部 9 条
+`file_name` 都删掉，`elasticsearch` 仍是 3。有效的问句必须**同时**满足「不含连续文件名（不触发 title 匹配）」
+与「正文子句命中 0」，「手册里有哪些规定」满足这两条。
 
 > 索引名说明：应用用的是别名 `documents_text`，它指向物理索引 `documents_text_v2`
 > （`internal/es/indexer.go` 的 `physicalIndex := i.index + "_" + cjkIndexVersion`，
@@ -650,24 +721,25 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 4 步（已完成） 1.1.2 终态：磁盘 9.2GB → 63GB（清 build cache 58.18GB，未碰其他项目）
 第 5 步（已完成） §1.3 缺陷 6 / 7：期望摘要是占位串（对账周期性永久报错）、种子声明了不存在的源对象
 第 6 步（已完成） §1.3 缺陷 8：failed 生成的自愈路径与耗尽信号（含两项自查出的二次缺陷）
-第 7 步           2.1 Go 工具链权限修复
-第 8 步           3.  状态文档三源归一 + 一致性契约测试
-第 9 步           2.2 / 2.3 配置一致性修复 + 契约测试
-第 10 步          4.1 邀请式自助开户（需你先确认产品口径）
-第 11 步          5.1 query/service.go 机械拆分
+第 7 步（已完成） §1.3 缺陷 9 / §4.6：ES 词法检索的 file_name 加权（回填 4684 条，未重建索引）
+第 8 步           2.1 Go 工具链权限修复
+第 9 步           3.  状态文档三源归一 + 一致性契约测试
+第 10 步          2.2 / 2.3 配置一致性修复 + 契约测试
+第 11 步          4.1 邀请式自助开户（需你先确认产品口径）
+第 12 步          5.1 query/service.go 机械拆分
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
-「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–6 步是
-「不做则故障永远静默」：这三处缺陷的共同点是自己不报错、还让看板变绿（见 §1.3）。
-第 7 步是「不做则每次改动都在踩坑」；第 8 步是「不做则后面所有状态判断都不可信」；
-第 9 步成本最低收益明确；第 10 步需要你的产品决策；第 11 步是纯收益优化，随时可做。
+「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–7 步是
+「不做则故障永远静默」：这几处缺陷的共同点是自己不报错、还让看板变绿（见 §1.3）。
+第 8 步是「不做则每次改动都在踩坑」；第 9 步是「不做则后面所有状态判断都不可信」；
+第 10 步成本最低收益明确；第 11 步需要你的产品决策；第 12 步是纯收益优化，随时可做。
 
 ---
 
 ## 8. 边界与未做的事（避免误解）
 
-- **代码改动限于两处**：§1.3 列出的 8 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
+- **代码改动限于两处**：§1.3 列出的 9 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
   （含补上的 `node-exporter`）。其余章节仍是调查结论，未据此改代码。
 - **§1.2 不只是文档**：`scripts/backup-stack.sh`、`scripts/restore-stack.sh`、3 个单职责助手脚本、
   `docker-compose.restore.yml`、16 个契约测试都已提交，并在隔离项目 `ai-etl-restore` 上真跑过
@@ -683,9 +755,15 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
   `ai-etl-go-build-cache` / `ai-etl-go-mod-cache` 与旧命名空间的 `ai-etl-pipeline_*` 也留着 ——
   空间已不紧张，而 go 缓存卷是构建提速的承重结构。
 - **UAT-017～020 没有标记为「已关闭」**，因为只做了产物层验证，未做章程要求的真实页面复验。
-- **§4.5 与 §4.6 没有动手**，理由分别写在各自小节里（前者被外部决策阻塞，后者需要重建 4684 条索引）。
+- **§4.5 没有动手**，理由写在该小节里（被外部决策阻塞）。**§4.6 已动手并完成**（见 §1.3 缺陷 9），
+  但走的是**回填**而不是原计划的重建索引 —— 4684 条存量 chunk 的 `file_name` 由
+  `scripts/backfill-es-file-name.sh` 就地补齐，没有 drop/rebuild 索引，也没有重新上传任何文档。
 - **§4.7 的 116 份源对象没有试图补救**。字节已不存在，脚本不做假造；它被降级为「由完整性门禁
   持续报告的已知缺失」，而不是「已修复」。
+- **缺陷 9 的修复不改变「已发布 / 草稿」的可见性口径**。`file_name` 回到索引后，
+  `demo-doc-onboarding` 与 `demo-doc-payroll` 的词法候选会重新出现，但它们
+  `publication_status='draft'`，仍被 `publicationrelease.ResolveVisibility` 正确挡在证据之外
+  （线上实测：这两个问句的 `backend_candidate_counts.elasticsearch` 为 0，是正确行为，不是缺陷）。
 - **缺陷 8 的修复不承诺「自愈成功」**。它承诺的是：`state='failed'` 的生成会被有界重放
   （`INDEX_RECONCILE_MAX_REPAIRS`，默认 3）、重放结束后停止、耗尽状态进入
   `ai_etl_generation_diagnostics{condition="repair_exhausted"}` 并触发
