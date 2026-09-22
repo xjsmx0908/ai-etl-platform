@@ -467,14 +467,29 @@ def wait_for_es_sync(
     timeout_sec: int = 120,
     poll_sec: int = 2,
     es_url: str = "",
-) -> None:
+) -> bool:
     """Block until Elasticsearch has indexed all expected documents.
 
+    Returns True when the count was reached, False when it timed out. The
+    caller must not discard the False case: the retrieval numbers of a run taken
+    while the keyword index was behind are not a quality signal, and
+    `write_quality_latest` would otherwise publish such a run as the baseline.
+
     The worker writes to Qdrant synchronously but feeds ES through an async
-    retry queue. Exact-keyword queries route ES with 0.75 weight, so a document
-    that is present in Qdrant but not yet in ES scores 0 on the BM25 side and is
-    pushed out of the top-K by RRF fusion — the eval then reports a false
-    retrieval timeout. Polling ES's document count closes that race.
+    retry queue, and exact-keyword queries route ES with 0.75 weight. A
+    document that is present in Qdrant but not yet in ES therefore scores 0 on
+    the BM25 side.
+
+    Note on what that is worth: the obvious next sentence -- "so the document is
+    pushed out of the top-K and the eval reports a false retrieval timeout" --
+    did NOT reproduce when it was measured on the demo stack
+    (.workbuddy-ai/tmp/experiment_es_sync_race.py). A probe document whose text
+    matched the question stayed in the citations after its chunks were deleted
+    from Elasticsearch and left in Qdrant, and the question routed to
+    StrategyExactKeyword (Elastic 0.75 / Qdrant 0.25) as intended. So treat the
+    ranking argument as unproven rather than as the reason this wait exists; the
+    reason to keep the verdict is that a lagging index is a known deviation from
+    the conditions the numbers are supposed to describe.
     """
     es_index = env.get("ES_INDEX", "documents_text")
     host_url = str(es_url or "").strip()
@@ -502,15 +517,17 @@ def wait_for_es_sync(
             last_count = -1
         if last_count >= expected_docs:
             print(f"[eval] es sync ready: {last_count}/{expected_docs}")
-            return
+            return True
         time.sleep(poll_sec)
-    # Don't fail the whole eval over ES sync health: it only risks false
-    # retrieval timeouts for exact-keyword cases, and the sync can lag when the
-    # eval stack shares the host with the live demo. Warn and continue.
+    # Still not fatal: failing here would make the eval flaky whenever the stack
+    # shares a host with something else, which is the trade-off this function
+    # has always made. What changes is that the caller now records it, so the
+    # report cannot pass itself off as a clean measurement.
     print(
         f"[eval] WARN: ES sync check did not reach {expected_docs} after "
         f"{timeout_sec}s (last count {last_count}); continuing"
     )
+    return False
 
 
 def should_start_compose(api_base: str) -> bool:
@@ -1623,8 +1640,18 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
         grounding_unavailable = sum(bool(item.get("grounding_unavailable")) for item in cases)
         result["summary"]["successful_query_cases"] = successful_queries
         result["summary"]["grounding_unavailable_cases"] = grounding_unavailable
+        # run_valid is the project's gate for "this report may be used as quality
+        # evidence": write_quality_latest refuses to publish a report whose
+        # run_valid is False, and analyze-eval-variance.py drops such reports.
+        # A run taken while the keyword index was behind belongs behind that gate
+        # rather than in the baseline. It does not affect the exit code, so this
+        # adds no new failure mode -- the run still completes and still prints its
+        # metrics; it just cannot pass itself off as a clean measurement.
+        es_sync_reached = (result.get("es_sync") or {}).get("reached", True)
         result["summary"]["run_valid"] = (
-            successful_queries == len(cases) and grounding_unavailable == 0
+            successful_queries == len(cases)
+            and grounding_unavailable == 0
+            and bool(es_sync_reached)
         )
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1644,6 +1671,17 @@ def write_report(report_dir: Path, result: Dict[str, Any]) -> Tuple[Path, Path]:
             "Use `--real-models` for quality claims."
         )
     lines.append("")
+
+    es_sync = result.get("es_sync") or {}
+    if es_sync.get("reached") is False:
+        lines.append(
+            "**Keyword index was behind when the queries ran.** "
+            f"Elasticsearch never reached {es_sync.get('expected_documents', '?')} documents "
+            "within the wait window. The retrieval numbers below were measured under that "
+            "deviation, so `run_valid` is false and this report must not be used as quality "
+            "evidence or published as a baseline. Re-run once the sink has caught up."
+        )
+        lines.append("")
 
     dataset = result.get("dataset") or {}
     provenance = dataset.get("provenance") or {}
@@ -2191,6 +2229,11 @@ def main() -> int:
 
         eval_items: List[Dict[str, Any]] = []
         uploaded_doc_ids: Dict[str, str] = dict(reused_doc_ids)
+        # Whether the keyword index had caught up when the queries ran. Recorded
+        # so a run taken under a known deviation cannot be read as a clean
+        # measurement; see wait_for_es_sync.
+        es_sync_reached = True
+        es_sync_expected = 0
         scores: List[float] = []
         acceptable_scores: List[float] = []
         total_prompt_tokens = 0
@@ -2226,14 +2269,12 @@ def main() -> int:
                 uploaded_doc_ids[document.document_id] = doc_id
 
             # Wait for the async full-text sink to finish indexing before querying.
-            # Exact-keyword queries route ES with 0.75 weight; if ES has not caught
-            # up, a document that is present in Qdrant scores 0 on the BM25 side and
-            # gets pushed out of the top-K by the RRF fusion — the eval then reports
-            # a false retrieval timeout. The documents are always uploaded and stored;
-            # the race is purely the eval's, not the pipeline's.
-            wait_for_es_sync(
+            # The verdict is kept, not just printed: see wait_for_es_sync for what
+            # the ranking argument does and does not justify.
+            es_sync_expected = len(uploaded_doc_ids)
+            es_sync_reached = wait_for_es_sync(
                 env,
-                len(uploaded_doc_ids),
+                es_sync_expected,
                 timeout_sec=120,
                 poll_sec=2,
                 es_url="" if started_services else "http://127.0.0.1:9200",
@@ -2518,6 +2559,14 @@ def main() -> int:
                 "store_collection": profile.store_collection,
             },
             "configuration": resolved_configuration,
+            # Whether the keyword index had caught up when the queries ran. A
+            # report with reached=false was measured under a known deviation and
+            # must not be treated as a quality signal (write_report folds this
+            # into summary.run_valid).
+            "es_sync": {
+                "expected_documents": es_sync_expected,
+                "reached": es_sync_reached,
+            },
             "summary": {
                 "total_cases": total,
                 "assertion_passed_cases": assertion_passed,

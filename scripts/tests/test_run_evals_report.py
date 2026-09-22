@@ -678,16 +678,23 @@ class JudgeReportTest(unittest.TestCase):
         original = module.run_cmd
         module.run_cmd = fake_run
         try:
-            module.wait_for_es_sync({"ES_INDEX": "documents_text"}, 47, timeout_sec=10, poll_sec=0)
+            reached = module.wait_for_es_sync(
+                {"ES_INDEX": "documents_text"}, 47, timeout_sec=10, poll_sec=0
+            )
         finally:
             module.run_cmd = original
 
         self.assertEqual(calls["n"], 3)
+        self.assertTrue(reached)
 
     def test_wait_for_es_sync_warns_and_continues_after_timeout(self):
         # ES sync lag must NOT fail the eval: wait_for_es_sync warns and returns
         # normally when the count never reaches the target, so a slow ES sink
         # does not turn a retrieval regression into an infra false-fail.
+        #
+        # It must, however, *report* the miss. Dropping the verdict at the print
+        # statement is what let a run measured under a lagging keyword index be
+        # published as the quality baseline.
         module = self._load_module("run_evals_es_timeout")
 
         def fake_run(cmd, env, check, timeout_sec):
@@ -696,9 +703,55 @@ class JudgeReportTest(unittest.TestCase):
         original = module.run_cmd
         module.run_cmd = fake_run
         try:
-            module.wait_for_es_sync({"ES_INDEX": "documents_text"}, 47, timeout_sec=1, poll_sec=0)
+            reached = module.wait_for_es_sync(
+                {"ES_INDEX": "documents_text"}, 47, timeout_sec=1, poll_sec=0
+            )
         finally:
             module.run_cmd = original
+
+        self.assertFalse(reached)
+
+    def test_report_is_invalid_when_the_keyword_index_was_behind(self):
+        module = self._load_module("run_evals_es_sync_invalid")
+        result = _minimal_result(model_mode="real", embed_model="bge-m3")
+        result["cases"] = [
+            {**result["cases"][0], "query_successful": True, "grounding_unavailable": False},
+        ]
+        result["summary"]["total_cases"] = 1
+        result["es_sync"] = {"expected_documents": 47, "reached": False}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, md_path = module.write_report(Path(tmp), result)
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            markdown = md_path.read_text(encoding="utf-8")
+            latest_exists = (Path(tmp) / "latest.json").exists()
+
+        # The queries themselves all succeeded, so the only thing making this
+        # report unusable is the sync verdict -- which is the point.
+        self.assertEqual(payload["summary"]["successful_query_cases"], 1)
+        self.assertEqual(payload["summary"]["grounding_unavailable_cases"], 0)
+        self.assertFalse(payload["summary"]["run_valid"])
+        self.assertIn("Keyword index was behind", markdown)
+        self.assertFalse(latest_exists)
+
+    def test_report_stays_valid_when_the_keyword_index_was_caught_up(self):
+        # The counterpart, so the assertion above cannot pass by marking every
+        # run invalid.
+        module = self._load_module("run_evals_es_sync_reached")
+        result = _minimal_result(model_mode="real", embed_model="bge-m3")
+        result["cases"] = [
+            {**result["cases"][0], "query_successful": True, "grounding_unavailable": False},
+        ]
+        result["summary"]["total_cases"] = 1
+        result["es_sync"] = {"expected_documents": 47, "reached": True}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, md_path = module.write_report(Path(tmp), result)
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            markdown = md_path.read_text(encoding="utf-8")
+
+        self.assertTrue(payload["summary"]["run_valid"])
+        self.assertNotIn("Keyword index was behind", markdown)
 
     # Refusal detection must not encode any single model's phrasing. The mock
     # server's wording ("未在参考文档中直接定位锚点") used to be an accepted marker,
