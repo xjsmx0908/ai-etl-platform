@@ -10,12 +10,13 @@
 
 ## 0. 结论摘要
 
-一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的七处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对。**
+一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的八处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方。**
 
-> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了三轮
-> 缺陷排查，找到并修复了 7 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
+> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了四轮
+> 缺陷排查，找到并修复了 8 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
 > 第 6 个属于「不一致的数据被当真源，而失败路径把证据回滚掉」，
-> 第 7 个属于「目录声明了从不存在的源对象，且平台没有任何核对机制」。
+> 第 7 个属于「目录声明了从不存在的源对象，且平台没有任何核对机制」，
+> 第 8 个属于「失败状态没有被任何自动流程认领，也没有被任何诊断指标统计」。
 > 原结论因此**不成立**，已按下表修订。
 > 同时 P0 的 §1.2（全栈无备份）已从「待做」变成「已做并在隔离栈上实测通过」。
 
@@ -25,7 +26,7 @@
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **没有 P0 挂着**。三项 P0 都已处理：ES 永久 yellow（§1.1.1）、全栈无备份（§1.2）、磁盘濒满（§1.1.2，可用空间 9.2GB → 63GB）。下一步按 §7 的执行顺序走 |
-| 已修复项 | 7 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
+| 已修复项 | 8 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
 
 ---
 
@@ -173,9 +174,11 @@ $ docker system df   → Images 106.3GB → 49.13GB   Build Cache 58.18GB → 0B
 **验收判据（磁盘，全部满足）**：`df -h /` 可用空间 **63GB > 25GB**（清理前 9.2GB）。
 告警随之消解，且消解本身也是实测的。
 
-**顺带看到的一条线索**：Alertmanager 里另有一条 `IndexGenerationFailed` 在 active
-（`state="failed"`），与 `documents` 表里 7 行 `status='failed'` 相呼应。这是告警体系本来就该报的，
-但此前没人处理 —— 已记入 PROGRESS 作为下一条待查项。
+**顺带看到的一条线索（已查清并修复，见 §1.3 缺陷 8）**：Alertmanager 里另有一条
+`IndexGenerationFailed` 在 active（`state="failed"`），与 `documents` 表里 7 行 `status='failed'`
+相呼应。当时只把它记入 PROGRESS 待查；后续排查确认这是**第八处独立缺陷** —— 这 7 份生成卡在
+`failed` 之后没有任何自动流程会认领它们，`repair_attempts` 恒为 0，而唯一统计"修复已耗尽"的指标
+只数 `active`，于是死生成对整套信号完全不可见。
 
 ---
 
@@ -226,7 +229,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 ---
 
-### 1.3 已修复的 7 个缺陷（前五处同一形状：失败被固化，重试变成复读）
+### 1.3 已修复的 8 个缺陷（前五处同一形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -239,6 +242,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 | 5 | 预审的瞬时失败被永久缓存，重试变成复读 | 计划器 30s 超时后，Redis 里的 run 永久 `failed`；只能手工删 key 才恢复 | 预审 run id 只由候选派生，而 `failed` 是终态且 `ExecuteNext` 对终态直接短路 → 重试复读旧错误，从不重新调用计划器。自动恢复路径（预审过期 → `needs_info` → 队列重新拾取）每轮只消耗一个 `RELEASE_REVIEW_TTL`，Agent 一次都没重跑 | `91a47fc` |
 | 6 | 演示清单的期望摘要是占位串，索引对账**周期性**永久报错 | `etl-worker` 每 30 分钟一条 `index manifest reconciliation failed … load repair ingestion job: no rows in result set`（08:30:03 / 09:00:03 / 09:30:03，间隔恰为 `INDEX_RECONCILE_LEASE`） | 种子把**文件哈希**（`sha256:demo-handbook` 这类占位串）同时写进 `expected_chunk_digest` 与两个投影摘要；按 `IdentityDigest` 复算真实值是 `sha256:e4adc7b7…` / `sha256:c9241b97…` / `sha256:4f2b1bb0…`。种子又只插 `ingestion_jobs`、不插 `ingestion_outbox`，而 `FinishReconciliation` 靠两者 JOIN 找重放目标 → 差异永远无法修复。失败路径 `tx.Rollback()` 把 `last_reconcile_error` 与 `last_reconciled_at` 一起回滚，于是清单看起来健康、可发布（`CurrentCandidate` 读的就是这个谓词），却永不收敛；而认领顺序是「最久未对账优先」，它们因此每轮都排在队首 | `3f1deb5` |
 | 7 | 演示种子声明了它**从未写入**的源对象 | 修复前：`ListObjectsV2` 权威返回对象存储 **0 个对象**，而 `documents` 表 **119 行全部** `object_key <> ''`、`file_size` 从 35 到 45,799,879 字节；用真实 `/v1/upload` 传探针 → 对象正常落盘（111 B），证明坏的不是链路而是历史对象 | `demo_showcase.go:146,148`（修复前）把 `object_key` 写成 `"demo/"+doc.docID+".md"`、`file_size` 写死 `2048`，**从不调用对象存储的 Upload**；且 `ensureDemoShowcase` 当时跑在 `s3.New` 之前，物理上拿不到客户端。目录因此只是一句声明 | `7cea45f` |
+| 8 | `state='failed'` 的生成没有任何自愈路径，且对诊断指标不可见 | `ai_etl_generation_manifests{state="failed"}=6`、`oldest_age_seconds{state="failed"}=1655531s`（≈19.2 天）；`IndexGenerationFailed` 自 2026-09-12T06:56:48Z firing 九天；这 6 份 `repair_attempts=0`、`last_reconciled_at` 恒为 `NULL`，而同一时间对账日志每 5 分钟稳定报 `checked:20 healthy:20 diverged:0 repair_exhausted:0` | 三处，都在 `indexmanifest/postgres.go`：① `ClaimReconciliation` 的 `WHERE state='active'` 让 failed 永不被认领 —— 这条本身是刻意的（只有 active 才有活投影可跨后端比对），但它**没有配套的接管路径**；② `OperationsSnapshot` 的 `repair_exhausted` 只数 `state='active'`，死生成对信号完全不可见；③ `Retry` 不清 `expected_chunk_count/expected_chunk_digest`，而 `SealExpected` 以 `IS NULL` 为守卫，封印过的失败再重试必 `ErrConflict` | `8b5e2f8` `7307e54` |
 
 **缺陷 6 的报错周期，实测与直觉相反**：对账每 5 分钟跑一轮，但**报错每 30 分钟才出现一次**。
 原因在租约：`ClaimReconciliation` 把 `reconcile_lease_until` 推到 `now()+INDEX_RECONCILE_LEASE`（30m）
@@ -279,6 +283,42 @@ ingestion 事件去重新物化对象，而没有对象可重放时它只能报�
 修复后线上断言：`demo/demo-doc-handbook.md` 513 B / `demo-doc-onboarding.md` 401 B /
 `demo-doc-payroll.md` 395 B，`documents.file_size` 与观测字节数**逐一相等**；
 缺失计数从 119 降到 116（那 3 份是唯一能确定性重建的）。剩余 116 份见 §4.7。
+
+**缺陷 8 是前七处的反面，也是唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
+在错误的时刻做了错误的事，这一处是**代码根本不存在**。`ClaimReconciliation` 只认领
+`state='active'`（这条本身是刻意的：只有 active 才有活投影可跨后端比对），而承载那份生成唯一
+一次投递的 `ingestion_outbox` 行早已 `published_at` 非空，relay 也不会再取它。于是这批生成
+落在两条路径中间的缝里：**没有任何代码会把它们捞回来**。它能藏九天，是因为诊断指标站在了
+错误的一边 —— `repair_exhausted` 只数 active，死生成从未被计入任何一条信号；`IndexGenerationFailed`
+虽然一直 firing，但同一时间对账日志报的是 `healthy:20 diverged:0`，绿灯让人以为那只是历史噪音。
+
+**修复的形状**：给 failed 生成一条**与 active 平行、但有界**的认领路径，并让「耗尽」成为可观测终态。
+
+- `ClaimFailedRepairs` / `ScheduleFailedRepair`：独立认领 `state='failed'` 且
+  `repair_attempts < N` 的清单，在**行锁内**读 job 状态后三分支 —— 无 job 可重放 → 扣预算并报
+  `ErrNoReplayPath`；job 已在 `queued/published/processing` → 释放租约且**不扣预算**（重放已在飞，
+  报 `ErrRepairInFlight`）；其余 → 清 `ingestion_outbox.published_at` 并重开 `ingestion_jobs`。
+- **重驱动不再改 `state`**。这是本次自查出的第二个真缺陷：第一版先把 state 改成 `building` 再重放，
+  而重建不保证产出同一个 `generation_id`（id 由构建定义派生）→ 清单既不会被重建、也不会再被报
+  `failed`，只会被报成 stalled。第一版上线后线上确实出现 3 行 `building` + 空 `last_error`，
+  已按部署时间边界恢复为 `failed`，并补 `state != 'failed'` 断言 + 反向验证 R6。
+- `Retry` 与重驱动共用同一条语句并清空封印（`expected_chunk_count/expected_chunk_digest` 等），
+  否则 `SealExpected` 的 `IS NULL` 守卫会让封印过的失败重试必然 `ErrConflict`。
+- `OperationsSnapshot` 的 `repair_exhausted` 扩到 `state='failed'`，并新增
+  `ai_etl_generation_reconciliations_total{outcome="repair_replayed"|"repair_unavailable"}`。
+
+**线上断言（2026-09-21 13:42–14:07 UTC，第二次部署后）**：对账五轮依次认领
+`replayed=6 / 6 / 4 / 1 / 1`（累计 **18**），此后每轮 `replayed=0` —— 预算走满即停，不再空转。
+7 份清单的 `repair_attempts` 全部到 3，`sum(repair_attempts)=21=7×3`，与
+`repair_replayed(18) + repair_pending(3)` 精确吻合，`last_reconcile_error` 全部清空。
+四个独立来源给出同一个耗尽信号：DB `repair_attempts=3`、worker `/metrics`
+`ai_etl_generation_diagnostics{condition="repair_exhausted"}=7`、Prometheus 同值、
+Alertmanager `IndexGenerationRepairExhausted` 自 13:52:48Z 起 `active`。
+
+**这 7 份重放之后仍然失败，而这是正确行为**：根因是源对象已不存在
+（`materialize object: copy object to temp file: The specified key does not exist.`，即 §4.7 的
+116 份缺失），重放不可能成功。修复保证的是**有界重试 + 耗尽可见**，不是「一定能自愈」——
+把不可恢复的失败从「静默」变成「响亮且不再重试」，才是这条路径该做的事。
 
 **仍未修、已确认但未动手的**：`AGENT_RUN_TTL` 之内、prompt 未变、模型变了的情况——
 run id 不含模型，所以换模型不会让已缓存的裁决失效。影响面小于缺陷 5，未纳入本轮。
@@ -518,6 +558,14 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 其中最要紧的是第一件 —— 对账器只能靠重放来修复差异，而源对象不存在时
 `FinishReconciliation` 找不到重放目标（缺陷 6 的报错就是这么来的）。
 
+**这条缺失与缺陷 8 的关系（2026-09-21 补测）**：缺陷 8 修复后，`state='failed'` 的生成会被
+有界重放三次；而 §4.7 的缺失让这些重放**注定失败**。线上实测：7 份 failed 生成累计被重放 18 次，
+每一次都在 `materialize object` 阶段因 `The specified key does not exist` 落入 DLQ，走满预算后
+`IndexGenerationRepairExhausted` 转 `active`。也就是说，**这条缺失的终态现在是显式的** ——
+它不再表现为「一批文档悄悄停在 failed」，而是「修复预算耗尽 + 一条会响的告警」。
+当前 `documents.status='failed'` 的 7 行是这 116 份里的一个子集；其余缺失文档的正文已在投影里、
+`status='completed'`，检索照常，只有重放会失败。**要恢复必须先有源对象，所以这 7 行不可自动修复。**
+
 **已做与不可做**
 
 - 演示种子的 3 份**可以确定性重建**（内容由代码生成），已作为缺陷 7 修复并线上断言：
@@ -596,27 +644,30 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 ## 7. 建议执行顺序
 
 ```
-第 1 步（已完成） 1.1.1 ES 单节点副本 + 1.1.2 磁盘回收 + §1.3 的 7 个功能缺陷
+第 1 步（已完成） 1.1.1 ES 单节点副本 + 1.1.2 磁盘回收 + §1.3 缺陷 1–5
 第 2 步（已完成） 1.2 备份脚本 + 恢复演练（隔离栈 8 项断言全 PASS，RTO 79.7 秒实测）
 第 3 步（已完成） 1.1.2 剩余：ES 水位改百分比 + 宿主机磁盘告警（含补 node-exporter）
 第 4 步（已完成） 1.1.2 终态：磁盘 9.2GB → 63GB（清 build cache 58.18GB，未碰其他项目）
-第 5 步           2.1 Go 工具链权限修复
-第 6 步           3.  状态文档三源归一 + 一致性契约测试
-第 7 步           2.2 / 2.3 配置一致性修复 + 契约测试
-第 8 步           4.1 邀请式自助开户（需你先确认产品口径）
-第 9 步           5.1 query/service.go 机械拆分
+第 5 步（已完成） §1.3 缺陷 6 / 7：期望摘要是占位串（对账周期性永久报错）、种子声明了不存在的源对象
+第 6 步（已完成） §1.3 缺陷 8：failed 生成的自愈路径与耗尽信号（含两项自查出的二次缺陷）
+第 7 步           2.1 Go 工具链权限修复
+第 8 步           3.  状态文档三源归一 + 一致性契约测试
+第 9 步           2.2 / 2.3 配置一致性修复 + 契约测试
+第 10 步          4.1 邀请式自助开户（需你先确认产品口径）
+第 11 步          5.1 query/service.go 机械拆分
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
-「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5 步是
-「不做则每次改动都在踩坑」；第 6 步是「不做则后面所有状态判断都不可信」；
-第 7 步成本最低收益明确；第 8 步需要你的产品决策；第 9 步是纯收益优化，随时可做。
+「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–6 步是
+「不做则故障永远静默」：这三处缺陷的共同点是自己不报错、还让看板变绿（见 §1.3）。
+第 7 步是「不做则每次改动都在踩坑」；第 8 步是「不做则后面所有状态判断都不可信」；
+第 9 步成本最低收益明确；第 10 步需要你的产品决策；第 11 步是纯收益优化，随时可做。
 
 ---
 
 ## 8. 边界与未做的事（避免误解）
 
-- **代码改动限于两处**：§1.3 列出的 7 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
+- **代码改动限于两处**：§1.3 列出的 8 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
   （含补上的 `node-exporter`）。其余章节仍是调查结论，未据此改代码。
 - **§1.2 不只是文档**：`scripts/backup-stack.sh`、`scripts/restore-stack.sh`、3 个单职责助手脚本、
   `docker-compose.restore.yml`、16 个契约测试都已提交，并在隔离项目 `ai-etl-restore` 上真跑过
@@ -635,3 +686,8 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 - **§4.5 与 §4.6 没有动手**，理由分别写在各自小节里（前者被外部决策阻塞，后者需要重建 4684 条索引）。
 - **§4.7 的 116 份源对象没有试图补救**。字节已不存在，脚本不做假造；它被降级为「由完整性门禁
   持续报告的已知缺失」，而不是「已修复」。
+- **缺陷 8 的修复不承诺「自愈成功」**。它承诺的是：`state='failed'` 的生成会被有界重放
+  （`INDEX_RECONCILE_MAX_REPAIRS`，默认 3）、重放结束后停止、耗尽状态进入
+  `ai_etl_generation_diagnostics{condition="repair_exhausted"}` 并触发
+  `IndexGenerationRepairExhausted`。线上那 7 份走满预算后仍然 `failed`，根因是 §4.7 的源对象
+  缺失 —— 那不是这条路径能修的，它只负责让不可恢复的失败变得可见、且不再空转。
