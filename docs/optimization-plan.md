@@ -10,14 +10,15 @@
 
 ## 0. 结论摘要
 
-一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的九处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效。**
+一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的十处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效；第十处把前九处的教训合起来用了一遍 —— 缓存漏了一个输入，而那个输入恰好是裁决自己声称的出处。**
 
-> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了五轮
-> 缺陷排查，找到并修复了 9 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
+> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了六轮
+> 缺陷排查，找到并修复了 10 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
 > 第 6 个属于「不一致的数据被当真源，而失败路径把证据回滚掉」，
 > 第 7 个属于「目录声明了从不存在的源对象，且平台没有任何核对机制」，
 > 第 8 个属于「失败状态没有被任何自动流程认领，也没有被任何诊断指标统计」，
-> 第 9 个属于「被声明、被加权、被测试过的检索信号，从未被写入索引」（§4.6）。
+> 第 9 个属于「被声明、被加权、被测试过的检索信号，从未被写入索引」（§4.6），
+> 第 10 个属于「缓存键漏了一个输入，而那个输入正是裁决自己声称的出处」。
 > 原结论因此**不成立**，已按下表修订。
 > 同时 P0 的 §1.2（全栈无备份）已从「待做」变成「已做并在隔离栈上实测通过」。
 
@@ -27,7 +28,7 @@
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **没有 P0 挂着**。三项 P0 都已处理：ES 永久 yellow（§1.1.1）、全栈无备份（§1.2）、磁盘濒满（§1.1.2，可用空间 9.2GB → 63GB）。下一步按 §7 的执行顺序走 |
-| 已修复项 | 9 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
+| 已修复项 | 10 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
 
 ---
 
@@ -230,7 +231,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 ---
 
-### 1.3 已修复的 9 个缺陷（前五处同一形状：失败被固化，重试变成复读）
+### 1.3 已修复的 10 个缺陷（前五处同一形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -245,6 +246,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 | 7 | 演示种子声明了它**从未写入**的源对象 | 修复前：`ListObjectsV2` 权威返回对象存储 **0 个对象**，而 `documents` 表 **119 行全部** `object_key <> ''`、`file_size` 从 35 到 45,799,879 字节；用真实 `/v1/upload` 传探针 → 对象正常落盘（111 B），证明坏的不是链路而是历史对象 | `demo_showcase.go:146,148`（修复前）把 `object_key` 写成 `"demo/"+doc.docID+".md"`、`file_size` 写死 `2048`，**从不调用对象存储的 Upload**；且 `ensureDemoShowcase` 当时跑在 `s3.New` 之前，物理上拿不到客户端。目录因此只是一句声明 | `7cea45f` |
 | 8 | `state='failed'` 的生成没有任何自愈路径，且对诊断指标不可见 | `ai_etl_generation_manifests{state="failed"}=6`、`oldest_age_seconds{state="failed"}=1655531s`（≈19.2 天）；`IndexGenerationFailed` 自 2026-09-12T06:56:48Z firing 九天；这 6 份 `repair_attempts=0`、`last_reconciled_at` 恒为 `NULL`，而同一时间对账日志每 5 分钟稳定报 `checked:20 healthy:20 diverged:0 repair_exhausted:0` | 三处，都在 `indexmanifest/postgres.go`：① `ClaimReconciliation` 的 `WHERE state='active'` 让 failed 永不被认领 —— 这条本身是刻意的（只有 active 才有活投影可跨后端比对），但它**没有配套的接管路径**；② `OperationsSnapshot` 的 `repair_exhausted` 只数 `state='active'`，死生成对信号完全不可见；③ `Retry` 不清 `expected_chunk_count/expected_chunk_digest`，而 `SealExpected` 以 `IS NULL` 为守卫，封印过的失败再重试必 `ErrConflict` | `8b5e2f8` `7307e54` |
 | 9 | ES 词法检索里权重最高的 `file_name` 加权是死代码 | `documents_text_v2` 的 mapping 无 `file_name`，`chunks with file_name = 0 / 4684`；`match_phrase(file_name,"员工手册")` 命中 0，而同一查询在正文侧命中 5；`backend_candidate_counts.elasticsearch` 对只靠标题才该命中的问句恒为 0 | 四处：`model.Task` / `model.Chunk` 没有 `FileName` 字段；`esChunkDoc` 没有该字段；ES mapping 没有该 property；入库链路（流式与 OCR/PDF 两条产出路径）从不填充。`titleAwareShouldClauses` 却发出 `match_phrase(file_name, boost 6.0)` 与 `match(file_name, boost 3.0)` —— ES 对未映射字段不报错、只是永不匹配，于是**静默降级**为「只有正文匹配」；`elastic_test.go` 只断言了子句存在，没有任何测试断言该字段被写入索引 | `5e172bb` |
+| 10 | 预审裁决的缓存身份漏了模型，且 `report.model` 是每次读取时从当前配置**合成**的 | 改 `LLM_MODEL` 并重建 query-api 后连续三次调用返回**逐字相同**的 `review-run-5d0091b5ac8e12bf1c0a8bd3fd823c0a`，而 `review.model` 跟着配置走（`deepseek-v4-flash` → `deepseek-v4-flash-probe` → `deepseek-v4-flash`）；B 那次带着不存在的模型名却返回 `completed` 且 summary 逐字相同 —— 计划器根本没被调用（run 在 Redis 里跨容器重建持久） | 两处：`agentapi/review.go` 的 `reviewRunID` 哈希载荷只有 tenant / candidate / prompt 版本 / 尝试序号，**没有模型**；`agentapi/service.go:285` 每次读取都把 `report.Model` 盖成 `s.reviewModel`，而确定性报告（`review.go:787`）装配时根本没有 `Model` 字段 —— 于是每轮调用都重写已存储裁决的模型名，一份由 A 产出的裁决被读回时标成了 B | `78e3fb5` |
 
 **缺陷 6 的报错周期，实测与直觉相反**：对账每 5 分钟跑一轮，但**报错每 30 分钟才出现一次**。
 原因在租约：`ClaimReconciliation` 把 `reconcile_lease_until` 推到 `now()+INDEX_RECONCILE_LEASE`（30m）
@@ -286,7 +288,7 @@ ingestion 事件去重新物化对象，而没有对象可重放时它只能报�
 `demo-doc-payroll.md` 395 B，`documents.file_size` 与观测字节数**逐一相等**；
 缺失计数从 119 降到 116（那 3 份是唯一能确定性重建的）。剩余 116 份见 §4.7。
 
-**缺陷 8 是前七处的反面，也是九处里唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
+**缺陷 8 是前七处的反面，也是十处里唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
 在错误的时刻做了错误的事，这一处是**代码根本不存在**。`ClaimReconciliation` 只认领
 `state='active'`（这条本身是刻意的：只有 active 才有活投影可跨后端比对），而承载那份生成唯一
 一次投递的 `ingestion_outbox` 行早已 `published_at` 非空，relay 也不会再取它。于是这批生成
@@ -373,8 +375,58 @@ chunks_with_file_name=4684/4684`；`match_phrase(file_name,"员工手册")` 命�
 version/generation —— 草稿文档被正确挡在证据之外。另外 `backend_candidate_counts` 是在可见性过滤
 **之后**统计的（`retrieval/engine.go:297-301`），所以 0 表示「候选被丢弃」，不表示「ES 没返回」。
 
-**仍未修、已确认但未动手的**：`AGENT_RUN_TTL` 之内、prompt 未变、模型变了的情况——
-run id 不含模型，所以换模型不会让已缓存的裁决失效。影响面小于缺陷 5，未纳入本轮。
+**缺陷 10 是缺陷 5 的同一条，只是漏掉了一个输入，而且它还多了一层谎报。**
+
+缺陷 5 把 prompt 版本与尝试序号放进了预审 run 的身份，理由写得很清楚：run 是「这个候选、由这个
+prompt 审过」的缓存，漏掉一个输入就等于把一份裁决永久缓存下去。**但模型也是这个裁决的输入，
+当时没放进去** —— 于是 `AGENT_RUN_TTL`（24h）之内把 `LLM_MODEL` 指向另一个模型，命中的还是
+旧 run，新模型一次都不会被问到。
+
+第二层更糟：`report.Model` **根本不是溯源信息**。确定性预审装配的报告
+（`review.go:787`）里没有 `Model` 字段，而 `service.go:285` 在**每次读取时**把当前配置盖上去 ——
+于是每一轮调用都会把已存储裁决的 `model` 重写一遍。一份由模型 A 产出的裁决，被读回时标成了模型 B。
+
+**线上复现（2026-09-22 01:46–01:53 UTC）**：改 `.env` 的 `LLM_MODEL` 并重建 query-api，
+连续三次调用返回**逐字相同**的 `review-run-5d0091b5ac8e12bf1c0a8bd3fd823c0a`，而
+`review.model` 跟着配置走（`deepseek-v4-flash` → `deepseek-v4-flash-probe` → `deepseek-v4-flash`）。
+run 存在 Redis（`agent:run:<id>`，跨容器重建持久），所以 B 那次**确实复用了旧裁决**：
+它带着一个不存在的模型名却返回 `status=completed`、与原裁决逐字相同的 summary —— 计划器根本没被调用。
+
+**修复的形状**：把模型放进 run 的身份，并把模型记在 run 自己身上。
+
+- `reviewRunID` 的哈希载荷加 `review_model`，与 prompt 版本、尝试序号并列。
+- `StartManagedReview` 把 `review_model` 写进 run 的 memory（`review_candidate` 已经在用这个位置）。
+- `resumePublicationReview` 用 `reviewModelFromRun(run)` 读回，**不再盖当前配置**。
+  在本次修复之前创建的 run 没有这个值，它们**如实报告没有模型**，而不是填一个当前配置 ——
+  伪造溯源正是这个缺陷本身。
+
+**线上断言（部署 `78e3fb5` 之后，同一套 A/B/C）**：
+
+| 步骤 | `LLM_MODEL` | `agent_run_id` | `review.model` | `status` |
+| --- | --- | --- | --- | --- |
+| A | `deepseek-v4-flash` | `review-run-d8286cc4e461840644306e1720c1eaab` | `deepseek-v4-flash` | completed |
+| B | `deepseek-v4-flash-probe` | `review-run-e6cf95927db6ba0d265cb3846d80e0fc`（**变了**） | —— | **failed** |
+| C | `deepseek-v4-flash` | `review-run-d8286cc4…`（**回到 A 的值**） | `deepseek-v4-flash` | completed |
+
+Redis 里三条 run 记录把两半都钉死了：
+
+```
+review-run-5d0091b5…（修复前创建）memory_keys=["review_candidate"]            ← 没有 review_model
+review-run-d8286cc4…（修复后 A）   memory_keys=["review_candidate","review_model"]
+                                   review_model="deepseek-v4-flash"
+review-run-e6cf9592…（修复后 B）   review_model="deepseek-v4-flash-probe"
+                                   error="agent planner returned status 503:
+                                          model_not_found … 模型 deepseek-v4-flash-probe 无可用渠道"
+```
+
+B 的错误原文是**新模型真的被调用了**的直接证据 —— 它失败在一个真实存在的模型名不存在上，
+而修复前同一个位置返回的是 completed。C 的 id 回到 A 的值说明身份仍是确定性的，
+原裁决被正确复用且**保留它自己的模型名**。
+
+**这条缺陷的一半在网上不可观测，值得记下来**：一旦身份包含模型，能从当前配置到达的 run
+就必然带着同一个模型，所以「读回时被贴错模型名」这一半在**新** run 上无法用线上 API 观测到 ——
+它由单元测试 + 反向验证 R2 覆盖（还原后报 `verdict produced by model-a was relabelled as "model-b"`）。
+线上能观测的是另一半（身份分叉、新模型被真的调用），以及历史 run 如实报告「无模型」。
 
 ---
 
@@ -724,24 +776,25 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 5 步（已完成） §1.3 缺陷 6 / 7：期望摘要是占位串（对账周期性永久报错）、种子声明了不存在的源对象
 第 6 步（已完成） §1.3 缺陷 8：failed 生成的自愈路径与耗尽信号（含两项自查出的二次缺陷）
 第 7 步（已完成） §1.3 缺陷 9 / §4.6：ES 词法检索的 file_name 加权（回填 4684 条，未重建索引）
-第 8 步           2.1 Go 工具链权限修复
-第 9 步           3.  状态文档三源归一 + 一致性契约测试
-第 10 步          2.2 / 2.3 配置一致性修复 + 契约测试
-第 11 步          4.1 邀请式自助开户（需你先确认产品口径）
-第 12 步          5.1 query/service.go 机械拆分
+第 8 步（已完成） §1.3 缺陷 10：预审裁决的缓存身份与模型溯源
+第 9 步           2.1 Go 工具链权限修复
+第 10 步          3.  状态文档三源归一 + 一致性契约测试
+第 11 步          2.2 / 2.3 配置一致性修复 + 契约测试
+第 12 步          4.1 邀请式自助开户（需你先确认产品口径）
+第 13 步          5.1 query/service.go 机械拆分
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
-「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–7 步是
+「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–8 步是
 「不做则故障永远静默」：这几处缺陷的共同点是自己不报错、还让看板变绿（见 §1.3）。
-第 8 步是「不做则每次改动都在踩坑」；第 9 步是「不做则后面所有状态判断都不可信」；
-第 10 步成本最低收益明确；第 11 步需要你的产品决策；第 12 步是纯收益优化，随时可做。
+第 9 步是「不做则每次改动都在踩坑」；第 10 步是「不做则后面所有状态判断都不可信」；
+第 11 步成本最低收益明确；第 12 步需要你的产品决策；第 13 步是纯收益优化，随时可做。
 
 ---
 
 ## 8. 边界与未做的事（避免误解）
 
-- **代码改动限于两处**：§1.3 列出的 9 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
+- **代码改动限于两处**：§1.3 列出的 10 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
   （含补上的 `node-exporter`）。其余章节仍是调查结论，未据此改代码。
 - **§1.2 不只是文档**：`scripts/backup-stack.sh`、`scripts/restore-stack.sh`、3 个单职责助手脚本、
   `docker-compose.restore.yml`、16 个契约测试都已提交，并在隔离项目 `ai-etl-restore` 上真跑过
@@ -766,6 +819,16 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
   `demo-doc-onboarding` 与 `demo-doc-payroll` 的词法候选会重新出现，但它们
   `publication_status='draft'`，仍被 `publicationrelease.ResolveVisibility` 正确挡在证据之外
   （线上实测：这两个问句的 `backend_candidate_counts.elasticsearch` 为 0，是正确行为，不是缺陷）。
+- **缺陷 10 的修复让修复之前创建的预审 run 变成不可达**，这是刻意的。它们的身份里没有模型，
+  因此现在算不出它们的 id；而它们也从未记录过自己的模型。线上那批遗留 run（如
+  `review-run-5d0091b5…`，`memory_keys=["review_candidate"]`）会自然过期（`AGENT_RUN_TTL=24h`），
+  同一候选的下一次预审会用新身份重新跑一遍。**没有做数据迁移**：把旧 run 迁移到新身份需要
+  假设它们的模型，而那正是本次要消灭的假设。
+- **缺陷 10 只有一半能在线上观测，另一半靠测试**。身份包含模型之后，从当前配置能到达的 run
+  必然带着同一个模型，所以「读回时被贴错模型名」在**新** run 上无法用线上 API 观测；
+  它由单元测试与反向验证 R2 覆盖（还原后报 `verdict produced by model-a was relabelled as "model-b"`）。
+  线上能观测到的是身份分叉（换模型 → 换 run）、新模型确实被调用（错误原文 `model_not_found`），
+  以及遗留 run 如实报告「无模型」。
 - **缺陷 8 的修复不承诺「自愈成功」**。它承诺的是：`state='failed'` 的生成会被有界重放
   （`INDEX_RECONCILE_MAX_REPAIRS`，默认 3）、重放结束后停止、耗尽状态进入
   `ai_etl_generation_diagnostics{condition="repair_exhausted"}` 并触发
