@@ -10,15 +10,16 @@
 
 ## 0. 结论摘要
 
-一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的十处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效；第十处把前九处的教训合起来用了一遍 —— 缓存漏了一个输入，而那个输入恰好是裁决自己声称的出处。**
+一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的十一处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效；第十处把前九处的教训合起来用了一遍 —— 缓存漏了一个输入，而那个输入恰好是裁决自己声称的出处；第十一处又回到了最开始的形状，只是这次没人回收的不是重试，而是记录本身 —— 一份被取代的裁决走不到「过期」这个状态，于是保留期对它永不生效。**
 
-> **修订说明（2026-09-21）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了六轮
-> 缺陷排查，找到并修复了 10 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
+> **修订说明（2026-09-22）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了七轮
+> 缺陷排查，找到并修复了 11 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
 > 第 6 个属于「不一致的数据被当真源，而失败路径把证据回滚掉」，
 > 第 7 个属于「目录声明了从不存在的源对象，且平台没有任何核对机制」，
 > 第 8 个属于「失败状态没有被任何自动流程认领，也没有被任何诊断指标统计」，
 > 第 9 个属于「被声明、被加权、被测试过的检索信号，从未被写入索引」（§4.6），
-> 第 10 个属于「缓存键漏了一个输入，而那个输入正是裁决自己声称的出处」。
+> 第 10 个属于「缓存键漏了一个输入，而那个输入正是裁决自己声称的出处」，
+> 第 11 个属于「生命周期只沿当前被引用的那一行走，被取代的记录再也无人回收」。
 > 原结论因此**不成立**，已按下表修订。
 > 同时 P0 的 §1.2（全栈无备份）已从「待做」变成「已做并在隔离栈上实测通过」。
 
@@ -28,7 +29,7 @@
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **没有 P0 挂着**。三项 P0 都已处理：ES 永久 yellow（§1.1.1）、全栈无备份（§1.2）、磁盘濒满（§1.1.2，可用空间 9.2GB → 63GB）。下一步按 §7 的执行顺序走 |
-| 已修复项 | 10 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
+| 已修复项 | 11 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
 
 ---
 
@@ -231,7 +232,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 ---
 
-### 1.3 已修复的 10 个缺陷（前五处同一形状：失败被固化，重试变成复读）
+### 1.3 已修复的 11 个缺陷（前五处同一形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -247,6 +248,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 | 8 | `state='failed'` 的生成没有任何自愈路径，且对诊断指标不可见 | `ai_etl_generation_manifests{state="failed"}=6`、`oldest_age_seconds{state="failed"}=1655531s`（≈19.2 天）；`IndexGenerationFailed` 自 2026-09-12T06:56:48Z firing 九天；这 6 份 `repair_attempts=0`、`last_reconciled_at` 恒为 `NULL`，而同一时间对账日志每 5 分钟稳定报 `checked:20 healthy:20 diverged:0 repair_exhausted:0` | 三处，都在 `indexmanifest/postgres.go`：① `ClaimReconciliation` 的 `WHERE state='active'` 让 failed 永不被认领 —— 这条本身是刻意的（只有 active 才有活投影可跨后端比对），但它**没有配套的接管路径**；② `OperationsSnapshot` 的 `repair_exhausted` 只数 `state='active'`，死生成对信号完全不可见；③ `Retry` 不清 `expected_chunk_count/expected_chunk_digest`，而 `SealExpected` 以 `IS NULL` 为守卫，封印过的失败再重试必 `ErrConflict` | `8b5e2f8` `7307e54` |
 | 9 | ES 词法检索里权重最高的 `file_name` 加权是死代码 | `documents_text_v2` 的 mapping 无 `file_name`，`chunks with file_name = 0 / 4684`；`match_phrase(file_name,"员工手册")` 命中 0，而同一查询在正文侧命中 5；`backend_candidate_counts.elasticsearch` 对只靠标题才该命中的问句恒为 0 | 四处：`model.Task` / `model.Chunk` 没有 `FileName` 字段；`esChunkDoc` 没有该字段；ES mapping 没有该 property；入库链路（流式与 OCR/PDF 两条产出路径）从不填充。`titleAwareShouldClauses` 却发出 `match_phrase(file_name, boost 6.0)` 与 `match(file_name, boost 3.0)` —— ES 对未映射字段不报错、只是永不匹配，于是**静默降级**为「只有正文匹配」；`elastic_test.go` 只断言了子句存在，没有任何测试断言该字段被写入索引 | `5e172bb` |
 | 10 | 预审裁决的缓存身份漏了模型，且 `report.model` 是每次读取时从当前配置**合成**的 | 改 `LLM_MODEL` 并重建 query-api 后连续三次调用返回**逐字相同**的 `review-run-5d0091b5ac8e12bf1c0a8bd3fd823c0a`，而 `review.model` 跟着配置走（`deepseek-v4-flash` → `deepseek-v4-flash-probe` → `deepseek-v4-flash`）；B 那次带着不存在的模型名却返回 `completed` 且 summary 逐字相同 —— 计划器根本没被调用（run 在 Redis 里跨容器重建持久） | 两处：`agentapi/review.go` 的 `reviewRunID` 哈希载荷只有 tenant / candidate / prompt 版本 / 尝试序号，**没有模型**；`agentapi/service.go:285` 每次读取都把 `report.Model` 盖成 `s.reviewModel`，而确定性报告（`review.go:787`）装配时根本没有 `Model` 字段 —— 于是每轮调用都重写已存储裁决的模型名，一份由 A 产出的裁决被读回时标成了 B | `78e3fb5` |
+| 11 | `release_center_reviews` 的保留期对「被取代的评审行」永不生效，表只增不减 | demo 租户 2 条 `failed` 预审行（`review-69e42208…`、`review-a26fb4d1…`）在 2026-09-21 08:17:56 写入、10 分钟后即被成功的预审取代；两条都不被任何 request 引用，`expire_due_reviews` 的可达性判定为 **false**。全表 27 行里有 4 行处于「无人引用」状态，而 `purgeable_now = 0` | 两处，都在 `releasecenter/store.go`：① `ExpireDueReviews` 通过 `JOIN release_center_requests q ON q.review_id=rv.review_id` 遍历评审行 —— 只认「请求当前指向的那一行」，被取代的行从此不可达；② `PurgeExpiredReviews` 只删 `status='expired'`。两者相乘：**在 TTL 到期前被取代的行永远走不到 `expired`，于是永远删不掉**，`RELEASE_REVIEW_RETENTION`（90 天）对它完全失效 | `5afc6b1` |
 
 **缺陷 6 的报错周期，实测与直觉相反**：对账每 5 分钟跑一轮，但**报错每 30 分钟才出现一次**。
 原因在租约：`ClaimReconciliation` 把 `reconcile_lease_until` 推到 `now()+INDEX_RECONCILE_LEASE`（30m）
@@ -288,7 +290,7 @@ ingestion 事件去重新物化对象，而没有对象可重放时它只能报�
 `demo-doc-payroll.md` 395 B，`documents.file_size` 与观测字节数**逐一相等**；
 缺失计数从 119 降到 116（那 3 份是唯一能确定性重建的）。剩余 116 份见 §4.7。
 
-**缺陷 8 是前七处的反面，也是十处里唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
+**缺陷 8 是前七处的反面，也是十一处里唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
 在错误的时刻做了错误的事，这一处是**代码根本不存在**。`ClaimReconciliation` 只认领
 `state='active'`（这条本身是刻意的：只有 active 才有活投影可跨后端比对），而承载那份生成唯一
 一次投递的 `ingestion_outbox` 行早已 `published_at` 非空，relay 也不会再取它。于是这批生成
@@ -427,6 +429,78 @@ B 的错误原文是**新模型真的被调用了**的直接证据 —— 它失
 就必然带着同一个模型，所以「读回时被贴错模型名」这一半在**新** run 上无法用线上 API 观测到 ——
 它由单元测试 + 反向验证 R2 覆盖（还原后报 `verdict produced by model-a was relabelled as "model-b"`）。
 线上能观测的是另一半（身份分叉、新模型被真的调用），以及历史 run 如实报告「无模型」。
+
+### 缺陷 11：被取代的预审行不受保留期约束
+
+**起点是一个看起来只是「脏数据」的现象**：demo 租户的 `release_center_reviews` 里躺着 2 条 `failed`
+预审行（`review-69e42208b72c0e0b`、`review-a26fb4d1d170c359`），`recommendation=manual_review`、
+`risk_level=high`，而它们对应的文档早已有更新的、`completed` 的预审。两条行看起来只是历史残留。
+
+**先查清它们从哪来**。两条的 id 都是 16 位十六进制，而 `AgentReview` 派生的是 32 位 ——
+`nextReviewID(previousID) = sha256(previousID + "\x00rereview")[:16]`，正是「上一份裁决已过期、
+开一次重审」这条路径。实测两条 id 恰好等于 `nextReviewID("demo-review-onboarding")` 与
+`nextReviewID("demo-review-payroll")`。时间线也吻合：种子行 2026-09-12 写入、TTL 7 天，
+2026-09-21 08:17:56 触发重审 —— 而那一刻计划器失败（这正是缺陷 5 的形状），于是写入 `failed`；
+10 分钟后重审成功，请求的 `review_id` 改指向新的 `completed` 行，两条 `failed` 就此**失去引用**。
+
+**到这里，问题从「残留数据」变成了「没人回收」**。查保留期的两端：
+
+- `ExpireDueReviews`（`store.go:529`）从 `release_center_requests` 出发 JOIN 评审行：
+  `JOIN release_center_reviews rv ON rv.tenant_id=q.tenant_id AND rv.review_id=q.review_id`。
+  它只认**请求当前指向的那一行**。被取代的行从此不可达。
+- `PurgeExpiredReviews`（`store.go:590`）只删 `status='expired'`。
+
+两者相乘就是结论：**一份裁决如果在 TTL 到期之前被取代，它就永远走不到 `expired`，
+于是永远删不掉**。`RELEASE_REVIEW_RETENTION`（默认 90 天）—— 一个写进配置、写进迁移注释
+（`0027` 的 "Indexes for review-report expiry, automatic rereview pickup, and retention cleanup"）
+的存储上界 —— 对这类行**完全失效**。
+
+**线上复现**（全表 27 行）：
+
+| 状态 | 无人引用 | 行数 |
+| --- | --- | --- |
+| completed | 否 | 12 |
+| completed | **是** | **2** |
+| expired | 否 | 4 |
+| expired | 是 | 7 |
+| failed | **是** | **2** |
+
+那 7 行 `expired` 无人引用的行会在 90 天后被正常清掉（它们已经走到了 `expired`）；
+另外 **4 行（2 `failed` + 2 `completed`）永远进不了那条路径**。两条 `failed` 行的
+`expire_due_reviews` 可达性实测为 **false**。
+
+**修复的形状**：让清理用「保留期本来想表达的那个不变量」做判据，而不是用一个中间状态做判据。
+
+- `PurgeExpiredReviews` 去掉 `status='expired'` 门禁，改成
+  **`expires_at <= now()-retention` 且没有任何 request 引用它**。
+  对被引用的行，新旧谓词完全等价 —— `NOT EXISTS(referenced)` 那道守卫本来就已经拦住它们了，
+  所以这不是放宽，只是把「谁算过期」这件事交给真正决定它的事实。
+- `0030` 迁移把 `release_center_reviews_purge_idx` 从 `WHERE status='expired'`
+  改成 `WHERE expires_at IS NOT NULL`，否则新谓词没有可用索引。
+
+**线上 A/B（部署前 / 部署后，同一批探针行）**：向线上库插入 4 行 `zz-probe-*`
+（`expires_at = now()-100d`，其中 `zz-probe-expired` 已是 `expired` 态），等采集器跑（每 5 秒一轮）：
+
+| 探针行 | 部署前（`83194a7`） | 部署后（`5afc6b1`） |
+| --- | --- | --- |
+| `zz-probe-expired` | 被回收 | 被回收 |
+| `zz-probe-superseded-failed` | **存活** | **被回收** |
+| `zz-probe-superseded-completed` | **存活** | **被回收** |
+| `zz-probe-fresh`（`expires_at = now()-1h`，在保留期内） | 存活 | 存活 |
+
+同一份谓词在同一张线上表上的对照（事务回滚，不改数据）：旧谓词命中 **1**，新谓词命中 **3**，
+差值正是那两行被取代的行。
+
+**那两条 `failed` 行今天不会被删，这是对的**：它们的 `expires_at = 2026-09-28`，窗口还没到。
+修复改变的不是「今天删不删」，而是「窗口过后删不删」。线上实测（回滚事务，把判据日期取到 2027-01-01）：
+部署后的谓词会回收 demo 租户 6 行 —— 两条 `failed`、两条被取代的 `completed`、两条种子 `expired`；
+旧谓词只回收 2 行（那两条种子）。**「永不回收」变成了「窗口过后回收」。**
+
+**反向验证**：把 `status='expired'` 门禁放回去 ——
+`TestPurgeExpiredReviewsReapsSupersededReviews`（真 Postgres）报 `deleted=1, want 3`，
+`TestPurgeExpiredReviewsDeletesUnreferenced`（pgxmock）报
+`could not match actual sql … with expected regexp "WHERE rv\.expires_at IS NOT NULL"`；
+还原后文件哈希与快照逐字节一致。
 
 ---
 
@@ -777,24 +851,25 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 6 步（已完成） §1.3 缺陷 8：failed 生成的自愈路径与耗尽信号（含两项自查出的二次缺陷）
 第 7 步（已完成） §1.3 缺陷 9 / §4.6：ES 词法检索的 file_name 加权（回填 4684 条，未重建索引）
 第 8 步（已完成） §1.3 缺陷 10：预审裁决的缓存身份与模型溯源
-第 9 步           2.1 Go 工具链权限修复
-第 10 步          3.  状态文档三源归一 + 一致性契约测试
-第 11 步          2.2 / 2.3 配置一致性修复 + 契约测试
-第 12 步          4.1 邀请式自助开户（需你先确认产品口径）
-第 13 步          5.1 query/service.go 机械拆分
+第 9 步（已完成） §1.3 缺陷 11：被取代的预审行不受保留期约束
+第 10 步          2.1 Go 工具链权限修复
+第 11 步          3.  状态文档三源归一 + 一致性契约测试
+第 12 步          2.2 / 2.3 配置一致性修复 + 契约测试
+第 13 步          4.1 邀请式自助开户（需你先确认产品口径）
+第 14 步          5.1 query/service.go 机械拆分
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
-「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–8 步是
+「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–9 步是
 「不做则故障永远静默」：这几处缺陷的共同点是自己不报错、还让看板变绿（见 §1.3）。
-第 9 步是「不做则每次改动都在踩坑」；第 10 步是「不做则后面所有状态判断都不可信」；
-第 11 步成本最低收益明确；第 12 步需要你的产品决策；第 13 步是纯收益优化，随时可做。
+第 10 步是「不做则每次改动都在踩坑」；第 11 步是「不做则后面所有状态判断都不可信」；
+第 12 步成本最低收益明确；第 13 步需要你的产品决策；第 14 步是纯收益优化，随时可做。
 
 ---
 
 ## 8. 边界与未做的事（避免误解）
 
-- **代码改动限于两处**：§1.3 列出的 10 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
+- **代码改动限于两处**：§1.3 列出的 11 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
   （含补上的 `node-exporter`）。其余章节仍是调查结论，未据此改代码。
 - **§1.2 不只是文档**：`scripts/backup-stack.sh`、`scripts/restore-stack.sh`、3 个单职责助手脚本、
   `docker-compose.restore.yml`、16 个契约测试都已提交，并在隔离项目 `ai-etl-restore` 上真跑过
@@ -834,3 +909,12 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
   `ai_etl_generation_diagnostics{condition="repair_exhausted"}` 并触发
   `IndexGenerationRepairExhausted`。线上那 7 份走满预算后仍然 `failed`，根因是 §4.7 的源对象
   缺失 —— 那不是这条路径能修的，它只负责让不可恢复的失败变得可见、且不再空转。
+- **缺陷 11 不动「已发布的文档保留自己的审批证据」这件事**。清理只针对**无人引用**的行；
+  仍有请求指向的那一行永远保留 —— 那正是 `NOT EXISTS(引用)` 守卫的作用，也是治理场景下
+  审批证据该有的行为。本次改掉的只是「被取代的行也永远留着」这一半，没有放宽任何被引用的行。
+- **缺陷 11 的两条线上残留行今天不会被删**，这是判据本身决定的，不是修复没生效：
+  它们的 `expires_at = 2026-09-28`，窗口还没到。修复改变的是「窗口过后删不删」。
+  线上以 2027-01-01 作判据日期、在回滚事务里验过：这两行会被回收，而修复前无论等多久都不会。
+- **本轮为验证保留期插入的 4 行 `zz-probe-*` 探针行已全部删除**（部署前存活的那 2 行由
+  部署后的采集器回收，`zz-probe-fresh` 由手工删除）。表回到 27 行，`状态 × 是否被引用`
+  矩阵与探针插入前逐项一致。
