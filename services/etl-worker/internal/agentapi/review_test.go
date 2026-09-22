@@ -85,7 +85,7 @@ func TestAutonomousReviewResumesPersistedRunWithoutDuplicatingSteps(t *testing.T
 	}
 	actor := agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
 	first := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
-	started, err := first.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
+	started, err := first.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1, ""), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestAutonomousReviewRejectsCandidateDriftDuringResume(t *testing.T) {
 	}
 	actor := agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
 	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
-	started, err := orchestrator.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
+	started, err := orchestrator.StartOrResume(context.Background(), actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1, ""), documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestAutonomousReviewRedisRestartResumesSameRun(t *testing.T) {
 		_ = firstLocks.Close()
 		t.Fatal(err)
 	}
-	runID := reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1)
+	runID := reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 1, "")
 	run, err := first.StartOrResume(context.Background(), actor, runID, documentReviewTaskPrefix+candidate.DocumentID, map[string]interface{}{"review_candidate": structMap(candidate)})
 	if err != nil {
 		_ = firstStore.Close()
@@ -695,12 +695,12 @@ func TestAutonomousReviewStopsRetryingAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("planner calls=%d, want 2 (one per allowed attempt, none after the budget is spent)", planner.calls)
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
-		runID := reviewRunID(actor.TenantID, candidate, reviewPromptVersion, attempt)
+		runID := reviewRunID(actor.TenantID, candidate, reviewPromptVersion, attempt, "")
 		if _, err := runStore.LoadRun(context.Background(), runID); err != nil {
 			t.Fatalf("attempt %d run %q missing: %v", attempt, runID, err)
 		}
 	}
-	if _, err := runStore.LoadRun(context.Background(), reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 3)); err == nil {
+	if _, err := runStore.LoadRun(context.Background(), reviewRunID(actor.TenantID, candidate, reviewPromptVersion, 3, "")); err == nil {
 		t.Fatal("a third attempt run was created beyond AGENT_REVIEW_MAX_ATTEMPTS")
 	}
 }
@@ -904,5 +904,99 @@ func TestAutonomousReviewRulePlannerAllowsPublishWhenPurposeMissing(t *testing.T
 	}
 	if report.Status != "completed" || report.Recommendation != "publish" || report.KnowledgeUsable != releasecenter.KnowledgeUseUsable {
 		t.Fatalf("unconfigured space should keep existing publish path: %+v", report)
+	}
+}
+
+// A review verdict is a cache of "this candidate, this prompt, this model". The
+// model is the one input the report names as its own provenance, so a change to
+// it has to fork the identity -- otherwise pointing LLM_MODEL elsewhere within
+// AGENT_RUN_TTL reuses the old verdict and never asks the new model.
+func TestReviewRunIDSeparatesReviewers(t *testing.T) {
+	candidate := reviewCandidate()
+	base := reviewRunID("tenant-a", candidate, reviewPromptVersion, 1, "model-a")
+	if base != reviewRunID("tenant-a", candidate, reviewPromptVersion, 1, "model-a") {
+		t.Fatal("the same reviewer must derive the same run id")
+	}
+	if base == reviewRunID("tenant-a", candidate, reviewPromptVersion, 1, "model-b") {
+		t.Fatal("a different review model must derive a different run id")
+	}
+	if base != reviewRunID("tenant-a", candidate, reviewPromptVersion, 1, "  model-a  ") {
+		t.Fatal("surrounding whitespace must not fork the identity")
+	}
+	if base == reviewRunID("tenant-a", candidate, reviewPromptVersion, 2, "model-a") {
+		t.Fatal("the attempt index must stay part of the identity")
+	}
+	if base == reviewRunID("tenant-b", candidate, reviewPromptVersion, 1, "model-a") {
+		t.Fatal("the tenant must stay part of the identity")
+	}
+	if base == reviewRunID("tenant-a", candidate, "autonomous-review-v3", 1, "model-a") {
+		t.Fatal("the prompt version must stay part of the identity")
+	}
+}
+
+func TestReviewModelFromRunDoesNotFabricateAModel(t *testing.T) {
+	if got := reviewModelFromRun(agent.Run{}); got != "" {
+		t.Fatalf("a run with no memory must report no model, got %q", got)
+	}
+	if got := reviewModelFromRun(agent.Run{Memory: map[string]interface{}{"review_candidate": map[string]interface{}{}}}); got != "" {
+		t.Fatalf("a run that never recorded a model must report none, got %q", got)
+	}
+	if got := reviewModelFromRun(agent.Run{Memory: map[string]interface{}{reviewModelMemoryKey: "  model-a  "}}); got != "model-a" {
+		t.Fatalf("recorded model=%q", got)
+	}
+	if got := reviewModelFromRun(agent.Run{Memory: map[string]interface{}{reviewModelMemoryKey: 7}}); got != "" {
+		t.Fatalf("a non-string model must report none, got %q", got)
+	}
+}
+
+// The two halves of the defect, in one test: a verdict keeps naming the model
+// that produced it, and a new model gets a new verdict instead of the cached one.
+func TestReviewVerdictKeepsItsModelAndANewModelGetsANewVerdict(t *testing.T) {
+	candidate := reviewCandidate()
+	workflow := &fakePublicationWorkflow{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	runStore := agent.NewMemoryStore()
+	registry := agent.NewRegistry()
+	if err := registerReviewTools(registry, workflow,
+		reviewDocumentStub{document: docstore.Document{TenantID: "tenant-a", DocID: candidate.DocumentID, Permission: "internal", KnowledgeSpaceID: "policies", Owner: "owner"}},
+		reviewChunkStub{chunks: []store.StoredChunk{{ChunkID: "chunk-1", TenantID: "tenant-a", DocID: candidate.DocumentID, DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID, Content: "普通制度内容", Index: 0}}}, runStore); err != nil {
+		t.Fatal(err)
+	}
+	actor := agent.Actor{TenantID: "tenant-a", UserID: "review-agent", Role: "admin", Permissions: []string{"agent"}}
+	orchestrator := newTestOrchestrator(t, runStore, registry, ReviewRulePlanner{}, 8)
+	service := newServiceWithComponents(orchestrator, runStore)
+	service.reviewOrchestrator = orchestrator
+	service.reviewWorkflow = workflow
+	service.reviewModel = "model-a"
+
+	first, err := service.ReviewPublicationReport(context.Background(), actor, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "completed" || first.Model != "model-a" {
+		t.Fatalf("first review=%+v", first)
+	}
+
+	// An operator repoints LLM_MODEL at another model inside AGENT_RUN_TTL.
+	service.reviewModel = "model-b"
+
+	// Reading the old verdict back must not relabel it with the new model.
+	replayed, err := service.ResumePublicationReport(context.Background(), actor, first.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Model != "model-a" {
+		t.Fatalf("verdict produced by model-a was relabelled as %q", replayed.Model)
+	}
+
+	// And the new model must actually get asked: a fresh run, not the cached one.
+	second, err := service.ReviewPublicationReport(context.Background(), actor, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.RunID == first.RunID {
+		t.Fatal("changing the review model must not reuse the cached verdict")
+	}
+	if second.Model != "model-b" {
+		t.Fatalf("second review=%+v", second)
 	}
 }

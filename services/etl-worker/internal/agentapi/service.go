@@ -226,7 +226,7 @@ func (s *Service) ReviewPublicationReport(ctx context.Context, actor agent.Actor
 	}
 	candidate := *assessment.Candidate
 	task := documentReviewTaskPrefix + documentID
-	memory := map[string]interface{}{"review_candidate": structMap(candidate)}
+	memory := map[string]interface{}{"review_candidate": structMap(candidate), reviewModelMemoryKey: s.reviewModel}
 	maxAttempts := s.reviewMaxAttempts
 	if maxAttempts < 1 {
 		maxAttempts = defaultReviewMaxAttempts
@@ -239,7 +239,7 @@ func (s *Service) ReviewPublicationReport(ctx context.Context, actor agent.Actor
 		// terminalState() short-circuits ExecuteNext, so no planner call would
 		// ever happen and the review could never recover from a transient
 		// failure. On the last attempt the recorded failure is the answer.
-		current, startErr := s.reviewOrchestrator.StartOrResume(ctx, actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, attempt), task, memory)
+		current, startErr := s.reviewOrchestrator.StartOrResume(ctx, actor, reviewRunID(actor.TenantID, candidate, reviewPromptVersion, attempt, s.reviewModel), task, memory)
 		if startErr != nil {
 			return releasecenter.AgentReview{}, startErr
 		}
@@ -282,7 +282,9 @@ func (s *Service) resumePublicationReview(ctx context.Context, actor agent.Actor
 	}
 	report.RunID = run.ID
 	report.Candidate = candidate
-	report.Model = s.reviewModel
+	// The model comes from the run, not from the live configuration: a cached
+	// verdict must keep naming the model that produced it.
+	report.Model = reviewModelFromRun(run)
 	report.PromptVersion = reviewPromptVersion
 	return report, nil
 }

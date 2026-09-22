@@ -336,20 +336,33 @@ func reviewRunCandidate(run agent.Run) (publicationworkflow.Candidate, error) {
 	return candidate, nil
 }
 
+// reviewModelMemoryKey is where a review run records the model that reviewed
+// its candidate. It is written once, when the run is created, and read back on
+// every later read: the report must name the model that actually produced the
+// verdict, not whichever model happens to be configured when it is read.
+const reviewModelMemoryKey = "review_model"
+
 // reviewRunID derives the durable Agent run id for one review attempt.
 //
-// A review run is a cache of "this exact candidate, reviewed by this prompt".
-// Keying it on the candidate alone makes that cache permanent in the worst way:
-// a run that ended in StateFailed is terminal, so every later review of the
-// same candidate replays the recorded error instead of asking the planner
-// again. The document then sits in manual_exception forever, and the automatic
-// re-review path (review expires -> needs_info -> re-listed -> re-reviewed)
-// burns a review TTL per attempt without ever re-running the Agent.
+// A review run is a cache of "this exact candidate, reviewed by this prompt,
+// by this model". Keying it on the candidate alone makes that cache permanent
+// in the worst way: a run that ended in StateFailed is terminal, so every later
+// review of the same candidate replays the recorded error instead of asking the
+// planner again. The document then sits in manual_exception forever, and the
+// automatic re-review path (review expires -> needs_info -> re-listed ->
+// re-reviewed) burns a review TTL per attempt without ever re-running the Agent.
 //
 // The prompt version and the attempt index are therefore part of the identity:
 // a prompt bump invalidates cached verdicts, and a failed attempt leaves room
 // for the next one.
-func reviewRunID(tenantID string, candidate publicationworkflow.Candidate, promptVersion string, attempt int) string {
+//
+// The review model belongs in the identity for the same reason, and it is the
+// one input the report names as its own provenance. Leaving it out means
+// pointing LLM_MODEL at a different model within AGENT_RUN_TTL (24h) reuses the
+// cached verdict and never asks the new model, while the stored review is
+// re-labelled with the new model's name -- a record that claims a model that
+// never saw the document.
+func reviewRunID(tenantID string, candidate publicationworkflow.Candidate, promptVersion string, attempt int, reviewModel string) string {
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -360,10 +373,24 @@ func reviewRunID(tenantID string, candidate publicationworkflow.Candidate, promp
 		Candidate     publicationworkflow.Candidate `json:"candidate"`
 		PromptVersion string                        `json:"prompt_version"`
 		Attempt       int                           `json:"attempt"`
+		ReviewModel   string                        `json:"review_model"`
 	}{TenantID: strings.TrimSpace(tenantID), Candidate: candidate,
-		PromptVersion: strings.TrimSpace(promptVersion), Attempt: attempt})
+		PromptVersion: strings.TrimSpace(promptVersion), Attempt: attempt,
+		ReviewModel: strings.TrimSpace(reviewModel)})
 	digest := sha256.Sum256(payload)
 	return "review-run-" + hex.EncodeToString(digest[:16])
+}
+
+// reviewModelFromRun reports the model the run was created with. Runs created
+// before the model became part of the review identity carry no such value, and
+// they deliberately report no model at all: stamping the live configuration
+// onto a cached verdict is exactly the lie this field exists to prevent.
+func reviewModelFromRun(run agent.Run) string {
+	if run.Memory == nil {
+		return ""
+	}
+	value, _ := run.Memory[reviewModelMemoryKey].(string)
+	return strings.TrimSpace(value)
 }
 
 func reviewPage(arguments map[string]interface{}) (int, int, error) {
