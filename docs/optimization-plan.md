@@ -341,6 +341,8 @@ Alertmanager `IndexGenerationRepairExhausted` 自 13:52:48Z 起 `active`。
   这是回归测试当场抓出来的（`chunk doc-name_0000 lost the upload file name, got ""`）。
 - `esChunkDoc` 加字段、`mapChunkToESDoc` 填值、建索引 mapping 加 `file_name`
   （`type=text, analyzer=cjk, search_analyzer=cjk`，与 `content` 同 analyzer，否则查询侧与索引侧切词不一致）。
+  **注意存量索引拿不到 `search_analyzer`**：对已是 text 的字段追加它会被 ES 拒绝，所以回填只写了
+  `type` 与 `analyzer`；缺 `search_analyzer` 时查询与索引两侧都用 `cjk`，功能上等价（见 §4.6 实测结果）。
 - 存量数据用 `scripts/backfill-es-file-name.sh` 回填，**不重建索引**：`documents` 表里已有权威文件名，
   逐文档 `_update_by_query` 幂等写入即可，比重建 4684 条索引风险低得多。
   `scripts/migrate-es-cjk-index.sh` 的 mapping 也同步加上该字段，供未来重建时使用。
@@ -573,7 +575,7 @@ $ internal/retrieval/elastic_test.go:109  断言这两条子句「存在」
 
 | 判据 | 结果 |
 | --- | --- |
-| `GET documents_text_v2/_mapping` 含 `file_name` | 含，且 `type=text / analyzer=cjk / search_analyzer=cjk` |
+| `GET documents_text_v2/_mapping` 含 `file_name` | 含。**线上索引实际是 `{"type":"text","analyzer":"cjk"}`，没有 `search_analyzer`** —— 对已是 text 的字段追加 `search_analyzer` 会被 ES 拒绝（`analyzer on a text field cannot be changed`），所以回填脚本只发前两项。缺 `search_analyzer` 时查询侧与索引侧都用 `analyzer` 指定的 `cjk`，两边一致，功能上无缺口；`search_analyzer` 只出现在代码的建索引 mapping 与 `scripts/migrate-es-cjk-index.sh` 里，供未来重建时使用 |
 | `match_phrase(file_name,"员工手册")` 命中数 | **0 → 5** |
 | 回填 | `chunks_with_file_name = 0/4684 → 4684/4684`（119 份文档） |
 | 端到端反向验证（移除 `file_name` → 回填） | 线上 API 的 `backend_candidate_counts.elasticsearch` **3 → 0 → 3** |
