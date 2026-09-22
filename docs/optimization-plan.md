@@ -10,17 +10,18 @@
 
 ## 0. 结论摘要
 
-一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的十一处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效；第十处把前九处的教训合起来用了一遍 —— 缓存漏了一个输入，而那个输入恰好是裁决自己声称的出处；第十一处又回到了最开始的形状，只是这次没人回收的不是重试，而是记录本身 —— 一份被取代的裁决走不到「过期」这个状态，于是保留期对它永不生效；第十二处把这个形状搬到了备份脚本上 —— 完整性判定算出来了、印出来了，却传不到唯一能触发告警的那个值上。**
+一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的十三处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效；第十处把前九处的教训合起来用了一遍 —— 缓存漏了一个输入，而那个输入恰好是裁决自己声称的出处；第十一处又回到了最开始的形状，只是这次没人回收的不是重试，而是记录本身 —— 一份被取代的裁决走不到「过期」这个状态，于是保留期对它永不生效；第十二处把这个形状搬到了备份脚本上 —— 完整性判定算出来了、印出来了，却传不到唯一能触发告警的那个值上；第十三处把「要求」和「判定」分了家 —— 输出语言只写在 prompt 里、没有任何代码校验，而模型复述一遍就能顶掉确定性扫描的原话。**
 
-> **修订说明（2026-09-22）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了八轮
-> 缺陷排查，找到并修复了 12 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
+> **修订说明（2026-09-22）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了九轮
+> 缺陷排查，找到并修复了 13 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
 > 第 6 个属于「不一致的数据被当真源，而失败路径把证据回滚掉」，
 > 第 7 个属于「目录声明了从不存在的源对象，且平台没有任何核对机制」，
 > 第 8 个属于「失败状态没有被任何自动流程认领，也没有被任何诊断指标统计」，
 > 第 9 个属于「被声明、被加权、被测试过的检索信号，从未被写入索引」（§4.6），
 > 第 10 个属于「缓存键漏了一个输入，而那个输入正是裁决自己声称的出处」，
 > 第 11 个属于「生命周期只沿当前被引用的那一行走，被取代的记录再也无人回收」，
-> 第 12 个属于「判定存在，但传不到唯一能触发告警的那个值上」。
+> 第 12 个属于「判定存在，但传不到唯一能触发告警的那个值上」，
+> 第 13 个属于「要求写在文本里、判定不在代码里 —— 输出语言和确定性结论的措辞都因此失守」。
 > 原结论因此**不成立**，已按下表修订。
 > 同时 P0 的 §1.2（全栈无备份）已从「待做」变成「已做并在隔离栈上实测通过」。
 
@@ -30,7 +31,7 @@
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **没有 P0 挂着**。三项 P0 都已处理：ES 永久 yellow（§1.1.1）、全栈无备份（§1.2）、磁盘濒满（§1.1.2，可用空间 9.2GB → 63GB）。下一步按 §7 的执行顺序走 |
-| 已修复项 | 12 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
+| 已修复项 | 13 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
 
 ---
 
@@ -233,7 +234,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 ---
 
-### 1.3 已修复的 12 个缺陷（前五处同一形状：失败被固化，重试变成复读）
+### 1.3 已修复的 13 个缺陷（前五处同一形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -251,6 +252,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 | 10 | 预审裁决的缓存身份漏了模型，且 `report.model` 是每次读取时从当前配置**合成**的 | 改 `LLM_MODEL` 并重建 query-api 后连续三次调用返回**逐字相同**的 `review-run-5d0091b5ac8e12bf1c0a8bd3fd823c0a`，而 `review.model` 跟着配置走（`deepseek-v4-flash` → `deepseek-v4-flash-probe` → `deepseek-v4-flash`）；B 那次带着不存在的模型名却返回 `completed` 且 summary 逐字相同 —— 计划器根本没被调用（run 在 Redis 里跨容器重建持久） | 两处：`agentapi/review.go` 的 `reviewRunID` 哈希载荷只有 tenant / candidate / prompt 版本 / 尝试序号，**没有模型**；`agentapi/service.go:285` 每次读取都把 `report.Model` 盖成 `s.reviewModel`，而确定性报告（`review.go:787`）装配时根本没有 `Model` 字段 —— 于是每轮调用都重写已存储裁决的模型名，一份由 A 产出的裁决被读回时标成了 B | `78e3fb5` |
 | 11 | `release_center_reviews` 的保留期对「被取代的评审行」永不生效，表只增不减 | demo 租户 2 条 `failed` 预审行（`review-69e42208…`、`review-a26fb4d1…`）在 2026-09-21 08:17:56 写入、10 分钟后即被成功的预审取代；两条都不被任何 request 引用，`expire_due_reviews` 的可达性判定为 **false**。全表 27 行里有 4 行处于「无人引用」状态，而 `purgeable_now = 0` | 两处，都在 `releasecenter/store.go`：① `ExpireDueReviews` 通过 `JOIN release_center_requests q ON q.review_id=rv.review_id` 遍历评审行 —— 只认「请求当前指向的那一行」，被取代的行从此不可达；② `PurgeExpiredReviews` 只删 `status='expired'`。两者相乘：**在 TTL 到期前被取代的行永远走不到 `expired`，于是永远删不掉**，`RELEASE_REVIEW_RETENTION`（90 天）对它完全失效 | `5afc6b1` |
 | 12 | 备份脚本把完整性判定吞掉了：文档承诺 `REQUIRE_INTEGRITY=1 → exit 3`，实际恒为 0，于是备份自己的升级机制对「源已损坏」这个唯一要报的条件失明 | 部署环境实测 `REQUIRE_INTEGRITY=1 ./scripts/backup-stack.sh` **exit=0**，同时日志里印着 `ERROR integrity is degraded`；`state.json` 连续 6 次运行都是 `last_integrity=degraded` 配 `consecutive_failures=0`，`ALERT.txt` 从未产生 | 两处，都在 `scripts/backup-stack.sh`：① 清单的退出码被 `manifest_code=$?` 接住后**只用于一行日志**（原 `if manifest_code -eq 3; then log ERROR`）；② 最终退出阶梯只由 `FAILURES` 决定（`if FAILURES > 0: exit 2; exit 0`），而那条路径从不递增它。全脚本**没有任何一处 `exit 3`** —— 文档承诺的码不可达。而 `record_state` 只按退出码计数、`consecutive_failures>=2` 才写 `ALERT.txt`，所以判定永远传不到告警 | `4668d92` |
+| 13 | 预审裁决的输出语言不由系统决定，且把一句话写成了一整段；模型的复述还能顶掉确定性扫描的原话 | 界面上同一张卡片里，`summary` 是 366 字符英文段落、`kind_label` 是 78 字符英文，而周围标签全是中文；同一个 `autonomous-review-v2` 下，`review-91847c6aa8e77c605020b37e2099f6d2` 却产出了中文 summary —— 语言只是模型当次的随机选择 | 三处：① `agentapi/review.go` 的 `reviewPlannerSystemPrompt` 通篇英文，`summary`/`finding.summary`/`kind_label` 的语言因此无人约束；② 同文件 `validateAutonomousReview` 合并 finding 时**只在模型给的严重度更低时**才用确定性那条，两边同为 `medium` 就保留模型的英文改写 —— 而 prompt 里写着 `Copy deterministic scan findings exactly`，没有任何代码校验它；③ 前端 `严重度：{finding.severity}` 直出枚举、未映射的 code 原样打印 | `5c04c99` |
 
 **缺陷 6 的报错周期，实测与直觉相反**：对账每 5 分钟跑一轮，但**报错每 30 分钟才出现一次**。
 原因在租约：`ClaimReconciliation` 把 `reconcile_lease_until` 推到 `now()+INDEX_RECONCILE_LEASE`（30m）
@@ -292,7 +294,7 @@ ingestion 事件去重新物化对象，而没有对象可重放时它只能报�
 `demo-doc-payroll.md` 395 B，`documents.file_size` 与观测字节数**逐一相等**；
 缺失计数从 119 降到 116（那 3 份是唯一能确定性重建的）。剩余 116 份见 §4.7。
 
-**缺陷 8 是前七处的反面，也是十一处里唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
+**缺陷 8 是前七处的反面，也是这十三处里唯一一处「不是没人修，是根本没有能修的地方」**：前七处都有代码
 在错误的时刻做了错误的事，这一处是**代码根本不存在**。`ClaimReconciliation` 只认领
 `state='active'`（这条本身是刻意的：只有 active 才有活投影可跨后端比对），而承载那份生成唯一
 一次投递的 `ingestion_outbox` 行早已 `published_at` 非空，relay 也不会再取它。于是这批生成
@@ -555,6 +557,120 @@ ALERT.txt : backup has failed 2 times in a row; last run 2026-09-22T03:33:04Z
 **刻意没有改的事**：**没有让 cron 打开 `REQUIRE_INTEGRITY`**。§4.7 的 116 份缺失是**已接受的残留**，
 把它设成致命会让 `ALERT.txt` 永久点亮、把信号变成噪声。这次改变的是「这个开关对想要严格策略的
 运维者真的按它说的生效」，不是改变日常策略。
+
+---
+
+### 缺陷 13：预审裁决的语言不由系统决定，而且把一句话写成了一整段
+
+这条来自**用户在演示界面上直接看到的东西**：`doc-1788958054422977825` 的预审卡片里，
+四周的中文标签中间夹着一整段英文和两个英文值。
+
+```
+Agent 预审 … 预审状态 已完成  风险评估 中风险  Agent 建议 需补充信息
+Candidate chunk doc-1788958054422977825_0000 contains only a test/placeholder marker
+string ('受管替换闭环第二版…门禁口令是橙门') rather than an approved HR, administrative,
+or business regulation for the production knowledge space. Knowledge-fitness assessment
+recorded space_fit=mismatch and knowledge_usable=not_knowledge, so the material cannot
+be published as formal knowledge.
+适不适合这个空间 不适合   能不能当正式知识 不能当正式知识
+材料看起来像 Test/placeholder marker string with a gate passphrase; not an approved HR, admin
+```
+
+**三个英文字段，三个不同来源**（`review-6055e3dd7aa52258`，`prompt_version=autonomous-review-v2`）：
+
+| 字段 | 值 | 来源 |
+| --- | --- | --- |
+| `summary` | 366 字符的英文段落 | **模型自由文本** —— `reviewPlannerSystemPrompt` 通篇是英文写的 |
+| `kind_label` | `Test/placeholder marker string with a gate passphrase; …` | **模型自由文本** |
+| `findings[].severity` | `medium` | 系统枚举，前端 `严重度：{finding.severity}` 原样打印 |
+
+**语言从来不是要求，只是模型当次的随机选择。** 同一个 `autonomous-review-v2`、
+同一个 `deepseek-v4-flash`，对另一份中文文档产出的却是中文裁决：
+
+```
+review-91847c6aa8e77c605020b37e2099f6d2  demo-doc-onboarding
+summary = "演示入职文档内容完整、无敏感数据、无提示注入风险；但知识适配评估将 space_fit
+          判定为 uncertain（无法确认材料是否适合当前演示知识空间），按规则该状态不得发布，
+          故需人工确认材料归属后再决定是否发布。"
+```
+
+两条裁决躺在同一张表、同一个 prompt 版本下，界面读起来一英一中 —— 取决于模型那一次怎么选。
+
+**顺带查出一处更安静的问题：模型的复述顶掉了确定性扫描的原话。**
+`validateAutonomousReview` 合并 finding 时按 `code + evidence_ref` 去重，
+但**只在模型给的严重度更低时**才用确定性的那一条：
+
+```go
+if reviewSeverityRank(current.Severity) < reviewSeverityRank(deterministicFinding.Severity) {
+    filtered[i] = deterministicFinding   // 只在更严重时才替换
+}
+```
+
+两边都是 `medium` 时不替换 —— 于是模型写的 `"The material does not belong in this knowledge
+space"` 留了下来，而 `fitness.go` 里那句权威的 `"材料不适合进入当前知识空间"` 被丢掉。
+prompt 里明明写着 `Copy deterministic scan findings exactly`，但**没有任何代码校验它**。
+这与前 12 个缺陷是同一个形状：**要求写在文本里，判定不在代码里**。
+
+**修复三处**：
+
+1. **prompt 中文化 + 长度上限**（`agentapi/review.go`）。`reviewPlannerSystemPrompt` 改为中文，
+   显式写出「summary、每条 finding 的 summary、kind_label 必须用简体中文」，
+   并给出长度上限：`summary ≤ 40 汉字`、`finding.summary ≤ 20 汉字`、`kind_label` 为中文短语。
+   枚举值（`status`/`recommendation`/`risk_level`/`severity`/`code`/`space_fit`/`knowledge_usable`）
+   保持英文 —— 它们是线上格式，不是给人读的文字。
+   版本号随之从 `autonomous-review-v2` 升到 `v3`，这也顺带作废了缓存的 v2 裁决。
+2. **确定性语言归一**（新增 `normalizeReviewLanguage`）。prompt 只是偏好，归一才是要求：
+   英文 `kind_label` 直接丢弃（它不参与任何判定，界面回落为「未标注」）、
+   英文 `summary` 用报告自己的枚举重建（`reviewSummaryFor`）、
+   finding 的英文 summary 换成该 code 的中文名（未知 code 回落「预审发现问题，需人工确认」）。
+   判定「是不是英文」用的是**功能词**而不是 ASCII 词数 —— 中文句子里本来就允许出现
+   `space_fit`、`uncertain`、`OpenTelemetry` 这类标识符，只数 ASCII 词会把该保留的文本误伤。
+3. **确定性文本优先**（合并逻辑）。同 `code + evidence_ref` 时保留扫描自己的措辞，
+   模型只能抬高严重度，不能改写结论。
+
+前端补 `severityLabel`（`low/medium/high/critical` → 低/中/高/严重）、
+`FINDING_LABELS` 补 `insufficient_evidence`、未映射的 code 不再原样打印（回落「其他问题」）。
+
+**还有一处必须同步改：泄露检测的 marker 会随 prompt 一起失效。**
+`scripts/release-center-real-model-scenarios-acceptance.py` 的 `PROMPT_LEAK_MARKERS`
+第一项是 `"read-only enterprise document pre-review"` —— **一句英文 prompt 的原文**。
+prompt 改成中文后，这个 marker 再也不可能出现在 summary 里，于是这项检查**对任何输入都通过**，
+包括真的把 prompt 吐出来的那种。已补两个中文 marker，并加脚本双向断言：
+新的中文 marker 命中当前 prompt、旧的两个英文 marker 确实已失效
+（后者若成立，说明 prompt 根本没换语言，这次改动就没意义）。
+
+**线上复现与修复后断言**（`default` 租户 / `doc-1788958054422977825`）：
+
+修复前 `review-6055e3dd7aa52258`（v2）：`summary` 366 字符英文段落、`kind_label` 78 字符英文。
+
+走**系统自己的重审路径**（把该裁决的 TTL 移到过去 → 采集器 `ExpireDueReviews` 标 expired →
+下一个 tick `ListReviewJobs` 重新拾取 → `StartManagedReview` 真实调用模型），
+得到 `review-c9c0fc21e50d0716`（v3）：
+
+| 字段 | 值 |
+| --- | --- |
+| `prompt_version` | `autonomous-review-v3` |
+| `summary` | `材料疑似测试占位或草稿骨架，不完整且与知识空间不匹配，不能发布。`（32 字符，模型自己写的中文，没走归一兜底） |
+| `kind_label` | `疑似测试占位或草稿骨架，非正式制度内容` |
+| `findings` | `space_mismatch` /「材料不适合进入当前知识空间」；`incomplete_knowledge` /「材料不完整，无法作为正式知识发布」 |
+
+`summary` 从 366 字符降到 32，findings 用的是确定性原话 —— 两条诉求都落地了。
+
+**反向验证**（`.workbuddy-ai/tmp/verify_review_language.py`，在部署环境上跑）：
+还原语言归一的函数体 → `TestNormalizeReviewLanguageRewritesEnglishProse` 与
+`TestValidateAutonomousReviewKeepsDeterministicWordingOverPlannerParaphrase` 失败；
+还原合并逻辑 → 合并测试失败；两次还原期间未受影响的 `TestLooksLikeEnglishProseThresholds`
+始终通过（这证明失败来自移除，而不是环境本身坏了）。恢复后文件哈希与快照逐字节一致。
+
+**一处必须记下的耦合**：`TestReviewRunIDSeparatesReviewers` 把 `"autonomous-review-v3"`
+**硬编码**成「另一个版本」，用来断言「版本不同则 run id 不同」。
+版本号升到 v3 的那天，这条断言会反转成「同一个版本必须 fork run id」。
+已改为从常量派生（`reviewPromptVersion + "-next"`），以后升版本不必再动测试。
+
+**没做**：没有改预审失败路径的 `summary`（`service.go` 里 `Summary: err.Error()`，
+把 Go 的英文错误信息直接当摘要）。那是诊断信息、只在 `status=failed` 时出现，
+用户这次反馈的是正常裁决的输出；改它要动多处既有断言，还会把内部错误原因从界面上抹掉。
+**记在这里，等有明确需求再动。**
 
 ---
 
@@ -918,24 +1034,25 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 8 步（已完成） §1.3 缺陷 10：预审裁决的缓存身份与模型溯源
 第 9 步（已完成） §1.3 缺陷 11：被取代的预审行不受保留期约束
 第 10 步（已完成） §1.3 缺陷 12：备份脚本把完整性判定吞掉（`REQUIRE_INTEGRITY` 不生效）
-第 11 步          2.1 Go 工具链权限修复
-第 12 步          3.  状态文档三源归一 + 一致性契约测试
-第 13 步          2.2 / 2.3 配置一致性修复 + 契约测试
-第 14 步          4.1 邀请式自助开户（需你先确认产品口径）
-第 15 步          5.1 query/service.go 机械拆分
+第 11 步（已完成） §1.3 缺陷 13：预审裁决的语言与长度（prompt 中文化 + 确定性归一 + 确定性文本优先）
+第 12 步          2.1 Go 工具链权限修复
+第 13 步          3.  状态文档三源归一 + 一致性契约测试
+第 14 步          2.2 / 2.3 配置一致性修复 + 契约测试
+第 15 步          4.1 邀请式自助开户（需你先确认产品口径）
+第 16 步          5.1 query/service.go 机械拆分
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
-「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–10 步是
+「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–11 步是
 「不做则故障永远静默」：这几处缺陷的共同点是自己不报错、还让看板变绿（见 §1.3）。
-第 11 步是「不做则每次改动都在踩坑」；第 12 步是「不做则后面所有状态判断都不可信」；
-第 13 步成本最低收益明确；第 14 步需要你的产品决策；第 15 步是纯收益优化，随时可做。
+第 12 步是「不做则每次改动都在踩坑」；第 13 步是「不做则后面所有状态判断都不可信」；
+第 14 步成本最低收益明确；第 15 步需要你的产品决策；第 16 步是纯收益优化，随时可做。
 
 ---
 
 ## 8. 边界与未做的事（避免误解）
 
-- **代码改动限于两处**：§1.3 列出的 12 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
+- **代码改动限于两处**：§1.3 列出的 13 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
   （含补上的 `node-exporter`）。其余章节仍是调查结论，未据此改代码。
 - **§1.2 不只是文档**：`scripts/backup-stack.sh`、`scripts/restore-stack.sh`、3 个单职责助手脚本、
   `docker-compose.restore.yml`、16 个契约测试都已提交，并在隔离项目 `ai-etl-restore` 上真跑过
@@ -990,3 +1107,15 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 - **缺陷 12 的验证全部走临时 `BACKUP_ROOT`**，部署环境的 `~/backups/ai-etl-platform/` 未被污染：
   `state.json` 仍是 `consecutive_failures=0`，且没有 `ALERT.txt`。为复现而多跑的那一次备份
   落在同一个保留窗口内（7 份上限，未触发轮转）。
+- **缺陷 13 不会改写已经存下来的 v2 裁决**。语言归一发生在**装配报告的那一刻**，不是读取的时候：
+  `review-6055e3dd7aa52258` 那一行的 366 字符英文原文仍在表里，只是它的 `prompt_version`
+  与当前代码不再匹配。界面显示的是请求当前指向的那一行，重审之后请求已指向 v3 的新行；
+  旧行会按 `RELEASE_REVIEW_RETENTION`（90 天）自然过期 —— 走的正是缺陷 11 修好的那条路径。
+- **缺陷 13 的线上验证改了 `default` 租户一行数据的 `expires_at`**。为了让采集器走它自己的重审
+  路径（`ExpireDueReviews` → `ListReviewJobs` → `StartManagedReview`），把
+  `review-6055e3dd7aa52258` 的 TTL 从 `2026-09-23T12:47:51Z` 移到「一小时前」—— 也就是时钟明天
+  会到达的同一个状态，其余列未动，其他行未动。这样做是因为演示环境的 admin 凭据不可用，
+  而采集器是自动重审的真实入口，比绕过它直接调 API 更接近线上行为。
+- **缺陷 13 没有动预审失败路径的 `summary`**（`service.go` 的 `Summary: err.Error()`，
+  把 Go 的英文错误原文当摘要）。那是只在 `status=failed` 时出现的诊断信息，而用户反馈的是
+  正常裁决的输出；改它要动多处既有断言，还会把内部错误原因从界面上抹掉。**记录在案，未做。**
