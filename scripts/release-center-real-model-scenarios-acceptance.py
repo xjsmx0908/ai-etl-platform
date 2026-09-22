@@ -37,7 +37,19 @@ REQUIRED_TOOLS = (
 )
 HANDOFF_STATES = {"needs_info", "manual_exception"}
 HANDOFF_RECOMMENDATIONS = {"needs_info", "manual_review", "reject"}
-PROMPT_LEAK_MARKERS = ("read-only enterprise document pre-review", "registered tools json", "<think>")
+# The first marker is a phrase taken from the prompt itself, which makes it
+# stale the moment the prompt changes: once the review prompt was rewritten in
+# Chinese for v3, "read-only enterprise document pre-review" could never appear
+# in a summary again, so the leak check could no longer fire. A check that cannot
+# fire reads exactly like a passing one, so every prompt generation keeps its own
+# marker here.
+PROMPT_LEAK_MARKERS = (
+    "read-only enterprise document pre-review",
+    "registered tools json",
+    "只读的企业文档预审",
+    "输出语言：summary",
+    "<think>",
+)
 
 SCENARIOS = (
     {
