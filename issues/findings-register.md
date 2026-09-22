@@ -1,9 +1,11 @@
 # 产品体验问题登记册
 
-最后核验：2026-09-11。
+最后核验：2026-09-22。
 
 这是产品体验验收的整改主文档。新问题只在这里建单。
+**UAT 条目的状态只在本文件维护**；其他文档只链接，不复制条目状态，也不写任何计数快照。
 验收章程和页面矩阵见 [`../docs/product-experience-acceptance.md`](../docs/product-experience-acceptance.md)。
+项目级事项状态见 [`../docs/backlog.md`](../docs/backlog.md)。
 历史口头问题的原文已写入各条「原始反馈」，不再另存文件。
 
 ## 状态
@@ -43,12 +45,14 @@
 | UAT-014 | 功能缺陷 | S2 | `/documents/[id]` `/qa` | admin | 已修复 | 受管「上传新版本」发布后问答仍引用旧切块 | 2026-09-09 复验：第二管理员批准后问答 120 元，详情不再列出旧切块 |
 | UAT-015 | 功能缺陷 | S2 | `/release-center` | admin | 已修复 | 知识发布中心间歇出现红色 Fail to fetch | 2026-09-11 复验：静默轮询无红字；手动刷新显示「同步暂时失败，请稍后重试」 |
 | UAT-016 | 美观 UX | S3 | 全站工作台 | 全部 | 已修复 | 页面语言和壳层与产品稿不一致 | 对照产品稿与 2026-09-11 现网截图 |
-| UAT-017 | 美观 UX | S3 | `/release-center` | admin | 开放 | 发布中心仍显示空间 raw id 与英文权限 | 2026-09-11 现网复验：空间 production / 权限 internal |
-| UAT-018 | 美观 UX | S3 | `/audit` | admin | 开放 | 审计操作者列显示 UUID 而不是用户名 | 2026-09-11 现网复验 |
-| UAT-019 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 开放 | xls/pptx 类型显示为 FILE | 2026-09-11 现网复验 |
-| UAT-020 | 美观 UX | S3 | `/login` | 全部 | 开放 | 登录品牌文案与产品稿不一致 | 2026-09-11 现网复验：仍写可量化 / 语义检索 |
+| UAT-017 | 美观 UX | S3 | `/release-center` | admin | 已修复 | 发布中心仍显示空间 raw id 与英文权限 | 2026-09-11 现网复验：空间 production / 权限 internal |
+| UAT-018 | 美观 UX | S3 | `/audit` | admin | 已修复 | 审计操作者列显示 UUID 而不是用户名 | 2026-09-11 现网复验 |
+| UAT-019 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 已修复 | xls/pptx 类型显示为 FILE | 2026-09-11 现网复验 |
+| UAT-020 | 美观 UX | S3 | `/login` | 全部 | 已修复 | 登录品牌文案与产品稿不一致 | 2026-09-11 现网复验：仍写可量化 / 语义检索 |
 
-2026-09-09 已完成 D1 复验。旧九条不再处于「待复验」。UAT-001～016 已关闭。UAT-017～020 为 2026-09-11 现网观感复验开放项。
+2026-09-09 已完成 D1 复验，旧九条不再处于「待复验」。UAT-001～016 于 2026-09-09 至 2026-09-11 关闭。UAT-017～020 于 2026-09-22 真实页面复验关闭，逐条证据见各条「复验」。
+
+2026-09-22 起，真实页面复验改用 `scripts/web-page-probe.cjs`（headless Chrome + DevTools 协议）：注入 `px-admin` 会话后抓取页面渲染文本，并强制 1440×900 视口。目的是不让「代码里已经改了」被当成「页面已经通过」——headless 默认 800×600 会把 `lg:` 面板整块隐藏，`innerText` 里读不到，只跑代码会得出相反的结论。
 
 续跑完成：不重跑 D0–D4。UAT-013 已修复并复验。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
 
@@ -271,7 +275,7 @@
 
 - 类型：美观 UX
 - 级别：S3
-- 状态：开放
+- 状态：已修复
 - 页面：`/release-center`
 - 角色：admin
 - 复现：2026-09-11 用 `px-admin` 打开知识发布中心。
@@ -280,12 +284,14 @@
 - 证据：`artifacts/product-experience-acceptance/2026-09-11-ux-retest/screenshots/release.png`
 - 归属：前端
 - 建议：发布中心列表/详情复用空间名与权限中文标签，不改审批/预审逻辑。
+- 修复：发布中心列表与详情改用 `spaceLabel` / `permissionLabel`（`web/lib/docDisplay.ts`）。
+- 复验：2026-09-22，`px-admin` 打开 `http://localhost:3100/release-center`。列表显示「生产库 · 1 项阻塞」「演示知识库 · 3 项阻塞」；点开 `gap-managed-d1.txt` 后详情显示「空间：生产库」「权限：内部」。全页无 `production` / `enterprise-demo` / `internal`。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/`。
 
 ### UAT-018 审计操作者显示 UUID
 
 - 类型：美观 UX
 - 级别：S3
-- 状态：开放
+- 状态：已修复
 - 页面：`/audit`
 - 角色：admin
 - 复现：打开审计日志第一页。
@@ -294,12 +300,14 @@
 - 证据：`artifacts/product-experience-acceptance/2026-09-11-ux-retest/screenshots/audit.png`
 - 归属：前端
 - 建议：优先渲染 username，UUID 放到详情展开。
+- 修复：操作者列改用 `actorDisplay`（`web/lib/docDisplay.ts`），命中用户列表时渲染 username，未命中时截断 UUID 并保留完整值作 `title`。
+- 复验：2026-09-22，`px-admin` 打开 `/audit`（共 729 条）。操作者列显示 `admin`、`px-admin`、`interviewer`、`eval-readonly`、`user` 等用户名加角色徽章；登录失败行显示 `—`；全页无裸 UUID。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/`。
 
 ### UAT-019 表格把 xls/pptx 显示成 FILE
 
 - 类型：美观 UX
 - 级别：S3
-- 状态：开放
+- 状态：已修复
 - 页面：`/documents`、`/documents/[id]`
 - 角色：全部
 - 复现：文档列表第一页有 `.xls` / `.pptx`。
@@ -308,12 +316,14 @@
 - 证据：`artifacts/product-experience-acceptance/2026-09-11-ux-retest/screenshots/documents.png`
 - 归属：前端
 - 建议：`getFileTypeMeta` 补 xls/xlsx/pptx。
+- 修复：`getFileTypeMeta` 的类型表补齐 `xls` / `xlsx` / `xlsm` / `ppt` / `pptx` / `pptm`（`web/lib/docDisplay.ts`），`FILE` 只作兜底。
+- 复验：2026-09-22，`px-admin` 打开 `/documents`（共 116 篇）。`个人所得税专项附加扣除信息表.xls` 与 `附件一_在职人员年休假信息收集表(1).xls` 徽章为 `XLS`，`1_财务制度培训2019.10.28.pptx` 为 `PPTX`，`阿里商旅试行管理通知.doc` 为 `DOC`，无 `FILE` 兜底。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/`。
 
 ### UAT-020 登录品牌文案与产品稿不一致
 
 - 类型：美观 UX
 - 级别：S3
-- 状态：开放
+- 状态：已修复
 - 页面：`/login`
 - 角色：全部
 - 复现：打开登录页。
@@ -322,12 +332,15 @@
 - 证据：`artifacts/product-experience-acceptance/2026-09-11-ux-retest/screenshots/login.png`
 - 归属：前端
 - 建议：只改登录品牌区文案，不改认证流程。
+- 修复：品牌区标题与两条卖点改为产品稿文案（`web/app/login/page.tsx`）。
+- 复验：2026-09-22，1440×900 打开 `/login`。品牌区为「让文档沉淀为 可检索、可问答、可发布的知识资产」，卖点为「多路召回 · 只回答已发布知识」「权限隔离 · 引用可追溯」；全页无「可量化的知识资产」「语义检索」「忠实度校验」。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/`。
 
 ## 本轮未建单的缺口
 
 - 机密双审已于 2026-09-09-fix 补测通过，不再作为缺口。
 - 文档退役后问答、管理员新建用户、个人空间上传新版本已于 2026-09-09-gap 补测通过。
 - 受管替换版本：旧发布在换版过程中仍可问；新版本独立审批后切换，UAT-014 已复验关闭。
+- 2026-09-22 真实页面复验只覆盖 UAT-017～020 对应的登录、文档、审计、发布中心四页。其余页面本次未走，不代表已通过。
 
 ## 新增问题模板
 

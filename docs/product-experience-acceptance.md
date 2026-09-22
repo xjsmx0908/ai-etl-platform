@@ -1,6 +1,6 @@
 # 产品体验验收规范
 
-最后核验：2026-09-09。
+最后核验：2026-09-22。
 
 这是面向真实 Web 工作台的体验验收门禁，覆盖页面美观、使用逻辑和功能缺陷。
 它不替代发布中心隔离栈、治理脚本或企业身份 staging；那些专项矩阵仍然
@@ -8,6 +8,10 @@
 [`governance-acceptance.md`](governance-acceptance.md) 和
 [`enterprise-identity-production-acceptance.md`](enterprise-identity-production-acceptance.md)
 为准。
+
+本文件是**章程**：只写要求、判据和执行节奏，不写条目状态。逐条状态与证据见
+[`../issues/findings-register.md`](../issues/findings-register.md)，项目级事项状态见
+[`backlog.md`](backlog.md)。下文的「执行记录」只作为带日期的历史，不代表当前状态。
 
 发现问题记入 [`../issues/findings-register.md`](../issues/findings-register.md)。
 
@@ -19,7 +23,7 @@
 完成标准：
 
 - 每个角色路径和每个页面都有通过/失败结论。
-- 登记册中 UAT-001～UAT-009 全部在真实页面复验。
+- 登记册中每个 UAT 条目都有真实页面复验记录（复验日期 + 证据路径），不存在长期停在「待复验」的条目。
 - 新问题都有类型、严重级别、复现步骤和证据路径。
 - 验收过程中不改产品代码；S1+ 才回写 [`backlog.md`](backlog.md)。
 
@@ -174,20 +178,22 @@
 2. 只读/普通/管理员主路径无 S0。
 3. 问答不引用 draft、retired、未授权空间或未发布受管文档。
 4. 管理员能从发布中心完成至少一次普通单审；机密路径能看出必须双人。
-5. 旧九条均不再处于「待复验」。
+5. 登记册中不存在停在「待复验」的条目。
 6. 证据目录存在，且不含密钥和文档正文。
 
 未通过时：保持登记册开放，不把专项脚本绿报当作体验验收通过。
 
-2026-09-09 本轮判定：**通过**（登记册开放项已清空）。S1 已修复。
+2026-09-09 本轮判定：**通过**。S1 已修复。
 
 - 矩阵 11 项已有结论；PX-02/PX-06/PX-09 于同日复验改为通过。
 - 无 S0；原 S1（UAT-010）已修复：只读可问「赴港流程」。
 - 机密双审页面证据已补：`confidential-dual-approval.txt` 2/2 已发布。
-- 无开放 UAT。UAT-013 已于同日修复：错密登录显示「用户名或密码错误」。UAT-007 已于同日修复：`/evals/latest.json` 200，`/quality` 展示离线评测与 Recall@1 55%。UAT-011 已于同日修复：问答 SSE 在 `event: done` 后结束，页面 3642ms 出现「回答已完成」。UAT-012 已于同日修复：只读上传按钮/文件选择禁用，并说明无权限。
+- UAT-013 已于同日修复：错密登录显示「用户名或密码错误」。UAT-007 已于同日修复：`/evals/latest.json` 200，`/quality` 展示离线评测与 Recall@1 55%。UAT-011 已于同日修复：问答 SSE 在 `event: done` 后结束，页面 3642ms 出现「回答已完成」。UAT-012 已于同日修复：只读上传按钮/文件选择禁用，并说明无权限。同日关闭项见登记册逐条「复验」。
 - 复验证据在 `artifacts/product-experience-acceptance/2026-09-09-fix/`（Git 忽略）。
 
 2026-09-09-gap 覆盖补测：个人空间上传新版本与退役问答通过；管理员新建用户可登录。受管辅助闭环前半（旧发布在换版过程中仍可问）成立。后半（新版本独立审批后切换）已于同日修复：问答切到 120 元，详情不再列出旧切块。UAT-014 关闭。证据 `artifacts/product-experience-acceptance/2026-09-09-gap/`。
+
+2026-09-22 复验 UAT-017～020：`px-admin` 在重建后的 `:3100` 上走真实页面，四项全部通过并关闭（发布中心空间/权限中文、审计操作者用户名、xls/pptx 类型徽章、登录品牌文案）。本轮只做复验，未改产品代码。手段与证据见登记册「最后核验」段与 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/`。本次只覆盖这四个页面，其余页面未走，不代表已通过。
 
 ## 证据
 
@@ -228,3 +234,4 @@
 | 2026-09-09-gap | 2026-09-09 | Codex | 覆盖缺口补测 | 个人换版/退役/新建用户通过。受管换版：旧版过程中仍可问；发布后旧切块残留已修复，UAT-014 关闭 |
 | 2026-09-11-uat015 | 2026-09-11 | Codex | UAT-015 复验 | `px-admin` 打开 `/release-center`：静默轮询无 `Fail to fetch`；手动刷新显示「同步暂时失败，请稍后重试」，恢复后红字消失。P-UAT-3 关闭 |
 | 2026-09-11-ux-retest | 2026-09-11 | Codex | 壳层上线后现网观感 | `px-admin` 打开重建后的 `:3100`。UAT-016 现网确认通过。新开 UAT-017～020（发布中心 ID、审计 UUID、FILE 类型、登录文案）。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-11-ux-retest/` |
+| 2026-09-22-uat017-020 | 2026-09-22 | 阿简 | UAT-017～020 真实页面复验 | `px-admin`（default 租户）打开重建后的 `:3100`。四项全部通过并关闭：发布中心显示「生产库/演示知识库」「权限：内部」；审计操作者为用户名；`.xls`→`XLS`、`.pptx`→`PPTX`；登录品牌区为「可检索、可问答、可发布的知识资产」。手段 `scripts/web-page-probe.cjs`（headless Chrome，1440×900）。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/` |

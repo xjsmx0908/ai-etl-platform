@@ -1052,37 +1052,58 @@ compose 用的是 `_FILE` 形式（`EnvSecret` 先读 `KEY` 再读 `KEY_FILE`）
 
 ---
 
-## 3. P1 —— 状态文档三源冲突（这是真正的「设计问题」）
+## 3. P1 —— 状态文档三源冲突（已修复，见本轮提交）
 
-**证据**
+**证据**（下表是修复前的状态）
 
 | 文档 | 最后核验 | 它对状态的说法 | 实测事实 |
 | --- | --- | --- | --- |
 | `issues/findings-register.md` | 2026-09-11 | UAT-017/018/019/020 **开放** | 四项均已修复 |
 | `docs/backlog.md` | 2026-09-12 | P-UAT-1「登记册开放项已清空」 | 与登记册直接矛盾 |
 | `CONTINUATION.md` | 2026-09-09 | §4「UAT-001～009 仍待真实页面复验」 | 这九项 09-09 就已全部关闭 |
+| `docs/product-experience-acceptance.md` | 2026-09-09 | 「2026-09-09 本轮判定：通过」「无开放 UAT」 | 09-11 又新开四条，这两句当场过期 |
 
-**实测证据**（在**运行中的容器**内检查部署产物，不是看源码）：
+**两处要更正上一版记录**
 
-```
-docker exec ai-etl-platform-web-1 grep -rl 生产库 /app/.next/static        → 命中（UAT-017 空间中文）
-docker exec ai-etl-platform-web-1 grep -rl PPTX  /app/.next/static        → 命中（UAT-019 Office 类型）
-docker exec ai-etl-platform-web-1 grep -rl XLSX  /app/.next/static        → 命中
-docker exec ai-etl-platform-web-1 grep -rl 可检索、可问答、可发布的知识资产 /app/.next  → 命中（UAT-020 新文案）
-docker exec ai-etl-platform-web-1 grep -rl 可量化的知识资产 /app/.next    → 空（旧文案已清除）
-```
+1. 原文说「三份文档各自都声明自己是状态源 —— `findings-register.md` 说『新问题只在这里建单』，`CONTINUATION.md` 说『以本文件为准』」。全仓 `grep` 证实**只有 `backlog.md` 声明了**「当前状态以本文件为准」，另外两处是「新问题只在这里建单」和「更新时间」，都不是状态源声明。所以这不是「三方都自称权威」的治理问题，而是**同一份事实被抄成了四份快照**。
+2. 原文**漏了第四处**：`docs/product-experience-acceptance.md` 行 22 / 177 / 182 / 187 各有一条会过期的状态断言。
 
-**这才是根问题**：三份文档**各自都声明自己是状态源** —— `backlog.md` 说「当前状态以本文件为准」，`findings-register.md` 说「新问题只在这里建单」，`CONTINUATION.md` 说「以本文件为准」。三者互相引用又互相矛盾。历史代价已经发生过：`LEARNINGS.codex.md` 里「续接文档口径对齐」「修复过时上下文材料」这类条目反复出现，都是在擦这个屁股。
+**根问题**：派生状态被复制。条目状态只有登记册有状态列、有证据，其余三处抄的是快照 —— 任何一次新增建单都会让它们过期，而且不会报错，症状是**读的人得出相反的结论**：看 backlog 以为体验验收清完了，看登记册以为还有四条开放，看 CONTINUATION 以为连旧九条都没复验。
 
 **怎么做**
 
-1. **确立单一事实源**：`docs/backlog.md` 作为唯一状态源；`findings-register.md` 只登记缺陷明细，不再自行声明总体状态；`CONTINUATION.md` 降级为「上次中断点 + 运行环境」，删掉所有状态断言。
-2. **加一致性契约测试**：断言 `findings-register.md` 中「开放」条目数 == backlog 中对应未关闭条目数。不一致就红。这是把「文档纪律」变成 CI 门禁，而不是靠人记得更新。
-3. **本轮先消除现存矛盾**：把 UAT-017～020 标记为「已修复（产物层验证）」，并在 `CONTINUATION.md §4` 删除已失效条目。
+1. **每个事实只留一个出处**：
+   - `issues/findings-register.md` —— UAT **逐条**状态的唯一出处（状态列 + 复验证据）。
+   - `docs/backlog.md` —— 项目级事项（`P-*`）状态的唯一出处；涉及 UAT 只链接，不复制计数。
+   - `docs/product-experience-acceptance.md` —— 章程，只写要求与判据；「执行记录」明确标为带日期的历史。
+   - `CONTINUATION.md` —— 续接点与运行环境，不写任何 UAT 状态。
 
-**验收判据**：三份文档对同一事实的说法一致；新增的一致性测试通过；`CONTINUATION.md` 里不再出现「UAT-xxx 待复验」这类会过期的状态断言。
+   **这里偏离了原文写的「以 backlog 为唯一状态源」**：逐条状态只能放在有状态列的那一份里，硬挪到 backlog 会变成双写，反而制造新的漂移源。
+2. **加一致性契约测试** `scripts/tests/test_experience_status_consistency.py`（16 条）：
+   - 7 条盯文档：登记册索引行与明细段一致、状态取值在图例内、其余三份文档不含状态快照、CONTINUATION 不出现「UAT 编号 + 状态词」、章程矩阵与登记册一致、backlog 的逐条结案声明与登记册一致。
+   - 9 条是**判据自检**：禁用词表被删窄、解析器不跳代码块、过期断言换措辞 —— 这三类判据写错时的症状都是「永远绿」，只跑正例发现不了。
+3. **顺带把 UAT-017～020 做成真实页面复验**，不是产物层验证。
 
-**一个诚实的限制**：我对 UAT-017～020 的验证是**产物层**的（部署包里确有新代码、旧文案已清除），**不是真实页面复验**。项目自己的章程 `docs/product-experience-acceptance.md` 明确要求「不能用隔离栈绿报代替真实页面结论」。所以这四项应标为「已修复，待真实页面复验」，而不是「已关闭」。
+**真实页面复验**（`scripts/web-page-probe.cjs`，headless Chrome + DevTools 协议）
+
+```
+node scripts/web-page-probe.cjs --base http://127.0.0.1:3100 \
+  --cookie "ai_etl_token=<现签 token>" \
+  --url /documents --url /audit --url /release-center --wait 9000
+```
+
+| ID | 实际渲染 | 结论 |
+| --- | --- | --- |
+| UAT-017 | 列表「生产库 · 1 项阻塞」；详情「空间：生产库」「权限：内部」 | 通过 |
+| UAT-018 | 操作者列 `admin` / `px-admin` / `interviewer` / `eval-readonly` / `user`，无裸 UUID | 通过 |
+| UAT-019 | `.xls`→`XLS`、`.pptx`→`PPTX`、`.doc`→`DOC` | 通过 |
+| UAT-020 | 「可检索、可问答、可发布的知识资产」+ 两条新卖点 | 通过 |
+
+两个坑记在证据目录的 `notes.md`：**headless 默认视口 800×600**，登录页左栏是 `lg:flex`，不设视口会得出「文案没改」的相反结论；**web 容器的 cookie 是 `Secure`**，`Network.setCookie` 必须写 `secure:false`，否则浏览器在 `http://127.0.0.1` 上直接丢弃、页面跳回 `/login`。
+
+**验收判据**：四份文档对同一事实说法一致；16 条断言全绿；9 类矛盾逐一反向验证必红、恢复后文件逐字节一致；`CONTINUATION.md` 不再出现任何 UAT 状态断言。
+
+**上一版留下的「诚实限制」已消除**：当时只做了产物层验证（部署包里确有新代码、旧文案已清除），现在按章程走完了真实页面。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/`。
 
 ---
 
@@ -1312,7 +1333,7 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 | Generation build 长任务恢复语义 | `CONTINUATION.md §4` 记录「完整 manifest/digest 跨重试持久化语义需整本任务验证，不能仅依赖 Redis checkpoint」 | 需一次整本长文档的故障注入 |
 | Jaeger `invalid UTF-8` 导出告警 | 已做 truncate 处理，但未确认运行日志中是否消失 | 查 jaeger 容器日志 |
 | 评测脚本 ES 同步竞态 | 本次实测出现 `[eval] WARN: ES sync check did not reach 47 after 1s (last count 10); continuing` | 复现并确认是否影响评测结论 |
-| UAT-017～020 真实页面复验 | 仅产物层验证 | 按 `docs/product-experience-acceptance.md` 用真实浏览器走一遍 |
+| ~~UAT-017～020 真实页面复验~~ | **已完成（2026-09-22）** | `scripts/web-page-probe.cjs` 走真实页面，四项全部通过并关闭 |
 | 企业身份生产 | 全部 blocked 在外部决策 | 不验证，等决策 |
 
 ---
@@ -1334,7 +1355,7 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 12 步（已完成） §1.3 缺陷 14：语言契约的读取侧兜底 + 判据补漏（线上 28 条裁决全部中文）
 第 13 步（已完成） §1.3 缺陷 15：失败裁决保留审阅者诊断 + 契约覆盖全部写入路径
 第 14 步（已完成） §2.1 Go 工具链权限 —— 复核发现**已自然消失，未改任何东西**
-第 15 步          3.  状态文档三源归一 + 一致性契约测试
+第 15 步（已完成） §3 状态文档三源归一 + 一致性契约测试 + UAT-017～020 真实页面复验
 第 16 步（已完成） §2.2 / 2.3 配置一致性修复 + 契约测试（`b14e20d` + `c7b4003`）
 第 17 步          4.1 邀请式自助开户（需你先确认产品口径）
 第 18 步          5.1 query/service.go 机械拆分
@@ -1350,8 +1371,11 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 的位置和体积**（三份、合计约 2.3GB，不是仓库根那一份 734MB）。
 第 16 步和第 5–13 步是同一类缺陷：**改了没反应，且不报错** —— 只是这次静默的不是结论，
 是配置。它成本最低、收益明确，所以提到第 17 步之前做掉。
-第 15 步是「不做则后面所有状态判断都不可信」；第 17 步需要你的产品决策；
-第 18 步是纯收益优化，随时可做。
+第 15 步是「不做则后面所有状态判断都不可信」，而且它**不只是文档纪律**：动手前四份
+文档对同一件事有三种说法，谁看哪一份就得出哪个结论。它没有代码改动，所以只能靠
+契约测试兜住 —— 16 条断言里 9 条是判据自检，因为这三类判据写错时全都是「永远绿」。
+顺带把 UAT-017～020 从「产物层验证」升成章程要求的真实页面复验。
+第 17 步需要你的产品决策；第 18 步是纯收益优化，随时可做。
 
 ---
 
@@ -1393,7 +1417,8 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 - **没有删除任何本项目的数据卷**。`ai-etl-platform_*` 全部保留；无引用的
   `ai-etl-go-build-cache` / `ai-etl-go-mod-cache` 与旧命名空间的 `ai-etl-pipeline_*` 也留着 ——
   空间已不紧张，而 go 缓存卷是构建提速的承重结构。
-- **UAT-017～020 没有标记为「已关闭」**，因为只做了产物层验证，未做章程要求的真实页面复验。
+- **UAT-017～020 已于 2026-09-22 做成真实页面复验并关闭**。上一版这里写的是「只做了产物层验证，所以不标记为已关闭」—— 这个保留是对的，它逼出了真正的复验；现在按 `docs/product-experience-acceptance.md` 走完真实页面，四项全部通过。
+- **真实页面复验有两个会让人得出相反结论的坑**，已写进证据目录的 `notes.md`：headless Chrome 默认视口 800×600，会把登录页 `lg:` 品牌栏整块隐藏（`innerText` 里读不到 → 误判「文案没改」）；web 容器的会话 cookie 标了 `Secure`，用 DevTools 协议注入时必须写 `secure:false`，否则在 `http://127.0.0.1` 上被直接丢弃、页面跳回 `/login`。
 - **§4.5 没有动手**，理由写在该小节里（被外部决策阻塞）。**§4.6 已动手并完成**（见 §1.3 缺陷 9），
   但走的是**回填**而不是原计划的重建索引 —— 4684 条存量 chunk 的 `file_name` 由
   `scripts/backfill-es-file-name.sh` 就地补齐，没有 drop/rebuild 索引，也没有重新上传任何文档。
@@ -1434,9 +1459,9 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
   （多出来的是 `.gomod`/`.gocache` 里的第三方源码）报 52 个假缺口。**判据写错时的症状
   是「同一个测试在两台机器上结论相反」，只跑正例永远发现不了** —— 所以给它配了
   `test_source_scan_skips_hidden_and_vendored_trees` 做自检。
-- **`docs/optimization-plan.md` 本身没有做全文一致性审计**。本轮只改了 §2.1 / §2.2 / §2.3 /
-  §7 / §8 五处，其余章节仍是各轮次追加的原文。§3 记的「状态文档三源冲突」指的就是这件事，
-  它仍未完成。
+- **`docs/optimization-plan.md` 本身仍没有做全文一致性审计**。这份台账是逐轮追加的，同一件事在不同章节的写法会漂移 —— §3 就漂过两处（把「只有 `backlog.md` 声明状态源」写成了「三份都声明」，还漏了第四份文档）。本轮只改了 §3 / §6 / §7 / §8 四处，其余章节仍是各轮次追加的原文。**这件事仍未完成**，但它和 §3 不是同一类：§3 是「四份文档对同一事实说法相反，读的人得出相反结论」，而这里是一份台账内部的措辞漂移，读的人只会觉得啰嗦，不会被误导。
+- **状态一致性契约测试只扫四份文档，不是全仓**。`docs/optimization-plan.md` 是缺陷台账，它必须能引用被修掉的错误措辞当证据；`LEARNINGS.codex.md` 是逐条带日期的日志，条目里的「当时待复验」是历史记录。把它们纳入会逼着台账不许引用原文。被扫的四份是**会断言当前状态**的那些。
+- **「UAT 条目状态只放登记册」偏离了 §3 原本写的「以 backlog 为唯一状态源」**。逐条状态只能放在有状态列、有证据的那一份里；硬挪到 backlog 会变成双写，反而制造新的漂移源。这条偏离写在 §3 里，不是默认忽略。
 - **缺陷 9 的修复不改变「已发布 / 草稿」的可见性口径**。`file_name` 回到索引后，
   `demo-doc-onboarding` 与 `demo-doc-payroll` 的词法候选会重新出现，但它们
   `publication_status='draft'`，仍被 `publicationrelease.ResolveVisibility` 正确挡在证据之外

@@ -1,8 +1,9 @@
 # Backlog
 
-最后核验：2026-09-12。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
+最后核验：2026-09-22。这里只保留当前未完成事项、外部决策门和可执行的验收条件。
 仓库规则维护：已将 `AGENTS.md` 的自然语言指令统一为中文，并明确简洁回答与最小上下文原则。
-已完成的阶段计划和历史实验报告已移出工作树；当前状态以本文件和对应设计/验收文档为准。
+已完成的阶段计划和历史实验报告已移出工作树。
+**本文件是项目级事项（`P-*`）状态的唯一出处**；产品体验逐条状态以 [`../issues/findings-register.md`](../issues/findings-register.md) 为准，本文件只链接，不复制其条目数，也不写任何计数快照。
 
 ## Active work
 
@@ -46,7 +47,7 @@ P-SEC-0 到 P-SEC-5 已落地。默认 Compose 绑回环、登录限流、`/metr
 
 | ID | 当前事项 | 状态 | 下一步/完成条件 | 依据 |
 | --- | --- | --- | --- | --- |
-| P-UAT-1 | 产品体验验收 | done | UAT-007/010/011/012/013 与 PX-06/PX-09 已复验。登记册开放项已清空 | [`docs/product-experience-acceptance.md`](product-experience-acceptance.md) |
+| P-UAT-1 | 产品体验验收 | done | UAT-007/010/011/012/013 与 PX-06/PX-09 已复验；UAT-017～020 于 2026-09-22 真实页面复验关闭。逐条状态见登记册 | [`docs/product-experience-acceptance.md`](product-experience-acceptance.md) |
 | P-UAT-1-S1 | 只读用户问答失败 | done | 2026-09-09 只读可问「赴港流程」；空间下拉可见。UAT-010 已修复 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 | P-UAT-1-next | 剩余体验缺陷 | done | UAT-013 已复验：错密登录显示「用户名或密码错误」 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 | P-UAT-2 | 受管换版切块未切换 | done | UAT-014 已复验：新版本发布后问答 120 元，旧 generation 退役 | [`../issues/findings-register.md`](../issues/findings-register.md) |
@@ -55,9 +56,11 @@ P-SEC-0 到 P-SEC-5 已落地。默认 Compose 绑回环、登录限流、`/metr
 
 这是 2026-09-09 明确要求的体验验收轨道，覆盖页面美观、使用逻辑和缺陷，不替代发布中心/治理/身份专项矩阵。问题登记以 [`issues/findings-register.md`](../issues/findings-register.md) 为准。
 
-2026-09-09 执行记录：D0–D4 已回写。随后修复 UAT-010，并补 PX-06 机密双审页面证据与 PX-09 空状态；复验通过。矩阵 PX-02/PX-06/PX-09 改为通过。随后修复 UAT-011：问答 SSE 在 `event: done` 后结束。随后修复 UAT-012：只读上传按钮禁用并说明无权限。随后修复 UAT-007：web 不再用空 reports 目录覆盖烘焙 `latest.json`，`/quality` 展示 Recall@1 55%。随后修复 UAT-013：错密登录显示「用户名或密码错误」。登记册开放项已清空。
+2026-09-09 执行记录：D0–D4 已回写。随后修复 UAT-010，并补 PX-06 机密双审页面证据与 PX-09 空状态；复验通过。矩阵 PX-02/PX-06/PX-09 改为通过。随后修复 UAT-011：问答 SSE 在 `event: done` 后结束。随后修复 UAT-012：只读上传按钮禁用并说明无权限。随后修复 UAT-007：web 不再用空 reports 目录覆盖烘焙 `latest.json`，`/quality` 展示 Recall@1 55%。随后修复 UAT-013：错密登录显示「用户名或密码错误」。逐条状态见 [`../issues/findings-register.md`](../issues/findings-register.md)。
 
 续跑入口已关闭：UAT-013 完成。2026-09-09-gap 覆盖补测后的 UAT-014 / P-UAT-2 已修复并复验，不重跑 D0–D4。
+
+2026-09-22 补记：2026-09-11 现网观感轮新开的 UAT-017～020（发布中心空间/权限、审计操作者、xls/pptx 类型、登录品牌文案）已于 2026-09-22 用真实页面复验关闭。复验手段见登记册「最后核验」段。
 
 ## Current execution plan
 
@@ -118,5 +121,5 @@ Agent 功能主线仍是“企业级 Agent 审计功能完善”，不是通用�
 ## Archive policy
 
 - 完成事项记录关闭日期和证据链接后留在 Git 历史中，不在当前 backlog 重复维护，也不再把大段历史快照放回工作树。
-- 历史条目中的旧状态按其日期理解；当前状态以本文件和对应设计/验收文档为准。
+- 历史条目中的旧状态按其日期理解；项目级事项（`P-*`）状态以本文件为准，产品体验逐条状态以 [`../issues/findings-register.md`](../issues/findings-register.md) 为准。
 - 新增事项使用唯一 ID；关闭事项记录关闭日期和证据链接，不删除 Git 历史。
