@@ -10,16 +10,17 @@
 
 ## 0. 结论摘要
 
-一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的十一处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效；第十处把前九处的教训合起来用了一遍 —— 缓存漏了一个输入，而那个输入恰好是裁决自己声称的出处；第十一处又回到了最开始的形状，只是这次没人回收的不是重试，而是记录本身 —— 一份被取代的裁决走不到「过期」这个状态，于是保留期对它永不生效。**
+一句话：**主链路能跑通，但「会自己恢复」这件事没做到 —— 已定位的十一处缺陷里，五处是同一个形状：一次瞬时故障被写成持久状态，之后没人再纠正它；第六处更隐蔽，失败路径把本该暴露问题的证据自己回滚掉了；第七处最安静，目录声明了一份从不存在的源对象，而平台里没有任何东西会去核对；第八处是前七处的反面 —— 不是没人修，是根本没有能修的地方；第九处是第七处在检索侧的重演 —— 加权最高的那个信号从被声明那天起就从未生效；第十处把前九处的教训合起来用了一遍 —— 缓存漏了一个输入，而那个输入恰好是裁决自己声称的出处；第十一处又回到了最开始的形状，只是这次没人回收的不是重试，而是记录本身 —— 一份被取代的裁决走不到「过期」这个状态，于是保留期对它永不生效；第十二处把这个形状搬到了备份脚本上 —— 完整性判定算出来了、印出来了，却传不到唯一能触发告警的那个值上。**
 
-> **修订说明（2026-09-22）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了七轮
-> 缺陷排查，找到并修复了 11 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
+> **修订说明（2026-09-22）**：初稿结论是「风险不在功能，在运维底座」。随后在部署环境上做了八轮
+> 缺陷排查，找到并修复了 12 个**功能/可靠性**缺陷（见 §1.3）：5 个属于「失败被固化、重试变成复读」，
 > 第 6 个属于「不一致的数据被当真源，而失败路径把证据回滚掉」，
 > 第 7 个属于「目录声明了从不存在的源对象，且平台没有任何核对机制」，
 > 第 8 个属于「失败状态没有被任何自动流程认领，也没有被任何诊断指标统计」，
 > 第 9 个属于「被声明、被加权、被测试过的检索信号，从未被写入索引」（§4.6），
 > 第 10 个属于「缓存键漏了一个输入，而那个输入正是裁决自己声称的出处」，
-> 第 11 个属于「生命周期只沿当前被引用的那一行走，被取代的记录再也无人回收」。
+> 第 11 个属于「生命周期只沿当前被引用的那一行走，被取代的记录再也无人回收」，
+> 第 12 个属于「判定存在，但传不到唯一能触发告警的那个值上」。
 > 原结论因此**不成立**，已按下表修订。
 > 同时 P0 的 §1.2（全栈无备份）已从「待做」变成「已做并在隔离栈上实测通过」。
 
@@ -29,7 +30,7 @@
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **没有 P0 挂着**。三项 P0 都已处理：ES 永久 yellow（§1.1.1）、全栈无备份（§1.2）、磁盘濒满（§1.1.2，可用空间 9.2GB → 63GB）。下一步按 §7 的执行顺序走 |
-| 已修复项 | 11 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
+| 已修复项 | 12 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
 
 ---
 
@@ -232,7 +233,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 ---
 
-### 1.3 已修复的 11 个缺陷（前五处同一形状：失败被固化，重试变成复读）
+### 1.3 已修复的 12 个缺陷（前五处同一形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -249,6 +250,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 | 9 | ES 词法检索里权重最高的 `file_name` 加权是死代码 | `documents_text_v2` 的 mapping 无 `file_name`，`chunks with file_name = 0 / 4684`；`match_phrase(file_name,"员工手册")` 命中 0，而同一查询在正文侧命中 5；`backend_candidate_counts.elasticsearch` 对只靠标题才该命中的问句恒为 0 | 四处：`model.Task` / `model.Chunk` 没有 `FileName` 字段；`esChunkDoc` 没有该字段；ES mapping 没有该 property；入库链路（流式与 OCR/PDF 两条产出路径）从不填充。`titleAwareShouldClauses` 却发出 `match_phrase(file_name, boost 6.0)` 与 `match(file_name, boost 3.0)` —— ES 对未映射字段不报错、只是永不匹配，于是**静默降级**为「只有正文匹配」；`elastic_test.go` 只断言了子句存在，没有任何测试断言该字段被写入索引 | `5e172bb` |
 | 10 | 预审裁决的缓存身份漏了模型，且 `report.model` 是每次读取时从当前配置**合成**的 | 改 `LLM_MODEL` 并重建 query-api 后连续三次调用返回**逐字相同**的 `review-run-5d0091b5ac8e12bf1c0a8bd3fd823c0a`，而 `review.model` 跟着配置走（`deepseek-v4-flash` → `deepseek-v4-flash-probe` → `deepseek-v4-flash`）；B 那次带着不存在的模型名却返回 `completed` 且 summary 逐字相同 —— 计划器根本没被调用（run 在 Redis 里跨容器重建持久） | 两处：`agentapi/review.go` 的 `reviewRunID` 哈希载荷只有 tenant / candidate / prompt 版本 / 尝试序号，**没有模型**；`agentapi/service.go:285` 每次读取都把 `report.Model` 盖成 `s.reviewModel`，而确定性报告（`review.go:787`）装配时根本没有 `Model` 字段 —— 于是每轮调用都重写已存储裁决的模型名，一份由 A 产出的裁决被读回时标成了 B | `78e3fb5` |
 | 11 | `release_center_reviews` 的保留期对「被取代的评审行」永不生效，表只增不减 | demo 租户 2 条 `failed` 预审行（`review-69e42208…`、`review-a26fb4d1…`）在 2026-09-21 08:17:56 写入、10 分钟后即被成功的预审取代；两条都不被任何 request 引用，`expire_due_reviews` 的可达性判定为 **false**。全表 27 行里有 4 行处于「无人引用」状态，而 `purgeable_now = 0` | 两处，都在 `releasecenter/store.go`：① `ExpireDueReviews` 通过 `JOIN release_center_requests q ON q.review_id=rv.review_id` 遍历评审行 —— 只认「请求当前指向的那一行」，被取代的行从此不可达；② `PurgeExpiredReviews` 只删 `status='expired'`。两者相乘：**在 TTL 到期前被取代的行永远走不到 `expired`，于是永远删不掉**，`RELEASE_REVIEW_RETENTION`（90 天）对它完全失效 | `5afc6b1` |
+| 12 | 备份脚本把完整性判定吞掉了：文档承诺 `REQUIRE_INTEGRITY=1 → exit 3`，实际恒为 0，于是备份自己的升级机制对「源已损坏」这个唯一要报的条件失明 | 部署环境实测 `REQUIRE_INTEGRITY=1 ./scripts/backup-stack.sh` **exit=0**，同时日志里印着 `ERROR integrity is degraded`；`state.json` 连续 6 次运行都是 `last_integrity=degraded` 配 `consecutive_failures=0`，`ALERT.txt` 从未产生 | 两处，都在 `scripts/backup-stack.sh`：① 清单的退出码被 `manifest_code=$?` 接住后**只用于一行日志**（原 `if manifest_code -eq 3; then log ERROR`）；② 最终退出阶梯只由 `FAILURES` 决定（`if FAILURES > 0: exit 2; exit 0`），而那条路径从不递增它。全脚本**没有任何一处 `exit 3`** —— 文档承诺的码不可达。而 `record_state` 只按退出码计数、`consecutive_failures>=2` 才写 `ALERT.txt`，所以判定永远传不到告警 | `4668d92` |
 
 **缺陷 6 的报错周期，实测与直觉相反**：对账每 5 分钟跑一轮，但**报错每 30 分钟才出现一次**。
 原因在租约：`ClaimReconciliation` 把 `reconcile_lease_until` 推到 `now()+INDEX_RECONCILE_LEASE`（30m）
@@ -501,6 +503,58 @@ B 的错误原文是**新模型真的被调用了**的直接证据 —— 它失
 `TestPurgeExpiredReviewsDeletesUnreferenced`（pgxmock）报
 `could not match actual sql … with expected regexp "WHERE rv\.expires_at IS NOT NULL"`；
 还原后文件哈希与快照逐字节一致。
+
+### 缺陷 12：备份脚本把完整性判定吞掉了
+
+这条来自**核对 §4.7 的验收判据**。§4.7 的判据是「116 稳定、`REQUIRE_INTEGRITY=1` 退出码为 3」，
+前半条实测成立（2026-09-22 的 cron 备份 `integrity.missing_objects = 116`，
+`--require-integrity` 直接调 `backup-manifest.py` 确实返回 3）。**但判据说的是脚本**，
+而脚本从不被单独验过 —— 于是问题出在包装层：
+
+```
+$ REQUIRE_INTEGRITY=1 ./scripts/backup-stack.sh ; echo "exit=$?"
+...
+ERROR integrity is degraded; see manifest.json integrity block
+backup finished: integrity=degraded dir=.../20260922T033113Z keep=7
+exit=0                     ← 文档写的是 3
+```
+
+**真因两处，都在 `scripts/backup-stack.sh`**：
+
+1. 清单的退出码被 `manifest_code=$?` 接住后**只喂给一行日志**（原
+   `if [[ ${manifest_code} -eq 3 ]]; then log "ERROR ..."`）。
+2. 最终退出阶梯只由 `FAILURES` 决定（`if [[ ${FAILURES} -gt 0 ]]; then exit 2; fi; exit 0`），
+   而那条路径从不递增 `FAILURES`。
+
+全脚本**没有任何一处 `exit 3`** —— 头注释第 28 行承诺的那个码在代码里不可达。
+
+**为什么这不只是一行文档错误**：退出码是脚本**已有的那套升级机制的唯一输入**。
+`record_state` 按退出码累计 `consecutive_failures`，`>= 2` 时写 `ALERT.txt`。判定既然到不了
+退出码，那么**一个已经损坏的备份会持续报告成功**：`state.json` 里连续 6 次运行都是
+`last_integrity=degraded` 配 `consecutive_failures=0`，`ALERT.txt` 从未出现。
+这与前面 11 个缺陷是同一个形状 —— **信号存在，但不可能响**。
+
+**修复**：把判定带到退出阶梯。`manifest_code == 3` 时置 `INTEGRITY_DEGRADED=1`，
+阶梯在 `FAILURES > 0 → exit 2` 之后返回 3（缺件比「忠实备份了一个已损坏的源」更紧急）。
+
+**升级链路线上实测**（`BACKUP_ROOT` 指向临时目录，部署环境的备份根未被触碰）：
+
+```
+run 1 exit=3
+run 2 exit=3
+state.json: {consecutive_failures: 2, last_exit_code: 3, last_integrity: degraded}
+ALERT.txt : backup has failed 2 times in a row; last run 2026-09-22T03:33:04Z
+```
+
+**修复后线上断言**：`REQUIRE_INTEGRITY=1` → **exit 3**（修复前 0）；不设该变量 → exit 0；
+契约测试 18 项全绿（含 1 项 opt-in 的线上行为测试）。
+
+**反向验证**：把 `backup-stack.sh` 还原到 HEAD 版本（用 `git show HEAD:…` 取原文件，
+不用 `git checkout --`，因为修复尚未提交），两项守卫测试都失败，还原后文件哈希与快照逐字节一致。
+
+**刻意没有改的事**：**没有让 cron 打开 `REQUIRE_INTEGRITY`**。§4.7 的 116 份缺失是**已接受的残留**，
+把它设成致命会让 `ALERT.txt` 永久点亮、把信号变成噪声。这次改变的是「这个开关对想要严格策略的
+运维者真的按它说的生效」，不是改变日常策略。
 
 ---
 
@@ -778,6 +832,17 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 `REQUIRE_INTEGRITY=1` 时退出码为 3；
 `documents` 表里**凡是对象存在的行**，`file_size` 与实际对象字节数一致（当前 3/3）。
 
+**判据复核（2026-09-22，在部署环境上实跑）**：① 2026-09-22 03:17 的 cron 备份
+`integrity = {status: degraded, missing_objects: 116, orphan_objects: 0}` —— 不是 0，也不是 119；
+② 用该备份的产物单独调 `backup-manifest.py`：不加 `--require-integrity` 返回 0，
+加 `--require-integrity` 返回 **3**（真实 `manifest.json` 未被改动，mtime 不变）；
+③ 3/3 —— `demo-doc-payroll` 395、`demo-doc-handbook` 513、`demo-doc-onboarding` 401，
+目录里的 `file_size` 与对象字节数逐一相等。三条判据全部成立。
+
+> **但这次复核暴露了另一个缺陷**：判据说的是「`REQUIRE_INTEGRITY=1` 退出码为 3」，
+> 而**脚本**从不返回 3 —— 判据被验在 `backup-manifest.py` 上，而 cron 跑的是包装脚本。
+> 见 §1.3 缺陷 12。
+
 ---
 
 ## 5. P2 —— 代码结构
@@ -852,24 +917,25 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 7 步（已完成） §1.3 缺陷 9 / §4.6：ES 词法检索的 file_name 加权（回填 4684 条，未重建索引）
 第 8 步（已完成） §1.3 缺陷 10：预审裁决的缓存身份与模型溯源
 第 9 步（已完成） §1.3 缺陷 11：被取代的预审行不受保留期约束
-第 10 步          2.1 Go 工具链权限修复
-第 11 步          3.  状态文档三源归一 + 一致性契约测试
-第 12 步          2.2 / 2.3 配置一致性修复 + 契约测试
-第 13 步          4.1 邀请式自助开户（需你先确认产品口径）
-第 14 步          5.1 query/service.go 机械拆分
+第 10 步（已完成） §1.3 缺陷 12：备份脚本把完整性判定吞掉（`REQUIRE_INTEGRITY` 不生效）
+第 11 步          2.1 Go 工具链权限修复
+第 12 步          3.  状态文档三源归一 + 一致性契约测试
+第 13 步          2.2 / 2.3 配置一致性修复 + 契约测试
+第 14 步          4.1 邀请式自助开户（需你先确认产品口径）
+第 15 步          5.1 query/service.go 机械拆分
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
-「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–9 步是
+「没人看得见的下滑」变成了「两条会响也会消的告警 + 63GB 余量」。第 5–10 步是
 「不做则故障永远静默」：这几处缺陷的共同点是自己不报错、还让看板变绿（见 §1.3）。
-第 10 步是「不做则每次改动都在踩坑」；第 11 步是「不做则后面所有状态判断都不可信」；
-第 12 步成本最低收益明确；第 13 步需要你的产品决策；第 14 步是纯收益优化，随时可做。
+第 11 步是「不做则每次改动都在踩坑」；第 12 步是「不做则后面所有状态判断都不可信」；
+第 13 步成本最低收益明确；第 14 步需要你的产品决策；第 15 步是纯收益优化，随时可做。
 
 ---
 
 ## 8. 边界与未做的事（避免误解）
 
-- **代码改动限于两处**：§1.3 列出的 11 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
+- **代码改动限于两处**：§1.3 列出的 12 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
   （含补上的 `node-exporter`）。其余章节仍是调查结论，未据此改代码。
 - **§1.2 不只是文档**：`scripts/backup-stack.sh`、`scripts/restore-stack.sh`、3 个单职责助手脚本、
   `docker-compose.restore.yml`、16 个契约测试都已提交，并在隔离项目 `ai-etl-restore` 上真跑过
@@ -918,3 +984,9 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 - **本轮为验证保留期插入的 4 行 `zz-probe-*` 探针行已全部删除**（部署前存活的那 2 行由
   部署后的采集器回收，`zz-probe-fresh` 由手工删除）。表回到 27 行，`状态 × 是否被引用`
   矩阵与探针插入前逐项一致。
+- **缺陷 12 没有改变日常备份策略**。`REQUIRE_INTEGRITY` 仍然**没有**写进 cron —— §4.7 的 116 份
+  缺失是已接受的残留，把它设成致命会让 `ALERT.txt` 永久点亮、把信号变成噪声。改的只是
+  「这个开关对想要严格策略的运维者真的按它说的生效」。
+- **缺陷 12 的验证全部走临时 `BACKUP_ROOT`**，部署环境的 `~/backups/ai-etl-platform/` 未被污染：
+  `state.json` 仍是 `consecutive_failures=0`，且没有 `ALERT.txt`。为复现而多跑的那一次备份
+  落在同一个保留窗口内（7 份上限，未触发轮转）。
