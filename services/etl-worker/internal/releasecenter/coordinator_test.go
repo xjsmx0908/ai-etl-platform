@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"ai-etl-pipeline/internal/docstore"
 	"ai-etl-pipeline/internal/notification"
@@ -310,6 +311,86 @@ func TestCoordinatorTreatsFailedAgentStatusAsManualException(t *testing.T) {
 	}
 	if request.State != RequestManualException {
 		t.Fatalf("failed Agent status was treated as successful review: request=%+v", request)
+	}
+}
+
+// The failure path used to replace the reviewer's own diagnostic with the
+// coordinator's own sentence. The review adapter already explains itself before
+// it returns -- agentapi/service.go puts the planner's error in Summary -- so the
+// overwrite threw the only copy of the reason away, leaving it in the agent run,
+// which expires with AGENT_RUN_TTL (24h) and is not reachable from the panel.
+// Both live failed rows have exactly this shape: review-a26fb4d1d170c359 and
+// review-69e42208b72c0e0b read `agent review returned status "failed"` and
+// nothing else.
+func TestCoordinatorKeepsReviewerDiagnosticOnFailedReview(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	// Verbatim shape of what the review adapter returns when the planner fails:
+	// Status "failed" with a nil error, and the planner's own error in Summary.
+	const plannerError = `agent planner returned status 503: {"error":{"code":"model_not_found","message":"no available channel for model X","type":"packy_api_error"}}`
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{
+		Status: "failed", Recommendation: "manual_review", RiskLevel: RiskHigh, Summary: plannerError,
+	}}, store)
+	report, request, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "failed" || request.State != RequestManualException {
+		t.Fatalf("failed Agent status was treated as successful review: report=%+v request=%+v", report, request)
+	}
+	if !strings.Contains(report.Summary, "model_not_found") {
+		t.Fatalf("the reviewer's own diagnostic was discarded: summary=%q", report.Summary)
+	}
+	if LooksLikeEnglish(report.Summary) {
+		t.Fatalf("failure summary does not read as Chinese: summary=%q", report.Summary)
+	}
+	if stored := store.reviews[report.ID].Summary; stored != report.Summary {
+		t.Fatalf("stored summary=%q but the report served %q", stored, report.Summary)
+	}
+}
+
+// An adapter that fails without saying anything must not leave a dangling
+// "原因：" with nothing after it.
+func TestCoordinatorFailedReviewWithoutDiagnosticStaysChinese(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{
+		Status: "failed", Recommendation: "publish", RiskLevel: RiskLow,
+	}}, store)
+	report, _, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary != failedReviewHead+"。" {
+		t.Fatalf("expected the bare verdict, got summary=%q", report.Summary)
+	}
+}
+
+// A provider error body is machine text of unknown length. The summary is shown
+// inline in the panel, so the reason is bounded -- and bounded on a rune
+// boundary, because the body mixes ASCII JSON with Chinese prose.
+func TestCoordinatorBoundsFailureReason(t *testing.T) {
+	candidate := readyCandidate()
+	workflow := &workflowStub{assessment: publicationworkflow.Assessment{DocumentID: candidate.DocumentID, Ready: true, Candidate: &candidate}}
+	store := newMemoryStore()
+	coordinator := NewCoordinator(workflow, documentStub{docstore.Document{TenantID: "acme", DocID: candidate.DocumentID, Permission: "internal", UploadedBy: "uploader"}}, reviewerStub{review: AgentReview{
+		Status: "failed", Summary: strings.Repeat("模型无可用渠道 ", 500),
+	}}, store)
+	report, _, err := coordinator.StartManagedReview(context.Background(), publicationworkflow.Actor{TenantID: "acme", UserID: "uploader", Role: "admin"}, candidate.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := len([]rune(failedReviewHead)) + len([]rune("。原因：")) + failureReasonLimit + len([]rune("…"))
+	if got := len([]rune(report.Summary)); got > limit {
+		t.Fatalf("summary is %d runes, over the %d-rune bound: %q", got, limit, report.Summary)
+	}
+	if !strings.HasSuffix(report.Summary, "…") {
+		t.Fatalf("a truncated reason must say so: summary=%q", report.Summary)
+	}
+	if !utf8.ValidString(report.Summary) {
+		t.Fatalf("truncation split a rune: summary=%q", report.Summary)
 	}
 }
 

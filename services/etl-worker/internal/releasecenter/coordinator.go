@@ -199,7 +199,12 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	if reviewErr != nil {
 		status = "failed"
 		reviewResult.Recommendation = "manual_review"
-		reviewResult.Summary = reviewErr.Error()
+		// Keep the reviewer's own diagnostic. It is already in Summary -- the
+		// review adapter puts the planner's error there before returning -- and
+		// overwriting it with reviewErr.Error() is what left
+		// review-a26fb4d1d170c359 and review-69e42208b72c0e0b saying nothing but
+		// `agent review returned status "failed"`.
+		reviewResult.Summary = FailureSummary(reviewResult.Summary, reviewErr)
 		// An unavailable or malformed review is uncertainty, not a low-risk
 		// result. Keep the failure path visibly high risk so policy and UI do
 		// not imply that the document passed pre-review.
@@ -213,6 +218,12 @@ func (c *Coordinator) StartManagedReview(ctx context.Context, actor publicationw
 	default:
 		reviewResult.RiskLevel = RiskLow
 	}
+	// The contract is applied here, not only inside the review adapter, because
+	// the adapter runs it at exactly one point: validateAutonomousReview, which
+	// is reached only when the run completed and its report parsed. Every failure
+	// path returns before that, so the text this branch just wrote would reach
+	// the table unchecked -- which is how an English failure template got there.
+	NormalizeAgentReview(&reviewResult)
 	report := ReviewReport{ID: reportID, TenantID: actor.TenantID, DocumentID: documentID,
 		DocumentVersionID: candidate.DocumentVersionID, GenerationID: candidate.GenerationID,
 		ReleaseRevision: candidate.ReleaseRevision, RunID: reviewResult.RunID, Status: status,

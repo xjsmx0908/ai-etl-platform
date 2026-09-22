@@ -39,6 +39,16 @@ var reviewFindingCodeLabels = map[string]string{
 const (
 	unlabeledFindingSummary = "预审发现问题，需人工确认"
 	undecidedReviewSummary  = "预审已完成，请人工确认"
+	// failedReviewHead is the verdict half of a failed review. It is one string
+	// rather than two so the sentence a reviewer reads does not depend on which
+	// of the two code paths happened to write the row: reviewSummaryFor uses it
+	// for a manual_review verdict, and FailureSummary uses it for the failure
+	// path.
+	failedReviewHead = "预审未给出结论，已转人工复核"
+	// failureReasonLimit bounds the diagnostic that FailureSummary appends. A
+	// provider error body is machine text of unknown length -- the observed 503
+	// body is ~250 characters -- and the panel shows it inline.
+	failureReasonLimit = 200
 )
 
 // NormalizeReviewLanguage enforces Chinese on every field a reviewer reads.
@@ -116,6 +126,51 @@ func NormalizeReviewReport(report *ReviewReport) {
 	report.Summary, report.KindLabel, report.Findings = out.Summary, out.KindLabel, out.Findings
 }
 
+// FailureSummary writes the summary of a failed review.
+//
+// Two requirements meet on this one field, and satisfying either alone produced
+// a bad verdict:
+//
+//   - The reviewer's own words have to survive. The review adapter already
+//     explains itself before it returns: agentapi/service.go stores the planner's
+//     error in Summary (`Summary: err.Error()`, `Summary: run.Error`,
+//     `Summary: "invalid review report: " + err.Error()`). The coordinator used to
+//     overwrite that with its own sentence, so the only copy of the reason lived
+//     in the agent run -- which expires with AGENT_RUN_TTL (24h) and is not
+//     reachable from the review panel. review-a26fb4d1d170c359 and
+//     review-69e42208b72c0e0b both read `agent review returned status "failed"`
+//     and nothing else, and why they were written is gone.
+//   - The text has to be Chinese. The failure path is the one write path that
+//     never passed NormalizeReviewLanguage -- validateAutonomousReview is reached
+//     only once the run completed and its report parsed -- and that is how an
+//     English template reached the table in the first place.
+//
+// So the reason is kept verbatim rather than paraphrased (a summary of a machine
+// error is worth less than the error) and bounded (see failureReasonLimit).
+func FailureSummary(upstream string, cause error) string {
+	if cause == nil {
+		return failedReviewHead + "。"
+	}
+	reason := strings.TrimSpace(upstream)
+	// An adapter that failed without saying anything leaves Summary empty or
+	// equal to the coordinator's own cause; appending either would just repeat
+	// the frame.
+	if reason == "" || reason == cause.Error() {
+		return failedReviewHead + "。"
+	}
+	return failedReviewHead + "。原因：" + truncateRunes(reason, failureReasonLimit)
+}
+
+// truncateRunes cuts on a rune boundary. The reason mixes ASCII JSON with Chinese
+// prose, so a byte slice would split a character and store invalid UTF-8.
+func truncateRunes(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
+}
+
 // reviewSummaryFor writes the one-line verdict from the report's structured
 // fields. Every input is a system enum, so the result cannot inherit the model's
 // language choice. It replaces a paragraph the model wrote with the sentence a
@@ -125,7 +180,7 @@ func reviewSummaryFor(in ReviewLanguage) string {
 		"publish":       "预审通过，未发现阻断发布的问题",
 		"needs_info":    "预审未通过，需补充材料或人工确认后重审",
 		"reject":        "预审未通过，不建议发布",
-		"manual_review": "预审未给出结论，已转人工复核",
+		"manual_review": failedReviewHead,
 	}[strings.ToLower(strings.TrimSpace(in.Recommendation))]
 	if head == "" {
 		head = undecidedReviewSummary
@@ -154,6 +209,16 @@ func reviewSummaryFor(in ReviewLanguage) string {
 //
 // A single Han-free word is left alone: one token is as likely to be an
 // identifier ("space_fit", "PXGAP-MGC1") as it is to be English.
+//
+// Neither shape fires on a field that *opens* in Chinese -- see englishSentence.
+// The predicate asks what a reviewer reads, and a reviewer reads the opening:
+// every English value that reached the panel opened in English
+// (`Exact candidate is ...`, `All required review steps ...`,
+// `Draft/placeholder marker text, ...`) and every Chinese one opened in Chinese.
+// A field that opens with a Chinese verdict and then quotes machine text is read
+// in Chinese -- the failure summary is exactly that shape (FailureSummary), and
+// judging it on its whole content would replace it with the bare verdict and
+// throw the reason away again.
 func LooksLikeEnglish(text string) bool {
 	return englishSentence(text) || hanFreePhrase(text)
 }
@@ -203,10 +268,20 @@ var englishFunctionWords = map[string]bool{
 }
 
 // englishSentence reports whether text reads as English sentences rather than
-// Chinese carrying a few English identifiers. Both conditions must hold: six
-// run-on ASCII words, at least two of them function words. An English sentence
-// always clears both; "space_fit 判定为 uncertain" clears neither.
+// Chinese carrying a few English identifiers. Three conditions must hold: the
+// field opens in Chinese-free text, has six run-on ASCII words, and at least two
+// of them are function words. An English sentence always clears all three;
+// "space_fit 判定为 uncertain" clears none of the last two.
+//
+// The opening matters because a quoted diagnostic is not prose. The failure
+// summary opens with 预审未给出结论，已转人工复核。and then quotes the provider's
+// error verbatim; the quoted body alone would clear both word counts, so without
+// this test the contract would rewrite the whole field back into the bare verdict
+// and the reason would be lost a second time, in a new place.
 func englishSentence(text string) bool {
+	if startsWithHan(text) {
+		return false
+	}
 	words, functionWords := 0, 0
 	for _, word := range strings.FieldsFunc(text, func(r rune) bool {
 		return !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z')
@@ -220,4 +295,17 @@ func englishSentence(text string) bool {
 		}
 	}
 	return words >= 6 && functionWords >= 2
+}
+
+// startsWithHan reports whether the first character that is not whitespace or
+// punctuation is Han. Leading quotes and brackets are skipped so a field wrapped
+// in them is judged by its opening word.
+func startsWithHan(text string) bool {
+	for _, r := range text {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			continue
+		}
+		return unicode.Is(unicode.Han, r)
+	}
+	return false
 }

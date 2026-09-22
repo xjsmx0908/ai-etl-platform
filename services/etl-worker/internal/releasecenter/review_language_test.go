@@ -1,6 +1,11 @@
 package releasecenter
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 // Every case below is either an identifier a Chinese field legitimately carries
 // or a value copied verbatim out of release_center_reviews. The live values are
@@ -25,6 +30,13 @@ func TestLooksLikeEnglishThresholds(t *testing.T) {
 		{"label with a han marker", "受管空间测试标记片段（PX-MANAGED-V2），内容为单句补贴标准，过于简短，疑似存根/测试文档", false},
 		{"label with a replacement char", "门禁管理制度；主体内容完整，但第二块含乱码替换字符（U+FFFD），疑似编码损坏", false},
 		{"short chinese label", "制度", false},
+		// A Chinese field that quotes a long machine error is read in Chinese.
+		// The quoted body clears both word counts on its own, so this case is
+		// what keeps the failure summary from being rewritten back into the bare
+		// verdict -- and taking the reason with it.
+		{"chinese verdict quoting a machine error", `预审未给出结论，已转人工复核。原因：agent planner returned status 503: {"error":{"code":"model_not_found","message":"no available channel for model X","type":"packy_api_error"}}`, false},
+		{"chinese label quoting english prose", "材料看起来像 Draft/placeholder marker text, not a formal policy document", false},
+		{"chinese lead, quoted english sentence", "预审未通过。The material does not belong in this knowledge space.", false},
 
 		{"english sentence", "The material does not belong in this knowledge space", true},
 		{"english sentence with an identifier", "Test/placeholder marker string with a gate passphrase; not an approved HR, admin", true},
@@ -177,5 +189,67 @@ func TestNormalizeReviewReportLocalizesFailureTemplate(t *testing.T) {
 	NormalizeReviewReport(&report)
 	if report.Summary != "预审未给出结论，已转人工复核。" {
 		t.Fatalf("a failed verdict must say what happens next, got %q", report.Summary)
+	}
+}
+
+// FailureSummary is the write-side counterpart of
+// TestNormalizeReviewReportLocalizesFailureTemplate: the read side repairs rows
+// that were written before the contract existed, the write side has to stop
+// producing them -- while keeping the reason, which is the half the old code
+// discarded.
+func TestFailureSummaryKeepsTheReasonInsideAChineseVerdict(t *testing.T) {
+	cause := errors.New(`agent review returned status "failed"`)
+	cases := []struct {
+		name     string
+		upstream string
+		want     string
+	}{
+		{
+			// The observed shape: the adapter put the planner's 503 body in
+			// Summary before returning Status "failed" with a nil error.
+			name:     "provider error is kept verbatim",
+			upstream: `agent planner returned status 503: {"error":{"code":"model_not_found"}}`,
+			want:     `预审未给出结论，已转人工复核。原因：agent planner returned status 503: {"error":{"code":"model_not_found"}}`,
+		},
+		{
+			name:     "an empty diagnostic is not appended",
+			upstream: "",
+			want:     "预审未给出结论，已转人工复核。",
+		},
+		{
+			// appending the coordinator's own sentence to itself would just
+			// repeat the frame.
+			name:     "the coordinator's own cause is not repeated",
+			upstream: cause.Error(),
+			want:     "预审未给出结论，已转人工复核。",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := FailureSummary(testCase.upstream, cause)
+			if got != testCase.want {
+				t.Fatalf("FailureSummary()=%q, want %q", got, testCase.want)
+			}
+			if LooksLikeEnglish(got) {
+				t.Fatalf("a failure summary must read as Chinese, got %q", got)
+			}
+		})
+	}
+	if got := FailureSummary("something happened", nil); got != "预审未给出结论，已转人工复核。" {
+		t.Fatalf("a missing cause must not produce a partial sentence, got %q", got)
+	}
+}
+
+func TestFailureSummaryBoundsTheReasonOnRuneBoundaries(t *testing.T) {
+	got := FailureSummary(strings.Repeat("模型无可用渠道 ", 500), errors.New("x"))
+	limit := len([]rune(failedReviewHead)) + len([]rune("。原因：")) + failureReasonLimit + 1
+	if len([]rune(got)) > limit {
+		t.Fatalf("summary is %d runes, over the %d-rune bound", len([]rune(got)), limit)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("a truncated reason must say so, got %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncation split a rune: %q", got)
 	}
 }
