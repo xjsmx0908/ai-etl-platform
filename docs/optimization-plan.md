@@ -1280,9 +1280,9 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 
 ## 5. P2 —— 代码结构
 
-### 5.1 `query/service.go` 单文件职责过载
+### 5.1 `query/service.go` 单文件职责过载（已修复，见本轮提交）
 
-**证据**：1749 行、51 个函数，混装了至少 6 类职责 ——
+**原状**：1749 行、79 个顶层声明，混装了至少 6 类职责 ——
 
 | 职责 | 代表函数 |
 | --- | --- |
@@ -1290,16 +1290,41 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 | SSE 协议 | `writeSSEError`, `queryBodyLimit`, `isMaxBytesError` |
 | LLM 传输 | `callLLM`, `streamChat`, `completeAnswer`, `enableChatStream` |
 | 提示词组装 | `buildPrompt`, `promptContextExcerpt`, `loadSystemPrompt` |
-| 检索后处理 | `gateByRelevance`, `stabilizeRanking`, `retrievalInfoFromResult` |
-| 校验与成本 | `groundingCheck`, `parseGroundingVerdict`, `estimateLLMCost` |
+| 检索后处理 | `gateByRelevance`, `retrievalInfoFromResult`, `diagnosticRequiredDocIDs` |
+| 校验与引用 | `groundingCheck`, `parseGroundingVerdict`, `citationsFromAnswer`, `estimateLLMCost` |
 
-对比：`cmd/api/main.go` 从 1746 行拆到 667 行（`LEARNINGS.codex.md` 2026-09-09 记录了这次拆分，方式是「同包机械拆分，不改 HTTP/权限语义」）。**同样的手法可以再来一次**，且项目已经记了「下一步如继续精简，再拆 `query/service.go`」。
+对比：`cmd/api/main.go` 从 1746 行拆到 667 行（`LEARNINGS.codex.md` 2026-09-09 记录了这次拆分，方式是「同包机械拆分，不改 HTTP/权限语义」）。本次是同样的手法再来一次。
 
-**怎么做**：按上表拆成 `service.go`（编排）+ `llm_transport.go` + `prompt.go` + `sse.go` + `postprocess.go`，**保持同一 package、不改任何导出签名**。这是纯机械重构，风险可控，且能显著降低后续每次改问答链路的上下文成本。
+**已拆成**（同 package，不改任何导出签名；行数一律为 `wc -l`，不要用 `len(text.split("\n"))` 数 —— 末尾换行会让它多算一行）：
 
-**验收判据**：`go test ./internal/query -count=1` 通过；`go vet` 干净；拆分前后 `git diff --stat` 的**导出符号集合完全一致**（用 `go doc` 输出对比）。
+| 文件 | 行数 | 职责 |
+| --- | --- | --- |
+| `service.go` | 996 | Service 类型与构造、HTTP 入口、`ask` 编排、请求/响应类型 |
+| `llm_transport.go` | 377 | LLM HTTP 传输、流式解析、错误分类、token 成本 |
+| `prompt.go` | 146 | 提示词加载与上下文拼装 |
+| `grounding.go` | 102 | 忠实度校验 |
+| `retrieval_postprocess.go` | 100 | 检索后处理（相关性门限、检索信息、诊断） |
+| `citations.go` | 53 | 证据上下文与引用 |
+| `sse.go` | 40 | SSE 错误写出与请求体限制 |
 
-**注意**：这是**收益/风险比最好的一条**，但**不是最紧急的**。它值得做，是因为每次改问答都要读 1749 行。
+文件划分沿用 package 既有约定：**实现文件名与测试文件名一一对应** —— `citations_test.go`、`grounding_test.go` 早就在，实现却挤在 `service.go` 里。所以没有按原文计划合成一个笼统的 `postprocess.go`。
+
+**怎么保证「只搬位置」**（这是本次唯一有分量的判据）：
+
+1. 拆分由脚本做，不手抄 —— `scripts/split_query_service.py` 按顶层声明边界切分，不重新格式化。
+2. `scripts/verify_go_file_split.py` 断言 **79 个声明的正文作为多重集合完全相等**（逐字节）。这比 `git diff --stat` 强：文件被搬空重建时 diff 只给满屏增删，读的人无法从里面看出结论。
+3. `go doc -all ./internal/query | sort` 前后 `diff` 为空 —— 导出符号集合一致。
+4. `gofmt -l`（本机 + 远端）为空、`go vet ./...` 干净、`go test ./... -count=1` 全绿。
+5. 脚本可复现出**与提交内容逐字节相同**的产物（`cmp` 七个文件全部相同）。
+
+**踩到的四个坑**（都已在脚本里修掉，不是「注意一下」）：
+
+1. **doc 注释会跟丢**：注释在原文里是「上一个 chunk 的尾巴」。必须先剥尾随空行再收注释，顺序反了会一行都收不到，静默丢掉 4 个声明的注释 —— 而 `go test` 照样全绿。
+2. **相邻的一行方法**：`noopLLMObserver` 的两个方法原文相邻（gofmt 把它们当同一对齐组），拆文件时若强行插空行，对齐被重置 —— 那就不再是「逐字节相同」。所以声明之间的空行数要照搬原文。
+3. **包注释不能与 `package` 子句隔空行**：否则 Go 不把它当包注释，`go doc` 第一行消失（这一条正是被 `go doc` 对比抓到的）。
+4. **Windows 上 `Path.write_text` 会把 `\n` 翻成 `\r\n`**：本地 `gofmt -l` 于是把 7 个文件全报成未格式化，而远端（LF checkout）是干净的 —— 又一处「两台机器结论相反」。必须显式 `newline="\n"`。
+
+**验收判据**：`go test ./internal/query -count=1` 通过；`go vet` 干净；`go doc` 导出符号集合完全一致；79 个声明正文逐字节相同。
 
 ### 5.2 其他偏大文件（暂不动，仅记录）
 
@@ -1358,7 +1383,7 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 15 步（已完成） §3 状态文档三源归一 + 一致性契约测试 + UAT-017～020 真实页面复验（`486deca`）
 第 16 步（已完成） §2.2 / 2.3 配置一致性修复 + 契约测试（`b14e20d` + `c7b4003`）
 第 17 步          4.1 邀请式自助开户（需你先确认产品口径）
-第 18 步          5.1 query/service.go 机械拆分
+第 18 步（已完成） §5.1 query/service.go 机械拆分（同包拆成 7 个文件，导出签名不变、79 个声明正文逐字节相同）
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
@@ -1375,7 +1400,10 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 文档对同一件事有三种说法，谁看哪一份就得出哪个结论。它没有代码改动，所以只能靠
 契约测试兜住 —— 16 条断言里 9 条是判据自检，因为这三类判据写错时全都是「永远绿」。
 顺带把 UAT-017～020 从「产物层验证」升成章程要求的真实页面复验。
-第 17 步需要你的产品决策；第 18 步是纯收益优化，随时可做。
+第 17 步需要你的产品决策。第 18 步是纯收益优化，随时可做，所以排在最后 —— 它**不改任何
+行为**，收益只体现在「以后读这段代码的人少花时间」。唯一的风险是「搬的过程中悄悄改了
+内容」，而这个风险测试看不见（搬错的注释、丢掉的包注释，`go test` 照样全绿），所以判据
+放在「79 个声明正文逐字节相同」和「`go doc` 导出集合前后一致」上。
 
 ---
 
