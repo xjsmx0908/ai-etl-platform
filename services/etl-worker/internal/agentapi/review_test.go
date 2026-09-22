@@ -790,89 +790,11 @@ func TestValidateAutonomousReviewKeepsSensitiveFloorWhenFitnessMatches(t *testin
 	}
 }
 
-// The English strings below are copied verbatim from review-6055e3dd7aa52258,
-// the verdict that put an English paragraph on the review panel.
-func TestNormalizeReviewLanguageRewritesEnglishProse(t *testing.T) {
-	report := releasecenter.AgentReview{
-		Recommendation: "needs_info",
-		KindLabel:      "Test/placeholder marker string with a gate passphrase; not an approved HR, admin",
-		Summary: "Candidate chunk doc-1788958054422977825_0000 contains only a test/placeholder marker " +
-			"string ('受管替换闭环第二版…门禁口令是橙门') rather than an approved HR, administrative, or " +
-			"business regulation for the production knowledge space. Knowledge-fitness assessment " +
-			"recorded space_fit=mismatch and knowledge_usable=not_knowledge, so the material cannot be " +
-			"published as formal knowledge.",
-		Findings: []releasecenter.Finding{
-			{Code: "space_mismatch", Severity: "medium", Summary: "The material does not belong in this knowledge space", EvidenceRef: "doc-1788958054422977825_0000"},
-			{Code: "planner_invented_this", Severity: "medium", Summary: "This is a sentence the planner wrote on its own", EvidenceRef: "doc-1788958054422977825_0000"},
-		},
-	}
-	normalizeReviewLanguage(&report)
-	if report.KindLabel != "" {
-		t.Fatalf("an English kind_label must be dropped, got %q", report.KindLabel)
-	}
-	if report.Summary != "预审未通过，需补充材料或人工确认后重审，共 2 项待确认问题。" {
-		t.Fatalf("summary must be rebuilt from the recommendation, got %q", report.Summary)
-	}
-	if report.Findings[0].Summary != "不适合本空间" {
-		t.Fatalf("a known code must take its Chinese name, got %q", report.Findings[0].Summary)
-	}
-	if report.Findings[1].Summary != unlabeledFindingSummary {
-		t.Fatalf("an unknown code must fall back to the generic Chinese note, got %q", report.Findings[1].Summary)
-	}
-	// A finding's identity is not a translation. The code, the severity and the
-	// evidence ref have to survive the rewrite, or the panel loses the link to the
-	// chunk the verdict rests on.
-	if report.Findings[0].Code != "space_mismatch" || report.Findings[0].Severity != "medium" ||
-		report.Findings[0].EvidenceRef != "doc-1788958054422977825_0000" {
-		t.Fatalf("normalization must not touch code, severity or evidence: %+v", report.Findings[0])
-	}
-}
-
-// The Chinese report below is copied verbatim from review-91847c6aa8e77c605020b37e2099f6d2,
-// the sibling verdict that came back in Chinese under the same prompt version. It
-// carries English identifiers, which is exactly what must not read as English.
-func TestNormalizeReviewLanguageKeepsChineseUntouched(t *testing.T) {
-	report := releasecenter.AgentReview{
-		Recommendation: "needs_info",
-		KindLabel:      "制度",
-		Summary: "演示入职文档内容完整、无敏感数据、无提示注入风险；但知识适配评估将 space_fit 判定为 " +
-			"uncertain（无法确认材料是否适合当前演示知识空间），按规则该状态不得发布，故需人工确认" +
-			"材料归属后再决定是否发布。",
-		Findings: []releasecenter.Finding{
-			{Code: "space_fit_uncertain", Severity: "medium", Summary: "无法确认材料是否适合当前知识空间", EvidenceRef: "demo-doc-onboarding-0"},
-		},
-	}
-	want := report
-	normalizeReviewLanguage(&report)
-	if report.KindLabel != want.KindLabel || report.Summary != want.Summary {
-		t.Fatalf("a Chinese report must pass through unchanged: %+v", report)
-	}
-	if report.Findings[0].Summary != want.Findings[0].Summary {
-		t.Fatalf("a Chinese finding must pass through unchanged: %+v", report.Findings[0])
-	}
-}
-
-func TestLooksLikeEnglishProseThresholds(t *testing.T) {
-	cases := []struct {
-		text string
-		want bool
-	}{
-		{"", false},
-		{"材料不适合进入当前知识空间", false},
-		{"space_fit", false},
-		{"space_fit 判定为 uncertain", false},
-		{"将 space_fit 记为 uncertain、knowledge_usable 记为 usable", false},
-		{"OpenTelemetry Collector 配置需要人工确认", false},
-		{"The material does not belong in this knowledge space", true},
-		{"Test/placeholder marker string with a gate passphrase; not an approved HR, admin", true},
-	}
-	for _, tc := range cases {
-		if got := looksLikeEnglishProse(tc.text); got != tc.want {
-			t.Fatalf("looksLikeEnglishProse(%q) = %v, want %v", tc.text, got, tc.want)
-		}
-	}
-}
-
+// The language contract's own tests live in releasecenter, next to the stored
+// type and the rule: the write path here and the read path in the API both call
+// the same function, so a test of the rule belongs with it rather than twice,
+// once per caller. What stays here is what only the write path can show -- that
+// validation applies the rule to the verdict it assembles.
 func TestValidateAutonomousReviewKeepsDeterministicWordingOverPlannerParaphrase(t *testing.T) {
 	// The planner is told to copy deterministic findings verbatim. It paraphrased
 	// this one instead, and the old merge kept the paraphrase because it compared
@@ -914,7 +836,7 @@ func TestValidateAutonomousReviewKeepsDeterministicWordingOverPlannerParaphrase(
 		t.Fatalf("expected the deterministic space_mismatch and not_knowledge findings: %+v", report.Findings)
 	}
 	for _, finding := range report.Findings {
-		if looksLikeEnglishProse(finding.Summary) {
+		if releasecenter.LooksLikeEnglish(finding.Summary) {
 			t.Fatalf("an English finding summary survived validation: %+v", finding)
 		}
 	}

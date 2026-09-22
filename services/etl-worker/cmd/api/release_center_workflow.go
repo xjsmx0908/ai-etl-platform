@@ -64,7 +64,7 @@ func handleReleaseCenterWorkflowDecision(
 			writeWorkflowDecisionError(w, err)
 			return
 		}
-		review, err := store.GetReview(r.Context(), actor.TenantID, result.Request.ReviewID)
+		review, err := readReview(r.Context(), store, actor.TenantID, result.Request.ReviewID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

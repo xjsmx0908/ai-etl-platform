@@ -43,7 +43,7 @@ const (
 // reviewPlannerSystemPrompt is written in Chinese on purpose. The language of
 // every human-facing field is a hard requirement here, and a prompt phrased in
 // English is only a preference: the same prompt version produced English prose
-// for one document and Chinese prose for another. normalizeReviewLanguage
+// for one document and Chinese prose for another. releasecenter.NormalizeAgentReview
 // enforces the requirement after the fact, so this prompt states it rather than
 // relying on it.
 //
@@ -579,115 +579,14 @@ func validateAutonomousReview(run agent.Run, report releasecenter.AgentReview) (
 	// Last step, after every recommendation/risk floor has been applied: the
 	// summary is derived from the final recommendation, so it has to run after
 	// the deterministic escalation, not before it.
-	normalizeReviewLanguage(&report)
+	releasecenter.NormalizeAgentReview(&report)
 	return report, candidate, nil
 }
 
-// reviewFindingCodeLabels names the finding codes the platform emits. It mirrors
-// the web panel's FINDING_LABELS for the same reason: a code is an identifier,
-// and an identifier must never reach a reviewer's screen.
-var reviewFindingCodeLabels = map[string]string{
-	"sensitive_data_detected":   "敏感信息",
-	"prompt_injection_detected": "提示词注入",
-	"space_mismatch":            "不适合本空间",
-	"space_fit_uncertain":       "是否适合本空间看不准",
-	"not_knowledge":             "不能作为正式知识",
-	"incomplete_knowledge":      "材料不完整",
-	"fitness_evidence_missing":  "缺少适合性证据",
-	"insufficient_evidence":     "材料内容不足",
-}
-
-const (
-	unlabeledFindingSummary = "预审发现问题，需人工确认"
-	undecidedReviewSummary  = "预审已完成，请人工确认"
-)
-
-// normalizeReviewLanguage enforces Chinese on every field a reviewer reads.
-//
-// Asking for Chinese in the prompt is not the same as enforcing it. Under one
-// prompt version the same model wrote an English summary for
-// doc-1788958054422977825 and a Chinese one for demo-doc-onboarding, so the
-// language of a given verdict was whatever the model happened to pick. The
-// requirement is therefore applied to the assembled report:
-//
-//   - kind_label decides nothing, so an English one is dropped and the panel
-//     falls back to "未标注（不影响发布）"
-//   - summary is rebuilt from the report's own enums, which carry no language
-//   - a finding keeps its identity (code, severity, evidence_ref) but takes the
-//     Chinese name of its code instead of an English sentence
-func normalizeReviewLanguage(report *releasecenter.AgentReview) {
-	if looksLikeEnglishProse(report.KindLabel) {
-		report.KindLabel = ""
-	}
-	if looksLikeEnglishProse(report.Summary) {
-		report.Summary = reviewSummaryFor(*report)
-	}
-	for i := range report.Findings {
-		if !looksLikeEnglishProse(report.Findings[i].Summary) {
-			continue
-		}
-		label, ok := reviewFindingCodeLabels[strings.ToLower(strings.TrimSpace(report.Findings[i].Code))]
-		if !ok {
-			label = unlabeledFindingSummary
-		}
-		report.Findings[i].Summary = label
-	}
-}
-
-// reviewSummaryFor writes the one-line verdict from the report's structured
-// fields. Every input is a system enum, so the result cannot inherit the model's
-// language choice. It replaces a paragraph the model wrote with the sentence a
-// reviewer actually needs: can this be published, and if not, why not.
-func reviewSummaryFor(report releasecenter.AgentReview) string {
-	head := map[string]string{
-		"publish":       "预审通过，未发现阻断发布的问题",
-		"needs_info":    "预审未通过，需补充材料或人工确认后重审",
-		"reject":        "预审未通过，不建议发布",
-		"manual_review": "预审未给出结论，已转人工复核",
-	}[strings.ToLower(strings.TrimSpace(report.Recommendation))]
-	if head == "" {
-		head = undecidedReviewSummary
-	}
-	if len(report.Findings) == 0 {
-		return head + "。"
-	}
-	return fmt.Sprintf("%s，共 %d 项待确认问题。", head, len(report.Findings))
-}
-
-// englishFunctionWords are the words a Chinese sentence does not borrow. A
-// Chinese summary legitimately contains English identifiers -- space_fit,
-// uncertain, OpenTelemetry -- because those are the names of things, so counting
-// ASCII words alone would misfire on exactly the text this fix has to preserve.
-// Function words are what separates English prose from Chinese prose with
-// identifiers in it.
-var englishFunctionWords = map[string]bool{
-	"the": true, "and": true, "or": true, "not": true, "but": true,
-	"than": true, "rather": true, "that": true, "this": true, "these": true,
-	"is": true, "are": true, "was": true, "were": true, "be": true,
-	"has": true, "have": true, "been": true, "cannot": true, "must": true,
-	"to": true, "of": true, "in": true, "on": true, "at": true,
-	"by": true, "from": true, "with": true, "for": true, "as": true,
-}
-
-// looksLikeEnglishProse reports whether text reads as English sentences rather
-// than Chinese carrying a few English identifiers. Both conditions must hold:
-// six run-on ASCII words, at least two of them function words. An English
-// sentence always clears both; "space_fit 判定为 uncertain" clears neither.
-func looksLikeEnglishProse(text string) bool {
-	words, functionWords := 0, 0
-	for _, word := range strings.FieldsFunc(text, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z')
-	}) {
-		if len(word) < 2 {
-			continue
-		}
-		words++
-		if englishFunctionWords[strings.ToLower(word)] {
-			functionWords++
-		}
-	}
-	return words >= 6 && functionWords >= 2
-}
+// The reviewer-facing language contract used to live here. It now lives in
+// releasecenter, next to the stored verdict, because the API has to apply the
+// same rule to rows that were written before the contract existed -- see
+// releasecenter.NormalizeReviewReport.
 
 func reviewRecommendationRank(recommendation string) int {
 	switch strings.ToLower(strings.TrimSpace(recommendation)) {

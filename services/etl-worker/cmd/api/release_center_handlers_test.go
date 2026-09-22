@@ -149,6 +149,58 @@ func TestReleaseCenterReviewReportIsAdminAndTenantScoped(t *testing.T) {
 	}
 }
 
+// The stored row below is review-d6559154618ac1cf as the database holds it: an
+// autonomous-review-v2 verdict whose summary and kind_label are English because
+// the language contract did not exist when it was written. A reviewer opens that
+// row today, so the handler -- not its caller -- has to localise it. Dropping
+// releasecenter.NormalizeReviewReport from readReview is what this test catches.
+func TestReleaseCenterReviewReportServesStoredVerdictInChinese(t *testing.T) {
+	storedSummary := "Exact candidate is a single draft/placeholder marker chunk containing only " +
+		"'受管闭环干净第一版。唯一标记 PXGAP-MGC1-20260909-P7Q2。本版门禁口令是青门。' with no actual " +
+		"policy content. Knowledge-space fitness assessment determined the material does not fit " +
+		"the production knowledge space (space_fit=mismatch) and cannot be used as formal knowledge."
+	store := &releaseReviewStoreStub{review: releasecenter.ReviewReport{
+		ID: "review-d6559154618ac1cf", TenantID: "acme", DocumentID: "doc-1",
+		Status: "completed", Recommendation: "needs_info", RiskLevel: releasecenter.RiskMedium,
+		PromptVersion: "autonomous-review-v2",
+		Summary:       storedSummary,
+		KindLabel:     "Draft/placeholder marker text, not a formal policy document",
+		Findings: []releasecenter.Finding{
+			{Code: "space_mismatch", Severity: "medium", Summary: "材料不适合进入当前知识空间", EvidenceRef: "doc-1_0000"},
+			{Code: "not_knowledge", Severity: "medium", Summary: "材料不能作为正式知识使用", EvidenceRef: "doc-1_0000"},
+		},
+	}}
+	handler := handleReleaseCenterReviewReport(store)
+
+	allowed := doRequest(handler, http.MethodGet, "/v1/release-center/review-reports/review-d6559154618ac1cf", nil, ctxWithRole("acme", "admin", "admin"))
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", allowed.Code, allowed.Body.String())
+	}
+	var body struct {
+		Review releasecenter.ReviewReport `json:"review"`
+	}
+	if err := json.NewDecoder(allowed.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if releasecenter.LooksLikeEnglish(body.Review.Summary) {
+		t.Fatalf("the served summary must not read as English: %q", body.Review.Summary)
+	}
+	if body.Review.Summary != "预审未通过，需补充材料或人工确认后重审，共 2 项待确认问题。" {
+		t.Fatalf("summary=%q", body.Review.Summary)
+	}
+	if body.Review.KindLabel != "" {
+		t.Fatalf("the served kind_label must not read as English: %q", body.Review.KindLabel)
+	}
+	// The findings are the reason a reviewer needs, and they were already Chinese.
+	if len(body.Review.Findings) != 2 || body.Review.Findings[0].Summary != "材料不适合进入当前知识空间" {
+		t.Fatalf("findings must survive the read path: %+v", body.Review.Findings)
+	}
+	// Localising the response must not rewrite the audit record.
+	if store.review.Summary != storedSummary || store.review.KindLabel == "" {
+		t.Fatalf("the stored verdict was edited in place: %+v", store.review)
+	}
+}
+
 type approvalPolicyManagerStub struct {
 	groups                                []releasecenter.ApprovalGroup
 	policies                              []releasecenter.ApprovalPolicy

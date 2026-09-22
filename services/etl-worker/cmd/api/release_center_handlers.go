@@ -171,9 +171,7 @@ func handleReleaseCenterOverview(store releasecenter.OverviewStore) http.Handler
 
 // handleReleaseCenterReviewReport exposes read-only, tenant-scoped review
 // evidence for overview records that no longer have a durable request.
-func handleReleaseCenterReviewReport(store interface {
-	GetReview(context.Context, string, string) (releasecenter.ReviewReport, error)
-}) http.HandlerFunc {
+func handleReleaseCenterReviewReport(store reviewReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -188,7 +186,7 @@ func handleReleaseCenterReviewReport(store interface {
 			http.NotFound(w, r)
 			return
 		}
-		review, err := store.GetReview(r.Context(), auth.GetTenantID(r.Context()), parts[3])
+		review, err := readReview(r.Context(), store, auth.GetTenantID(r.Context()), parts[3])
 		if err != nil {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
@@ -245,7 +243,7 @@ func handleReleaseCenterDecision(store releasecenter.Store, workflow releasecent
 				writeError(w, http.StatusNotFound, err.Error())
 				return
 			}
-			review, err := store.GetReview(r.Context(), auth.GetTenantID(r.Context()), request.ReviewID)
+			review, err := readReview(r.Context(), store, auth.GetTenantID(r.Context()), request.ReviewID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
@@ -281,7 +279,7 @@ func handleReleaseCenterDecision(store releasecenter.Store, workflow releasecent
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		review, err := store.GetReview(r.Context(), auth.GetTenantID(r.Context()), result.Request.ReviewID)
+		review, err := readReview(r.Context(), store, auth.GetTenantID(r.Context()), result.Request.ReviewID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
