@@ -174,7 +174,13 @@ func TestPurgeExpiredReviewsDeletesUnreferenced(t *testing.T) {
 	defer mock.Close()
 	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 	retention := 24 * time.Hour
-	mock.ExpectExec("DELETE FROM release_center_reviews").WithArgs(now.Add(-retention), 20).WillReturnResult(pgxmock.NewResult("DELETE", 2))
+	// The expectation is a regex over the emitted SQL, so it doubles as the guard
+	// on the predicate: `WHERE rv.expires_at IS NOT NULL` is the first condition
+	// of the corrected query. A query gated on `WHERE rv.status='expired'` --
+	// which could never reap a review that was superseded before its TTL elapsed
+	// -- does not contain that substring, so restoring the gate fails this test
+	// with an unmet expectation instead of silently passing.
+	mock.ExpectExec(`WHERE rv\.expires_at IS NOT NULL`).WithArgs(now.Add(-retention), 20).WillReturnResult(pgxmock.NewResult("DELETE", 2))
 	deleted, err := NewPostgresStore(mock).PurgeExpiredReviews(context.Background(), now, retention, 20)
 	if err != nil || deleted != 2 {
 		t.Fatalf("deleted=%d err=%v", deleted, err)

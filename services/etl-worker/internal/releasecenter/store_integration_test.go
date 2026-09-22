@@ -143,3 +143,96 @@ func TestPostgresOverviewProjectsPublishedApprovalAndTenantScope(t *testing.T) {
 		t.Fatalf("published replacement projection=%+v, want checking not published", cutover)
 	}
 }
+
+// TestPurgeExpiredReviewsReapsSupersededReviews pins the retention contract that
+// RELEASE_REVIEW_RETENTION states: a review row is dropped once it is past
+// expires_at by the retention window and no request points at it any more.
+//
+// The rows that matter here are the superseded ones. A review only reaches
+// status='expired' via ExpireDueReviews, which joins the request that currently
+// references the row; a review superseded before its TTL elapsed (the request
+// repointed at a newer review after a transient Agent failure) is therefore
+// never marked expired. Gating the purge on that status retained those rows
+// forever. The referenced row must still survive: it is the live evidence the
+// request is judged against, and the foreign key from release_center_requests
+// would reject its deletion anyway.
+func TestPurgeExpiredReviewsReapsSupersededReviews(t *testing.T) {
+	dsn := os.Getenv("GOVERNANCE_RELEASE_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set GOVERNANCE_RELEASE_TEST_DSN to run PostgreSQL release-center integration tests")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := fmt.Sprintf("releasecenter_purge_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") }()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	retention := 90 * 24 * time.Hour
+	// Both timestamps are computed constants, so they are inlined rather than
+	// bound: pgx sends a parameterised statement over the extended protocol,
+	// which rejects the multi-statement script below.
+	past := now.Add(-100 * 24 * time.Hour).Format(time.RFC3339Nano)
+	fresh := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
+		CREATE TABLE release_center_reviews (
+			review_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, document_id TEXT NOT NULL,
+			document_version_id TEXT NOT NULL, generation_id TEXT NOT NULL, release_revision BIGINT NOT NULL,
+			status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), expires_at TIMESTAMPTZ);
+		CREATE TABLE release_center_requests (
+			request_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, review_id TEXT NOT NULL, state TEXT NOT NULL);
+		INSERT INTO release_center_reviews (review_id,tenant_id,document_id,document_version_id,generation_id,release_revision,status,expires_at) VALUES
+			('probe-superseded-failed','probe','doc-1','job-1','gen-1',1,'failed','%[1]s'),
+			('probe-superseded-completed','probe','doc-1','job-1','gen-1',1,'completed','%[1]s'),
+			('probe-expired-unreferenced','probe','doc-1','job-1','gen-1',1,'expired','%[1]s'),
+			('probe-referenced-failed','probe','doc-2','job-2','gen-2',1,'failed','%[1]s'),
+			('probe-fresh-completed','probe','doc-3','job-3','gen-3',1,'completed','%[2]s');
+		INSERT INTO release_center_requests (request_id,tenant_id,review_id,state)
+			VALUES ('probe-request','probe','probe-referenced-failed','needs_info');`, past, fresh)); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := NewPostgresStore(pool).PurgeExpiredReviews(ctx, now, retention, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 3 {
+		t.Fatalf("deleted=%d, want 3 (both superseded rows and the already-expired one)", deleted)
+	}
+	rows, err := pool.Query(ctx, `SELECT review_id FROM release_center_reviews ORDER BY review_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var survivors []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		survivors = append(survivors, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"probe-fresh-completed", "probe-referenced-failed"}
+	if len(survivors) != len(want) || survivors[0] != want[0] || survivors[1] != want[1] {
+		t.Fatalf("survivors=%v, want %v (a review inside its window, and one a request still references)", survivors, want)
+	}
+}

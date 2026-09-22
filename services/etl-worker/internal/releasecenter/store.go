@@ -587,11 +587,23 @@ func (s *PostgresStore) PurgeExpiredReviews(ctx context.Context, now time.Time, 
 		limit = 200
 	}
 	cutoff := now.UTC().Add(-retention)
+	// The predicate is "past expires_at by the retention window, and no request
+	// points at it yet" -- deliberately not "status='expired'".
+	//
+	// ExpireDueReviews reaches a review only through the request that currently
+	// references it (q.review_id=rv.review_id). A review that is superseded
+	// before its TTL elapses is never marked expired: the request is repointed at
+	// the replacement, and from then on the expiry walk cannot see the old row at
+	// all. Gating this delete on status='expired' therefore retained every
+	// superseded review forever, and RELEASE_REVIEW_RETENTION -- which is
+	// configured as a bound on review storage -- never applied to them. The two
+	// halves of the lifecycle have to agree on the same predicate: what is
+	// "unreferenced and past its window" is exactly what retention is allowed to
+	// drop, whatever status the row was left holding.
 	tag, err := s.q.Exec(ctx, `WITH doomed AS (
 		SELECT rv.review_id
 		FROM release_center_reviews rv
-		WHERE rv.status='expired'
-		  AND rv.expires_at IS NOT NULL
+		WHERE rv.expires_at IS NOT NULL
 		  AND rv.expires_at <= $1
 		  AND NOT EXISTS (
 			SELECT 1 FROM release_center_requests q
