@@ -30,10 +30,10 @@
 | 类别 | 结论 |
 | --- | --- |
 | 功能完善度 | 主链路（上传→解析→向量化→检索→问答→发布审批）已闭环；缺口集中在**自助能力**、**合规审查深度**两处（**备份恢复**已由 §1.2 补齐） |
-| 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；问题在**配置一致性**、**状态文档三源冲突**、**单文件职责过载** |
+| 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；**配置一致性**已由 §2.2 / §2.3 修掉（并加了契约测试），剩下的问题是**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **没有 P0 挂着**。三项 P0 都已处理：ES 永久 yellow（§1.1.1）、全栈无备份（§1.2）、磁盘濒满（§1.1.2，可用空间 9.2GB → 63GB）。下一步按 §7 的执行顺序走 |
-| 已修复项 | 15 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）。见 §1.1、§1.2、§1.3 |
+| 已修复项 | 15 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）+ 配置键一致性：3 个切块死键、26 个未文档化的键、3 个 compose 漏传的检索键（§2.2 / §2.3）。见 §1.1、§1.2、§1.3、§2.2、§2.3 |
 
 ---
 
@@ -869,9 +869,9 @@ B4 给人看的文本都含汉字、B5 修复前那行**逐字未变**（只改�
 
 ## 2. P1 —— 工程可复现性（现在会绊住每一次改动）
 
-### 2.1 远端 Go 工具链默认跑不通，`.gomod`/`.gocache` 是承重结构
+### 2.1 远端 Go 工具链默认跑不通（已解决，未改任何东西 —— 2026-09-22 复核）
 
-**证据**
+**原记录（2026-09-12）**
 
 ```
 $ cd services/etl-worker && go test ./cmd/api ./cmd/worker
@@ -880,31 +880,41 @@ $ cd services/etl-worker && go test ./cmd/api ./cmd/worker
   FAIL  ai-etl-pipeline/cmd/worker [setup failed]
 
 $ ls -ld ~/go/pkg/mod          → drwxr-xr-x root root   ← ubuntu 用户无写权限
-$ go env GOMODCACHE           → /home/ubuntu/go/pkg/mod  ← 默认指向 root 拥有的目录
-
-# 显式指定仓库内缓存后：
-$ GOMODCACHE=$PWD/.gomod GOCACHE=$PWD/.gocache go test ./cmd/api ./cmd/worker
-  ok  ai-etl-pipeline/cmd/api     27.418s
-  ok  ai-etl-pipeline/cmd/worker   0.011s
 ```
 
-**根因**：`/home/ubuntu/go/pkg/mod` 于 2026-09-08 由 root 创建，ubuntu 无写权限。仓库根目录的 `.gomod`(350MB) / `.gocache`(384MB) 是 2026-09-12 用 `GOMODCACHE`/`GOCACHE` 环境变量临时绕过的产物 —— **它们不是垃圾，是绕行方案**。
+**2026-09-22 复核：不再复现。** 目录属主已变成 ubuntu，不设任何 `GOMODCACHE`/`GOCACHE`
+直接跑测试即通过：
 
-**影响**：任何新会话或新人在服务器上直接跑 `go test` 都会失败，且失败信息是权限错，容易误判成代码问题。这直接损害「改完能在服务器上验证」这个目标。
+```
+$ ls -ld /home/ubuntu/go/pkg/mod
+  drwxr-xr-x 7 ubuntu ubuntu 4096 Sep  8 17:24
 
-**怎么做**（三选一，推荐第 1 条）
+$ cd services/etl-worker && export PATH=$PATH:/usr/local/go/bin
+$ go test ./internal/releasecenter/ ./cmd/worker
+  ok   ai-etl-pipeline/internal/releasecenter  0.007s
+  ok   ai-etl-pipeline/cmd/worker              0.008s
+```
 
-1. `sudo chown -R ubuntu:ubuntu /home/ubuntu/go/pkg/mod` —— 一劳永逸，恢复默认行为。
-2. `go env -w GOMODCACHE=/home/ubuntu/ai-projects/ai-etl-platform/.gomod GOCACHE=...` —— 固化到 go 配置，但把缓存绑在仓库路径上，仓库移动即失效。
-3. 在 `services/etl-worker/Makefile` 和 `CONTINUATION.md` 里显式导出这两个变量 —— 只是把坑写清楚，没消除。
+**处置：本项从待办划掉，没有改任何东西。** 当时的第 1 条方案（`chown -R ubuntu:ubuntu`）
+不知何时已被执行，问题自然消失。**无需再修**，也不应再去动 `go env -w`。
 
-**注意**：无论选哪条，`.gomod`/`.gocache` 都不应提交进 Git（已在 `31a5b28` 加入 `.gitignore`），但**也绝不能删除**。
+**但原记录有一处不准，必须纠正**：`.gomod` / `.gocache` 不止在仓库根，而是**三份**：
 
-**验收判据**：在远端 `cd services/etl-worker && go test ./... -count=1` 不设任何额外环境变量即可通过。
+```
+350M  ./.gomod                        365M  ./.gocache
+350M  ./services/.gomod               399M  ./services/.gocache
+350M  ./services/etl-worker/.gomod    523M  ./services/etl-worker/.gocache
+```
 
-### 2.2 `.env.example` 切块配置段有 3 个「死键」，改错静默无效
+合计约 2.3GB。原记录写的「734MB」只算了仓库根那一份。这三份仍然是**承重结构**
+（构建提速），继续保留、继续 gitignore，**不要删**。
 
-**证据**（`.env.example:408-412`）
+**验收判据**：`go test ./... -count=1` 在远端不设任何额外环境变量即可通过 —— 已实测通过。
+
+
+### 2.2 `.env.example` 切块配置段有 3 个「死键」（已修复，`b14e20d` + `c7b4003`）
+
+**证据**（`.env.example` 切块段，修复前）
 
 ```
 MIN_CHUNK_SIZE=128
@@ -914,38 +924,131 @@ PARSER_MAX_CHUNK_SIZE=600   ← 真正生效
 PARSER_CHUNK_OVERLAP=50     ← 真正生效
 ```
 
-`docker-compose.yml:300-302` 实际是：
+`docker-compose.yml` 的 `parser-service` 段实际是：
 
 ```
-- MIN_CHUNK_SIZE=128                          ← 硬编码，不插值 .env
+- MIN_CHUNK_SIZE=128                          ← 硬编码字面量，不插值 .env
 - MAX_CHUNK_SIZE=${PARSER_MAX_CHUNK_SIZE:-600} ← 从 PARSER_* 取值
 - CHUNK_OVERLAP=${PARSER_CHUNK_OVERLAP:-50}    ← 从 PARSER_* 取值
 ```
 
-**影响**：切块参数是入库质量的核心旋钮（`LEARNINGS.codex.md` 记录了从 1200 字符调到 600 的完整过程）。现在用户按直觉改 `MAX_CHUNK_SIZE=1000` 会**完全没反应**，且没有任何报错。这是最难排查的一类配置缺陷。
+**影响**：切块参数是入库质量的核心旋钮（`LEARNINGS.codex.md` 记录了从 1200 字符调到 600
+的完整过程）。用户按直觉改 `MAX_CHUNK_SIZE=1000` 会**完全没反应**，且没有任何报错。
+这是最难排查的一类配置缺陷 —— 症状只有「改了没反应」，日志和界面都不会说话。
 
-**怎么做**：删掉 3 个死键，只保留 `PARSER_*`；或在 `docker-compose.yml` 里改为真正的 `${MAX_CHUNK_SIZE:-600}` 插值。推荐前者 —— 一套键名，不留二义。
+**一处需要更正原记录**：原计划写的是「删掉 3 个死键，只保留 `PARSER_*`」。三个键确实
+都是死键（原记录把 `MIN_CHUNK_SIZE` 标成「硬编码」是对的），但**直接删掉它等于把
+最小切块尺寸变成不可调**。改名本身是刻意的（同一个宿主值要喂给 `parser-service` 和
+`etl-worker` 两个容器，而 etl-worker 侧本来就用 `PARSER_` 前缀），缺的是
+`MIN_CHUNK_SIZE` 从没享受同等待遇。
 
-**验收判据**：`grep -rn "MAX_CHUNK_SIZE\|CHUNK_OVERLAP" .env.example` 只剩 `PARSER_` 前缀；改 `PARSER_MAX_CHUNK_SIZE` 后重建 parser 容器，容器内 `env | grep MAX_CHUNK` 的值随之变化。
+**实际做法**：补一个 `PARSER_MIN_CHUNK_SIZE`，三个键统一带前缀，compose 侧
+`MIN_CHUNK_SIZE=${PARSER_MIN_CHUNK_SIZE:-128}`。既消掉死键，又**把原本不可调的
+那个键变成可调**。
 
-### 2.3 19 个环境变量被代码引用但未写入 `.env.example`
-
-**证据**
+**线上验证**（2026-09-22，演示栈）
 
 ```
-config.go 引用键 184 个，.env.example 定义 192 个，差集 19 个未文档化：
-ALERT_WEBHOOK_TOKEN, EMBED_BACKOFF, EMBED_MAX_BACKOFF, EMBED_MAX_RETRIES,
-HEALTH_PORT, LOGIN_RATE_LIMIT, LOGIN_RATE_LIMIT_STORE, PARSER_ENDPOINT,
-PARSER_READ_BUFFER, PIPELINE_RETRY_BACKOFF, PIPELINE_TASK_BUFFER, PROMPT_DIR,
-PROMPT_VERSION, RETRIEVAL_MIN_RELEVANCE, SCIM_BEARER_TOKENS, SPARSE_AVG_DL,
-SPARSE_B, SPARSE_K1, UPLOAD_DIR, WORKER_HEALTH_URL
+# 注入
+$ echo "PARSER_MIN_CHUNK_SIZE=200" >> .env && echo "PARSER_CHUNK_OVERLAP=77" >> .env
+$ docker compose up -d parser-service
+$ docker compose exec -T parser-service env | grep -E "^MIN_CHUNK_SIZE|^CHUNK_OVERLAP"
+  MIN_CHUNK_SIZE=200        ← 修复前这里恒为 128，改 .env 无效
+  CHUNK_OVERLAP=77
+# 还原
+$ cp .env.envfix-backup .env && docker compose up -d parser-service
+$ docker compose exec -T parser-service env | grep -E "^MIN_CHUNK_SIZE|^CHUNK_OVERLAP"
+  MIN_CHUNK_SIZE=128
+  CHUNK_OVERLAP=50
 ```
 
-`AGENTS.md` 明文要求：「配置通过环境变量驱动，新增设置同步写入 `.env.example` 文件」。**这条约定正在被违反**，其中 `LOGIN_RATE_LIMIT`、`SCIM_BEARER_TOKENS`、`ALERT_WEBHOOK_TOKEN`、`RETRIEVAL_MIN_RELEVANCE` 都是运维/安全相关的键。
+**验收判据**：改 `PARSER_MIN_CHUNK_SIZE` 后重建 parser 容器，容器内 `MIN_CHUNK_SIZE`
+随之变化 —— 已实测（128 → 200 → 128）。契约测试 `test_chunking_host_keys_are_prefixed_and_wired`
+钉住这条重命名，裸键一旦回到根模板顶层就红。
 
-**怎么做**：补齐这 19 个键（带默认值和一行说明）。建议再加一个契约测试 —— 解析 `config.go` 的键集合与 `.env.example` 比对，缺一个就红，防止再次漂移。
+### 2.3 环境变量未被写入 `.env.example`（已修复，`b14e20d` + `c7b4003`）
 
-**验收判据**：新增契约测试通过；差集为空。
+**证据**（修复前，两处口径都重算过）
+
+```
+口径一：全部 compose 文件的插值键（${KEY...}）   → 19 个未写入任何 .env.example
+口径二：服务代码读取的键（Go Env*/secretCSV/os.Getenv + Python Settings）
+                                                 → 11 个未写入（已排除 13 个单测专用键）
+两份差集只有 4 个键重合，并起来是 26 个键
+```
+
+`AGENTS.md` 明文要求：「配置通过环境变量驱动，新增设置同步写入 `.env.example` 文件」。
+**这条约定正在被违反**，其中 `LOGIN_RATE_LIMIT_STORE`、`SCIM_BEARER_TOKENS`、
+`ALERT_WEBHOOK_TOKEN`、`RETRIEVAL_MIN_RELEVANCE` 都是运维/安全相关的键。
+
+**两处口径更正（这是本项最值得记的部分）**
+
+1. **原记录的「19 个」是算大的。** 那次只跟**根模板**比对，而
+   `services/etl-worker/.env.example` 里已经写着 71 个键 —— 原记录列的 20 个键里有
+   **11 个**（`EMBED_BACKOFF`、`EMBED_MAX_*`、`HEALTH_PORT`、`UPLOAD_DIR`、`SPARSE_*`、
+   `PARSER_READ_BUFFER`、`PIPELINE_*_BUFFER` 等）早已文档化。正确口径是**三份模板的并集**。
+   另有 2 个（`LOGIN_RATE_LIMIT`、`PROMPT_VERSION`）在根模板里以注释形式存在，
+   原记录的匹配没算注释行。**真正一行都没有的只有 7 个**。
+
+2. **只查「代码读取」会漏掉一半。** 宿主 `.env` 的值只有被 compose 插值才进得了容器，
+   所以还必须反查 `${KEY}`。这一口径独立查出 **19 个**缺口，其中 **15 个**是代码侧不读、
+   只有 compose 会插值的键（`RERANKER_LOG_LEVEL`、`REDIS_CACHE_HOST_PORT`、
+   `REDIS_STATE_HOST_PORT`、`WORKFLOW_CALLBACK_TOKEN_FILE`，以及 11 个叠加层专用的
+   端口/资产目录键 —— `RESTORE_*` 5 个、`IDENTITY_DEMO_*` 3 个、`API_PORT`、`WEB_PORT`、
+   `WORKER_METRICS_HOST_PORT`）。**只查代码引用的那一次，这 15 个一个都看不到。**
+
+**实际做法**：补齐全部缺口（默认值一律从代码里读，不猜）。**同时把 5 处硬编码改成插值**
+——`MIN_CHUNK_SIZE`、`PARSER_ENDPOINT`、`WORKER_HEALTH_URL`、`PROMPT_DIR`、
+`OTEL_EXPORTER_OTLP_ENDPOINT`。原因：这几个键被 compose 用字面量覆盖，只在
+`.env.example` 里写下来等于**制造新的死键**，正是本项要修的那个缺陷。13 个单测专用键
+（`*_TEST_DSN`、`OIDC_KEYCLOAK_TEST_*` 等）**刻意不写**，由契约测试排除 `_test.go` 实现。
+
+**写文档时又挖出第三个缺口（`c7b4003`）**：补进去的键里有三个是「代码会读、compose 却
+从不传给容器」——`RETRIEVAL_MIN_RELEVANCE`、`RETRIEVAL_GROUNDING_LOW_BOUND`、
+`RETRIEVAL_GROUNDING_HIGH_BOUND`。`docker-compose.yml` 给 query-api 传了另外 9 个
+`RETRIEVAL_*` 键，偏偏在最后一行停住了，于是忠实度校验器一直跑在内置默认值上，
+宿主 `.env` 里改这三个值没有任何反应。**这是「只查代码引用」漏掉的形状**：
+键确实被读，只是读它的那个进程拿不到宿主的值。
+
+线上 A/B：
+
+```
+# 修复前
+$ docker compose exec -T query-api env | grep -E "RETRIEVAL_MIN_RELEVANCE|RETRIEVAL_GROUNDING"
+  RETRIEVAL_GROUNDING_CHECK=true          ← 只有这一个，另三个不在
+# 修复后（docker compose up -d query-api）
+  RETRIEVAL_GROUNDING_CHECK=true
+  RETRIEVAL_GROUNDING_HIGH_BOUND=0.70
+  RETRIEVAL_GROUNDING_LOW_BOUND=0.45
+  RETRIEVAL_MIN_RELEVANCE=0
+```
+
+另外两个键（`ALERT_WEBHOOK_TOKEN`、`SCIM_BEARER_TOKENS`）属于同一形状，但**处置相反**：
+compose 用的是 `_FILE` 形式（`EnvSecret` 先读 `KEY` 再读 `KEY_FILE`），容器里文件优先，
+所以明文值永远进不去。**这两行改成注释**并写明「只在直接跑服务时生效」，
+而不是当成可用旋钮摆在那里 —— 把它们留在顶层，就是在重复本项要修的缺陷。
+
+**新增契约测试** `scripts/tests/test_env_example_contract.py`（6 条断言）
+
+| 断言 | 钉住什么 |
+|---|---|
+| `test_every_compose_interpolated_key_is_documented` | 全部 compose（含 6 个叠加层）的 `${KEY}` ⊆ 模板并集 |
+| `test_every_code_referenced_key_is_documented` | Go 非测试代码 + Python Settings 读的键 ⊆ 模板并集 |
+| `test_chunking_host_keys_are_prefixed_and_wired` | 切块三键必须带 `PARSER_` 前缀且真的接进容器 |
+| `test_parser_template_defaults_match_service_settings` | parser 模板默认值 == `app/config.py` 的字段默认值 |
+| `test_source_scan_skips_hidden_and_vendored_trees` | **判据自检**：必须跳过 `.gomod`/`.gocache` |
+| `test_every_config_env_helper_is_scanned` | **判据自检**：`config.go` 新增读 env 的助手必须被覆盖 |
+
+**最后两条自检不是装饰，是踩出来的**。第一版用 `rglob("*.go")` 直接扫
+`services/etl-worker`，**本机（262 个 `.go`）全绿，远端（6365 个 `.go`）报 52 个假缺口**
+——多出来的 6103 个在 `.gomod`/`.gocache` 里，AWS SDK、minio-go、grpc 都在读它们自己的
+`AWS_ACCESS_KEY`、`MINIO_ALIAS`、`GRPC_GO_LOG_*`。判据出错时的症状是「同一个测试在两台
+机器上结论相反」，只跑正例永远发现不了。
+
+**验收判据**：契约测试 6 条全绿（本机 + 远端）；差集为空（compose 插值 233 个、模板并集
+286 个）；6 条断言逐一做反向验证 —— 破坏各自的目标后必红，恢复后文件逐字节一致；
+线上 query-api 容器内可见四个检索键（修复前只有 `RETRIEVAL_GROUNDING_CHECK` 一个）。
+
 
 ---
 
@@ -1230,9 +1333,9 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 11 步（已完成） §1.3 缺陷 13：预审裁决的语言与长度（prompt 中文化 + 确定性归一 + 确定性文本优先）
 第 12 步（已完成） §1.3 缺陷 14：语言契约的读取侧兜底 + 判据补漏（线上 28 条裁决全部中文）
 第 13 步（已完成） §1.3 缺陷 15：失败裁决保留审阅者诊断 + 契约覆盖全部写入路径
-第 14 步          2.1 Go 工具链权限修复
+第 14 步（已完成） §2.1 Go 工具链权限 —— 复核发现**已自然消失，未改任何东西**
 第 15 步          3.  状态文档三源归一 + 一致性契约测试
-第 16 步          2.2 / 2.3 配置一致性修复 + 契约测试
+第 16 步（已完成） §2.2 / 2.3 配置一致性修复 + 契约测试（`b14e20d` + `c7b4003`）
 第 17 步          4.1 邀请式自助开户（需你先确认产品口径）
 第 18 步          5.1 query/service.go 机械拆分
 ```
@@ -1243,15 +1346,20 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 12 步是第 11 步的下半场：判定补上了却只挂在写入路径上，于是**表里已有的裁决照样是错的**。
 第 13 步是第 12 步的下半场：中文补上了，但失败裁决只剩一句「已转人工复核」——
 **一个说不清为什么失败的裁决，管理员只能重试或叫人**。
-第 14 步是「不做则每次改动都在踩坑」；第 15 步是「不做则后面所有状态判断都不可信」；
-第 16 步成本最低收益明确；第 17 步需要你的产品决策；第 18 步是纯收益优化，随时可做。
+第 14 步复核时发现不需要做（问题已自然消失），但**顺手纠正了原记录里 `.gomod`/`.gocache`
+的位置和体积**（三份、合计约 2.3GB，不是仓库根那一份 734MB）。
+第 16 步和第 5–13 步是同一类缺陷：**改了没反应，且不报错** —— 只是这次静默的不是结论，
+是配置。它成本最低、收益明确，所以提到第 17 步之前做掉。
+第 15 步是「不做则后面所有状态判断都不可信」；第 17 步需要你的产品决策；
+第 18 步是纯收益优化，随时可做。
 
 ---
 
 ## 8. 边界与未做的事（避免误解）
 
-- **代码改动限于两处**：§1.3 列出的 15 个缺陷，以及 §1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
-  （含补上的 `node-exporter`）。其余章节仍是调查结论，未据此改代码。
+- **代码改动限于三处**：§1.3 列出的 15 个缺陷，§1.1.2 的 ES 水位百分比化 + 宿主机磁盘告警
+  （含补上的 `node-exporter`），以及 §2.2 / §2.3 的配置键修复（`b14e20d` + `c7b4003`）。
+  其余章节仍是调查结论，未据此改代码。
 - **缺陷 14 只改了「给人看的文本」，没改「存起来的事实」**。`release_center_reviews` 里那 6 条英文
   `summary`、8 条英文 `kind_label` **一个字都没有被改写**，读取侧只是不再把它们原样送出去。
   这是刻意的：那一行是「模型当时说了什么」的审计记录，改它等于改证据。
@@ -1275,7 +1383,9 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
   （`down -v` 只作用于该隔离项目，碰不到演示栈的卷）。
 - **新增了一个服务**：`node-exporter`。它不是可选的装饰 —— 没有它就没有任何磁盘信号，
   告警规则写出来也是死的。端口 9100 只在 `127.0.0.1`，隔离栈通过 eval 覆盖把它收起来。
-- **没有删除任何东西**。远端 734MB 的 `.gomod`/`.gocache` 是承重结构，本次确认了它不能被删。
+- **没有删除任何东西**。远端 `.gomod`/`.gocache` 是承重结构，本次确认了它不能被删。
+  **顺便纠正一处旧记录**：它们不是只有仓库根那一份（734MB），而是**三份**
+  （仓库根、`services/`、`services/etl-worker/`），合计约 **2.3GB**。全部保留。
 - **没有清理你其他项目的镜像/卷**。清理后 `Images` 仍有 24.59GB 可回收、`Local Volumes`
   19.98GB 可回收，大部分不属于本项目 —— 这类操作我不会未经确认执行。
   本轮的回收只做了 `docker builder prune -af`（58.18GB 构建缓存，只影响下次构建速度，
@@ -1289,6 +1399,44 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
   `scripts/backfill-es-file-name.sh` 就地补齐，没有 drop/rebuild 索引，也没有重新上传任何文档。
 - **§4.7 的 116 份源对象没有试图补救**。字节已不存在，脚本不做假造；它被降级为「由完整性门禁
   持续报告的已知缺失」，而不是「已修复」。
+- **§2.2 / §2.3 只打通了「宿主 `.env` → 容器」这条链路，没有改任何键的语义**。补进去的每个键，
+  默认值都是从代码里读出来的（`internal/config/config.go`、`services/doc-parser-service/app/config.py`、
+  或 compose 的 `:-` 默认值），**没有一个是猜的**。5 处 compose 硬编码改成插值时默认值与改前
+  逐字相同，所以**现有部署的行为一个字都没变** —— 变的是「现在改得动」。
+- **契约测试只覆盖两个方向，有一类同类问题没有覆盖**：根模板里还有 **18 个键**既没被任何
+  compose 文件插值、也没有任何宿主脚本读取，即「写在 `.env` 里不会生效」。完整清单：
+
+  ```
+  KAFKA_BROKERS        REDIS_CACHE_ADDR     REDIS_STATE_ADDR    STORE_ENDPOINT
+  S3_ENDPOINT          REDIS_ADDR           REDIS_DB            PG_DSN
+  MINIO_ROOT_USER      MINIO_ROOT_PASSWORD  REDIS_CACHE_PASSWORD
+  REDIS_STATE_PASSWORD NOTIFICATION_WEBHOOK_TOKEN
+  TASK_STATUS_STORE    TASK_STATUS_TTL      MULTIPART_MAX_MEMORY_MB
+  OUTBOX_RELAY_BATCH_SIZE  OUTBOX_RELAY_LEASE
+  ```
+
+  分三类：**集群内地址**（`REDIS_*_ADDR`、`STORE_ENDPOINT`、`S3_ENDPOINT`、`KAFKA_BROKERS`，
+  compose 直接写死成服务名）、**已由 `_FILE` 形式的 secret 取代**（`PG_DSN`、
+  `MINIO_ROOT_USER/PASSWORD`、`*_PASSWORD`、`NOTIFICATION_WEBHOOK_TOKEN`）、
+  **在 compose 里完全没有引用**（`TASK_STATUS_*`、`MULTIPART_MAX_MEMORY_MB`、
+  `OUTBOX_RELAY_*`）。**三类都没有动**：前两类要改成可配置是产品决定（要不要允许外部
+  Redis/PG、要不要走明文 secret），第三类需要先确认代码侧默认值是否够用。
+  契约测试不检查这一类 —— 它只断言「compose 会插值的键」和「代码会读的键」，
+  不检查「模板写了但两边都没接」的键。**这是已知的覆盖缺口，不是已经做完的事。**
+
+  **顺带修掉的 5 个**：`CHUNK_OVERLAP` / `MAX_CHUNK_SIZE` / `MIN_CHUNK_SIZE`（§2.2），
+  以及 `RETRIEVAL_MIN_RELEVANCE` / `RETRIEVAL_GROUNDING_LOW_BOUND` /
+  `RETRIEVAL_GROUNDING_HIGH_BOUND`（compose 的 query-api 段漏传了这三个检索旋钮，
+  已补上并重建验证）。清单从 23 降到 18，**没有一个新增**。
+
+- **本轮踩到一个「本机绿、服务器红」的假失败，值得单独记**：契约测试第一版用
+  `rglob("*.go")` 扫 `services/etl-worker`，本机 262 个 `.go` 全绿，远端 6365 个
+  （多出来的是 `.gomod`/`.gocache` 里的第三方源码）报 52 个假缺口。**判据写错时的症状
+  是「同一个测试在两台机器上结论相反」，只跑正例永远发现不了** —— 所以给它配了
+  `test_source_scan_skips_hidden_and_vendored_trees` 做自检。
+- **`docs/optimization-plan.md` 本身没有做全文一致性审计**。本轮只改了 §2.1 / §2.2 / §2.3 /
+  §7 / §8 五处，其余章节仍是各轮次追加的原文。§3 记的「状态文档三源冲突」指的就是这件事，
+  它仍未完成。
 - **缺陷 9 的修复不改变「已发布 / 草稿」的可见性口径**。`file_name` 回到索引后，
   `demo-doc-onboarding` 与 `demo-doc-payroll` 的词法候选会重新出现，但它们
   `publication_status='draft'`，仍被 `publicationrelease.ResolveVisibility` 正确挡在证据之外
