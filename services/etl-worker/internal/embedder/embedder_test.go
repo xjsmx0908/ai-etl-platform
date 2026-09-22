@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/model"
@@ -253,5 +254,70 @@ func TestEmbedOpenAICompatibleRequestOmitsKeepAlive(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "keep_alive") {
 		t.Fatalf("openai-compatible embed must not send keep_alive, got %s", raw)
+	}
+}
+
+// TestTruncateKeepsThePreviewValidUTF8 pins the contract of the text_preview
+// span attribute: whatever comes in, what reaches the tracer is valid UTF-8 and
+// no longer than the byte budget.
+//
+// The regression it guards is subtle. An earlier fix added ToValidUTF8 to repair
+// input that was already invalid, but left the cut as s[:maxLen] -- a byte slice.
+// Repairing and then cutting at an arbitrary byte offset re-breaks the string, so
+// for any non-ASCII text the attribute could still carry invalid UTF-8. A pure-CJK
+// preview makes it certain rather than likely: three-byte characters mean byte 100
+// always lands inside a character.
+func TestTruncateKeepsThePreviewValidUTF8(t *testing.T) {
+	const budget = 100
+	cases := []struct {
+		name    string
+		content string
+	}{
+		// 40 three-byte characters: 120 bytes, so the cut is guaranteed to fall
+		// inside a character if it is taken at byte 100.
+		{"pure CJK past the budget", strings.Repeat("巡", 40)},
+		{"CJK with ASCII mixed in", "机房日常巡检规范\n巡检编号 PXBB8664。\n机房温度标准为 26 摄氏度，湿度应保持在 40% 到 60% 之间，超限需在 30 分钟内上报。"},
+		// Four-byte runes exercise a different offset alignment.
+		{"emoji", strings.Repeat("🙂", 40)},
+		{"combining marks", strings.Repeat("e\u0301", 60)},
+		// Already-invalid input: the repair half of the contract.
+		{"lone continuation byte", "巡检记录\x80温度上限 32 度"},
+		{"truncated CJK sequence", "巡检记录\xe5\xb7"},
+		{"short enough to pass through", "warmup"},
+		{"exactly the budget", strings.Repeat("a", budget)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncate(tc.content, budget)
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncate returned invalid UTF-8: %q", got)
+			}
+			preview := strings.TrimSuffix(got, "...")
+			if len(preview) > budget {
+				t.Errorf("preview is %d bytes, over the %d-byte budget", len(preview), budget)
+			}
+			// The preview must be a prefix of the repaired input, so a cut can
+			// only ever shorten the text -- never substitute or reorder it.
+			repaired := strings.ToValidUTF8(tc.content, "\uFFFD")
+			if !strings.HasPrefix(repaired, preview) {
+				t.Errorf("preview %q is not a prefix of the repaired input %q", preview, repaired)
+			}
+		})
+	}
+}
+
+// TestTruncateCutsOnARuneBoundary is the narrow version of the test above: it
+// asserts the boundary property directly instead of inferring it from validity,
+// so a future change that switches to runes-as-budget still has to keep the cut
+// on a boundary.
+func TestTruncateCutsOnARuneBoundary(t *testing.T) {
+	content := strings.Repeat("巡", 40)
+	got := strings.TrimSuffix(truncate(content, 100), "...")
+	if len(got) != 99 {
+		t.Fatalf("cut = %d bytes, want 99 (33 three-byte characters); the next "+
+			"character starts at byte 99 and would not fit in the 100-byte budget", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("cut is not valid UTF-8: %q", got)
 	}
 }

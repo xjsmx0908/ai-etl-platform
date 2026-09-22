@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"ai-etl-pipeline/internal/circuit"
 	"ai-etl-pipeline/internal/config"
@@ -301,12 +302,27 @@ func (e *HTTPEmbedder) backoff(attempt int) time.Duration {
 	return jitter
 }
 
+// truncate builds the bounded preview that goes into the text_preview span
+// attribute. maxLen is a byte budget, not a rune budget: the attribute exists to
+// keep traces small, so the limit has to hold in the unit the exporter measures.
+//
+// Both halves matter. strings.ToValidUTF8 repairs input that is already invalid
+// (a PDF or OCR path can hand us a lone continuation byte), and the rune-boundary
+// walk keeps the cut from *re-introducing* the very problem it just repaired:
+// slicing at an arbitrary byte offset lands inside a multi-byte character for any
+// non-ASCII text, and the tracer then carries invalid UTF-8. The sibling helper
+// releasecenter.truncateRunes cuts on runes for the same reason; this one cannot,
+// because its budget is bytes.
 func truncate(s string, maxLen int) string {
 	s = strings.ToValidUTF8(s, "�")
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // --- Retryable error ---
