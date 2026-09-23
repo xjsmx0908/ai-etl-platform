@@ -25,7 +25,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 function parseArgs(argv) {
-  const opts = { base: "http://127.0.0.1:3100", urls: [], wait: 5000, out: "", cookie: "", port: 9222, json: false, width: 1440, height: 900, login: "", afterLoad: "" };
+  const opts = { base: "http://127.0.0.1:3100", urls: [], wait: 5000, out: "", cookie: "", port: 9222, json: false, width: 1440, height: 900, login: "", afterLoad: "", selfCheck: false };
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
     const value = argv[i + 1];
@@ -44,15 +44,90 @@ function parseArgs(argv) {
       }
       case "--after-load": opts.afterLoad = value; i += 1; break;
       case "--json": opts.json = true; break;
+      case "--self-check": opts.selfCheck = true; break;
       default: throw new Error(`unknown argument: ${key}`);
     }
   }
-  if (opts.urls.length === 0) throw new Error("at least one --url is required");
+  if (opts.urls.length === 0 && !opts.selfCheck) throw new Error("at least one --url is required");
   return opts;
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * True when navigating to /login sent us somewhere else.
+ *
+ * That redirect is the only session evidence the page offers: the BFF marks the
+ * session cookie HttpOnly, so JS cannot read it back. A login page that renders
+ * itself -- including one showing an error -- keeps the path, so this stays
+ * false and the caller still throws. Anything cross-origin is not our app's
+ * redirect either.
+ */
+function isLoginRedirect(href, base) {
+  if (!href) return false;
+  try {
+    const url = new URL(href);
+    if (url.origin !== new URL(base).origin) return false;
+    return url.pathname !== "/login";
+  } catch {
+    return false;
+  }
+}
+
+function pathOf(href) {
+  try {
+    return new URL(href).pathname;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * A protected route that lands on /login did render something, so the
+ * "rendered nothing" check cannot see it -- without this the probe reports a
+ * broken session as a pass. The login route itself is exempt: that is where it
+ * was asked to go.
+ */
+function bouncedToLogin(route, href) {
+  return route !== "/login" && pathOf(href) === "/login";
+}
+
+/**
+ * The two predicates above decide whether the probe reuses a session or fails,
+ * so they are checked by running them rather than by reading the source.
+ * `--self-check` runs these without needing Chrome.
+ */
+const SELF_CHECKS = [
+  ["an authenticated visitor is sent away from /login", () => isLoginRedirect("http://h:3100/qa", "http://h:3100"), true],
+  ["a login page that renders itself is not a redirect", () => isLoginRedirect("http://h:3100/login", "http://h:3100"), false],
+  ["an empty href is not a redirect", () => isLoginRedirect("", "http://h:3100"), false],
+  ["another origin is not our redirect", () => isLoginRedirect("http://evil.example/qa", "http://h:3100"), false],
+  ["/login?next=... is still the login page", () => isLoginRedirect("http://h:3100/login?next=%2Fqa", "http://h:3100"), false],
+  ["a protected route parked on /login is a bounce", () => bouncedToLogin("/documents", "http://h:3100/login"), true],
+  ["the login route is never a bounce", () => bouncedToLogin("/login", "http://h:3100/login"), false],
+  ["a route that rendered where asked is not a bounce", () => bouncedToLogin("/documents", "http://h:3100/documents"), false],
+];
+
+function runSelfChecks() {
+  const failed = [];
+  for (const [name, run, want] of SELF_CHECKS) {
+    let got;
+    try {
+      got = run();
+    } catch (err) {
+      got = `threw ${err.message}`;
+    }
+    const ok = got === want;
+    if (!ok) failed.push(name);
+    process.stdout.write(`${ok ? "ok  " : "FAIL"} ${name} -> ${got} (want ${want})\n`);
+  }
+  if (failed.length) {
+    process.stderr.write(`self-check: ${failed.length} predicate(s) wrong: ${failed.join("; ")}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(`self-check: ${SELF_CHECKS.length} predicate(s) ok\n`);
 }
 
 async function debuggerEndpoint(port) {
@@ -104,6 +179,7 @@ class CDP {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.selfCheck) return runSelfChecks();
   const browserWs = await debuggerEndpoint(opts.port);
 
   const ws = new WebSocket(browserWs);
@@ -149,6 +225,7 @@ async function main() {
 
   const results = [];
   let loginOutcome = "";
+  let loginRedirectTo = "";
 
   if (opts.login) {
     // Drive the real login page instead of injecting a cookie: the BFF sets an
@@ -159,22 +236,35 @@ async function main() {
     if (!label) throw new Error("--login must be admin or user");
     await cdp.send("Page.navigate", { url: `${opts.base}/login` }, sessionId);
     await sleep(3500);
-    const clicked = await cdp.send(
+    const probed = await cdp.send(
       "Runtime.evaluate",
       {
         expression: `(() => {
           const button = document.querySelector('button[aria-label=${JSON.stringify(label)}]');
-          if (!button) return "missing";
-          button.click();
-          return "clicked";
+          if (button) { button.click(); return { outcome: "clicked", href: location.href }; }
+          return { outcome: "missing", href: location.href };
         })()`,
         returnByValue: true,
       },
       sessionId,
     );
-    loginOutcome = clicked.result?.value || "unknown";
-    if (loginOutcome !== "clicked") throw new Error(`demo login button not found on /login (${loginOutcome})`);
-    await sleep(6000);
+    const probedValue = probed.result?.value || {};
+    loginOutcome = probedValue.outcome || "unknown";
+    loginRedirectTo = probedValue.href || "";
+    if (loginOutcome === "clicked") {
+      await sleep(6000);
+    } else if (isLoginRedirect(loginRedirectTo, opts.base)) {
+      // The profile already holds a session, so /login hands an authenticated
+      // visitor straight to the workspace (observed landing on /qa) and the demo
+      // button never enters the DOM -- looking for it can only ever fail. Reusing
+      // that session is the point of pointing the probe at a persistent profile,
+      // so skip the click rather than throw. This is not a silent pass: every
+      // route below still has to render, and a session the app does not actually
+      // accept sends the route back to /login, which is reported as broken.
+      loginOutcome = "already-authenticated";
+    } else {
+      throw new Error(`demo login button not found on /login (${loginOutcome})`);
+    }
   }
 
   for (const route of opts.urls) {
@@ -215,12 +305,17 @@ async function main() {
       .filter(Boolean);
 
     const value = evaluated.result?.value || {};
+    // A protected route that lands on /login did render something, so the
+    // "rendered nothing" check below cannot see it. Without this the probe
+    // reports a broken session as a pass.
+    const bounced = bouncedToLogin(route, value.href || url);
     results.push({
       route,
       url,
       finalUrl: value.href || url,
       title: value.title || "",
       afterLoadOutcome,
+      bouncedToLogin: bounced,
       text: value.text || "",
       htmlLength: value.htmlLength || 0,
       consoleErrors,
@@ -233,11 +328,16 @@ async function main() {
   if (opts.out) {
     const dir = path.dirname(opts.out);
     if (dir && dir !== ".") fs.mkdirSync(dir, { recursive: true });
-    const payload = opts.login ? { login: opts.login, loginOutcome, pages: results } : { pages: results };
+    const payload = opts.login
+      ? { login: opts.login, loginOutcome, loginRedirectTo, pages: results }
+      : { pages: results };
     fs.writeFileSync(opts.out, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   }
 
-  if (opts.login) process.stdout.write(`\nlogin: ${opts.login} (${loginOutcome})\n`);
+  if (opts.login) {
+    const via = loginRedirectTo ? ` -> ${loginRedirectTo}` : "";
+    process.stdout.write(`\nlogin: ${opts.login} (${loginOutcome}${via})\n`);
+  }
 
   if (opts.json) {
     process.stdout.write(`${JSON.stringify(results, null, 2)}\n`);
@@ -251,9 +351,14 @@ async function main() {
     }
   }
 
-  const broken = results.filter((item) => item.htmlLength === 0 || item.text.trim() === "");
+  const broken = results.filter(
+    (item) => item.htmlLength === 0 || item.text.trim() === "" || item.bouncedToLogin,
+  );
   if (broken.length) {
-    process.stderr.write(`probe: ${broken.length} page(s) rendered nothing: ${broken.map((b) => b.route).join(", ")}\n`);
+    const why = broken
+      .map((b) => `${b.route}${b.bouncedToLogin ? " (bounced to /login -- no usable session)" : ""}`)
+      .join(", ");
+    process.stderr.write(`probe: ${broken.length} page(s) not usable: ${why}\n`);
     process.exit(1);
   }
 }
