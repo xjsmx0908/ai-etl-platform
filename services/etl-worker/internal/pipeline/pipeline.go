@@ -143,6 +143,11 @@ func mergeStageTimings(prev, next model.StageTimings) model.StageTimings {
 
 var ErrTaskCancelled = errors.New("task cancelled")
 
+// releaseClaimTimeout bounds the best-effort ingestion-job release. It is short
+// on purpose: the release runs on the shutdown path too, inside the worker's
+// 30s drain budget, and it is a single UPDATE.
+const releaseClaimTimeout = 5 * time.Second
+
 // pageBatchRanges returns half-open page ranges for bounded OCR requests. The
 // checkpoint stores the next page to process, so restarting after a completed
 // batch never re-runs an already durable OCR batch.
@@ -302,6 +307,31 @@ func (p *Pipeline) workerLoop(ctx context.Context, id int) (normalExit bool) {
 	return true
 }
 
+// releaseClaim hands the durable ingestion job back when this delivery ends
+// without reaching a terminal state, so the next delivery can claim it.
+//
+// Claim grants a lease that is sized to exceed the worst-case pipeline run
+// (INGESTION_JOB_LEASE is validated against PIPELINE_TIMEOUT times the retry
+// count, i.e. hours). Leaving the job `processing` while the message is handed
+// back therefore does not delay the retry by a backoff -- it delays it by the
+// whole lease, and the worker re-Nacks the same Kafka offset in the meantime.
+// The retry path itself is fine once the claim succeeds; this is only about
+// letting it start.
+//
+// The context is detached because the shutdown path calls this with an already
+// cancelled context, and it gets its own short deadline because the drain
+// budget is 30s -- the pipeline's stage timeout would outlive it.
+func (p *Pipeline) releaseClaim(ctx context.Context, task model.Task) {
+	if p.ingestionJobs == nil || task.EventID == "" {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseClaimTimeout)
+	defer cancel()
+	if err := p.ingestionJobs.ReleaseClaim(releaseCtx, task); err != nil {
+		slog.Warn("release ingestion job failed", "doc_id", task.DocID, "error", err)
+	}
+}
+
 // handleTask processes a task with exponential backoff retry.
 func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskWithAck) {
 	var lastErr error
@@ -345,6 +375,12 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 				"attempt", attempt, "backoff", backoff)
 			select {
 			case <-ctx.Done():
+				// The worker is shutting down mid-attempt. The Kafka offset stays
+				// uncommitted, so the task will be redelivered -- but the durable
+				// ingestion job is still `processing` and Claim would answer
+				// ClaimBusy for the whole lease. Hand it back before leaving, or
+				// the redelivery spins on the same offset until the lease expires.
+				p.releaseClaim(ctx, twa.Task)
 				return
 			case <-time.After(backoff):
 			}
@@ -366,10 +402,12 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 		}
 
 		// Durable completion must commit before the Kafka offset. If PostgreSQL is
-		// temporarily unavailable the message remains uncommitted and may resume
-		// after its processing lease expires.
+		// temporarily unavailable the message stays uncommitted and is redelivered
+		// -- and the claim goes back with it, so the redelivery can actually start
+		// instead of waiting out the processing lease.
 		if twa.Task.EventID != "" {
 			if err := p.ingestionJobs.Complete(ctx, twa.Task, time.Now().UTC()); err != nil {
+				p.releaseClaim(ctx, twa.Task)
 				twa.Nack(err)
 				return
 			}
@@ -389,12 +427,15 @@ func (p *Pipeline) handleTask(ctx context.Context, workerID int, twa model.TaskW
 	// Retries exhausted → push to DLQ first, then commit offset only on DLQ success.
 	if err := p.dlq.Push(ctx, model.DLQMessage{Task: twa.Task, Error: lastErr.Error(), Time: time.Now()}); err != nil {
 		slog.Error("DLQ push failed, message will be retried", "doc_id", twa.Task.DocID, "error", err)
+		// The Nack only means "try again" if the job is claimable again.
+		p.releaseClaim(ctx, twa.Task)
 		twa.Nack(err)
 		return
 	}
 
 	if twa.Task.EventID != "" {
 		if err := p.ingestionJobs.Fail(ctx, twa.Task, lastErr.Error(), time.Now().UTC()); err != nil {
+			p.releaseClaim(ctx, twa.Task)
 			twa.Nack(err)
 			return
 		}

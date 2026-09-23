@@ -63,6 +63,63 @@ func TestMemoryStoreRejectsStableJobIDForDifferentRequest(t *testing.T) {
 	}
 }
 
+// A delivery that ends without a terminal transition has to hand the claim back,
+// or the redelivery answers ClaimBusy for the rest of the lease. This is the
+// in-process shape of what the worker hit on a mid-ingestion restart: the lease is
+// sized to exceed the worst-case pipeline run, so waiting it out is hours, not a
+// backoff, and the worker re-Nacks the same offset the whole time.
+func TestMemoryStoreReleaseClaimLetsTheNextDeliveryClaimImmediately(t *testing.T) {
+	store := NewMemoryStore()
+	submission := Submission{
+		JobID: "job-1", EventID: "event-1", RequestSignature: "sha256:request-1",
+		Document: docstore.Document{
+			TenantID: "tenant-a", DocID: "doc-1", FileName: "handbook.pdf",
+			ObjectKey: "tenant-a/doc-1.pdf", Permission: "internal",
+			Status: docstore.StatusQueued, Stage: "queued",
+		},
+		Task: model.Task{DocID: "doc-1", TenantID: "tenant-a", FilePath: "tenant-a/doc-1.pdf"},
+	}
+	if _, err := store.Admit(context.Background(), submission); err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	task := model.Task{
+		JobID: "job-1", EventID: "event-1", TenantID: "tenant-a",
+		DocID: "doc-1", FilePath: "tenant-a/doc-1.pdf",
+	}
+	lease := 12 * time.Hour
+
+	if got, err := store.Claim(context.Background(), task, lease); err != nil || got != ClaimAcquired {
+		t.Fatalf("first claim = (%q,%v), want (%q,nil)", got, err, ClaimAcquired)
+	}
+	if got, _ := store.Claim(context.Background(), task, lease); got != ClaimBusy {
+		t.Fatalf("claim while held = %q, want %q", got, ClaimBusy)
+	}
+	if err := store.ReleaseClaim(context.Background(), task); err != nil {
+		t.Fatalf("release claim: %v", err)
+	}
+	if got, err := store.Claim(context.Background(), task, lease); err != nil || got != ClaimAcquired {
+		t.Fatalf("claim after release = (%q,%v), want (%q,nil)", got, err, ClaimAcquired)
+	}
+
+	// A job that already reached a terminal state must not be reopened by a late
+	// release, and must stay terminal for the next delivery.
+	if err := store.Complete(context.Background(), task, time.Now()); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := store.ReleaseClaim(context.Background(), task); err != nil {
+		t.Fatalf("release after completion: %v", err)
+	}
+	if got, _ := store.Claim(context.Background(), task, lease); got != ClaimTerminal {
+		t.Fatalf("claim after completion = %q, want %q", got, ClaimTerminal)
+	}
+}
+
+func TestMemoryStoreReleaseClaimRejectsIncompleteTask(t *testing.T) {
+	if err := NewMemoryStore().ReleaseClaim(context.Background(), model.Task{JobID: "job-1"}); !errors.Is(err, ErrInvalidSubmission) {
+		t.Fatalf("release error = %v, want ErrInvalidSubmission", err)
+	}
+}
+
 type recordingPublisher struct {
 	err   error
 	tasks []model.Task

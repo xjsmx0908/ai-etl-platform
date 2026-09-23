@@ -79,8 +79,17 @@ type Store interface {
 
 // JobStore is the worker-facing durable lifecycle surface. Claim grants one
 // processing lease; terminal jobs make duplicate Kafka deliveries safe to ACK.
+//
+// ReleaseClaim hands a claimed-but-unfinished job back so the next delivery
+// can claim it immediately. Every path that returns while still holding the
+// claim has to call it: Claim answers ClaimBusy for as long as the lease runs,
+// and INGESTION_JOB_LEASE is sized to exceed the worst-case pipeline window, so
+// a job left `processing` turns a retry into a wait of hours.
+//
+// Not to be confused with Store.Release, which hands back an outbox event.
 type JobStore interface {
 	Claim(context.Context, model.Task, time.Duration) (ClaimResult, error)
+	ReleaseClaim(context.Context, model.Task) error
 	Complete(context.Context, model.Task, time.Time) error
 	Fail(context.Context, model.Task, string, time.Time) error
 }
@@ -187,6 +196,23 @@ func (s *MemoryStore) Claim(_ context.Context, task model.Task, lease time.Durat
 	s.states[task.JobID] = "processing"
 	s.leases[task.JobID] = time.Now().UTC().Add(lease)
 	return ClaimAcquired, nil
+}
+
+// Release returns a claimed job to `published` and clears its lease, but only
+// while it is still `processing`: a job that already reached a terminal state
+// must not be reopened by a late release.
+func (s *MemoryStore) ReleaseClaim(_ context.Context, task model.Task) error {
+	if task.JobID == "" || task.EventID == "" {
+		return ErrInvalidSubmission
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.states[task.JobID] != "processing" {
+		return nil
+	}
+	s.states[task.JobID] = "published"
+	delete(s.leases, task.JobID)
+	return nil
 }
 
 func (s *MemoryStore) Complete(_ context.Context, task model.Task, _ time.Time) error {

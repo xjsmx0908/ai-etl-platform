@@ -159,6 +159,61 @@ func TestPostgresStoreClaimDistinguishesAcquiredBusyAndTerminal(t *testing.T) {
 	}
 }
 
+// Releasing is what turns a Nack into a retry that can actually start: Claim
+// accepts `published`, and answers ClaimBusy for as long as the lease runs.
+func TestPostgresStoreReleaseClaimReturnsProcessingJobToPublished(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer mock.Close()
+	task := model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1", FilePath: "tenant-a/doc-1/version.txt"}
+	mock.ExpectExec(`(?s)UPDATE ingestion_jobs SET status='published'.*AND status='processing'`).
+		WithArgs("job-1", "event-1", "tenant-a", "doc-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	if err := NewPostgresStore(mock).ReleaseClaim(context.Background(), task); err != nil {
+		t.Fatalf("ReleaseClaim: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The release is best-effort, and the guard is the point: a job that already
+// reached a terminal state matches no row, which is not an error to act on.
+func TestPostgresStoreReleaseClaimIgnoresJobThatAlreadyFinished(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer mock.Close()
+	task := model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1"}
+	mock.ExpectExec(`(?s)UPDATE ingestion_jobs SET status='published'.*AND status='processing'`).
+		WithArgs("job-1", "event-1", "tenant-a", "doc-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	if err := NewPostgresStore(mock).ReleaseClaim(context.Background(), task); err != nil {
+		t.Fatalf("ReleaseClaim on finished job: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresStoreReleaseClaimRejectsIncompleteTask(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new pool: %v", err)
+	}
+	defer mock.Close()
+	err = NewPostgresStore(mock).ReleaseClaim(context.Background(), model.Task{JobID: "job-1"})
+	if !errors.Is(err, ErrInvalidSubmission) {
+		t.Fatalf("ReleaseClaim error = %v, want ErrInvalidSubmission", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgresStoreCompletesOnlyMatchingProcessingJob(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

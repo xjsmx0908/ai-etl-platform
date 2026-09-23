@@ -230,6 +230,7 @@ type ingestionJobStub struct {
 	claim       ingestion.ClaimResult
 	completeErr error
 	failErr     error
+	releaseErr  error
 	events      *[]string
 }
 
@@ -248,6 +249,15 @@ func (s *ingestionJobStub) Fail(context.Context, model.Task, string, time.Time) 
 		*s.events = append(*s.events, "fail")
 	}
 	return s.failErr
+}
+
+// ReleaseClaim records the hand-back so a test can assert that a delivery which
+// ends without a terminal transition does not leave the job claimed.
+func (s *ingestionJobStub) ReleaseClaim(context.Context, model.Task) error {
+	if s.events != nil {
+		*s.events = append(*s.events, "release")
+	}
+	return s.releaseErr
 }
 
 func (s *fullTextSinkStub) Enqueue(_ context.Context, _ model.Chunk) error {
@@ -509,7 +519,9 @@ func TestHandleTask_PersistsCompletionBeforeAcknowledging(t *testing.T) {
 	p.handleTask(context.Background(), 0, model.TaskWithAck{
 		Task: task, Ack: func() { events = append(events, "ack") }, Nack: func(error) { events = append(events, "nack") },
 	})
-	if got, want := strings.Join(events, ","), "complete,nack"; got != want {
+	// A completion that cannot be persisted leaves the job claimed; the claim has
+	// to go back with the Nack or the redelivery waits out the whole lease.
+	if got, want := strings.Join(events, ","), "complete,release,nack"; got != want {
 		t.Fatalf("failed terminal order = %q, want %q", got, want)
 	}
 }
@@ -537,7 +549,8 @@ func TestHandleTask_PersistsFailureAfterDLQBeforeAcknowledging(t *testing.T) {
 	p.handleTask(context.Background(), 0, model.TaskWithAck{
 		Task: task, Ack: func() { events = append(events, "ack") }, Nack: func(error) { events = append(events, "nack") },
 	})
-	if got, want := strings.Join(events, ","), "fail,nack"; got != want {
+	// A failure that cannot be persisted also leaves the job claimed.
+	if got, want := strings.Join(events, ","), "fail,release,nack"; got != want {
 		t.Fatalf("failed persistence order = %q, want %q", got, want)
 	}
 }
@@ -578,6 +591,59 @@ func TestHandleTask_DoesNotCommitWhenDLQFails(t *testing.T) {
 		if s.Status == model.TaskStatusFailed {
 			t.Fatalf("unexpected failed status when DLQ push fails: %+v", statuses.statuses)
 		}
+	}
+}
+
+// A worker that stops mid-attempt leaves the Kafka offset uncommitted, so the
+// task is redelivered. If the durable job is still `processing` that redelivery
+// answers ClaimBusy for the rest of INGESTION_JOB_LEASE -- hours, because the
+// lease is sized to exceed the worst-case pipeline run. Handing the claim back on
+// the shutdown path is what lets the redelivery resume instead of spinning on the
+// same offset until the lease expires.
+func TestHandleTask_ReleasesClaimWhenShutdownInterruptsRetryBackoff(t *testing.T) {
+	cfg := baseTestConfig()
+	cfg.MaxRetries = 1
+	// Long enough that only the cancelled context can end the backoff wait.
+	cfg.RetryBackoff = time.Hour
+
+	events := []string{}
+	jobs := &ingestionJobStub{claim: ingestion.ClaimAcquired, events: &events}
+	p := New(cfg, noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, &dlqStub{}).
+		WithIngestionJobs(jobs).
+		WithGenerationBuilder(&generationBuildStub{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	p.handleTask(ctx, 0, model.TaskWithAck{
+		Task: model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1", FilePath: "missing"},
+		Ack:  func() { events = append(events, "ack") },
+		Nack: func(error) { events = append(events, "nack") },
+	})
+
+	// The first attempt fails on the missing object; the retry backoff then sees
+	// the cancelled context and leaves, releasing rather than acking or nacking.
+	if got, want := strings.Join(events, ","), "release"; got != want {
+		t.Fatalf("shutdown order = %q, want %q", got, want)
+	}
+}
+
+func TestHandleTask_ReleasesClaimWhenDLQPushFails(t *testing.T) {
+	events := []string{}
+	jobs := &ingestionJobStub{claim: ingestion.ClaimAcquired, events: &events}
+	dlq := &dlqStub{err: errors.New("dlq unavailable")}
+	p := New(baseTestConfig(), noopEmbedder{}, noopStorer{}, metrics.NewCollector(10), noopCheckpoint{}, dlq).
+		WithIngestionJobs(jobs)
+
+	p.handleTask(context.Background(), 0, model.TaskWithAck{
+		Task: model.Task{JobID: "job-1", EventID: "event-1", TenantID: "tenant-a", DocID: "doc-1", FilePath: "missing"},
+		Ack:  func() { events = append(events, "ack") },
+		Nack: func(error) { events = append(events, "nack") },
+	})
+
+	// The Nack only means "try again" if the claim went back with it.
+	if got, want := strings.Join(events, ","), "release,nack"; got != want {
+		t.Fatalf("DLQ failure order = %q, want %q", got, want)
 	}
 }
 

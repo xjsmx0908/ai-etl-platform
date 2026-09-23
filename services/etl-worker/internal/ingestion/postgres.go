@@ -249,6 +249,37 @@ func (s *PostgresStore) Claim(ctx context.Context, task model.Task, lease time.D
 	}
 }
 
+// ReleaseClaim hands a claimed-but-unfinished job back to the state Claim accepts,
+// so the next delivery resumes immediately instead of waiting out the
+// processing lease.
+//
+// The lease is the mutual-exclusion window, and it is deliberately sized to
+// exceed the worst-case pipeline run (INGESTION_JOB_LEASE must be greater than
+// PIPELINE_TIMEOUT times the retry count, which puts the default in the
+// half-day range). Using that same value as the crash-recovery timer means a
+// delivery that ends without a terminal transition -- a shutdown, or a Nack
+// that asks for a retry -- leaves the job `processing` and every redelivery
+// answers ClaimBusy for hours while the worker re-Nacks the same Kafka offset.
+//
+// Only `processing` jobs are released: a job that already reached a terminal
+// state must not be reopened by a late release. Releasing is best-effort, so a
+// statement that matches no row is not an error -- the job may have completed
+// concurrently.
+func (s *PostgresStore) ReleaseClaim(ctx context.Context, task model.Task) error {
+	if task.JobID == "" || task.EventID == "" || task.TenantID == "" || task.DocID == "" {
+		return ErrInvalidSubmission
+	}
+	if _, err := s.q.Exec(ctx, `
+		UPDATE ingestion_jobs SET status='published', lease_until=NULL,
+			processing_started_at=NULL, updated_at=now()
+		WHERE job_id=$1 AND event_id=$2 AND tenant_id=$3 AND doc_id=$4
+		  AND status='processing'`,
+		task.JobID, task.EventID, task.TenantID, task.DocID); err != nil {
+		return fmt.Errorf("release ingestion job: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) Complete(ctx context.Context, task model.Task, completedAt time.Time) error {
 	return s.markJobTerminal(ctx, task, "completed", "", completedAt)
 }
