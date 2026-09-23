@@ -15,13 +15,19 @@ import (
 	"ai-etl-pipeline/internal/store"
 )
 
-type documentSearchVisibilityStub struct {
+// documentContentVisibilityStub answers the policy the two document-content
+// endpoints use. It stands in for publicationrelease.ResolveDocumentContentVisibility,
+// which differs from the retrieval policy for documents that were never
+// published; the publicationrelease tests pin that difference, and these tests
+// pin that the handlers ask for the content policy at all (a handler wired to
+// retrieval.VisibilityResolver no longer compiles).
+type documentContentVisibilityStub struct {
 	visible map[string]bool
 	err     error
 	count   int
 }
 
-func (s documentSearchVisibilityStub) ResolveVisibility(_ context.Context, _ string, refs []indexmanifest.GenerationReference) ([]bool, error) {
+func (s documentContentVisibilityStub) ResolveDocumentContentVisibility(_ context.Context, _ string, refs []indexmanifest.GenerationReference) ([]bool, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -111,7 +117,7 @@ func TestHandleDocumentChunks_Success(t *testing.T) {
 	}
 }
 
-func TestHandleDocumentChunksFiltersUnpublishedReplacementGeneration(t *testing.T) {
+func TestHandleDocumentChunksFiltersSupersededReplacementGeneration(t *testing.T) {
 	docs := newFakeDocStore()
 	seedDoc(docs, "acme", "d1", "internal")
 	lister := &fakeChunkLister{chunks: map[string][]store.StoredChunk{
@@ -121,13 +127,39 @@ func TestHandleDocumentChunksFiltersUnpublishedReplacementGeneration(t *testing.
 		},
 	}}
 	handler := handleDocumentChunks(docs, lister, testQueryService(),
-		documentSearchVisibilityStub{visible: map[string]bool{"gen-published": true}})
+		documentContentVisibilityStub{visible: map[string]bool{"gen-published": true}})
 	req := httptest.NewRequest(http.MethodGet, "/v1/documents/d1/chunks", nil)
 	req = req.WithContext(ctxWithRole("acme", "user"))
 	req.SetPathValue("docID", "d1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "120 yuan") || !strings.Contains(rec.Body.String(), "80 yuan") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleDocumentChunksListsChunksOfANeverPublishedDocument covers the
+// document-detail side of the two policies. A document that has not been through
+// the release centre has no published generation to select among, so its own
+// chunks are the current ones and the page must list them. The retrieval policy
+// answers the opposite for the same document, which is why the handler takes the
+// detail policy.
+func TestHandleDocumentChunksListsChunksOfANeverPublishedDocument(t *testing.T) {
+	docs := newFakeDocStore()
+	seedDoc(docs, "acme", "d1", "internal")
+	lister := &fakeChunkLister{chunks: map[string][]store.StoredChunk{
+		"d1": {
+			{ChunkID: "c1", DocID: "d1", TenantID: "acme", DocumentVersionID: "job-draft", GenerationID: "gen-draft", Content: "draft content", Index: 0},
+		},
+	}}
+	handler := handleDocumentChunks(docs, lister, testQueryService(),
+		documentContentVisibilityStub{visible: map[string]bool{"gen-draft": true}})
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents/d1/chunks", nil)
+	req = req.WithContext(ctxWithRole("acme", "user"))
+	req.SetPathValue("docID", "d1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "draft content") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -230,7 +262,7 @@ func TestHandleDocumentSearch_SuccessAggregatesAndEnriches(t *testing.T) {
 	}
 }
 
-func TestHandleDocumentSearchFiltersUnpublishedReplacementGeneration(t *testing.T) {
+func TestHandleDocumentSearchFiltersSupersededReplacementGeneration(t *testing.T) {
 	docs := newFakeDocStore()
 	seedDoc(docs, "acme", "docA", "internal")
 	searcher := &fakeDocumentSearcher{candidates: []retrieval.Candidate{
@@ -238,7 +270,7 @@ func TestHandleDocumentSearchFiltersUnpublishedReplacementGeneration(t *testing.
 		{DocID: "docA", DocumentVersionID: "job-new", GenerationID: "gen-replacement", Content: "unapproved", Score: 0.9},
 	}}
 	handler := handleDocumentSearch(config.Config{RetrievalEnableES: true}, docs, searcher, testQueryService(),
-		documentSearchVisibilityStub{visible: map[string]bool{"gen-published": true}})
+		documentContentVisibilityStub{visible: map[string]bool{"gen-published": true}})
 	req := httptest.NewRequest(http.MethodGet, "/v1/documents/search?q=policy", nil)
 	req = req.WithContext(ctxWithRole("acme", "user"))
 	rr := httptest.NewRecorder()
@@ -248,11 +280,35 @@ func TestHandleDocumentSearchFiltersUnpublishedReplacementGeneration(t *testing.
 	}
 }
 
+// TestHandleDocumentSearchKeepsChunksOfANeverPublishedDocument covers the search
+// side of the same policy question as the chunk-list test above. The documents
+// page lists a document as soon as ingestion completes, so a search over that
+// page's own list has to be able to find it; before the content policy was split
+// out, searching a draft document's text returned nothing while the list showed
+// the document.
+func TestHandleDocumentSearchKeepsChunksOfANeverPublishedDocument(t *testing.T) {
+	docs := newFakeDocStore()
+	seedDoc(docs, "acme", "draft-1", "internal")
+	searcher := &fakeDocumentSearcher{candidates: []retrieval.Candidate{{
+		DocID: "draft-1", DocumentVersionID: "job-draft", GenerationID: "gen-draft",
+		Content: "试用期为三个月", Score: 1,
+	}}}
+	handler := handleDocumentSearch(config.Config{RetrievalEnableES: true}, docs, searcher, testQueryService(),
+		documentContentVisibilityStub{visible: map[string]bool{"gen-draft": true}})
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents/search?q=%E8%AF%95%E7%94%A8%E6%9C%9F", nil)
+	req = req.WithContext(ctxWithRole("acme", "user"))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "draft-1") {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleDocumentSearchFailsClosedWhenReleaseVisibilityUnavailable(t *testing.T) {
 	searcher := &fakeDocumentSearcher{candidates: []retrieval.Candidate{{
 		DocID: "docA", DocumentVersionID: "job-1", GenerationID: "gen-1", Content: "must not leak",
 	}}}
-	for _, visibility := range []documentSearchVisibilityStub{
+	for _, visibility := range []documentContentVisibilityStub{
 		{err: context.DeadlineExceeded},
 		{count: 2},
 	} {

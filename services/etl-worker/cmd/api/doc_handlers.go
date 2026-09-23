@@ -367,7 +367,26 @@ type chunkView struct {
 // handleDocumentChunks serves GET /v1/documents/{docID}/chunks: the chunks of a
 // single document, tenant- and permission-scoped exactly like the registry
 // detail (missing/cross-tenant/not-allowed all 404).
-func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister, qs *query.Service, visibility ...retrieval.VisibilityResolver) http.HandlerFunc {
+// documentContentVisibility decides which chunks of a document a content read may
+// list.
+//
+// It is deliberately not retrieval.VisibilityResolver. That interface answers
+// "may this chunk be used as answer evidence", and it fails closed for anything
+// without published authority — correct for retrieval, wrong for reading a
+// document's own content. Reusing it made every document that has not been
+// through the release centre render an empty chunk list on its own detail page
+// and become unfindable through the document search, even though the chunks were
+// indexed and the registry list displayed the document. See
+// publicationrelease.ResolveDocumentContentVisibility for the policy and why the
+// two differ only for documents with no published release.
+type documentContentVisibility interface {
+	ResolveDocumentContentVisibility(ctx context.Context, tenantID string, refs []indexmanifest.GenerationReference) ([]bool, error)
+}
+
+// handleDocumentChunks serves GET /v1/documents/{docID}/chunks: the chunks of a
+// single document, tenant- and permission-scoped exactly like the registry
+// detail (missing/cross-tenant/not-allowed all 404).
+func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister, qs *query.Service, visibility ...documentContentVisibility) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -413,7 +432,7 @@ func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister, qs *q
 					GenerationID:      chunk.GenerationID,
 				}
 			}
-			visible, visErr := visibility[0].ResolveVisibility(r.Context(), tenantID, refs)
+			visible, visErr := visibility[0].ResolveDocumentContentVisibility(r.Context(), tenantID, refs)
 			if visErr != nil || len(visible) != len(list) {
 				slog.Error("document chunk publication visibility failed", "doc_id", docID, "error", visErr)
 				writeError(w, http.StatusServiceUnavailable, "publication visibility unavailable")
@@ -458,7 +477,7 @@ type documentSearchResultView struct {
 // handleDocumentSearch serves GET /v1/documents/search?q=: full-text content
 // search over indexed chunks, aggregated to document level. Requires ES to be
 // enabled; enrichment comes from the tenant-scoped registry.
-func handleDocumentSearch(cfg config.Config, docs docstore.Store, searcher documentSearcher, qs *query.Service, visibility ...retrieval.VisibilityResolver) http.HandlerFunc {
+func handleDocumentSearch(cfg config.Config, docs docstore.Store, searcher documentSearcher, qs *query.Service, visibility ...documentContentVisibility) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -508,7 +527,7 @@ func handleDocumentSearch(cfg config.Config, docs docstore.Store, searcher docum
 					GenerationID:      candidate.GenerationID,
 				}
 			}
-			visible, err := visibility[0].ResolveVisibility(r.Context(), tenantID, refs)
+			visible, err := visibility[0].ResolveDocumentContentVisibility(r.Context(), tenantID, refs)
 			if err != nil || len(visible) != len(candidates) {
 				slog.Error("document search publication visibility failed", "error", err)
 				writeError(w, http.StatusServiceUnavailable, "publication visibility unavailable")

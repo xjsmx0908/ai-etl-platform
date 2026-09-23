@@ -16,35 +16,22 @@ type PostgresStore struct {
 	q db.Querier
 }
 
-// ResolveVisibility applies the published-release read policy to backend and
-// cached candidates. A candidate is visible only when it exactly matches the
-// tenant's resolved published version/generation and that manifest remains
-// active and healthy. Missing or incomplete authority fails closed.
-func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, refs []indexmanifest.GenerationReference) ([]bool, error) {
-	visible := make([]bool, len(refs))
-	if len(refs) == 0 {
-		return visible, nil
-	}
+// publishedIdentity is the version/generation pair a document's release has
+// actually published. Both fields are non-empty for a healthy resolved release.
+type publishedIdentity struct{ versionID, generationID string }
+
+// publishedAuthorities answers, for a batch of documents, which ones have a
+// published release and which are published only through the legacy
+// documents.publication_status flag.
+//
+// It deliberately returns the raw authority rather than a verdict: the two
+// callers below apply different policies to the same facts, and the difference
+// is the whole point of having two of them.
+func (s *PostgresStore) publishedAuthorities(ctx context.Context, tenantID string, documentIDs []string) (map[string]publishedIdentity, map[string]struct{}, error) {
 	if s == nil || s.q == nil || strings.TrimSpace(tenantID) == "" {
-		return nil, ErrInvalid
+		return nil, nil, ErrInvalid
 	}
-	documentIDs := make([]string, 0, len(refs))
-	seen := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if strings.TrimSpace(ref.DocumentID) == "" {
-			continue
-		}
-		if _, ok := seen[ref.DocumentID]; ok {
-			continue
-		}
-		seen[ref.DocumentID] = struct{}{}
-		documentIDs = append(documentIDs, ref.DocumentID)
-	}
-	if len(documentIDs) == 0 {
-		return visible, nil
-	}
-	type identity struct{ versionID, generationID string }
-	published := make(map[string]identity, len(documentIDs))
+	published := make(map[string]publishedIdentity, len(documentIDs))
 	rows, err := s.q.Query(ctx, `SELECT r.document_id,r.published_version_id,r.published_generation_id
 		FROM document_releases r
 		JOIN index_manifests m ON m.tenant_id=r.tenant_id
@@ -63,18 +50,18 @@ func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, 
 			AND m.elasticsearch_count=m.expected_chunk_count
 			AND m.elasticsearch_digest=m.expected_chunk_digest`, tenantID, documentIDs)
 	if err != nil {
-		return nil, fmt.Errorf("resolve published release visibility: %w", err)
+		return nil, nil, fmt.Errorf("resolve published release visibility: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var documentID, versionID, generationID string
 		if err := rows.Scan(&documentID, &versionID, &generationID); err != nil {
-			return nil, fmt.Errorf("scan published release visibility: %w", err)
+			return nil, nil, fmt.Errorf("scan published release visibility: %w", err)
 		}
-		published[documentID] = identity{versionID: versionID, generationID: generationID}
+		published[documentID] = publishedIdentity{versionID: versionID, generationID: generationID}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate published release visibility: %w", err)
+		return nil, nil, fmt.Errorf("iterate published release visibility: %w", err)
 	}
 	legacyIDs := make([]string, 0, len(documentIDs))
 	for _, documentID := range documentIDs {
@@ -91,19 +78,60 @@ func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, 
 			  AND publication_status='published'
 			  AND deletion_status='active'`, tenantID, legacyIDs)
 		if err != nil {
-			return nil, fmt.Errorf("resolve published legacy visibility: %w", err)
+			return nil, nil, fmt.Errorf("resolve published legacy visibility: %w", err)
 		}
 		defer legacyRows.Close()
 		for legacyRows.Next() {
 			var documentID string
 			if err := legacyRows.Scan(&documentID); err != nil {
-				return nil, fmt.Errorf("scan published legacy visibility: %w", err)
+				return nil, nil, fmt.Errorf("scan published legacy visibility: %w", err)
 			}
 			legacyPublished[documentID] = struct{}{}
 		}
 		if err := legacyRows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate published legacy visibility: %w", err)
+			return nil, nil, fmt.Errorf("iterate published legacy visibility: %w", err)
 		}
+	}
+	return published, legacyPublished, nil
+}
+
+// referenceDocumentIDs returns the distinct, non-empty document ids in a
+// candidate batch, in first-seen order.
+func referenceDocumentIDs(refs []indexmanifest.GenerationReference) []string {
+	documentIDs := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.DocumentID) == "" {
+			continue
+		}
+		if _, ok := seen[ref.DocumentID]; ok {
+			continue
+		}
+		seen[ref.DocumentID] = struct{}{}
+		documentIDs = append(documentIDs, ref.DocumentID)
+	}
+	return documentIDs
+}
+
+// ResolveVisibility applies the published-release read policy to backend and
+// cached candidates. A candidate is visible only when it exactly matches the
+// tenant's resolved published version/generation and that manifest remains
+// active and healthy. Missing or incomplete authority fails closed.
+func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, refs []indexmanifest.GenerationReference) ([]bool, error) {
+	visible := make([]bool, len(refs))
+	if len(refs) == 0 {
+		return visible, nil
+	}
+	if s == nil || s.q == nil || strings.TrimSpace(tenantID) == "" {
+		return nil, ErrInvalid
+	}
+	documentIDs := referenceDocumentIDs(refs)
+	if len(documentIDs) == 0 {
+		return visible, nil
+	}
+	published, legacyPublished, err := s.publishedAuthorities(ctx, tenantID, documentIDs)
+	if err != nil {
+		return nil, err
 	}
 	for i, ref := range refs {
 		identity, ok := published[ref.DocumentID]
@@ -115,6 +143,62 @@ func (s *PostgresStore) ResolveVisibility(ctx context.Context, tenantID string, 
 		if _, ok := legacyPublished[ref.DocumentID]; ok && strings.TrimSpace(ref.DocumentVersionID) == "" && strings.TrimSpace(ref.GenerationID) == "" {
 			visible[i] = true
 		}
+	}
+	return visible, nil
+}
+
+// ResolveDocumentContentVisibility is the policy for reading a document's own
+// content — the chunks of one document, as listed by GET
+// /v1/documents/{docID}/chunks and by the document-level search behind
+// GET /v1/documents/search.
+//
+// It differs from ResolveVisibility in exactly one case: a document that has
+// never been published. ResolveVisibility answers "may this chunk be used as
+// answer evidence", so anything without published authority fails closed. These
+// two endpoints ask a different question — "which of this document's chunks are
+// the current ones" — and a document with no published release has no superseded
+// generation to hide. Hiding them reports "this document has no chunks" for a
+// document whose chunks are sitting in the index, and makes a document that the
+// registry list displays impossible to find by searching its own text.
+//
+// A document that does have published authority keeps the strict policy; that is
+// what makes a replacement publish switch the page to the new generation instead
+// of showing the retired one alongside it.
+func (s *PostgresStore) ResolveDocumentContentVisibility(ctx context.Context, tenantID string, refs []indexmanifest.GenerationReference) ([]bool, error) {
+	visible := make([]bool, len(refs))
+	if len(refs) == 0 {
+		return visible, nil
+	}
+	if s == nil || s.q == nil || strings.TrimSpace(tenantID) == "" {
+		return nil, ErrInvalid
+	}
+	documentIDs := referenceDocumentIDs(refs)
+	if len(documentIDs) == 0 {
+		return visible, nil
+	}
+	published, _, err := s.publishedAuthorities(ctx, tenantID, documentIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i, ref := range refs {
+		if strings.TrimSpace(ref.DocumentID) == "" {
+			continue
+		}
+		// A release row exists for every ingested document, but its published
+		// columns stay NULL until something is actually published, so the
+		// identity — not the row — is what decides whether there is a published
+		// generation to select among.
+		identity, hasRow := published[ref.DocumentID]
+		if hasRow && identity.versionID != "" && identity.generationID != "" {
+			if ref.DocumentVersionID != "" && ref.GenerationID != "" &&
+				identity.versionID == ref.DocumentVersionID && identity.generationID == ref.GenerationID {
+				visible[i] = true
+			}
+			continue
+		}
+		// No published generation to select among: every chunk of the document is
+		// the current one.
+		visible[i] = true
 	}
 	return visible, nil
 }
