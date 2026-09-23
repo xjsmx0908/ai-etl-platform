@@ -105,9 +105,9 @@
 
 - 本节只列**仍然有效**的中断点与运行环境事实。状态类结论（谁开放、谁关闭、谁通过）不写在这里：它们会随下一次整改过期，正确出处是 `docs/backlog.md`（项目级事项）与 `issues/findings-register.md`（产品体验逐条）。
 - 以下问题属于历史或生产准备跟踪，不属于当前 Agent 审计主线；除非用户重新指定，不得自动展开。
-- Generation build 的长任务恢复仍需进一步审查：失败重试会重新创建 build session，虽然索引 upsert 具备幂等性，但完整 manifest/digest 的跨重试持久化语义需要整本任务验证，不能仅依赖普通 Redis checkpoint 宣称完全恢复。
+- ~~Generation build 的长任务恢复仍需进一步审查~~ → **已完成（2026-09-23 受控故障注入）**：恢复语义本身可用 —— 重试走的是 checkpoint 恢复而不是静默全量重放，最终块集与一次干净运行逐块相同；当初真正坏掉的是「让重试能开始」的那道持久认领，已按 `docs/optimization-plan.md` §1.3 缺陷 20 修复。结论、证据与判据见该文 §6。
 - CPU `bge-m3` 仍然较慢；600 字符单请求已稳定，但整本扫描书预计耗时较长。若需要生产级吞吐，应使用 GPU 或独立 Embedding 服务，而不是继续盲目提高并发。
-- Jaeger 曾出现 `string field contains invalid UTF-8` 导出告警；文本 truncate 已做有效 UTF-8 处理，但需继续确认运行日志中是否完全消失。
+- ~~Jaeger 曾出现 `string field contains invalid UTF-8` 导出告警~~ → **已定案（2026-09-23）**：报错来自 etl-worker 的 OTLP 导出器（`embedder.truncate` 按字节切在多字节字符中间），不是 jaeger 的问题；修复后 `docker compose logs etl-worker | grep -c "invalid UTF-8"` 实测为 0。见 `docs/optimization-plan.md` §1.3 缺陷 17。
 - 企业身份决策登记 E-01～I-10 仍为 Pending，D0～D7 为 Blocked；个人演示身份运行时不能视为 staging/production 企业身份准入。
 - 普通用户仍不能自助注册、找回密码或管理知识空间；账号、空间和发布审批需要管理员预先配置。
 - 普通用户 Web 界面不提供删除入口，上传者删除能力仅 API 可用（决策出处：`docs/optimization-plan.md` §4.3）。
