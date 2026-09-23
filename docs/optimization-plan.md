@@ -1152,11 +1152,24 @@ services/etl-worker/cmd/api/*.go` → 无匹配。
 
 ### 4.2 备份恢复 —— 已完成，见 §1.2 与 `docs/backup-and-recovery.md`
 
-### 4.3 上传者删除能力后端有、前端未开放
+### 4.3 上传者删除能力：后端有、前端不开放 —— **已决定：仅 API 可用**
 
-**证据**：`CONTINUATION.md §4` 记录「后端授权逻辑已有，但 UI 是否开放仍需产品决定」。
+**决策**（2026-09-22）：**不开放前端入口**。普通用户能通过 API 删除自己上传的文档，Web 界面只给管理员删除按钮。本节从「待产品决定」转为已决，两侧事实由 `scripts/tests/test_document_delete_reachability.py` 锁住。
 
-**影响**：低。但「后端有、前端不给」是一种**授权语义不完整**的状态 —— 接口能力已经存在，只是没人从 UI 能走到。要么开放，要么明确记录为「仅 API 可用」并加测试锁住，不要悬着。
+**两侧事实**
+
+| 侧 | 位置 | 事实 |
+| --- | --- | --- |
+| 后端 | `services/etl-worker/cmd/api/doc_handlers.go:223` | `DELETE` 分支要求 `upload` scope |
+| 后端 | `services/etl-worker/cmd/api/doc_handlers.go:228` | 且必须是文档上传者本人或管理员 |
+| 权限 | `services/etl-worker/internal/auth/login.go:29` | `user` 角色持有 `[query, upload, agent]`，所以普通用户能走到上面那个分支 |
+| 前端 | `web/app/(app)/documents/page.tsx:372` | 删除按钮只在 `isAdmin` 时渲染 |
+
+**为什么保留这个不一致**：接口能力与 UI 入口不是同一件事。后端授权语义是完整的 —— 上传者本人可删、越权返回 403 —— 前端只是不提供入口。这是**有意的能力收敛，不是缺陷**：`handleDocument` 同一个 switch 里的 `PATCH` 分支（`:251`）才是真的管理员专属（`!= "admin"`），两者并排看说明 `DELETE` 的宽松是刻意留的。
+
+**代价**：文档管理页对普通用户是只读的 —— 传错了只能找管理员删，或自己调 API。
+
+**测试为什么是双向的**：前端放开（守卫不再只认 `isAdmin`）会红，后端收紧（判据从 `upload` 改成 admin）也会红。任一侧单方面变动都会先撞到这个测试，迫使改动方回来改本节。
 
 ### 4.4 合规审查深度 —— 项目自己已经反复划定边界
 
