@@ -1,6 +1,6 @@
 # 项目任务续接记录
 
-更新时间：2026-09-22（Asia/Shanghai）
+更新时间：2026-09-23（Asia/Shanghai）
 
 ## 1. 已完成的工作
 
@@ -148,7 +148,7 @@ P2.3、P2.5、P2.6、P1.9 属于生产准入或外部决策，不是当前 Agent
 - 当前 Compose 容器均运行；Kafka topic 已创建：`doc-processing`、`doc-processing-dlq`、`doc-processing-ocr`、`doc-processing-ocr-dlq`。
 - 失败任务不应被隐式篡改；重新上传会产生新 doc ID。若要重放，必须通过明确的 DLQ/任务重放流程并记录结果。
 - 不得覆盖用户问题记录 `issues/`，也不得在未要求时改写 `new_thread_prompt.md`；本文件仅在任务进展变化时更新。
-- Go 宿主机可能没有 `go/gofmt`，使用 Docker 执行测试和格式化：
+- Go 工具链：**2026-09-22 复核后远端已可直接跑** —— `/home/ubuntu/go/pkg/mod` 属主已是 `ubuntu`，不设任何环境变量即可 `go test ./...`（结论见 `docs/optimization-plan.md` §2.1，那一节现在标的是「已解决，未改任何东西」）。下面这条 Docker 方式保留作备用，宿主确实缺 `go/gofmt` 时再用：
 
   ```bash
   docker run --rm -v "$PWD/services/etl-worker:/app" \
