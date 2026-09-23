@@ -545,7 +545,10 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 
 	var offset any
 	var chunks []StoredChunk
-	seen := make(map[string]struct{})
+	// seen maps a chunk's normalized content to the position its kept copy holds
+	// in chunks, so a later duplicate can replace it when it carries more
+	// identity.
+	seen := make(map[string]int)
 	for {
 		body := map[string]interface{}{
 			"limit":        100,
@@ -598,20 +601,31 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 			if chunk.ChunkID == "" || chunk.Content == "" {
 				continue
 			}
-			// Defensive read-side deduplication for historical parser output: old
-			// paragraph overlap could emit a chunk fully contained in the following
-			// chunk. Keep the richer chunk and never show both in document details.
-			key := strings.Join(strings.Fields(chunk.Content), " ")
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
 			if idx, ok := p.Payload["index"].(float64); ok {
 				chunk.Index = int(idx)
 			}
 			if md, ok := p.Payload["metadata"].(map[string]interface{}); ok {
 				chunk.Metadata = stringMetadata(md)
 			}
+			// Defensive read-side deduplication for historical parser output: old
+			// paragraph overlap could emit a chunk fully contained in the following
+			// chunk. Keep the richer chunk and never show both in document details.
+			//
+			// The same content can also arrive as a byte-identical pair -- one copy
+			// from a legacy write carrying no generation identity, one from the
+			// managed generation that superseded it. Which copy survives decides
+			// whether the chunk is visible at all: publication policy matches a chunk
+			// to its published generation by identity, so a copy with no identity
+			// never matches and the whole document reads as empty. Prefer the copy
+			// that carries an identity rather than whichever the scroll returned first.
+			key := strings.Join(strings.Fields(chunk.Content), " ")
+			if at, exists := seen[key]; exists {
+				if !carriesIdentity(chunks[at]) && carriesIdentity(chunk) {
+					chunks[at] = chunk
+				}
+				continue
+			}
+			seen[key] = len(chunks)
 			chunks = append(chunks, chunk)
 		}
 		if len(sr.Result.NextPageOffset) == 0 || string(sr.Result.NextPageOffset) == "null" {
@@ -622,6 +636,13 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 
 	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
 	return removeContainedAdjacentChunks(chunks), nil
+}
+
+// carriesIdentity reports whether a chunk names the version and generation it
+// came from. Publication policy matches a chunk to a published release by that
+// pair, so a chunk missing either half can never be selected as the current one.
+func carriesIdentity(chunk StoredChunk) bool {
+	return chunk.DocumentVersionID != "" && chunk.GenerationID != ""
 }
 
 func removeContainedAdjacentChunks(chunks []StoredChunk) []StoredChunk {

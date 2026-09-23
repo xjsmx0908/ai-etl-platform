@@ -169,3 +169,98 @@ func TestQdrantListChunksByDocNoPermissionFilter(t *testing.T) {
 		t.Fatalf("expected 2 must clauses (no permission), got %d", len(must))
 	}
 }
+
+// A chunk can exist twice with byte-identical content: one copy from a legacy
+// write that carried no generation identity, one from the managed generation
+// that superseded it. Which copy survives decides whether the chunk is visible
+// at all -- publication policy matches a chunk to its published generation by
+// identity, so keeping the anonymous copy makes the whole document read as
+// empty on the detail page. The kept copy must be the one carrying identity,
+// and the outcome must not depend on the order the scroll returns them in.
+//
+// A copy carrying only half of the pair (a generation but no version) is not
+// identity either: publication policy requires both halves, so it must not
+// outrank a copy that has both.
+func TestQdrantListChunksByDocKeepsTheCopyCarryingIdentity(t *testing.T) {
+	anonymous := `{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0}}`
+	halfIdentified := `{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,` +
+		`"generation_id":"gen-1"}}`
+	identified := `{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,` +
+		`"document_version_id":"job-1","generation_id":"gen-1","metadata":{"order":"A-0"}}}`
+
+	for _, tc := range []struct {
+		name   string
+		points string
+	}{
+		{"anonymous first", anonymous + "," + identified},
+		{"identified first", identified + "," + anonymous},
+		{"half identity does not outrank full identity", halfIdentified + "," + identified},
+		{"full identity outranks half identity", identified + "," + halfIdentified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/points/scroll") {
+					_, _ = w.Write([]byte(`{"result":{"points":[` + tc.points + `],"next_page_offset":null}}`))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+			qs, err := NewQdrantStorer(srv.URL, "", "docs", 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer qs.Close()
+
+			chunks, err := qs.ListChunksByDoc(context.Background(), "t1", "d1", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(chunks) != 1 {
+				t.Fatalf("expected the duplicate pair to collapse to 1 chunk, got %d: %+v", len(chunks), chunks)
+			}
+			if chunks[0].GenerationID != "gen-1" || chunks[0].DocumentVersionID != "job-1" {
+				t.Fatalf("expected the copy carrying identity to survive, got %+v", chunks[0])
+			}
+			// The replacement is decided after the payload fields are decoded, so the
+			// surviving copy must still carry them.
+			if chunks[0].Metadata["order"] != "A-0" {
+				t.Fatalf("expected the surviving copy to keep its metadata, got %+v", chunks[0].Metadata)
+			}
+		})
+	}
+}
+
+// Deduplication must stay keyed on content. A chunk without identity that has
+// different content is still a chunk of this document, and must not be dropped
+// merely because a sibling chunk carries an identity.
+func TestQdrantListChunksByDocKeepsIdentitylessChunkWithDistinctContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/points/scroll") {
+			_, _ = w.Write([]byte(`{"result":{"points":[
+				{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"没有身份的一段","index":0}},
+				{"payload":{"chunk_id":"c2","doc_id":"d1","tenant_id":"t1","content":"有身份的另一段","index":1,
+					"document_version_id":"job-1","generation_id":"gen-1"}}
+			],"next_page_offset":null}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	qs, err := NewQdrantStorer(srv.URL, "", "docs", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qs.Close()
+
+	chunks, err := qs.ListChunksByDoc(context.Background(), "t1", "d1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected both distinct chunks to survive, got %d: %+v", len(chunks), chunks)
+	}
+	if chunks[0].ChunkID != "c1" || chunks[1].ChunkID != "c2" {
+		t.Fatalf("expected index order c1,c2, got %q,%q", chunks[0].ChunkID, chunks[1].ChunkID)
+	}
+}
