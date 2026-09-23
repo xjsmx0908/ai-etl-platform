@@ -53,6 +53,7 @@
 | UAT-022 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 已修复 | 上传者列显示截断 UUID 而不是用户名 | 2026-09-23 复验：列表三行与详情页「上传者」均为 `demo-user`，页面不再出现 `c189da83…` |
 | UAT-023 | 使用逻辑 | S3 | `/documents/[id]` | 全部 | 待产品确认 | 元数据块直出内部检索字段，与同页中文空间名打架 | 2026-09-23 真实页面复验 |
 | UAT-024 | 功能缺陷 | S2 | `/documents/[id]` `/documents` | 全部 | 已修复 | 没有任何发布记录的文档读不出自己的切块：详情页显示「暂无切块」，同一页的搜索框也搜不到它 | 2026-09-23 复验：`/documents/demo-doc-onboarding` 显示「文档切块（3）」并列出正文 |
+| UAT-025 | 功能缺陷 | S2 | `/documents/[id]` | 全部 | 已修复 | 已发布文档显示空切块：同一段内容在向量库里有逐字相同的两份拷贝，去重留下不带代际身份那一份 | 2026-09-23 复验：`/documents/ADM-2024-001` 显示「文档切块（1）」并列出正文 |
 
 2026-09-09 已完成 D1 复验，旧九条不再处于「待复验」。UAT-001～016 于 2026-09-09 至 2026-09-11 关闭。UAT-017～020 于 2026-09-22 真实页面复验关闭，逐条证据见各条「复验」。
 
@@ -63,6 +64,8 @@
 2026-09-23 修复 UAT-021 与 UAT-022（`94b9941`、`e9c0857`），并在重建后的 `:3100` 上复验关闭。两条都是「同一件事在库里是 id、在界面上应该是名字」，但根因在两端：UAT-022 是展示层拿不到名字（`uploaded_by` 永远是 UUID），UAT-021 是演示种子把用户 id 写进了人读列。**UAT-022 没有按本条原先的建议做**——原建议让两个页面改用 `actorDisplay(doc.uploaded_by, users)`，而 `GET /v1/users` 是 admin-only（`cmd/api/main.go:508`）、文档列表服务所有角色，照做会让 readonly 与 user 账号拿到 403。改成在服务端随行下发 `uploaded_by_name`。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/`。
 
 2026-09-23 修复 UAT-024（`be4b8c2`），并在重建后的 `:3100` 上复验关闭。这条**不是**用户反馈出来的，是去查「发布中心验收矩阵第 3 项」为什么在审批前读不到 `chunk_ids` 时挖到的：`GET /v1/documents/{docID}/chunks` 与 `GET /v1/documents/search` 两个端点都挂 `publicationrelease.ResolveVisibility`，而那是**检索证据**策略、对没有已发布权威的文档 fail-closed —— 于是「读这份文档自己的内容」被「这块能不能当回答证据」的判据管住了。证据 `artifacts/product-experience-acceptance/2026-09-23-document-content-visibility/`。
+
+2026-09-23 修复 UAT-025（`969433d`），并在重建后的 `:3100` 上复验关闭。它是 UAT-024 修复时顺带查清、当时只登记为「未建单缺口」的那一条（`ADM-2024-001` / `SEC-2024-001` 已发布却显示空切块），本轮立单并修完：真因不在可见性策略（策略 SQL 逐字命中、manifest 健康、Qdrant 里也有身份匹配的块），而在端点数据源的**精确内容去重** —— `QdrantStorer.ListChunksByDoc` 的 `seen` 按归一化内容先到先得，同一段内容的两份逐字相同拷贝里留下了不带身份的那份。与 UAT-024 **方向相反**：一个是「没有发布记录却被当成不可读」，一个是「有发布记录但去重留下了旧块」。证据 `artifacts/product-experience-acceptance/2026-09-23-chunks/`。
 
 三条被查过但**不建单**的观察写在文件末尾「本轮未建单的缺口」，含 `/agent` 与 `/release-center` 上的 `Fetch: net::ERR_ABORTED`：它在 CDP 里是 `canceled=true` + `initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取，页面既无红色横幅也无失败文案，属噪声而非缺陷。
 
@@ -407,7 +410,26 @@
 - 权限：**没有跟着放宽**。两个端点各自保留独立的权限过滤（`permissionAllowed` + `ListChunksByDoc(allowed)` / `AllowedPermissionsForRole`）。线上对照：同一关键词「员工手册」，admin 看到 `demo-doc-payroll`（confidential），user 看不到；user 直读 payroll 的 chunks 得 `404`。
 - 证据：`artifacts/product-experience-acceptance/2026-09-23-document-content-visibility/`
 - 归属：后端
-- 建议：已修复。顺带查清的**另一件事**见「本轮未建单的缺口」。
+- 建议：已修复。顺带查清的**另一件事**（`ADM-2024-001` / `SEC-2024-001` 已发布却显示空切块）已立为 UAT-025 并修复（`969433d`）。
+
+### UAT-025 已发布文档显示空切块（去重留下了不带代际身份的那一份）
+
+- 类型：功能缺陷 · 级别：S2 · 状态：已修复
+- 页面：`/documents/[id]` · 角色：全部
+- 复现：
+  1. 打开 `/documents/ADM-2024-001`（default 租户，`publication_status='published'`，有健康的已发布代际）。
+  2. 页面「文档切块（0）」+「暂无切块」。
+  3. 同一文档在 Qdrant `documents-v2` 里有 2 个点、ES 里有 2 块，其中一块的 `document_version_id`/`generation_id` 与已发布代际完全匹配。
+- 期望：已发布文档应当列出属于当前已发布代际的块。
+- 实际：`GET /v1/documents/{docID}/chunks` 返回 `{"total":0}`。`SEC-2024-001` 同样（Qdrant 3 点、ES 3 块，改前也是 0）；对照 `FIN-2025-001` 正常返回 1。
+- 真因：**不在可见性策略**。策略 SQL 逐字复制出来跑是命中的，`index_manifests` 的 `state=active` / `expected_count` / `qdrant_count` / `elasticsearch_count` 三者相等、两个摘要都对得上，Qdrant 里也确实有一块身份完全匹配 —— 排除到最后一层才发现问题在端点数据源的**精确内容去重**：`QdrantStorer.ListChunksByDoc`（`internal/store/store.go`）的 `seen` 以归一化内容为键、`if _, ok := seen[key]; !ok` **先到先得**。而同一份文档确实可能同时存在两份内容逐字相同的块：一份历史写入（两个身份字段全空）、一份来自取代它的受管代际 —— `ADM-2024-001` 那 2 点的 `norm_sha256` **完全相同**（`474a312b86f23982`），scroll 顺序把空身份那块排在前面。`seen` 只决定**展示哪一份**，而发布可见性按 identity 精确匹配，空身份那份永远匹配不上，于是整份文档被判空。
+- 修复：`seen` 改记位置（`map[string]int`），遇到重复内容时若已在位的那份不带身份、而新来的带身份，则替换掉它 —— 结果与存储返回顺序无关。判据 `carriesIdentity` 要求 `DocumentVersionID` 与 `GenerationID` **都非空**，与发布策略同源；只要求一半会让「半个身份」的块顶掉真正匹配的那份。同段另一支去重 `removeContainedAdjacentChunks`（包含式重叠，阈值 0.65，用来挡历史 parser 的重叠块）不受影响，注释原先把两者混在了一句里，已拆开写清。
+- 反向验证：基线正例先通过，四个变异各自让新测试报红 —— 改回「先到先得」（原缺陷）、判据反转、判据退化成只看 `GenerationID`、metadata 不再写进块；每条跑完按 sha256 逐字节复原。
+- 线上断言（同一脚本跑改前改后两态，9 项）：`ADM-2024-001` 0 → **1**、`SEC-2024-001` 0 → **1**；`doc-1788350741430636808` 24、`HR-2024-003` 1、`FIN-2025-001` 1、`doc-1788338541964346783` 0、demo 三份展示文档 3/3/3 **全部不变**。把「改前预期」跑在改后代码上，只有 `ADM-2024-001` 与 `SEC-2024-001` 两项 MISMATCH。
+- 权限：未改动，与 UAT-024 一样只放宽了内容可见性，权限过滤仍是独立的一层。
+- 证据：`artifacts/product-experience-acceptance/2026-09-23-chunks/`（`assert-before.txt` / `assert-after.txt` / `assert-before-expectations-on-after-code.txt` / `reverse-verify-chunk-identity.txt` / `page-after-adm.json`）
+- 归属：后端
+- 建议：已修复。
 
 ## 本轮未建单的缺口
 
@@ -419,7 +441,7 @@
 - `/agent` 与 `/release-center` 的 `Fetch: net::ERR_ABORTED` **不是缺陷**。CDP 事件显示 `canceled=true`、`initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取（`?_rsc=` 是预取的标记），即浏览器侧主动取消的投机请求，不是服务端失败（服务端失败会带状态码而不是 `ERR_ABORTED`）。同一形状在两次重载与 `/release-center` 基线上各复现一次，页面无 `role="alert"` / 红色横幅 / 失败文案，且列表与详情数据完整渲染。默认视口下不设 1440×900 也复现同样结果，与视口无关。判据与原始日志见证据目录 `notes.md`。
 - `/quality` 自报「最近一次真实评测 2026-09-11」，是页面主动显示的日期，未判为缺陷。
 - `scripts/web-page-probe.cjs --login` 在 Chrome profile 已存在会话时会失败（登录页直接跳走，找不到体验登录按钮）。这是巡检工具的限制，不是产品缺陷：本轮改成复用 profile 里的会话，或对 default 租户用现签 token 加 `--cookie`。下一轮可让 `--login` 在已登录时直接跳过。
-- **已发布文档在详情页显示空切块，而 Qdrant 里有当前代际的块**（2026-09-23 查 UAT-024 时顺带查清，**未修**）。`ADM-2024-001` / `SEC-2024-001` 都有健康的已发布代际（`index_manifests` 的 `state=active`、`expected/qdrant/elasticsearch_count` 三者相等、两个摘要都对得上），策略 SQL 逐字命中它们，Qdrant 里也各有一块身份完全匹配 —— 但 `GET /v1/documents/{docID}/chunks` 返回 0。真因在端点数据源的**跨代际内容去重**：`QdrantStorer.ListChunksByDoc`（`internal/store/store.go:531`）按归一化内容去重（本意是挡历史 parser 的包含式重叠），而 `ADM-2024-001` 那 2 块的 `norm_sha256` **完全相同**（`474a312b86f23982`），scroll 顺序把**空身份**那块排在前面，去重于是保留了它、丢掉了匹配已发布代际的那块；策略对「有已发布代际」的文档要求引用带身份并精确匹配，留下的空身份块因此全被拒。`SEC-2024-001` 同理（3 块去重后剩 2 块，身份都是空的）。这与 UAT-024 **方向不同**：UAT-024 是「没有发布记录却被当成不可读」，这个是「有发布记录但去重留下了旧块」。判据与原始 payload 见 `artifacts/product-experience-acceptance/2026-09-23-document-content-visibility/qdrant-content.txt` 与同目录 `notes.md`。修法需要先定「同一文档跨代际内容相同的块该保留哪一块」，会动到去重策略本身，影响面比 UAT-024 大，留待单独决策。
+- ~~**已发布文档在详情页显示空切块，而 Qdrant 里有当前代际的块**~~（2026-09-23 查 UAT-024 时顺带查清）**已于同日立为 UAT-025 并修复（`969433d`）**。原先记在这里的理由是「修法需要先定『同一文档跨代际内容相同的块该保留哪一块』，会动到去重策略本身」——实际动手时发现判据不用新定：与发布策略同源即可（`document_version_id` 与 `generation_id` **都非空**的那一份胜出），改动只有一处替换条件加一个 helper。原先的诊断里有一处需要更正：`ListChunksByDoc` 里的去重其实有**两支**，出问题的是 `seen` 的**精确内容**去重（先到先得），而注释里拿来解释它的「挡历史 parser 包含式重叠」是另一支 `removeContainedAdjacentChunks` 的职责。详见 UAT-025 明细。
 
 ## 新增问题模板
 

@@ -55,7 +55,7 @@ P-SEC-0 到 P-SEC-5 已落地。默认 Compose 绑回环、登录限流、`/metr
 | P-UAT-3 | 发布中心 Fail to fetch 红字 | done | 2026-09-11 真实页面复验通过：静默轮询无 Fail to fetch；手动刷新显示「同步暂时失败，请稍后重试」 | [`../issues/findings-register.md`](../issues/findings-register.md) |
 | P-UAT-4 | 产品壳层与页面语言 | done | UAT-016：统一 PageHeader、管理分组、中文阶段/引用/空间名；契约测试 `test_product_shell.py` | [`../issues/findings-register.md`](../issues/findings-register.md) |
 | P-UAT-5 | 未发布文档读不出自己的切块 | done | UAT-024：两个端点不再复用检索证据判据（`ResolveDocumentContentVisibility`）。线上 8 份文档改前改后对照 + admin/user 权限回归通过。`be4b8c2` | [`../issues/findings-register.md`](../issues/findings-register.md) |
-| P-UAT-6 | 已发布文档详情页显示空切块 | pending decision | 查 UAT-024 时顺带查清、**未修**：`QdrantStorer.ListChunksByDoc` 的跨代际内容去重留下了空身份旧块，策略因此把整份文档判空（`ADM-2024-001` / `SEC-2024-001`）。动手前先定「同一文档跨代际内容相同的块该保留哪一块」，会改到去重策略本身 | [`../issues/findings-register.md`](../issues/findings-register.md) |
+| P-UAT-6 | 已发布文档详情页显示空切块 | done | UAT-025：`QdrantStorer.ListChunksByDoc` 的精确内容去重改为「带代际身份的那份胜出」，不再先到先得。线上 9 份文档改前改后对照：`ADM-2024-001` 与 `SEC-2024-001` 0 → 1，其余一个数都没动。`969433d` | [`../issues/findings-register.md`](../issues/findings-register.md) |
 
 这是 2026-09-09 明确要求的体验验收轨道，覆盖页面美观、使用逻辑和缺陷，不替代发布中心/治理/身份专项矩阵。问题登记以 [`issues/findings-register.md`](../issues/findings-register.md) 为准。
 
