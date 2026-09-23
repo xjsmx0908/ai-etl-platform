@@ -103,6 +103,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.RetrievalCandidateK != 50 {
 		t.Errorf("expected RetrievalCandidateK=50, got %d", cfg.RetrievalCandidateK)
 	}
+	// 0 means "no cap", i.e. the behaviour before the knob existed. The default
+	// must not quietly start bounding rerank cost: that would change which
+	// candidates get scored for every deployment that never sets the key.
+	if cfg.RetrievalRerankInputK != 0 {
+		t.Errorf("expected RetrievalRerankInputK=0 (no cap), got %d", cfg.RetrievalRerankInputK)
+	}
 	if cfg.RetrievalFinalTopK != 5 {
 		t.Errorf("expected RetrievalFinalTopK=5, got %d", cfg.RetrievalFinalTopK)
 	}
@@ -228,6 +234,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("RETRIEVAL_ENABLE_ES", "false")
 	os.Setenv("RETRIEVAL_ENABLE_RERANK", "true")
 	os.Setenv("RETRIEVAL_RERANK_POLICY", "always")
+	os.Setenv("RETRIEVAL_RERANK_INPUT_K", "24")
 	os.Setenv("RETRIEVAL_DIAGNOSTICS_ENABLED", "true")
 	os.Setenv("RETRIEVAL_EXACT_SCHEMA_FIELDS", "contract_no,trace_id")
 	os.Setenv("RERANK_ENDPOINT", "http://reranker:8080/rerank")
@@ -284,6 +291,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("RETRIEVAL_ENABLE_ES")
 		os.Unsetenv("RETRIEVAL_ENABLE_RERANK")
 		os.Unsetenv("RETRIEVAL_RERANK_POLICY")
+		os.Unsetenv("RETRIEVAL_RERANK_INPUT_K")
 		os.Unsetenv("RETRIEVAL_DIAGNOSTICS_ENABLED")
 		os.Unsetenv("RETRIEVAL_EXACT_SCHEMA_FIELDS")
 		os.Unsetenv("RERANK_ENDPOINT")
@@ -373,6 +381,9 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.RetrievalCandidateK != 80 {
 		t.Errorf("expected RetrievalCandidateK=80, got %d", cfg.RetrievalCandidateK)
+	}
+	if cfg.RetrievalRerankInputK != 24 {
+		t.Errorf("expected RetrievalRerankInputK=24, got %d", cfg.RetrievalRerankInputK)
 	}
 	if cfg.RetrievalFinalTopK != 7 {
 		t.Errorf("expected RetrievalFinalTopK=7, got %d", cfg.RetrievalFinalTopK)
@@ -729,6 +740,24 @@ func TestValidate_RetrievalConfig(t *testing.T) {
 	cfg.RetrievalCandidateK = 0
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for RetrievalCandidateK < 1")
+	}
+
+	// 0 is a legal value for this one (no cap); a negative one is a typo, not a
+	// policy, and must not reach the reranker as "send -3 candidates".
+	cfg = Load()
+	cfg.RetrievalRerankInputK = 0
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected 0 to be accepted as \"no cap\", got %v", err)
+	}
+	cfg = Load()
+	cfg.RetrievalRerankInputK = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for RetrievalRerankInputK < 0")
+	}
+	cfg = Load()
+	cfg.RetrievalRerankInputK = 501
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for RetrievalRerankInputK > 500")
 	}
 
 	cfg = Load()

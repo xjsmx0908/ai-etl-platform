@@ -22,6 +22,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// defaultRerankTopK is how many reranked candidates the engine keeps. It is an
+// output size, not a work budget: the reranker is a cross-encoder, so what it
+// costs is decided by how many candidates it is handed, and before
+// RetrievalRerankInputK existed nothing bounded that. The two numbers used to be
+// the same expression (min(pool, 20)), which read as if the cap on the output
+// also capped the cost. It did not.
+const defaultRerankTopK = 20
+
 // Engine orchestrates embedding, cache lookup, routing, scatter-gather
 // retrieval, fusion, and optional reranking.
 type Engine struct {
@@ -327,26 +335,44 @@ cacheMiss:
 		)
 		rerankErr := ""
 		if decision.ShouldRerank {
-			rerankTopK := len(stabilized)
-			if rerankTopK > 20 {
-				rerankTopK = 20
+			// Two different numbers, deliberately: how many candidates are scored
+			// (rerankInput) and how many are kept (rerankTopK). Capping the input
+			// is what bounds the cross-encoder's cost; it is taken from the head of
+			// the stabilized order, so what a cap drops is what fusion ranked
+			// lowest. RETRIEVAL_RERANK_INPUT_K = 0 keeps the pre-knob behaviour of
+			// scoring every fused candidate.
+			rerankInput := stabilized
+			if k := e.cfg.RetrievalRerankInputK; k > 0 && k < len(rerankInput) {
+				rerankInput = rerankInput[:k]
+			}
+			rerankTopK := len(rerankInput)
+			if rerankTopK > defaultRerankTopK {
+				rerankTopK = defaultRerankTopK
 			}
 			rerankCtx, rerankSpan := tracer.Start(ctx, "Retrieval.Rerank",
 				trace.WithSpanKind(trace.SpanKindClient),
 				trace.WithAttributes(
 					attribute.Int("rerank.candidate_count", len(stabilized)),
+					attribute.Int("rerank.input_count", len(rerankInput)),
 					attribute.Int("rerank.top_k", rerankTopK),
 					attribute.Bool("rerank.protect_exact_matches", decision.ProtectExactMatches),
 				),
 			)
-			reranked, err := e.reranker.Rerank(rerankCtx, req.Question, stabilized, rerankTopK)
+			reranked, err := e.reranker.Rerank(rerankCtx, req.Question, rerankInput, rerankTopK)
 			if err != nil {
 				rerankSpan.RecordError(err)
 				rerankSpan.SetStatus(codes.Error, "reranker failed")
 				partialErrors = append(partialErrors, "reranker: "+err.Error())
 				rerankErr = err.Error()
 			} else {
-				rerankSpan.SetAttributes(attribute.Int("rerank.result_count", len(reranked)))
+				// How deep into the input the reranker actually reached. This is the
+				// evidence for choosing RETRIEVAL_RERANK_INPUT_K: if the deepest
+				// result always sits near the head of the pool, the tail of the pool
+				// is being scored for nothing. -1 when the mapping is unavailable.
+				rerankSpan.SetAttributes(
+					attribute.Int("rerank.result_count", len(reranked)),
+					attribute.Int("rerank.deepest_used_input_rank", deepestInputRank(reranked, stabilized)),
+				)
 				if decision.ProtectExactMatches {
 					ranked = protectExactMatches(reranked, fused, decision.Evidence, len(fused))
 				} else {
@@ -556,6 +582,34 @@ func rankOfCandidate(candidates []Candidate, id string) int {
 		}
 	}
 	return 0
+}
+
+// deepestInputRank reports the last position in pool that any candidate in
+// selected occupies, 0-based. It answers "how deep into the pool did the
+// reranker actually reach", which is the evidence for sizing
+// RETRIEVAL_RERANK_INPUT_K: if this stays near the head of the pool, the tail
+// was scored and then discarded. Returns -1 when nothing could be mapped, so a
+// missing mapping cannot be misread as "reached rank 0".
+func deepestInputRank(selected, pool []Candidate) int {
+	if len(selected) == 0 || len(pool) == 0 {
+		return -1
+	}
+	position := make(map[string]int, len(pool))
+	for i, candidate := range pool {
+		if candidate.ChunkID == "" {
+			continue
+		}
+		if _, seen := position[candidate.ChunkID]; !seen {
+			position[candidate.ChunkID] = i
+		}
+	}
+	deepest := -1
+	for _, candidate := range selected {
+		if i, ok := position[candidate.ChunkID]; ok && i > deepest {
+			deepest = i
+		}
+	}
+	return deepest
 }
 
 func topCandidateMatches(evidence exactEvidence, candidates []Candidate) bool {

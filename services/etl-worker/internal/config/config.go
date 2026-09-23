@@ -102,6 +102,17 @@ type Config struct {
 	RetrievalEnableES     bool
 	RetrievalEnableRerank bool
 	RetrievalRerankPolicy string
+	// RetrievalRerankInputK caps how many candidates are sent *to* the reranker,
+	// taken from the head of the stabilized order. Zero means "no cap": every
+	// fused candidate is scored, which is the behaviour before this knob existed.
+	//
+	// The reranker is a cross-encoder, so its cost is O(candidates), while its
+	// output is capped at rerankTopK. Those are two different numbers, and before
+	// this field the second one was silently deciding nothing about the first:
+	// a 50-candidate pool cost 50 forward passes to produce 20 results, and the
+	// remaining 30 were scored and discarded. RETRIEVAL_CANDIDATE_K sizes the
+	// fusion pool; this sizes the work.
+	RetrievalRerankInputK int
 	// RetrievalDiagnosticsEnabled permits controlled evaluation requests to ask
 	// for aggregate required-document stage coverage. It is disabled by default.
 	RetrievalDiagnosticsEnabled bool
@@ -367,6 +378,7 @@ func Load() Config {
 		RetrievalEnableES:           EnvBool("RETRIEVAL_ENABLE_ES", true),
 		RetrievalEnableRerank:       EnvBool("RETRIEVAL_ENABLE_RERANK", false),
 		RetrievalRerankPolicy:       strings.ToLower(strings.TrimSpace(EnvStr("RETRIEVAL_RERANK_POLICY", RerankPolicyAuto))),
+		RetrievalRerankInputK:       EnvInt("RETRIEVAL_RERANK_INPUT_K", 0),
 		RetrievalDiagnosticsEnabled: EnvBool("RETRIEVAL_DIAGNOSTICS_ENABLED", false),
 		RetrievalExactSchemaFields:  EnvCSV("RETRIEVAL_EXACT_SCHEMA_FIELDS", DefaultRetrievalExactSchemaFields),
 		RetrievalMinRelevance:       EnvFloat("RETRIEVAL_MIN_RELEVANCE", 0),
@@ -615,6 +627,12 @@ func (c Config) Validate() error {
 	}
 	if c.RetrievalCandidateK < 1 || c.RetrievalCandidateK > 500 {
 		return fmt.Errorf("RETRIEVAL_CANDIDATE_K must be between 1 and 500, got %d", c.RetrievalCandidateK)
+	}
+	// 0 is meaningful here (no cap), so unlike RETRIEVAL_CANDIDATE_K the lower
+	// bound is 0 rather than 1. A negative value would mean "send a negative
+	// number of candidates", which is a typo rather than a policy.
+	if c.RetrievalRerankInputK < 0 || c.RetrievalRerankInputK > 500 {
+		return fmt.Errorf("RETRIEVAL_RERANK_INPUT_K must be between 0 (no cap) and 500, got %d", c.RetrievalRerankInputK)
 	}
 	if c.RetrievalMinRelevance < 0 || c.RetrievalMinRelevance > 1 {
 		return fmt.Errorf("RETRIEVAL_MIN_RELEVANCE must be between 0 and 1, got %v", c.RetrievalMinRelevance)
