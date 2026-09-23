@@ -199,11 +199,15 @@
 
 2026-09-23 修复 UAT-021 / UAT-022 并复验关闭。改的是 Web 工作台交互，所以按本节要求先在真实页面上确认根因、改完再在重建后的页面上复验。两条的根因在两端：UAT-022 是展示层拿不到名字（`uploaded_by` 永远是 UUID，而 `GET /v1/users` 是 admin-only，文档列表却服务所有角色），UAT-021 是演示种子把用户 id 写进了人读的 `owner` 列。验收判据是页面上「上传者」渲染 `demo-user`、「责任人」渲染「人力资源部」/「财务部」，且四页不再出现 `c189da83…` 与 `4f60802f…`；反向验证 7 个变异各自让对应测试变红。逐条状态见登记册。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/`。
 
+2026-09-23 修复 UAT-023 并复验关闭。这条是**使用逻辑**（章程「问题分类」把「术语和业务对不上」写在这一类里），所以判据不是「好不好看」，而是「两块并排会不会读成两个答案」：同一页「知识空间」写「用户上传」，而下面的元数据块直出 `applicable_scope: production`。取登记册建议里的第一个解法——块头改为「内部检索字段」并说明这些键是检索与过滤用的系统字段、不代表业务分类；**没有**把 `applicable_scope` 译成中文业务词，那正是这条问题描述的误读方向。验收判据是页面上该块自报「内部检索字段」且同页「知识空间」仍渲染「用户上传」；反向验证 3 个变异各自让对应测试变红（含「把内部 token 说成业务归属」这一条）。纯展示改动，不碰检索过滤逻辑。逐条状态见登记册。证据 `artifacts/product-experience-acceptance/2026-09-23-uat023/`。
+
 **页面矩阵的「结论」列是 2026-09-09 那一轮的记录**，本文件不再维护第二套逐条结论；后续每轮的页面结论与新建单都只在登记册里，本文件的「执行记录」只留带日期的历史。这样做的原因是：同一件事有两处状态列时，读的人会得出相反的结论。
 
 ## 证据
 
 目录：`artifacts/product-experience-acceptance/YYYY-MM-DD/`（Git 忽略）。
+
+因为 Git 忽略，**登记册里引用的证据路径只在产出它的那份工作副本上存在**，换一份检出就核不到，而引用本身不会报错。2026-09-23 复核过一轮：8 个被引用的目录里 7 个在本机不存在。引用目录名必须与产出时一致；旧目录可能已不在，这一条不当作缺陷，但引用写错（名字与产出不一致）必须改。
 
 建议文件：
 
@@ -243,3 +247,4 @@
 | 2026-09-22-uat017-020 | 2026-09-22 | 阿简 | UAT-017～020 真实页面复验 | `px-admin`（default 租户）打开重建后的 `:3100`。四项全部通过并关闭：发布中心显示「生产库/演示知识库」「权限：内部」；审计操作者为用户名；`.xls`→`XLS`、`.pptx`→`PPTX`；登录品牌区为「可检索、可问答、可发布的知识资产」。手段 `scripts/web-page-probe.cjs`（headless Chrome，1440×900）。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/` |
 | 2026-09-23-uat-rest | 2026-09-23 | 阿简 | 其余页面真实页面复验 | `demo-admin`（demo 租户）与 `px-admin`（default 租户）打开 `:3100`。`/`、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users` 均 200 且有渲染文本，另补 `/documents`、`/documents/[id]`。新开三条问题；`Fetch: net::ERR_ABORTED` 经 CDP 判定为 RSC 预取噪声，不建单。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-23-uat-rest/` |
 | 2026-09-23-uat021-022 | 2026-09-23 | 阿简 | UAT-021 / UAT-022 修复与复验 | 改 `internal/docstore/docstore.go`、`cmd/api/doc_handlers.go`、`cmd/api/demo_showcase.go` 与四个 web 文件（`94b9941`、`e9c0857`）。重建 `query-api` 与 `web` 后，`demo-admin` 在 `:3100` 打开 `/documents`、`/documents/demo-doc-payroll`、`/agent`、`/release-center`：上传者渲染 `demo-user`、责任人渲染「人力资源部」/「财务部」，四页均不再出现 `c189da83…` 与 `4f60802f…`。反向验证 7 个变异各自对应的测试变红，另有两条运行时反向验证（不覆盖管理员手工改过的责任人、改回 UUID 后重新收敛）。两条关闭。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/` |
+| 2026-09-23-uat023 | 2026-09-23 | 阿简 | UAT-023 修复与复验 | 改 `web/app/(app)/documents/[id]/page.tsx` 元数据块的标题与说明（`internal` 侧零改动）。重建 `web` 后，`px-admin`（default 租户）在 `:3100` 打开 `/documents/doc-1789044422928850395`：块头渲染「内部检索字段」+「不代表业务分类」说明，同页「知识空间」仍渲染「用户上传」，`consoleErrors` 为空。反向验证 3 个变异各自让 `test_product_shell` 对应断言变红。UAT-023 关闭。证据 `artifacts/product-experience-acceptance/2026-09-23-uat023/` |

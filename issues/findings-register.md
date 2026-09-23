@@ -51,7 +51,7 @@
 | UAT-020 | 美观 UX | S3 | `/login` | 全部 | 已修复 | 登录品牌文案与产品稿不一致 | 2026-09-11 现网复验：仍写可量化 / 语义检索 |
 | UAT-021 | 美观 UX | S3 | `/agent` `/release-center` `/documents/[id]` | admin | 已修复 | 责任人显示用户 UUID 而不是人名或部门 | 2026-09-23 复验：`/agent` 与 `/release-center` 显示「责任人：人力资源部」，详情页「责任人」为「财务部」 |
 | UAT-022 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 已修复 | 上传者列显示截断 UUID 而不是用户名 | 2026-09-23 复验：列表三行与详情页「上传者」均为 `demo-user`，页面不再出现 `c189da83…` |
-| UAT-023 | 使用逻辑 | S3 | `/documents/[id]` | 全部 | 待产品确认 | 元数据块直出内部检索字段，与同页中文空间名打架 | 2026-09-23 真实页面复验 |
+| UAT-023 | 使用逻辑 | S3 | `/documents/[id]` | 全部 | 已修复 | 元数据块直出内部检索字段，与同页中文空间名打架 | 2026-09-23 复验：块头自报「内部检索字段」并说明不代表业务分类，同页「知识空间」仍渲染「用户上传」 |
 | UAT-024 | 功能缺陷 | S2 | `/documents/[id]` `/documents` | 全部 | 已修复 | 没有任何发布记录的文档读不出自己的切块：详情页显示「暂无切块」，同一页的搜索框也搜不到它 | 2026-09-23 复验：`/documents/demo-doc-onboarding` 显示「文档切块（3）」并列出正文 |
 | UAT-025 | 功能缺陷 | S2 | `/documents/[id]` | 全部 | 已修复 | 已发布文档显示空切块：同一段内容在向量库里有逐字相同的两份拷贝，去重留下不带代际身份那一份 | 2026-09-23 复验：`/documents/ADM-2024-001` 显示「文档切块（1）」并列出正文 |
 
@@ -65,9 +65,11 @@
 
 2026-09-23 修复 UAT-024（`be4b8c2`），并在重建后的 `:3100` 上复验关闭。这条**不是**用户反馈出来的，是去查「发布中心验收矩阵第 3 项」为什么在审批前读不到 `chunk_ids` 时挖到的：`GET /v1/documents/{docID}/chunks` 与 `GET /v1/documents/search` 两个端点都挂 `publicationrelease.ResolveVisibility`，而那是**检索证据**策略、对没有已发布权威的文档 fail-closed —— 于是「读这份文档自己的内容」被「这块能不能当回答证据」的判据管住了。证据 `artifacts/product-experience-acceptance/2026-09-23-document-content-visibility/`。
 
-2026-09-23 修复 UAT-025（`969433d`），并在重建后的 `:3100` 上复验关闭。它是 UAT-024 修复时顺带查清、当时只登记为「未建单缺口」的那一条（`ADM-2024-001` / `SEC-2024-001` 已发布却显示空切块），本轮立单并修完：真因不在可见性策略（策略 SQL 逐字命中、manifest 健康、Qdrant 里也有身份匹配的块），而在端点数据源的**精确内容去重** —— `QdrantStorer.ListChunksByDoc` 的 `seen` 按归一化内容先到先得，同一段内容的两份逐字相同拷贝里留下了不带身份的那份。与 UAT-024 **方向相反**：一个是「没有发布记录却被当成不可读」，一个是「有发布记录但去重留下了旧块」。证据 `artifacts/product-experience-acceptance/2026-09-23-chunks/`。
+2026-09-23 修复 UAT-025（`969433d`），并在重建后的 `:3100` 上复验关闭。它是 UAT-024 修复时顺带查清、当时只登记为「未建单缺口」的那一条（`ADM-2024-001` / `SEC-2024-001` 已发布却显示空切块），本轮立单并修完：真因不在可见性策略（策略 SQL 逐字命中、manifest 健康、Qdrant 里也有身份匹配的块），而在端点数据源的**精确内容去重** —— `QdrantStorer.ListChunksByDoc` 的 `seen` 按归一化内容先到先得，同一段内容的两份逐字相同拷贝里留下了不带身份的那份。与 UAT-024 **方向相反**：一个是「没有发布记录却被当成不可读」，一个是「有发布记录但去重留下了旧块」。证据 `artifacts/product-experience-acceptance/2026-09-23-chunk-identity/`。
 
 三条被查过但**不建单**的观察写在文件末尾「本轮未建单的缺口」，含 `/agent` 与 `/release-center` 上的 `Fetch: net::ERR_ABORTED`：它在 CDP 里是 `canceled=true` + `initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取，页面既无红色横幅也无失败文案，属噪声而非缺陷。
+
+2026-09-23 修复 UAT-023，并在重建后的 `:3100` 上复验关闭。取的是本条建议里的第一个解法（**块头自报身份**），不是第二个（把空间相关的键译成中文）——`applicable_scope` 取的是空间的 `Kind`，把它译成「生产库」正是这条问题描述的误读方向，等于把误读固化进界面。改动只在 `web/app/(app)/documents/[id]/page.tsx` 的展示块，键值对本身仍是接口字段名原样直出（可核对），**不碰检索过滤逻辑**。证据 `artifacts/product-experience-acceptance/2026-09-23-uat023/`。
 
 续跑完成：不重跑 D0–D4。UAT-013 已修复并复验。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
 
@@ -385,14 +387,20 @@
 
 ### UAT-023 文档详情元数据块直出内部检索字段
 
-- 类型：使用逻辑 · 级别：S3 · 状态：待产品确认
+- 类型：使用逻辑 · 级别：S3 · 状态：已修复
 - 页面：`/documents/[id]` · 角色：全部
 - 复现：打开 `/documents/doc-1789044422928850395`（default 租户，用户上传空间），看治理区下方的「元数据」。
 - 期望：要么说明这是给运维看的原始检索字段，要么把空间相关的键译成与同页「知识空间」一致的中文。
 - 实际：显示 `applicable_scope: production`、`knowledge_base_id: user-uploads`、`knowledge_space_id: user-uploads`，而同一页的「知识空间」写「用户上传」。`applicable_scope` 取的是空间的 `Kind`（`cmd/api/upload_handlers.go:305`），检索期当过滤 token 用（`internal/query/scope.go:43`），不是业务词汇。两块并排时读的人会以为这份文档属于「生产库」。
-- 证据：`artifacts/product-experience-acceptance/2026-09-23-uat-rest/probe-default-documents.json`
+- 证据（改前）：`artifacts/product-experience-acceptance/2026-09-23-uat-rest/probe-default-documents.json`
 - 归属：产品 / 前端
 - 建议：先确认这个块给谁看。给运维看就补一句「内部检索字段」的说明；给业务用户看就把 `knowledge_space_id` / `knowledge_base_id` 走 `spaceLabel`，把 `applicable_scope` 折进「系统详情」。渲染处是 `web/app/(app)/documents/[id]/page.tsx:371-382`，纯展示改动，不碰检索过滤逻辑。
+- **采用第一个解法**：块头 `元数据` 改为 `内部检索字段`，并加一句「以下为检索与过滤使用的系统字段，键名是接口字段名，不代表业务分类（例如 `applicable_scope` 取的是知识空间的类型标识）」。**刻意不采用第二个**——把 `applicable_scope: production` 译成「生产库」正是本条问题描述的误读方向，那样做等于把误读固化进界面；键值对本身仍原样直出接口字段名，可核对。判据来自章程第 91 行：本条属「使用逻辑」，而该行把「术语和业务对不上」明确写在这一类里。
+- 修复：`web/app/(app)/documents/[id]/page.tsx:371-382` 的展示块（`internal` 侧零改动）。回归测试 `scripts/tests/test_product_shell.py::test_document_detail_labels_metadata_as_internal_retrieval_fields` 四条断言，其中最后一条是双向断言（新标题在、旧的 `>元数据</dt>` 已清），防「只加不改」。
+- 反向验证：基线正例先通过，三个变异各自让上面那条测试报红——块头改回裸标题「元数据」（原缺陷）、只留标题去掉说明、**把内部 token 说成业务归属**（这条问题警告的误读方向）；每条跑完按 sha256 逐字节复原。第三个变异是关键对照：若测试只钉「标题改了」，把 token 说成业务归属照样能过。
+- 复验：2026-09-23，重建 `web` 后以 default 租户 `px-admin` 打开 `/documents/doc-1789044422928850395`（1440×900）：渲染「内部检索字段」+ 上述说明 + 三个内部键，同页「知识空间」仍渲染「用户上传」，`consoleErrors` 为空。证据 `artifacts/product-experience-acceptance/2026-09-23-uat023/`（`page-after-docdetail.json` 已按章程从第一个 `文档切块（` 起截断，另记 `full_text_sha256`）。
+- 未做：没有把 `knowledge_space_id` / `knowledge_base_id` 走 `spaceLabel`，也没有把 `applicable_scope` 折进「系统详情」。若产品方要的是第二个解法，需按新口径重做。
+
 
 ### UAT-024 没有发布记录的文档读不出自己的切块
 
@@ -427,7 +435,7 @@
 - 反向验证：基线正例先通过，四个变异各自让新测试报红 —— 改回「先到先得」（原缺陷）、判据反转、判据退化成只看 `GenerationID`、metadata 不再写进块；每条跑完按 sha256 逐字节复原。
 - 线上断言（同一脚本跑改前改后两态，9 项）：`ADM-2024-001` 0 → **1**、`SEC-2024-001` 0 → **1**；`doc-1788350741430636808` 24、`HR-2024-003` 1、`FIN-2025-001` 1、`doc-1788338541964346783` 0、demo 三份展示文档 3/3/3 **全部不变**。把「改前预期」跑在改后代码上，只有 `ADM-2024-001` 与 `SEC-2024-001` 两项 MISMATCH。
 - 权限：未改动，与 UAT-024 一样只放宽了内容可见性，权限过滤仍是独立的一层。
-- 证据：`artifacts/product-experience-acceptance/2026-09-23-chunks/`（`assert-before.txt` / `assert-after.txt` / `assert-before-expectations-on-after-code.txt` / `reverse-verify-chunk-identity.txt` / `page-after-adm.json`）
+- 证据：`artifacts/product-experience-acceptance/2026-09-23-chunk-identity/`（`assert-before.txt` / `assert-after.txt` / `assert-before-expectations-on-after-code.txt` / `reverse-verify-chunk-identity.txt` / `page-after-adm.json`）
 - 归属：后端
 - 建议：已修复。
 
@@ -439,6 +447,7 @@
 - 2026-09-22 真实页面复验只覆盖 UAT-017～020 对应的登录、文档、审计、发布中心四页。其余页面本次未走，不代表已通过。
 - 2026-09-23 已补走其余页面（`/`→`/qa`、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users`，加 `/documents`、`/documents/[id]`）。七页全部返回 200 且有渲染文本，`consoleErrors` 除下述噪声外为空。
 - `/agent` 与 `/release-center` 的 `Fetch: net::ERR_ABORTED` **不是缺陷**。CDP 事件显示 `canceled=true`、`initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取（`?_rsc=` 是预取的标记），即浏览器侧主动取消的投机请求，不是服务端失败（服务端失败会带状态码而不是 `ERR_ABORTED`）。同一形状在两次重载与 `/release-center` 基线上各复现一次，页面无 `role="alert"` / 红色横幅 / 失败文案，且列表与详情数据完整渲染。默认视口下不设 1440×900 也复现同样结果，与视口无关。判据与原始日志见证据目录 `notes.md`。
+- **证据目录的引用能不能核到，取决于 `.gitignore`。** `/artifacts/product-experience-acceptance/` 是 Git 忽略的（`.gitignore:51`），所以本文件里的证据路径只在**产出它的那份工作副本**上存在；换一份检出就核不到，而引用本身不会报错。2026-09-23 复核时 8 个被引用的目录里有 7 个在本机不存在（`2026-09-09*`、`2026-09-11*`、`2026-09-22-uat017-020`、`2026-09-23-uat-rest`），其中 `2026-09-23-uat-rest` 的内容还在 `.workbuddy-ai/tmp/evidence-2026-09-23/`，已补回该目录名；另有两处把 `2026-09-23-chunk-identity` 误写成 `2026-09-23-chunks`（已更正）。**这一条不是产品缺陷**，是台账的自证条件：引用的目录名必须与产出时一致，且要接受「旧目录可能已不在」。若要根治，得把证据目录纳入版本库或改用可寻址的存储，本文件不擅自改这条约定。
 - `/quality` 自报「最近一次真实评测 2026-09-11」，是页面主动显示的日期，未判为缺陷。
 - `scripts/web-page-probe.cjs --login` 在 Chrome profile 已存在会话时会失败（登录页直接跳走，找不到体验登录按钮）。这是巡检工具的限制，不是产品缺陷：本轮改成复用 profile 里的会话，或对 default 租户用现签 token 加 `--cookie`。下一轮可让 `--login` 在已登录时直接跳过。
 - ~~**已发布文档在详情页显示空切块，而 Qdrant 里有当前代际的块**~~（2026-09-23 查 UAT-024 时顺带查清）**已于同日立为 UAT-025 并修复（`969433d`）**。原先记在这里的理由是「修法需要先定『同一文档跨代际内容相同的块该保留哪一块』，会动到去重策略本身」——实际动手时发现判据不用新定：与发布策略同源即可（`document_version_id` 与 `generation_id` **都非空**的那一份胜出），改动只有一处替换条件加一个 helper。原先的诊断里有一处需要更正：`ListChunksByDoc` 里的去重其实有**两支**，出问题的是 `seen` 的**精确内容**去重（先到先得），而注释里拿来解释它的「挡历史 parser 包含式重叠」是另一支 `removeContainedAdjacentChunks` 的职责。详见 UAT-025 明细。
