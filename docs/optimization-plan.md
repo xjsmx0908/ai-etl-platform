@@ -238,7 +238,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 ---
 
-### 1.3 已修复的 16 个缺陷（前五处同一形状：失败被固化，重试变成复读）
+### 1.3 已修复的 17 个缺陷（前五处同一形状：失败被固化，重试变成复读）
 
 排查方式统一为：**先在部署环境复现，再定位到具体代码行，再加回归测试，再反向验证（还原修复后测试必须失败），最后部署并线上断言**。下表每条都有线上证据。
 
@@ -261,6 +261,8 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 | 15 | 失败的预审裁决说不出为什么失败：审阅者自己的诊断已经写在手里，却被下一行覆盖掉 | 线上两条 `failed` 裁决（`review-a26fb4d1d170c359`、`review-69e42208b72c0e0b`）的 `summary` 都是 `agent review returned status "failed"`，**没有一个字说明原因**；注入一次计划器故障后复现：新行同样只印这一句，而平台自己的 `GET /v1/agent/runs/{id}` 对同一个 run 返回 `agent planner returned status 503: {"error":{"code":"model_not_found",...}}` —— 原因一直在，只是没进裁决 | 两处，都在 `releasecenter/coordinator.go`：① `:202` `reviewResult.Summary = reviewErr.Error()` 把**适配器已经放好的诊断**覆盖掉（`agentapi/service.go` 的三处失败返回都写了 `Summary: err.Error()` / `run.Error` / `"invalid review report: "+err.Error()`），覆盖后原因只存在于 agent run 里，而 run 受 `AGENT_RUN_TTL`（24h）约束、且不在裁决面板上；② 失败分支是**唯一没经过语言契约的写入路径** —— `validateAutonomousReview` 只在 run 完成且报告解析成功后才被走到，所有失败路径都在它之前 return，这正是英文模板能进表的原因 | `0bcb969` |
 | 16 | 密码打得太长被报成服务端故障（500），而打得太短反而被接受 —— **形状与上面 15 条都不同**，它是一个输入校验缺口 | 线上实测（管理员重置 `eval-user` 的密码）：73 字节 → **HTTP 500 `{"error":"failed to hash password"}`**；1 个字符 → **HTTP 204（接受）**。同一批请求里 72 字节 → 204 | 两处，都在 `cmd/api/user_handlers.go`：① `handleCreateUser`（`:181`）与 `handleSetPassword`（`:329`）把 `auth.HashPassword` 的**任何**错误都写成 500，而 `x/crypto v0.55.0` 的 `GenerateFromPassword` 对超过 72 字节的输入返回 `ErrPasswordTooLong` 且**不截断** —— 「密码打太长」对用户表现为服务端故障；② 全仓此前**没有任何长度校验**，所以这条 500 是唯一症状 | `45be654` |
 
+| 17 | 截断 `text_preview` 时先修 UTF-8、再按**字节**切，切点落回多字节字符中间 → OTLP 导出器拒绝**整批** span，trace 整体丢失（§6 那条「Jaeger `invalid UTF-8` 导出告警」就是它） | 上传一份纯中文文档（每块远超 100 字节；3 字节字符使 `100 % 3 == 1`，切点必然落在字符中间）后，`etl-worker` 立刻打出 `traces export: rpc error: code = Internal desc = grpc: error while marshaling: string field contains invalid UTF-8`，jaeger 里查不到本次的 embed span | `services/etl-worker/internal/embedder/embedder.go` 的 `truncate`：先 `strings.ToValidUTF8` 修掉非法序列，再用 `s[:maxLen]` **按字节**切 —— 刚修好的串被切回非法状态。同包的 `releasecenter.truncateRunes` 早已按 rune 切，只是预算单位不同 | `6969acc` |
+
 **缺陷 16 只修了一半，另一半是刻意的**：72 字节上限是**存储格式的硬属性**（bcrypt 存不下），
 所有写密码的路径都必须拒；而**最小长度是产品策略**，管理员 API 从来接受任意非空密码，
 在这里加下限等于改一个已经发布的契约，不是修缺陷。所以 `auth.ValidatePasswordStorage` 只拒
@@ -270,6 +272,15 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 **这一轮还留下一个与密码无关的产物**：`cmd/api/routes_test.go`。它用 `go/parser` 从 `main.go`
 抽出路由字面量、塞进一个全新的 `http.ServeMux`，把「注册期模式冲突」这个只在 `main()` 里才炸的
 检查搬进了单测。它被独立提交（`976f191`），因为它跟密码无关，修的是「单测全绿 + 部署即挂」这个形状。
+
+**缺陷 17 值得单独记一笔：修复只做了一半，而症状指向了错误的组件**。报错文本是
+`traces export: … string field contains invalid UTF-8`，第一反应会去查 jaeger；实际上
+jaeger 什么都没收到，是 **etl-worker 的导出器拒绝整批 span**。真因是 `truncate` 里
+「先 `ToValidUTF8`、再 `s[:maxLen]`」这个顺序 —— 修好的串被下一行按字节切回非法状态，
+两次操作各自都对，合起来错。`maxLen` 仍是**字节**预算而不是字数，这是刻意的：这个属性
+存在的意义就是让 trace 变小，限制必须落在导出器度量的那个单位上（按 rune 切得到
+99 字节 / 33 字符，正好在预算内，所以两者并不冲突）。判据因此不能是「预览看起来对不对」，
+必须是「**span 是否真的到达 jaeger**」—— 乱码只是表象，丢 span 才是后果。
 
 **缺陷 6 的报错周期，实测与直觉相反**：对账每 5 分钟跑一轮，但**报错每 30 分钟才出现一次**。
 原因在租约：`ClaimReconciliation` 把 `reconcile_lease_until` 推到 `now()+INDEX_RECONCILE_LEASE`（30m）
@@ -1413,8 +1424,8 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 | 项 | 现状 | 验证方式 |
 | --- | --- | --- |
 | Generation build 长任务恢复语义 | `CONTINUATION.md §4` 记录「完整 manifest/digest 跨重试持久化语义需整本任务验证，不能仅依赖 Redis checkpoint」 | 需一次整本长文档的故障注入 |
-| Jaeger `invalid UTF-8` 导出告警 | 已做 truncate 处理，但未确认运行日志中是否消失 | 查 jaeger 容器日志 |
-| 评测脚本 ES 同步竞态 | 本次实测出现 `[eval] WARN: ES sync check did not reach 47 after 1s (last count 10); continuing` | 复现并确认是否影响评测结论 |
+| Jaeger `invalid UTF-8` 导出告警 | **已定案 = §1.3 缺陷 17**（`6969acc`）。不是 jaeger 的问题：报错来自 **etl-worker 的 OTLP 导出器**，它拒绝整批 span，于是 trace 根本没到 jaeger。真因是 `embedder.truncate` 先 `ToValidUTF8` 再按字节切。**日志只能证明一半** —— etl-worker 容器在 `2026-09-22T12:57:35Z` 重建，日志窗口恰好从修复那一刻开始，所以「修复前出现过」只有断言脚本自己的记录（修复前 2 项失败） | 已验：`assert_utf8_preview_live.py` 2026-09-23 复跑 **8/8 通过**（导出无报错 + 探针的 embed span 真的出现在 jaeger，预览 33 字符 / 99 字节）；`docker compose logs etl-worker \| grep -c "invalid UTF-8"` = **0** |
+| 评测脚本 ES 同步竞态 | **已定案（`0cd2377`）**：`wait_for_es_sync` 算出的判定原本只进一行 `print`，不影响 `run_valid`，而 `run_valid` 正是本项目「这份报告能不能当质量证据」的闸门（`write_quality_latest` 拒发、`analyze-eval-variance.py` 丢弃）。改法刻意**不动退出码**（仍 warn-and-continue），改为新增 `es_sync` 字段并把 `reached=false` 折进 `summary.run_valid`。**同时纠正一处被夸大的说法**：原 docstring 声称「ES 落后会把文档推出 top-K，导致假的检索超时」，演示栈实测**未复现**（只从 ES 删块、Qdrant 保留 → 同一问题仍引用它，citations 前后一致），docstring 已改为只陈述权重事实并注明排序论证未经证实 | 已验：`scripts/tests` 282 tests OK（18 skipped）；部署主机上直接调用真实模块 —— `reached=false` → `run_valid=false` 且不产出 `latest.json` 且报告带降级说明，`reached=true` → 产出 `latest.json` |
 | ~~UAT-017～020 真实页面复验~~ | **已完成（2026-09-22）** | `scripts/web-page-probe.cjs` 走真实页面，四项全部通过并关闭 |
 | 企业身份生产 | 全部 blocked 在外部决策 | 不验证，等决策 |
 
@@ -1442,6 +1453,12 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 17 步（不做）   4.1 邀请式自助开户 —— 已实现后撤回，代码在分支 `invite-onboarding`（`24388f6`）
 第 18 步（已完成） §5.1 query/service.go 机械拆分（同包拆成 7 个文件，导出签名不变、79 个声明正文逐字节相同）（`e15117b`）
 第 19 步（已完成） §1.3 缺陷 16：超过 bcrypt 上限的密码返回 400 而不是 500（`45be654`）+ 路由表模式冲突纳入单测（`976f191`）
+第 20 步（已完成） §6 Jaeger `invalid UTF-8` 导出告警 → 定案为 §1.3 缺陷 17（`6969acc`）
+第 21 步（已完成） §6 评测脚本 ES 同步竞态 → 判定折进 `run_valid`（`0cd2377`）
+第 22 步（已完成） §4.3 上传者删除能力记为「仅 API 可用」+ 双向契约测试（`11501a6`）
+第 23 步（已完成） §4.4 版本对比：发布时记下被替换的那次发布 + 确定性块级差异 + `GET /v1/documents/{id}/version-diff`（`c3f18cc` `37efad6`）
+第 24 步（已完成） P-CAP-3 真实问答时延观察 —— 顺带定位 P-CAP-7（本轮，无代码改动）
+第 25 步（待做）   UAT 其余 7 页真实页面复验（`/`、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users`）
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
@@ -1467,6 +1484,18 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 行为**，收益只体现在「以后读这段代码的人少花时间」。唯一的风险是「搬的过程中悄悄改了
 内容」，而这个风险测试看不见（搬错的注释、丢掉的包注释，`go test` 照样全绿），所以判据
 放在「79 个声明正文逐字节相同」和「`go doc` 导出集合前后一致」上。
+
+第 20–21 步是 §6 那两条「诚实标注」的收口 —— 它们的共同点是**判定算出来了，却传不到该去的地方**：
+第 20 步的判定被写进一个会被整体拒绝的批次里（于是 span 丢在导出器，根本不在 jaeger），
+第 21 步的判定被写进一行日志里（于是索引落后时测出来的指标可以冒充一次干净的基线）。
+两条都不是新功能，只是把已有的判定接到它的消费者上。
+第 22 步把一处「看起来像 bug 的不一致」定成了**决策**，并同时钉住两侧事实 ——
+普通用户没有删除入口、上传者的删除能力只在 API 上，是刻意留的（同一条 switch 里的 `PATCH` 才是真管理员专属）。
+第 23 步是 §4.4 三个暂缓项里唯一能自证的：它需要两块地基（发布时记下被替换的那次发布、按内容而非位置对齐），
+而「上一发布版本」**不能**从 `index_manifests` 推 —— `Activate` 会把从未发布的代际也标成 `retired`。
+第 24 步是**观察**不是修复：产出的是 P-CAP-3 的数据，顺带把 23s 的检索成本定位到 P-CAP-7
+（rerank 的上限限的是输出、不是算力）。修它会改变检索质量，必须走 P-CAP-2 的评测轨，所以只记录、不修。
+第 25 步留到最后，是因为章程写着「验收中途不改代码」—— 巡检那一轮必须没有源码变更。
 
 ---
 

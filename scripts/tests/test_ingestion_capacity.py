@@ -247,5 +247,78 @@ class _FakeIngestionAPI:
         handler.wfile.write(body)
 
 
+class QueryLatencyObservationTests(unittest.TestCase):
+    """Tripwires for the P-CAP-3 observation and the instrument behind it.
+
+    The published numbers are a snapshot; these assertions are about the things
+    that would silently invalidate a *future* run or make the doc unreadable:
+    the question pool drifting into duplicates (which measures the semantic
+    cache instead of the system), the percentile helper growing an interpolated
+    tail it cannot support, and the doc losing the sentence that says whether
+    `ttft` includes retrieval.
+    """
+
+    OBSERVATION = ROOT / "scripts" / "query-latency-observation.py"
+    DOC = ROOT / "docs" / "ingestion-capacity.md"
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("query_latency_observation", cls.OBSERVATION)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        cls.mod = module
+        raw = cls.DOC.read_text(encoding="utf-8")
+        # Markdown wraps at ~80 columns, so any multi-word phrase can be split
+        # across a line break. Assert against a whitespace-normalized copy;
+        # otherwise the test passes or fails on how the paragraph happens to be
+        # wrapped, which is not what it is checking.
+        cls.doc = raw
+        cls.flat = " ".join(raw.split())
+
+    def test_question_pool_has_no_duplicates(self):
+        questions = self.mod.DEFAULT_QUESTIONS
+        self.assertGreaterEqual(len(questions), 8, "观测轮数下限是 5–10，池子至少要够 8 轮")
+        duplicates = sorted({q for q in questions if questions.count(q) > 1})
+        self.assertEqual(
+            duplicates, [],
+            f"问题池里有重复项 {duplicates}；重复问同一句会命中语义缓存，"
+            f"那一轮测到的是缓存不是系统",
+        )
+
+    def test_nearest_rank_p95_is_the_maximum_at_small_n(self):
+        # n=8 -> ceil(0.95*8)=8 -> the maximum. The doc says so; if this helper
+        # ever starts interpolating, that sentence becomes a lie.
+        values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 42.0]
+        self.assertEqual(self.mod.percentile_nearest_rank(values, 0.95), 42.0)
+        self.assertEqual(self.mod.percentile_nearest_rank(values, 0.50), 4.0)
+        self.assertIsNone(self.mod.percentile_nearest_rank([], 0.95))
+
+    def test_go_duration_parser_reads_what_the_api_emits(self):
+        parse = self.mod.parse_go_duration
+        self.assertAlmostEqual(parse("25.96s"), 25.96, places=2)
+        self.assertAlmostEqual(parse("1m2.5s"), 62.5, places=2)
+        # Refuse shapes it does not understand instead of returning a wrong number.
+        self.assertIsNone(parse(""))
+        self.assertIsNone(parse("soon"))
+        self.assertIsNone(parse(None))
+
+    def test_doc_states_the_scope_and_the_ttft_definition(self):
+        self.assertIn("scripts/query-latency-observation.py", self.doc)
+        self.assertIn("not the L1 query gate", self.doc)
+        # The one sentence a reader needs to compare these numbers with anything
+        # else: ttft is measured from request start, so it contains retrieval.
+        self.assertIn("`ttft` includes retrieval", self.flat)
+        # And the caveat that keeps the p95 honest at n=8.
+        self.assertIn("is the maximum", self.flat)
+
+    def test_doc_keeps_the_pcap6_numbers_attributed_to_their_configuration(self):
+        # The P-CAP-6 query rows were measured with the optional reranker off.
+        # Without this qualifier the two sets of numbers read as a contradiction.
+        self.assertIn("before the optional reranker was running", self.flat)
+        self.assertIn("P-CAP-7", self.doc)
+
+
 if __name__ == "__main__":
     unittest.main()
