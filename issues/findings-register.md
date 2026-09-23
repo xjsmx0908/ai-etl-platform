@@ -49,8 +49,8 @@
 | UAT-018 | 美观 UX | S3 | `/audit` | admin | 已修复 | 审计操作者列显示 UUID 而不是用户名 | 2026-09-11 现网复验 |
 | UAT-019 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 已修复 | xls/pptx 类型显示为 FILE | 2026-09-11 现网复验 |
 | UAT-020 | 美观 UX | S3 | `/login` | 全部 | 已修复 | 登录品牌文案与产品稿不一致 | 2026-09-11 现网复验：仍写可量化 / 语义检索 |
-| UAT-021 | 美观 UX | S3 | `/agent` `/release-center` `/documents/[id]` | admin | 开放 | 责任人显示用户 UUID 而不是人名或部门 | 2026-09-23 真实页面复验 |
-| UAT-022 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 开放 | 上传者列显示截断 UUID 而不是用户名 | 2026-09-23 真实页面复验 |
+| UAT-021 | 美观 UX | S3 | `/agent` `/release-center` `/documents/[id]` | admin | 已修复 | 责任人显示用户 UUID 而不是人名或部门 | 2026-09-23 复验：`/agent` 与 `/release-center` 显示「责任人：人力资源部」，详情页「责任人」为「财务部」 |
+| UAT-022 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 已修复 | 上传者列显示截断 UUID 而不是用户名 | 2026-09-23 复验：列表三行与详情页「上传者」均为 `demo-user`，页面不再出现 `c189da83…` |
 | UAT-023 | 使用逻辑 | S3 | `/documents/[id]` | 全部 | 待产品确认 | 元数据块直出内部检索字段，与同页中文空间名打架 | 2026-09-23 真实页面复验 |
 
 2026-09-09 已完成 D1 复验，旧九条不再处于「待复验」。UAT-001～016 于 2026-09-09 至 2026-09-11 关闭。UAT-017～020 于 2026-09-22 真实页面复验关闭，逐条证据见各条「复验」。
@@ -58,6 +58,8 @@
 2026-09-22 起，真实页面复验改用 `scripts/web-page-probe.cjs`（headless Chrome + DevTools 协议）：注入 `px-admin` 会话后抓取页面渲染文本，并强制 1440×900 视口。目的是不让「代码里已经改了」被当成「页面已经通过」——headless 默认 800×600 会把 `lg:` 面板整块隐藏，`innerText` 里读不到，只跑代码会得出相反的结论。
 
 2026-09-23 补走其余页面：`/`（重定向到 `/qa`）、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users`，另加 `/documents` 与 `/documents/[id]`。加上 2026-09-22 的登录、文档、审计、发布中心，章程页面矩阵 11 页都已在真实页面上走过一轮。本轮只巡检，未改产品代码，新开 UAT-021～023。证据 `artifacts/product-experience-acceptance/2026-09-23-uat-rest/`。
+
+2026-09-23 修复 UAT-021 与 UAT-022（`94b9941`、`e9c0857`），并在重建后的 `:3100` 上复验关闭。两条都是「同一件事在库里是 id、在界面上应该是名字」，但根因在两端：UAT-022 是展示层拿不到名字（`uploaded_by` 永远是 UUID），UAT-021 是演示种子把用户 id 写进了人读列。**UAT-022 没有按本条原先的建议做**——原建议让两个页面改用 `actorDisplay(doc.uploaded_by, users)`，而 `GET /v1/users` 是 admin-only（`cmd/api/main.go:508`）、文档列表服务所有角色，照做会让 readonly 与 user 账号拿到 403。改成在服务端随行下发 `uploaded_by_name`。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/`。
 
 三条被查过但**不建单**的观察写在文件末尾「本轮未建单的缺口」，含 `/agent` 与 `/release-center` 上的 `Fetch: net::ERR_ABORTED`：它在 CDP 里是 `canceled=true` + `initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取，页面既无红色横幅也无失败文案，属噪声而非缺陷。
 
@@ -344,7 +346,7 @@
 
 ### UAT-021 责任人显示用户 UUID
 
-- 类型：美观 UX · 级别：S3 · 状态：开放
+- 类型：美观 UX · 级别：S3 · 状态：已修复
 - 页面：`/agent`、`/release-center`、`/documents/[id]` · 角色：admin
 - 复现：
   1. 以 `demo-admin` 打开 `/agent`（兼容路由，与发布中心同一工作台）。
@@ -355,10 +357,12 @@
 - 证据：`artifacts/product-experience-acceptance/2026-09-23-uat-rest/probe-7pages.json`（`/agent` 渲染文本含该 UUID）、`probe-docdetail.json`（`/documents/demo-doc-handbook`）、`probe-agent-network-demo.txt` 与 `probe-agent-network-default.txt`（同一条路径在两个租户下的对照）
 - 归属：后端（演示种子）
 - 建议：`cmd/api/demo_showcase.go` 的 `INSERT INTO documents (… owner …)` 不再把 `adminID` 传进 `owner`，改传可读责任人（人名或部门）。**展示层修不通用**：`owner` 是自由文本（`cmd/api/upload_handlers.go:864` 直接取表单值），不能假定它一定是 UUID 再映射回用户名——那是把种子的错变成展示层的猜测。
+- 修复：按上述建议改种子，三份文档的 `owner` 改为 `人力资源部` / `人力资源部` / `财务部`，`adminID` 挪到 `$14` 只用于收敛判断（`94b9941`）。**收敛分支是必须的**：`ON CONFLICT ... DO UPDATE` 只在 `WHERE` 里列出的列变动时才执行，没有 `owner=CASE WHEN documents.owner=$14 THEN EXCLUDED.owner ELSE documents.owner END` 加对应 `WHERE` 子句，修复就只对全新数据库生效，已播种的部署会永远渲染那个 UUID。`CASE` 同时保证不覆盖管理员手工编辑过的责任人。
+- 复验：2026-09-23，重建 `query-api` 后（重启即重新播种）同一批已存在的行从 `4f60802f-6de7-4652-b59a-27109d85c912` 收敛为部门名；1440×900 打开 `/agent` 与 `/release-center` 渲染「责任人：人力资源部」，`/documents/demo-doc-payroll` 治理区「责任人」渲染「财务部」，四页均不再出现 `4f60802f…`。另做两条运行时反向验证：把一份文档的 `owner` 手工改成「手工指定的责任人」后重启，值**未**被覆盖（ELSE 分支成立）；改回 UUID 后重启，收敛回「人力资源部」（并还原演示状态）。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/`。
 
 ### UAT-022 上传者列显示截断 UUID
 
-- 类型：美观 UX · 级别：S3 · 状态：开放
+- 类型：美观 UX · 级别：S3 · 状态：已修复
 - 页面：`/documents`、`/documents/[id]` · 角色：全部
 - 复现：
   1. 以 `demo-admin` 打开 `/documents`：三行的「上传者」都是 `c189da83…`。
@@ -369,6 +373,9 @@
 - 证据：`artifacts/product-experience-acceptance/2026-09-23-uat-rest/probe-7pages.json`、`probe-docdetail.json`、`probe-default-documents.json`
 - 归属：前端
 - 建议：`/documents` 与 `/documents/[id]` 改用 `actorDisplay(doc.uploaded_by, users)`（`listUsers` 在 `/audit` 已经这样用过），删掉 `formatUploader` 里不可达的两个字面量分支。契约测试补一条与 `scripts/tests/test_product_shell.py::test_audit_prefers_username_over_raw_uuid` 同形的断言——只有 `/audit` 被测试钉住，正是这两个页面漂移出去的原因。
+- **建议已被推翻（2026-09-23 修复时发现）**：`GET /v1/users` 挂在 `requireScopes(auth.ScopeAdmin)` 下（`cmd/api/main.go:508`），是 admin-only；而 `GET /v1/documents` 服务所有角色。照原建议让两个页面调 `listUsers`，readonly 与 user 账号会拿到 403。`/audit` 能用是因为审计页本来就只给管理员看。
+- 修复：改为在**服务端**解析。`internal/docstore/docstore.go` 的 `documentColumns` 加子查询取 `users.username`，随行下发 `uploaded_by_name`（`Get` / `GetByHash` / `List` 都经这一个列清单与 `scanDocument`，改一处即覆盖）；`cmd/api/doc_handlers.go` 的 `documentView` 加 `uploaded_by_name`；前端 `formatUploader(id, name)` 两参，删掉 `demo-user` / `demo-admin` 两个字面量分支（`git show 3a16e7f` 确认它们从引入那天起就不可能命中）。两个写法是刻意的：比较的是 uuid 那一侧（`u.id::text = documents.uploaded_by`），反过来 `documents.uploaded_by::uuid` 遇到非 UUID 值会抛错把整个列表打挂，而这种值线上确实存在（`gov-admin`、`interviewer`、`ingestion-capacity-user`、`demo-user`）；子查询用 `COALESCE(..., '')`，因为 `scanDocument` 读普通 `string`，解析不出名字时前端回退到截断 UUID 而不是空白。
+- 复验：2026-09-23，重建 `query-api` 与 `web` 后，`GET /v1/documents` 返回 3/3 行带 `uploaded_by_name`（`c189da83-…` → `demo-user`）；1440×900 打开 `/documents`，表头「上传者」列三行均为 `demo-user`；`/documents/demo-doc-payroll` 的「上传者」同为 `demo-user`；两个页面均不再出现 `c189da83`。反向验证 7 个变异（去掉子查询、把 cast 换到 TEXT 列、前端改回单参、helper 忽略 `name`、种子写回 `adminID`、去掉收敛分支、`owner` 字面量改回 UUID）各自对应的测试全部变红。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/`。
 
 ### UAT-023 文档详情元数据块直出内部检索字段
 

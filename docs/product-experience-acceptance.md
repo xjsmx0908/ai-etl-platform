@@ -197,6 +197,8 @@
 
 2026-09-23 补走其余页面：`/`（重定向到 `/qa`）、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users`，另加 `/documents` 与 `/documents/[id]`。七页均 200 且有渲染文本；`/observe` 七项主链路全部在线、白名单说明可读；`/data` 空间下拉区分个人自动发布与受管审批、密级三档齐；`/qa` 检索边界随角色显示；`/users` 列表与操作入口可见。加上 2026-09-22 的登录、文档、审计、发布中心，页面矩阵 11 页已在真实页面上各走过一轮。本轮只巡检，未改产品代码，新开三条问题，逐条状态与证据见登记册。
 
+2026-09-23 修复 UAT-021 / UAT-022 并复验关闭。改的是 Web 工作台交互，所以按本节要求先在真实页面上确认根因、改完再在重建后的页面上复验。两条的根因在两端：UAT-022 是展示层拿不到名字（`uploaded_by` 永远是 UUID，而 `GET /v1/users` 是 admin-only，文档列表却服务所有角色），UAT-021 是演示种子把用户 id 写进了人读的 `owner` 列。验收判据是页面上「上传者」渲染 `demo-user`、「责任人」渲染「人力资源部」/「财务部」，且四页不再出现 `c189da83…` 与 `4f60802f…`；反向验证 7 个变异各自让对应测试变红。逐条状态见登记册。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/`。
+
 **页面矩阵的「结论」列是 2026-09-09 那一轮的记录**，本文件不再维护第二套逐条结论；后续每轮的页面结论与新建单都只在登记册里，本文件的「执行记录」只留带日期的历史。这样做的原因是：同一件事有两处状态列时，读的人会得出相反的结论。
 
 ## 证据
@@ -240,3 +242,4 @@
 | 2026-09-11-ux-retest | 2026-09-11 | Codex | 壳层上线后现网观感 | `px-admin` 打开重建后的 `:3100`。UAT-016 现网确认通过。新开 UAT-017～020（发布中心 ID、审计 UUID、FILE 类型、登录文案）。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-11-ux-retest/` |
 | 2026-09-22-uat017-020 | 2026-09-22 | 阿简 | UAT-017～020 真实页面复验 | `px-admin`（default 租户）打开重建后的 `:3100`。四项全部通过并关闭：发布中心显示「生产库/演示知识库」「权限：内部」；审计操作者为用户名；`.xls`→`XLS`、`.pptx`→`PPTX`；登录品牌区为「可检索、可问答、可发布的知识资产」。手段 `scripts/web-page-probe.cjs`（headless Chrome，1440×900）。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/` |
 | 2026-09-23-uat-rest | 2026-09-23 | 阿简 | 其余页面真实页面复验 | `demo-admin`（demo 租户）与 `px-admin`（default 租户）打开 `:3100`。`/`、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users` 均 200 且有渲染文本，另补 `/documents`、`/documents/[id]`。新开三条问题；`Fetch: net::ERR_ABORTED` 经 CDP 判定为 RSC 预取噪声，不建单。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-23-uat-rest/` |
+| 2026-09-23-uat021-022 | 2026-09-23 | 阿简 | UAT-021 / UAT-022 修复与复验 | 改 `internal/docstore/docstore.go`、`cmd/api/doc_handlers.go`、`cmd/api/demo_showcase.go` 与四个 web 文件（`94b9941`、`e9c0857`）。重建 `query-api` 与 `web` 后，`demo-admin` 在 `:3100` 打开 `/documents`、`/documents/demo-doc-payroll`、`/agent`、`/release-center`：上传者渲染 `demo-user`、责任人渲染「人力资源部」/「财务部」，四页均不再出现 `c189da83…` 与 `4f60802f…`。反向验证 7 个变异各自对应的测试变红，另有两条运行时反向验证（不覆盖管理员手工改过的责任人、改回 UUID 后重新收敛）。两条关闭。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/` |
