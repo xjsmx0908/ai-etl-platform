@@ -370,13 +370,18 @@ export default function DocumentDetailPage() {
         )}
         {doc.metadata && Object.keys(doc.metadata).length > 0 && (
           <div className="mt-3 border-t border-slate-100 pt-3">
-            <dt className="text-xs text-slate-400">元数据</dt>
-            <dd className="mt-1 flex flex-wrap gap-2">
-              {Object.entries(doc.metadata).map(([k, v]) => (
-                <span key={k} className="rounded bg-slate-50 px-2 py-0.5 text-xs text-slate-600">
-                  {k}: {String(v)}
-                </span>
-              ))}
+            <dt className="text-xs text-slate-400">内部检索字段</dt>
+            <dd className="mt-1">
+              <p className="text-xs text-slate-400">
+                以下为检索与过滤使用的系统字段，键名是接口字段名，不代表业务分类（例如 applicable_scope 取的是知识空间的类型标识）。
+              </p>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {Object.entries(doc.metadata).map(([k, v]) => (
+                  <span key={k} className="rounded bg-slate-50 px-2 py-0.5 text-xs text-slate-600">
+                    {k}: {String(v)}
+                  </span>
+                ))}
+              </div>
             </dd>
           </div>
         )}

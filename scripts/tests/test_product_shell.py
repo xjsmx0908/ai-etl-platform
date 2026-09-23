@@ -46,6 +46,21 @@ class ProductShellTests(unittest.TestCase):
         self.assertIn("新文件将替换「{doc.file_name}」的内容", page)
         self.assertNotIn("active（有效）", page)
 
+    def test_document_detail_labels_metadata_as_internal_retrieval_fields(self):
+        """UAT-023：元数据块直出内部检索字段，与同页中文的「知识空间」并排时读成两个答案。
+
+        这些键是检索与过滤用的系统字段（`applicable_scope` 取的是知识空间的类型标识，
+        不是业务分类），所以块头必须自报身份，不能只写「元数据」让人当成业务属性。
+        """
+        page = (ROOT / "web/app/(app)/documents/[id]/page.tsx").read_text(encoding="utf-8")
+        self.assertIn("内部检索字段", page)
+        self.assertIn("不代表业务分类", page)
+        # 反面也要钉住：`applicable_scope` 是空间的类型标识，不能被说成业务归属 ——
+        # 那正是这条问题描述的误读方向。
+        self.assertIn("applicable_scope 取的是知识空间的类型标识", page)
+        # 双向断言：新写法在，旧的裸标题已清
+        self.assertNotIn(">元数据</dt>", page)
+
     def test_release_center_uses_page_header_without_changing_gates(self):
         page = (ROOT / "web/app/(app)/agent/page.tsx").read_text(encoding="utf-8")
         self.assertIn("PageHeader", page)
