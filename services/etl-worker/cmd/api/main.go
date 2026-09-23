@@ -351,6 +351,15 @@ func main() {
 		}
 	}
 	exactPublication := publicationworkflow.NewPostgresPublication(pgPool, qs)
+	// The version diff reads the keyword projection directly and so needs its own
+	// client: the rollback indexer above is closed by its own defer.
+	var versionDiffChunks generationChunkLister
+	if versionDiffIndexer, err := es.NewHTTPIndexer(cfg.ESAddress, cfg.ESAPIKey, cfg.ESIndex); err != nil {
+		slog.Warn("document version diff unavailable", "error", err)
+	} else {
+		defer versionDiffIndexer.Close()
+		versionDiffChunks = versionDiffIndexer
+	}
 	publicationWorkflow := publicationworkflow.New(docStore, exactPublication).
 		WithPublisher(exactPublication)
 	releaseCenterStore := releasecenter.NewPostgresStore(pgPool)
@@ -489,6 +498,10 @@ func main() {
 	apiV1.Handle("/v1/release-center/reviews/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReview(releaseCoordinator)))
 	apiV1.Handle("/v1/release-center/review-reports/", requireScopes(auth.ScopeAdmin)(handleReleaseCenterReviewReport(releaseCenterStore)))
 	apiV1.Handle("/v1/documents/{docID}/chunks", chunksHandler)
+	// Admin-only, like the release centre routes: this is release governance
+	// evidence, and it must not become a second way to read blocks that
+	// /v1/documents/{docID}/chunks filters by document permission.
+	apiV1.Handle("/v1/documents/{docID}/version-diff", requireScopes(auth.ScopeAdmin)(http.HandlerFunc(handleDocumentVersionDiff(exactPublication, versionDiffChunks))))
 	apiV1.Handle("/v1/system/health", requireScopes("query")(http.HandlerFunc(handleSystemHealth(cfg))))
 	apiV1.Handle("/v1/tasks/", requireScopes("upload")(http.HandlerFunc(handleTaskStatus(taskStatusStore))))
 	apiV1.Handle("/v1/tasks/{docID}/cancel", requireScopes("upload")(http.HandlerFunc(handleTaskCancel(taskStatusStore, admissionStore))))

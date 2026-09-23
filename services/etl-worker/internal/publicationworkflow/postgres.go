@@ -63,6 +63,45 @@ func (p *PostgresPublication) CurrentCandidate(ctx context.Context, tenantID, do
 	return candidate, true, nil
 }
 
+// ReleasePair names the two indexed versions a version diff compares: the one
+// currently published, and the one it replaced.
+//
+// The previous identity is deliberately two fields rather than one. Retention
+// reclaims a retired generation's manifest row, which nulls the generation, but
+// the version survives as a historical fact -- and "the previous release was
+// job-1 and its blocks are gone" is a different answer from "this document has
+// never been published before". A caller that could not tell them apart would
+// report a reclaimed predecessor as an empty one, i.e. as "everything is new".
+type ReleasePair struct {
+	PublishedVersionID    string
+	PublishedGenerationID string
+	PreviousVersionID     string
+	PreviousGenerationID  string
+}
+
+// CurrentReleasePair returns the published and previous identities for one
+// document. found is false when the document has no release row at all, which is
+// how a document that has never entered governance looks.
+func (p *PostgresPublication) CurrentReleasePair(ctx context.Context, tenantID, documentID string) (ReleasePair, bool, error) {
+	if p == nil || p.q == nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(documentID) == "" {
+		return ReleasePair{}, false, fmt.Errorf("publication release store is not configured")
+	}
+	var pair ReleasePair
+	err := p.q.QueryRow(ctx, `SELECT COALESCE(published_version_id,''),COALESCE(published_generation_id,''),
+		COALESCE(previous_version_id,''),COALESCE(previous_generation_id,'')
+		FROM document_releases WHERE tenant_id=$1 AND document_id=$2`, tenantID, documentID).Scan(
+		&pair.PublishedVersionID, &pair.PublishedGenerationID,
+		&pair.PreviousVersionID, &pair.PreviousGenerationID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReleasePair{}, false, nil
+	}
+	if err != nil {
+		return ReleasePair{}, false, fmt.Errorf("load release pair: %w", err)
+	}
+	return pair, true, nil
+}
+
 func (p *PostgresPublication) Publish(ctx context.Context, actor Actor, candidate Candidate, idempotencyKey string) error {
 	if !strings.EqualFold(strings.TrimSpace(actor.Role), "admin") {
 		return ErrAdminRequired
