@@ -1,6 +1,6 @@
 # 产品体验验收规范
 
-最后核验：2026-09-22。
+最后核验：2026-09-23。
 
 这是面向真实 Web 工作台的体验验收门禁，覆盖页面美观、使用逻辑和功能缺陷。
 它不替代发布中心隔离栈、治理脚本或企业身份 staging；那些专项矩阵仍然
@@ -195,6 +195,10 @@
 
 2026-09-22 复验 UAT-017～020：`px-admin` 在重建后的 `:3100` 上走真实页面，四项全部通过并关闭（发布中心空间/权限中文、审计操作者用户名、xls/pptx 类型徽章、登录品牌文案）。本轮只做复验，未改产品代码。手段与证据见登记册「最后核验」段与 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/`。本次只覆盖这四个页面，其余页面未走，不代表已通过。
 
+2026-09-23 补走其余页面：`/`（重定向到 `/qa`）、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users`，另加 `/documents` 与 `/documents/[id]`。七页均 200 且有渲染文本；`/observe` 七项主链路全部在线、白名单说明可读；`/data` 空间下拉区分个人自动发布与受管审批、密级三档齐；`/qa` 检索边界随角色显示；`/users` 列表与操作入口可见。加上 2026-09-22 的登录、文档、审计、发布中心，页面矩阵 11 页已在真实页面上各走过一轮。本轮只巡检，未改产品代码，新开三条问题，逐条状态与证据见登记册。
+
+**页面矩阵的「结论」列是 2026-09-09 那一轮的记录**，本文件不再维护第二套逐条结论；后续每轮的页面结论与新建单都只在登记册里，本文件的「执行记录」只留带日期的历史。这样做的原因是：同一件事有两处状态列时，读的人会得出相反的结论。
+
 ## 证据
 
 目录：`artifacts/product-experience-acceptance/YYYY-MM-DD/`（Git 忽略）。
@@ -235,3 +239,4 @@
 | 2026-09-11-uat015 | 2026-09-11 | Codex | UAT-015 复验 | `px-admin` 打开 `/release-center`：静默轮询无 `Fail to fetch`；手动刷新显示「同步暂时失败，请稍后重试」，恢复后红字消失。P-UAT-3 关闭 |
 | 2026-09-11-ux-retest | 2026-09-11 | Codex | 壳层上线后现网观感 | `px-admin` 打开重建后的 `:3100`。UAT-016 现网确认通过。新开 UAT-017～020（发布中心 ID、审计 UUID、FILE 类型、登录文案）。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-11-ux-retest/` |
 | 2026-09-22-uat017-020 | 2026-09-22 | 阿简 | UAT-017～020 真实页面复验 | `px-admin`（default 租户）打开重建后的 `:3100`。四项全部通过并关闭：发布中心显示「生产库/演示知识库」「权限：内部」；审计操作者为用户名；`.xls`→`XLS`、`.pptx`→`PPTX`；登录品牌区为「可检索、可问答、可发布的知识资产」。手段 `scripts/web-page-probe.cjs`（headless Chrome，1440×900）。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/` |
+| 2026-09-23-uat-rest | 2026-09-23 | 阿简 | 其余页面真实页面复验 | `demo-admin`（demo 租户）与 `px-admin`（default 租户）打开 `:3100`。`/`、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users` 均 200 且有渲染文本，另补 `/documents`、`/documents/[id]`。新开三条问题；`Fetch: net::ERR_ABORTED` 经 CDP 判定为 RSC 预取噪声，不建单。不改产品代码。证据 `artifacts/product-experience-acceptance/2026-09-23-uat-rest/` |

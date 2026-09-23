@@ -1,6 +1,6 @@
 # 产品体验问题登记册
 
-最后核验：2026-09-22。
+最后核验：2026-09-23。
 
 这是产品体验验收的整改主文档。新问题只在这里建单。
 **UAT 条目的状态只在本文件维护**；其他文档只链接，不复制条目状态，也不写任何计数快照。
@@ -49,10 +49,17 @@
 | UAT-018 | 美观 UX | S3 | `/audit` | admin | 已修复 | 审计操作者列显示 UUID 而不是用户名 | 2026-09-11 现网复验 |
 | UAT-019 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 已修复 | xls/pptx 类型显示为 FILE | 2026-09-11 现网复验 |
 | UAT-020 | 美观 UX | S3 | `/login` | 全部 | 已修复 | 登录品牌文案与产品稿不一致 | 2026-09-11 现网复验：仍写可量化 / 语义检索 |
+| UAT-021 | 美观 UX | S3 | `/agent` `/release-center` `/documents/[id]` | admin | 开放 | 责任人显示用户 UUID 而不是人名或部门 | 2026-09-23 真实页面复验 |
+| UAT-022 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 开放 | 上传者列显示截断 UUID 而不是用户名 | 2026-09-23 真实页面复验 |
+| UAT-023 | 使用逻辑 | S3 | `/documents/[id]` | 全部 | 待产品确认 | 元数据块直出内部检索字段，与同页中文空间名打架 | 2026-09-23 真实页面复验 |
 
 2026-09-09 已完成 D1 复验，旧九条不再处于「待复验」。UAT-001～016 于 2026-09-09 至 2026-09-11 关闭。UAT-017～020 于 2026-09-22 真实页面复验关闭，逐条证据见各条「复验」。
 
 2026-09-22 起，真实页面复验改用 `scripts/web-page-probe.cjs`（headless Chrome + DevTools 协议）：注入 `px-admin` 会话后抓取页面渲染文本，并强制 1440×900 视口。目的是不让「代码里已经改了」被当成「页面已经通过」——headless 默认 800×600 会把 `lg:` 面板整块隐藏，`innerText` 里读不到，只跑代码会得出相反的结论。
+
+2026-09-23 补走其余页面：`/`（重定向到 `/qa`）、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users`，另加 `/documents` 与 `/documents/[id]`。加上 2026-09-22 的登录、文档、审计、发布中心，章程页面矩阵 11 页都已在真实页面上走过一轮。本轮只巡检，未改产品代码，新开 UAT-021～023。证据 `artifacts/product-experience-acceptance/2026-09-23-uat-rest/`。
+
+三条被查过但**不建单**的观察写在文件末尾「本轮未建单的缺口」，含 `/agent` 与 `/release-center` 上的 `Fetch: net::ERR_ABORTED`：它在 CDP 里是 `canceled=true` + `initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取，页面既无红色横幅也无失败文案，属噪声而非缺陷。
 
 续跑完成：不重跑 D0–D4。UAT-013 已修复并复验。证据 `artifacts/product-experience-acceptance/2026-09-09-fix/`。
 
@@ -335,12 +342,55 @@
 - 修复：品牌区标题与两条卖点改为产品稿文案（`web/app/login/page.tsx`）。
 - 复验：2026-09-22，1440×900 打开 `/login`。品牌区为「让文档沉淀为 可检索、可问答、可发布的知识资产」，卖点为「多路召回 · 只回答已发布知识」「权限隔离 · 引用可追溯」；全页无「可量化的知识资产」「语义检索」「忠实度校验」。证据 `artifacts/product-experience-acceptance/2026-09-22-uat017-020/`。
 
+### UAT-021 责任人显示用户 UUID
+
+- 类型：美观 UX · 级别：S3 · 状态：开放
+- 页面：`/agent`、`/release-center`、`/documents/[id]` · 角色：admin
+- 复现：
+  1. 以 `demo-admin` 打开 `/agent`（兼容路由，与发布中心同一工作台）。
+  2. 在「统一业务记录」里选中 `员工手册.md`，看详情卡「责任人」。
+  3. 再打开 `/documents/demo-doc-handbook`，看治理区「责任人」。
+- 期望：显示人读的责任人。`default` 租户同一位置渲染的是「体验验收员」（2026-09-23 实测），历史记录里还有「小卡拉米」「财务部」。
+- 实际：三处都显示 `4f60802f-6de7-4652-b59a-27109d85c912`。库里 `demo` 租户三份文档的 `owner` 全是这串（= `demo-admin` 的用户 id）；`default` 租户同一个字段是人读文本（实测渲染「体验验收员」，另有文档为空串、页面显示「未填写」）。`owner` 的定义在 `internal/migrations/0004_document_governance.up.sql:20` 写的是「Accountable owner (business role or user)」，与记录上传者的 `uploaded_by` 明确区分，是人读文本，不是用户 id 列。
+- 证据：`artifacts/product-experience-acceptance/2026-09-23-uat-rest/probe-7pages.json`（`/agent` 渲染文本含该 UUID）、`probe-docdetail.json`（`/documents/demo-doc-handbook`）、`probe-agent-network-demo.txt` 与 `probe-agent-network-default.txt`（同一条路径在两个租户下的对照）
+- 归属：后端（演示种子）
+- 建议：`cmd/api/demo_showcase.go` 的 `INSERT INTO documents (… owner …)` 不再把 `adminID` 传进 `owner`，改传可读责任人（人名或部门）。**展示层修不通用**：`owner` 是自由文本（`cmd/api/upload_handlers.go:864` 直接取表单值），不能假定它一定是 UUID 再映射回用户名——那是把种子的错变成展示层的猜测。
+
+### UAT-022 上传者列显示截断 UUID
+
+- 类型：美观 UX · 级别：S3 · 状态：开放
+- 页面：`/documents`、`/documents/[id]` · 角色：全部
+- 复现：
+  1. 以 `demo-admin` 打开 `/documents`：三行的「上传者」都是 `c189da83…`。
+  2. 打开 `/documents/demo-doc-handbook`：「上传者」同为 `c189da83…`。
+  3. 换 `px-admin`（default 租户）打开 `/documents`：每一行都是 `96ca72d2…` 或 `62da5a2e…`。
+- 期望：显示用户名。判据与 UAT-018（审计操作者列）相同。
+- 实际：两个页面都走 `formatUploader(doc.uploaded_by)`（`web/lib/docDisplay.ts:48`）。该函数只对**字面量字符串** `demo-user` / `demo-admin` 返回「演示用户」「演示管理员」，其余 UUID 一律截断成前 8 位加省略号。而 `uploaded_by` 永远来自 `auth.GetUserID()`（`cmd/api/upload_handlers.go:488`、`:503`、`:543`），落库即用户 UUID —— 两个中文名分支在真实数据下**不可达**，所有行都走截断分支。`/audit` 用的是另一个函数 `actorDisplay(id, users)`，带用户目录，所以 UAT-018 只把它修好了。
+- 证据：`artifacts/product-experience-acceptance/2026-09-23-uat-rest/probe-7pages.json`、`probe-docdetail.json`、`probe-default-documents.json`
+- 归属：前端
+- 建议：`/documents` 与 `/documents/[id]` 改用 `actorDisplay(doc.uploaded_by, users)`（`listUsers` 在 `/audit` 已经这样用过），删掉 `formatUploader` 里不可达的两个字面量分支。契约测试补一条与 `scripts/tests/test_product_shell.py::test_audit_prefers_username_over_raw_uuid` 同形的断言——只有 `/audit` 被测试钉住，正是这两个页面漂移出去的原因。
+
+### UAT-023 文档详情元数据块直出内部检索字段
+
+- 类型：使用逻辑 · 级别：S3 · 状态：待产品确认
+- 页面：`/documents/[id]` · 角色：全部
+- 复现：打开 `/documents/doc-1789044422928850395`（default 租户，用户上传空间），看治理区下方的「元数据」。
+- 期望：要么说明这是给运维看的原始检索字段，要么把空间相关的键译成与同页「知识空间」一致的中文。
+- 实际：显示 `applicable_scope: production`、`knowledge_base_id: user-uploads`、`knowledge_space_id: user-uploads`，而同一页的「知识空间」写「用户上传」。`applicable_scope` 取的是空间的 `Kind`（`cmd/api/upload_handlers.go:305`），检索期当过滤 token 用（`internal/query/scope.go:43`），不是业务词汇。两块并排时读的人会以为这份文档属于「生产库」。
+- 证据：`artifacts/product-experience-acceptance/2026-09-23-uat-rest/probe-default-documents.json`
+- 归属：产品 / 前端
+- 建议：先确认这个块给谁看。给运维看就补一句「内部检索字段」的说明；给业务用户看就把 `knowledge_space_id` / `knowledge_base_id` 走 `spaceLabel`，把 `applicable_scope` 折进「系统详情」。渲染处是 `web/app/(app)/documents/[id]/page.tsx:371-382`，纯展示改动，不碰检索过滤逻辑。
+
 ## 本轮未建单的缺口
 
 - 机密双审已于 2026-09-09-fix 补测通过，不再作为缺口。
 - 文档退役后问答、管理员新建用户、个人空间上传新版本已于 2026-09-09-gap 补测通过。
 - 受管替换版本：旧发布在换版过程中仍可问；新版本独立审批后切换，UAT-014 已复验关闭。
 - 2026-09-22 真实页面复验只覆盖 UAT-017～020 对应的登录、文档、审计、发布中心四页。其余页面本次未走，不代表已通过。
+- 2026-09-23 已补走其余页面（`/`→`/qa`、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users`，加 `/documents`、`/documents/[id]`）。七页全部返回 200 且有渲染文本，`consoleErrors` 除下述噪声外为空。
+- `/agent` 与 `/release-center` 的 `Fetch: net::ERR_ABORTED` **不是缺陷**。CDP 事件显示 `canceled=true`、`initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取（`?_rsc=` 是预取的标记），即浏览器侧主动取消的投机请求，不是服务端失败（服务端失败会带状态码而不是 `ERR_ABORTED`）。同一形状在两次重载与 `/release-center` 基线上各复现一次，页面无 `role="alert"` / 红色横幅 / 失败文案，且列表与详情数据完整渲染。默认视口下不设 1440×900 也复现同样结果，与视口无关。判据与原始日志见证据目录 `notes.md`。
+- `/quality` 自报「最近一次真实评测 2026-09-11」，是页面主动显示的日期，未判为缺陷。
+- `scripts/web-page-probe.cjs --login` 在 Chrome profile 已存在会话时会失败（登录页直接跳走，找不到体验登录按钮）。这是巡检工具的限制，不是产品缺陷：本轮改成复用 profile 里的会话，或对 default 租户用现签 token 加 `--cookie`。下一轮可让 `--login` 在已登录时直接跳过。
 
 ## 新增问题模板
 
