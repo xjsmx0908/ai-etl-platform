@@ -132,7 +132,16 @@ func (p *PostgresPublication) Publish(ctx context.Context, actor Actor, candidat
 	if tag.RowsAffected() != 1 {
 		return ErrCandidateStale
 	}
-	tag, err = tx.Exec(ctx, `UPDATE document_releases SET published_version_id=$3,
+	// The replaced release is captured in the same statement that overwrites it.
+	// The row is already locked FOR UPDATE, so a separate read would be safe too,
+	// but keeping it here makes "previous is whatever published was" a property of
+	// one statement instead of an ordering the reader has to verify. NULLIF turns
+	// the empty strings of a never-published row into NULLs, which is what the
+	// pair CHECK and the diff endpoint both expect.
+	tag, err = tx.Exec(ctx, `UPDATE document_releases SET
+		previous_version_id=NULLIF(published_version_id,''),
+		previous_generation_id=NULLIF(published_generation_id,''),
+		published_version_id=$3,
 		published_generation_id=$4,revision=revision+1,last_error='',
 		last_publication_idempotency_key=$6,last_publication_request_hash=$7,updated_at=now()
 		WHERE tenant_id=$1 AND document_id=$2 AND current_version_id=$3

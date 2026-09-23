@@ -148,6 +148,43 @@ func assertPublicationUnchanged(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
+// TestPostgresPublicationRecordsTheReleaseItReplaced covers the column the
+// version diff reads. Publish overwrites published_version_id in place, so
+// without it the question "what changed since the last published version" has no
+// way to name the version it should compare against -- and the retired rows in
+// index_manifests cannot stand in, because Activate retires generations that
+// were never published.
+func TestPostgresPublicationRecordsTheReleaseItReplaced(t *testing.T) {
+	pool, cleanup := publicationWorkflowPool(t)
+	defer cleanup()
+	seedExactPublication(t, pool)
+	publication := NewPostgresPublication(pool, nil)
+
+	candidate, found, err := publication.CurrentCandidate(context.Background(), "acme", "policy-1")
+	if err != nil || !found {
+		t.Fatalf("current candidate found=%t err=%v", found, err)
+	}
+	actor := Actor{TenantID: "acme", UserID: "admin-1", Role: "admin"}
+	if err := publication.Publish(context.Background(), actor, candidate, "agent:run-1:2:publish_document"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	var previousVersion, previousGeneration, publishedVersion, publishedGeneration string
+	err = pool.QueryRow(context.Background(), `SELECT COALESCE(previous_version_id,''),
+		COALESCE(previous_generation_id,''),COALESCE(published_version_id,''),COALESCE(published_generation_id,'')
+		FROM document_releases WHERE tenant_id='acme' AND document_id='policy-1'`).
+		Scan(&previousVersion, &previousGeneration, &publishedVersion, &publishedGeneration)
+	if err != nil {
+		t.Fatalf("read release: %v", err)
+	}
+	if publishedVersion != "job-2" || publishedGeneration != "gen-2" {
+		t.Fatalf("published=%s/%s, want job-2/gen-2", publishedVersion, publishedGeneration)
+	}
+	if previousVersion != "job-1" || previousGeneration != "gen-1" {
+		t.Fatalf("previous=%s/%s, want job-1/gen-1", previousVersion, previousGeneration)
+	}
+}
+
 func seedExactPublication(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
@@ -163,6 +200,12 @@ func seedExactPublication(t *testing.T, pool *pgxpool.Pool) {
 	}
 }
 
+// publicationWorkflowPool builds a scratch schema holding the tables Publish
+// touches. The DDL below is hand-written rather than migrated, so it has to be
+// kept in step with internal/migrations by hand: 0031 added previous_version_id
+// and previous_generation_id, and a Publish that writes them against a schema
+// without them fails with "column does not exist" -- but only for whoever sets
+// GOVERNANCE_RELEASE_TEST_DSN, because these tests skip without it.
 func publicationWorkflowPool(t *testing.T) (*pgxpool.Pool, func()) {
 	t.Helper()
 	dsn := os.Getenv("GOVERNANCE_RELEASE_TEST_DSN")
@@ -195,7 +238,8 @@ func publicationWorkflowPool(t *testing.T) (*pgxpool.Pool, func()) {
 			effective_date TIMESTAMPTZ,deletion_status TEXT NOT NULL DEFAULT 'active',updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),PRIMARY KEY(tenant_id,doc_id));
 		CREATE TABLE document_releases (
 			tenant_id TEXT NOT NULL,document_id TEXT NOT NULL,current_version_id TEXT,published_version_id TEXT,
-			published_generation_id TEXT,revision BIGINT NOT NULL,resolution_status TEXT NOT NULL,last_error TEXT NOT NULL DEFAULT '',
+			published_generation_id TEXT,previous_version_id TEXT,previous_generation_id TEXT,
+			revision BIGINT NOT NULL,resolution_status TEXT NOT NULL,last_error TEXT NOT NULL DEFAULT '',
 			last_publication_idempotency_key TEXT NOT NULL DEFAULT '',last_publication_request_hash TEXT NOT NULL DEFAULT '',
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),PRIMARY KEY(tenant_id,document_id));
 		CREATE UNIQUE INDEX document_releases_publication_idempotency_key ON document_releases(tenant_id,last_publication_idempotency_key) WHERE last_publication_idempotency_key<>'';
@@ -204,6 +248,10 @@ func publicationWorkflowPool(t *testing.T) (*pgxpool.Pool, func()) {
 			expected_chunk_count INT,expected_chunk_digest TEXT,qdrant_count INT,qdrant_digest TEXT,
 			elasticsearch_count INT,elasticsearch_digest TEXT,state TEXT NOT NULL,last_reconcile_error TEXT NOT NULL DEFAULT '',
 			retired_at TIMESTAMPTZ);
+		ALTER TABLE document_releases ADD CONSTRAINT document_releases_previous_version_requires_generation
+			CHECK (previous_generation_id IS NULL OR previous_version_id IS NOT NULL);
+		ALTER TABLE document_releases ADD CONSTRAINT document_releases_previous_generation_fk
+			FOREIGN KEY (previous_generation_id) REFERENCES index_manifests (generation_id) ON DELETE SET NULL;
 		CREATE TABLE audit_logs (
 			id BIGSERIAL PRIMARY KEY,tenant_id TEXT NOT NULL DEFAULT '',actor_user_id TEXT NOT NULL DEFAULT '',actor_role TEXT NOT NULL DEFAULT '',
 			action TEXT NOT NULL,resource_type TEXT NOT NULL DEFAULT '',resource_id TEXT NOT NULL DEFAULT '',result TEXT NOT NULL DEFAULT 'success',

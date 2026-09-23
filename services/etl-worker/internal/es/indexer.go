@@ -220,25 +220,34 @@ func (i *HTTPIndexer) UpsertGeneration(ctx context.Context, identity indexmanife
 	return fmt.Errorf("es generation index failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
-func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity) (indexmanifest.BackendObservation, error) {
+// ListGenerationChunks returns every block the projection holds for one
+// generation, in the identity form the reconciler and the version diff both
+// consume. Content is deliberately not returned: what changed between two
+// versions is decided by content_hash, and fetching the text would only invite
+// comparing it.
+//
+// ObserveGeneration is this function plus a digest. Keeping one query behind
+// both means the reconcile path and the diff path cannot drift apart in how they
+// decide what a generation holds.
+func (i *HTTPIndexer) ListGenerationChunks(ctx context.Context, identity indexmanifest.GenerationIdentity) ([]indexmanifest.ChunkIdentity, error) {
 	if identity.GenerationID == "" || identity.TenantID == "" || identity.DocumentID == "" || identity.DocumentVersionID == "" {
-		return indexmanifest.BackendObservation{}, indexmanifest.ErrInvalidManifest
+		return nil, indexmanifest.ErrInvalidManifest
 	}
 	if err := i.ensureGenerationMappingOnce(ctx); err != nil {
-		return indexmanifest.BackendObservation{}, err
+		return nil, err
 	}
 	refreshReq, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/%s/_refresh", i.address, pathEscape(i.index)), nil)
 	if err != nil {
-		return indexmanifest.BackendObservation{}, err
+		return nil, err
 	}
 	i.setHeaders(refreshReq)
 	refreshResp, err := i.client.Do(refreshReq)
 	if err != nil {
-		return indexmanifest.BackendObservation{}, fmt.Errorf("es generation refresh: %w", err)
+		return nil, fmt.Errorf("es generation refresh: %w", err)
 	}
 	refreshResp.Body.Close()
 	if refreshResp.StatusCode < 200 || refreshResp.StatusCode >= 300 {
-		return indexmanifest.BackendObservation{}, fmt.Errorf("es generation refresh status=%d", refreshResp.StatusCode)
+		return nil, fmt.Errorf("es generation refresh status=%d", refreshResp.StatusCode)
 	}
 	query := map[string]interface{}{"size": 500, "_source": []string{"chunk_id", "chunk_index", "content_hash"}, "sort": []string{"_doc"}, "query": map[string]interface{}{"bool": map[string]interface{}{"filter": []map[string]interface{}{
 		{"term": map[string]string{"tenant_id": identity.TenantID}}, {"term": map[string]string{"doc_id": identity.DocumentID}}, {"term": map[string]string{"document_version_id": identity.DocumentVersionID}}, {"term": map[string]string{"generation_id": identity.GenerationID}},
@@ -246,7 +255,7 @@ func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanif
 	data, _ := json.Marshal(query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/%s/_search?scroll=1m", i.address, pathEscape(i.index)), bytes.NewReader(data))
 	if err != nil {
-		return indexmanifest.BackendObservation{}, err
+		return nil, err
 	}
 	i.setHeaders(req)
 	identities := []indexmanifest.ChunkIdentity{}
@@ -254,12 +263,12 @@ func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanif
 	for {
 		resp, err := i.client.Do(req)
 		if err != nil {
-			return indexmanifest.BackendObservation{}, fmt.Errorf("es generation search: %w", err)
+			return nil, fmt.Errorf("es generation search: %w", err)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
-			return indexmanifest.BackendObservation{}, fmt.Errorf("es generation search status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+			return nil, fmt.Errorf("es generation search status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 		}
 		var page struct {
 			ScrollID string `json:"_scroll_id"`
@@ -276,7 +285,7 @@ func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanif
 		err = json.NewDecoder(resp.Body).Decode(&page)
 		resp.Body.Close()
 		if err != nil {
-			return indexmanifest.BackendObservation{}, fmt.Errorf("decode es generation: %w", err)
+			return nil, fmt.Errorf("decode es generation: %w", err)
 		}
 		scrollID = page.ScrollID
 		if len(page.Hits.Hits) == 0 {
@@ -288,7 +297,7 @@ func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanif
 		scrollData, _ := json.Marshal(map[string]string{"scroll": "1m", "scroll_id": scrollID})
 		req, err = http.NewRequestWithContext(ctx, http.MethodPost, i.address+"/_search/scroll", bytes.NewReader(scrollData))
 		if err != nil {
-			return indexmanifest.BackendObservation{}, err
+			return nil, err
 		}
 		i.setHeaders(req)
 	}
@@ -299,6 +308,17 @@ func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanif
 		if clearResp, clearErr := i.client.Do(clearReq); clearErr == nil {
 			clearResp.Body.Close()
 		}
+	}
+	return identities, nil
+}
+
+// ObserveGeneration reports what the projection currently holds for one
+// generation: a count and a digest, which is what reconciliation compares
+// against the manifest.
+func (i *HTTPIndexer) ObserveGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity) (indexmanifest.BackendObservation, error) {
+	identities, err := i.ListGenerationChunks(ctx, identity)
+	if err != nil {
+		return indexmanifest.BackendObservation{}, err
 	}
 	digest, err := indexmanifest.IdentityDigest(identity, identities)
 	if err != nil {
