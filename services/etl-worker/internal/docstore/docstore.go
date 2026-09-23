@@ -407,7 +407,7 @@ func listWhere(q ListQuery) (string, []any) {
 // directory is admin-only (GET /v1/users), while the document registry is
 // readable by every role; a client-side lookup would 403 for readonly and user
 // accounts. The comparison casts the *uuid* side, not uploaded_by: the column is
-// TEXT DEFAULT '' and may hold a non-UUID value, and casting that to uuid would
+// TEXT, not uuid, and may hold a non-UUID value, so casting that to uuid would
 // raise and take the whole listing down instead of just leaving the name empty.
 const documentColumns = `tenant_id, doc_id, file_name, object_key, file_hash, file_size,
 	content_type, permission, status, stage, chunks_done, chunks_total,

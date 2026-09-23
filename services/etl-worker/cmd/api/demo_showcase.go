@@ -418,7 +418,7 @@ type demoShowcaseDocument struct {
 	// distinct from uploaded_by which records who performed the upload. Seeding
 	// the demo admin's UUID here rendered as a 36-character identifier wherever
 	// an administrator was meant to read a name.
-	owner string
+	owner  string
 	chunks []string
 }
 
