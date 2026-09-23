@@ -104,14 +104,22 @@ type Config struct {
 	RetrievalRerankPolicy string
 	// RetrievalRerankInputK caps how many candidates are sent *to* the reranker,
 	// taken from the head of the stabilized order. Zero means "no cap": every
-	// fused candidate is scored, which is the behaviour before this knob existed.
+	// fused candidate is scored, which is the behaviour before this knob existed
+	// and the shipped default.
 	//
 	// The reranker is a cross-encoder, so its cost is O(candidates), while its
 	// output is capped at rerankTopK. Those are two different numbers, and before
-	// this field the second one was silently deciding nothing about the first:
-	// a 50-candidate pool cost 50 forward passes to produce 20 results, and the
-	// remaining 30 were scored and discarded. RETRIEVAL_CANDIDATE_K sizes the
-	// fusion pool; this sizes the work.
+	// this field the second one was silently deciding nothing about the first: a
+	// 50-candidate pool cost 50 forward passes to produce 20 results.
+	// RETRIEVAL_CANDIDATE_K sizes the fusion pool; this sizes the work.
+	//
+	// Zero is the default because the pool tail is load-bearing, not because the
+	// saving is unavailable. Measured on the demo stack (2026-09-23, 8 questions,
+	// no cap): the chunks that became context reached fused rank 34 of 50, so a
+	// candidate the fusion order ranked 34th was promoted by the cross-encoder
+	// into the 5 the model reads. A cap at 35 reproduced the same sources for all
+	// 8 questions at ~70% of the rerank cost, but with a one-position margin on
+	// eight samples. Details and the method: docs/ingestion-capacity.md, P-CAP-7.
 	RetrievalRerankInputK int
 	// RetrievalDiagnosticsEnabled permits controlled evaluation requests to ask
 	// for aggregate required-document stage coverage. It is disabled by default.
@@ -633,6 +641,17 @@ func (c Config) Validate() error {
 	// number of candidates", which is a typo rather than a policy.
 	if c.RetrievalRerankInputK < 0 || c.RetrievalRerankInputK > 500 {
 		return fmt.Errorf("RETRIEVAL_RERANK_INPUT_K must be between 0 (no cap) and 500, got %d", c.RetrievalRerankInputK)
+	}
+	// The reranker cannot return more candidates than it was handed, so a cap
+	// below the final top-K would shrink the context as a side effect of a
+	// cost setting. That is the same defect this knob exists to fix -- one number
+	// silently deciding a second thing -- so it is refused rather than accepted
+	// and explained. This checks the configured default; a request that asks for
+	// a larger top_k is bounded by its own value.
+	if c.RetrievalRerankInputK > 0 && c.RetrievalRerankInputK < c.RetrievalFinalTopK {
+		return fmt.Errorf(
+			"RETRIEVAL_RERANK_INPUT_K (%d) is below RETRIEVAL_FINAL_TOP_K (%d): the reranker can only return candidates it was handed, so the context would shrink to the cap; set it to 0 (no cap) or to at least %d",
+			c.RetrievalRerankInputK, c.RetrievalFinalTopK, c.RetrievalFinalTopK)
 	}
 	if c.RetrievalMinRelevance < 0 || c.RetrievalMinRelevance > 1 {
 		return fmt.Errorf("RETRIEVAL_MIN_RELEVANCE must be between 0 and 1, got %v", c.RetrievalMinRelevance)

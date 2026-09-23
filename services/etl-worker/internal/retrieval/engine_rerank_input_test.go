@@ -8,14 +8,21 @@ import (
 
 	"ai-etl-pipeline/internal/config"
 	"ai-etl-pipeline/internal/sparse"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // A Cross-Encoder Reranker costs O(candidates handed to it) but returns at most
 // rerankTopK. Those are two numbers, and before RETRIEVAL_RERANK_INPUT_K existed
 // only one of them was expressible: a 50-candidate pool cost 50 forward passes
-// to produce 20 results (measured live: 21.07s for one query, 30 of the 50 pairs
-// scored and discarded). These tests keep the two numbers apart, so a later
-// refactor cannot quietly fold the work budget back into the output size.
+// to produce 20 results (measured live: 21.07s for one query). These tests keep
+// the two numbers apart, so a later refactor cannot quietly fold the work budget
+// back into the output size.
+//
+// The cost of a cap is real, not theoretical: measured on the demo stack with no
+// cap, the candidates that became context reached fused rank 34 of 50, so the
+// tail is scored and sometimes promoted rather than scored and thrown away. That
+// is why the shipped value is 0 and why the knob is measured rather than picked.
 
 type rerankInputRecorder struct {
 	got     []Candidate
@@ -146,7 +153,8 @@ func TestRerankInputKAboveThePoolIsANoop(t *testing.T) {
 // reads it as a free optimisation. With the cap off the reranker sees the whole
 // pool and can promote a candidate that fusion ranked last; with the cap on it
 // never sees it. That trade is the reason the shipped value is chosen from
-// measurement (rerank.deepest_used_input_rank) rather than picked.
+// measurement (retrieval.deepest_selected_input_rank, which reports how deep the
+// candidates that become context reach) rather than picked.
 func TestRerankInputKIsWhatDropsATailCandidate(t *testing.T) {
 	// Score by ChunkID, promoting whatever candidate the caller marks. The
 	// promoted one is whichever sits deepest in the stabilized order, so the
@@ -224,5 +232,148 @@ func TestDeepestInputRankReportsHowDeepTheRerankerReached(t *testing.T) {
 	anonymousPool := []Candidate{{ChunkID: ""}, {ChunkID: ""}}
 	if got := deepestInputRank(anonymous, anonymousPool); got != -1 {
 		t.Fatalf("expected -1 for identity-less candidates, got %d", got)
+	}
+}
+
+// withSpanRecorder installs a recording tracer on the engine so the depth
+// attributes can be read back. Both of them are emitted as span attributes, so
+// without a recorder the test could only assert that the numbers were computed,
+// not that anything ever published them.
+func withSpanRecorder(t *testing.T, engine *Engine) *tracetest.SpanRecorder {
+	t.Helper()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+	})
+	engine.tracer = provider.Tracer("rerank-input-test")
+	return recorder
+}
+
+// spanIntAttribute returns the last value recorded for an int attribute on the
+// named span. The boolean reports presence, because an attribute that is absent
+// must not be read as zero: 0 is a legitimate depth ("the head of the pool").
+func spanIntAttribute(t *testing.T, recorder *tracetest.SpanRecorder, spanName, key string) (int, bool) {
+	t.Helper()
+	value, present := 0, false
+	for _, span := range recorder.Ended() {
+		if span.Name() != spanName {
+			continue
+		}
+		for _, attr := range span.Attributes() {
+			if string(attr.Key) != key {
+				continue
+			}
+			value, present = int(attr.Value.AsInt64()), true
+		}
+	}
+	return value, present
+}
+
+// reorderingReranker returns a chosen arrangement of the candidates it was
+// handed, addressed by position in its own input. Expressing the arrangement
+// that way, rather than by ChunkID, keeps the test independent of how
+// stabilizeRanking orders the pool.
+type reorderingReranker struct {
+	order   []int
+	got     []Candidate
+	gotTopK int
+}
+
+func (r *reorderingReranker) Rerank(_ context.Context, _ string, candidates []Candidate, topK int) ([]Candidate, error) {
+	r.got = append([]Candidate(nil), candidates...)
+	r.gotTopK = topK
+	ranked := make([]Candidate, 0, len(candidates))
+	seen := make([]bool, len(candidates))
+	for _, i := range r.order {
+		if i < 0 || i >= len(candidates) || seen[i] {
+			continue
+		}
+		seen[i] = true
+		ranked = append(ranked, candidates[i])
+	}
+	for i := range candidates {
+		if !seen[i] {
+			ranked = append(ranked, candidates[i])
+		}
+	}
+	return topCandidates(ranked, topK), nil
+}
+
+// TestSelectedInputRankIsNotTheRerankerOutputRank keeps the two depth signals
+// apart. They are easy to conflate -- both are "how deep did we go" -- but they
+// size different things: the reranker's reach says what a cap would withhold
+// from scoring, the selected depth says whether the withheld candidates were
+// going to be used. Sizing RETRIEVAL_RERANK_INPUT_K from the first number alone
+// is what produced the wrong conclusion that the pool tail is wasted work.
+func TestSelectedInputRankIsNotTheRerankerOutputRank(t *testing.T) {
+	engine, _ := newRerankInputEngine(t, 0, 50)
+	recorder := withSpanRecorder(t, engine)
+	// The reranker hands back the first five of its input plus one candidate from
+	// position 40. Its output therefore reaches depth 40, while the five that
+	// survive into the context reach only depth 4.
+	engine.reranker = &reorderingReranker{order: []int{0, 1, 2, 3, 4, 40}}
+	result := runRerankInputProbe(t, engine)
+
+	used, ok := spanIntAttribute(t, recorder, "Retrieval.Rerank", "rerank.deepest_used_input_rank")
+	if !ok {
+		t.Fatal("expected rerank.deepest_used_input_rank on the rerank span")
+	}
+	if used != 40 {
+		t.Fatalf("expected the reranker's reach to be 40, got %d", used)
+	}
+	if len(result.Sources) != 5 {
+		t.Fatalf("expected 5 context candidates, got %d", len(result.Sources))
+	}
+	selected, ok := spanIntAttribute(t, recorder, "RetrievalEngine.Retrieve", "retrieval.deepest_selected_input_rank")
+	if !ok {
+		t.Fatal("expected retrieval.deepest_selected_input_rank on the retrieval span")
+	}
+	if selected != 4 {
+		t.Fatalf("expected the selected depth to be 4, got %d", selected)
+	}
+	if selected == used {
+		t.Fatal("the two depth signals collapsed into one number; they must be independent")
+	}
+}
+
+// TestSelectedInputRankFollowsTheRerankerOrder is the converse case: when the
+// reranker does promote a deep candidate into the context, the selected depth
+// must report it. Otherwise a cap could be set from a number that never moves.
+func TestSelectedInputRankFollowsTheRerankerOrder(t *testing.T) {
+	engine, _ := newRerankInputEngine(t, 0, 50)
+	recorder := withSpanRecorder(t, engine)
+	engine.reranker = &reorderingReranker{order: []int{40, 0, 1, 2, 3}}
+	result := runRerankInputProbe(t, engine)
+
+	if len(result.Sources) == 0 {
+		t.Fatal("expected sources")
+	}
+	deep := engine.reranker.(*reorderingReranker).got[40].ChunkID
+	if result.Sources[0].ChunkID != deep {
+		t.Fatalf("expected %q to lead the context, got %q", deep, result.Sources[0].ChunkID)
+	}
+	selected, ok := spanIntAttribute(t, recorder, "RetrievalEngine.Retrieve", "retrieval.deepest_selected_input_rank")
+	if !ok {
+		t.Fatal("expected retrieval.deepest_selected_input_rank on the retrieval span")
+	}
+	if selected != 40 {
+		t.Fatalf("expected the selected depth to report the promoted candidate at 40, got %d", selected)
+	}
+}
+
+// TestSelectedInputRankIsAbsentWhenTheRerankerFails guards the attribute's
+// meaning. After a reranker failure `ranked` falls back to the fusion order, in
+// which the deepest candidate is trivially the last one; publishing that as the
+// selected depth would report a saturated number that looks like evidence the
+// cap is unsafe.
+func TestSelectedInputRankIsAbsentWhenTheRerankerFails(t *testing.T) {
+	engine, _ := newRerankInputEngine(t, 0, 50)
+	recorder := withSpanRecorder(t, engine)
+	engine.reranker = &failingPolicyEvalReranker{}
+	runRerankInputProbe(t, engine)
+
+	if _, ok := spanIntAttribute(t, recorder, "RetrievalEngine.Retrieve", "retrieval.deepest_selected_input_rank"); ok {
+		t.Fatal("expected no selected depth when the reranker did not produce the ordering")
 	}
 }

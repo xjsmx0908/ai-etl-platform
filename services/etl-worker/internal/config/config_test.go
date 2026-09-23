@@ -759,6 +759,27 @@ func TestValidate_RetrievalConfig(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for RetrievalRerankInputK > 500")
 	}
+	// The reranker cannot return more candidates than it was handed, so a cap
+	// under the final top-K would shrink the context -- a retrieval quality
+	// change hiding inside a cost setting, which is the defect this knob is
+	// meant to remove. It must be refused, not silently honoured.
+	cfg = Load()
+	cfg.RetrievalRerankInputK = cfg.RetrievalFinalTopK - 1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for RetrievalRerankInputK below RetrievalFinalTopK")
+	}
+	// At the boundary the context can still be filled, so it is allowed.
+	cfg = Load()
+	cfg.RetrievalRerankInputK = cfg.RetrievalFinalTopK
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected a cap equal to the final top-K to be accepted, got %v", err)
+	}
+	// A cap above the final top-K is the intended shape.
+	cfg = Load()
+	cfg.RetrievalRerankInputK = cfg.RetrievalFinalTopK + 30
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected a cap above the final top-K to be accepted, got %v", err)
+	}
 
 	cfg = Load()
 	cfg.RetrievalFinalTopK = 0

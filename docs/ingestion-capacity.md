@@ -197,15 +197,62 @@ at 388 characters and ~490ms per pair at the 512-character
 `RERANKER_MAX_DOCUMENT_CHARS` cap; 49 pairs × 490ms ≈ 24s, which is what the
 span reports. Embedding the question costs 0.2s.
 
-The cap does not bound the work. `internal/retrieval/engine.go:330-333` caps
-`rerankTopK` at 20 and passes it down as `top_n`, but it passes **all**
-stabilized candidates as `documents`. `services/reranker-service/app/reranker.py:41-42`
-scores every document, and `top_n` only trims the returned list
-(`rank_scores(..., top_n)` at `:77`). So the cross-encoder scores 37–50 pairs to
-return 20, and `RETRIEVAL_FINAL_TOP_K` narrows those to the 5 the model sees.
+#### The output cap and the work budget are two numbers
 
-There is no knob for how many candidates are scored: `RETRIEVAL_CANDIDATE_K`
-(50 here) sets the fusion pool and therefore the rerank cost, which is linear in
-that pool at ~0.5s per pair on this CPU. Bounding the input is a retrieval
-quality change, so it belongs on the eval track rather than in this observation;
-see P-CAP-7 in [`backlog.md`](backlog.md).
+`internal/retrieval/engine.go` used to compute both from one expression:
+`rerankTopK := len(stabilized); if rerankTopK > 20 { rerankTopK = 20 }`. That
+value was passed down as `top_n`, while `documents` carried **every** stabilized
+candidate. `services/reranker-service/app/reranker.py` scores each document and
+`top_n` only trims the returned list, so the cross-encoder scored 37–50 pairs to
+return 20 — and a reader of that one expression would reasonably conclude the cap
+bounded the cost. It did not.
+
+2026-09-23 separated the two numbers and made the choice measurable:
+
+- `RETRIEVAL_RERANK_INPUT_K` bounds how many candidates are handed to the
+  reranker, taken from the head of the fused order. `0` = no cap, which is the
+  behaviour before the knob existed and the shipped default.
+- `rerank.deepest_used_input_rank` (on the `Retrieval.Rerank` span) reports how
+  deep the reranker's own output reaches.
+- `retrieval.deepest_selected_input_rank` (on the `RetrievalEngine.Retrieve`
+  span) reports how deep the candidates that become context reach. This is the
+  number that decides the knob: a candidate deeper than the cap is one the cap
+  removes before it is ever scored.
+
+#### The pool tail is load-bearing, so the cap ships at 0
+
+Eight questions on the demo stack, semantic cache flushed before each run so no
+answer is served without reranking (2026-09-23):
+
+| run | `RETRIEVAL_RERANK_INPUT_K` | pool sizes | deepest used (reranker output) | deepest selected (context) | rerank step |
+| --- | --- | --- | --- | --- | --- |
+| no cap | 0 | 50, 44, 50, 50, 38, 34, 50, 49 | 43, 41, 30, 40, 33, 33, 47, 42 (max 47) | **34**, 7, 29, 8, 30, 21, 33, 27 (max 34) | 15.4–24.7s (median 22.7s) |
+| capped | 35 | same | max 34 | 34, 7, 29, 8, 30, 21, 33, 27 — unchanged | 14.2–17.7s (median 17.1s) |
+| capped | 5 | same | max 4 | 3, 4, 4, 4, 4, 3, 4, 4 | 1.8–2.5s (median 2.2s) |
+
+The row that settles the question is the no-cap `deepest selected` list. A
+candidate that fusion ranked **34th of 50** was promoted by the cross-encoder into
+the 5 chunks the model reads. The fused order is a weak proxy for relevance: the
+tail is not scored and thrown away, it is scored and sometimes promoted. That is
+what an earlier reading of this section got wrong: it inferred from the output cap
+alone that the tail was wasted, which is the same conflation the knob exists to
+remove.
+
+Capping at the measured maximum (`35`) returns **the same sources for all eight
+questions** at 75% of the rerank cost, so the knob is not a no-op. It is still not
+shipped as a default: the margin is one position (34 against a cap of 35) on eight
+questions, and the saving is proportional to the cap rather than free. The `5` row
+is the reverse check — it changes the sources for 8/8 questions and drops the
+rerank step to 9.7% of the uncapped median, which is what a cap that actually
+bounds the work looks like.
+
+The remaining cost lever is the pool itself. `RETRIEVAL_CANDIDATE_K` (50 here)
+sets the fusion pool and the rerank cost is linear in it at ~0.5s per pair; this
+measurement is what shows that shrinking it trades recall rather than only time.
+`RETRIEVAL_RERANK_INPUT_K` must be `0` or at least `RETRIEVAL_FINAL_TOP_K`: a
+lower value is refused at startup, because the reranker cannot return more
+candidates than it was handed and the context would shrink silently.
+
+Backlog entry and status: P-CAP-7 in [`backlog.md`](backlog.md). The measurement
+harness is `measure_rerank_depth.py` (runs on the deployment host; `--compare`
+diffs two runs source by source).

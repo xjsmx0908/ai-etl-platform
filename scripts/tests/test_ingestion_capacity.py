@@ -319,6 +319,32 @@ class QueryLatencyObservationTests(unittest.TestCase):
         self.assertIn("before the optional reranker was running", self.flat)
         self.assertIn("P-CAP-7", self.doc)
 
+    def test_doc_records_the_pcap7_conclusion_with_its_evidence(self):
+        # P-CAP-7 was closed by measurement, and the measurement is the argument:
+        # without the numbers a reader cannot tell whether the shipped cap of 0 is
+        # a decision or an omission. Both depth signals are named because the
+        # decision rides on the second one, not the first.
+        self.assertIn("retrieval.deepest_selected_input_rank", self.flat)
+        self.assertIn("rerank.deepest_used_input_rank", self.flat)
+        self.assertIn("34th of 50", self.flat)
+        # The default, stated where a reader looks for it.
+        self.assertIn("the behaviour before the knob existed and the shipped default", self.flat)
+        # And the disproved claim is gone rather than softened: the old reading
+        # inferred "wasted" from the output cap alone, which is the exact
+        # confusion the knob exists to remove.
+        self.assertNotIn("scored and discarded", self.flat)
+        self.assertNotIn("scored for nothing", self.flat)
+
+    def test_doc_and_validator_agree_on_the_cap_lower_bound(self):
+        # A cap below the final top-K shrinks the context, because the reranker
+        # cannot return candidates it was never handed. The doc states it and the
+        # validator has to enforce it; a doc-only claim would be a comment.
+        self.assertIn("must be `0` or at least `RETRIEVAL_FINAL_TOP_K`", self.flat)
+        config = (ROOT / "services" / "etl-worker" / "internal" / "config" / "config.go").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("is below RETRIEVAL_FINAL_TOP_K", config)
+
 
 if __name__ == "__main__":
     unittest.main()

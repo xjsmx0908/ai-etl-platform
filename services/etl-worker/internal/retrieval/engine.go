@@ -327,6 +327,11 @@ cacheMiss:
 	attachCandidateFileNames(fused, req.FileNames)
 	stabilized := stabilizeRanking(req.Question, fused)
 	ranked := append([]Candidate(nil), stabilized...)
+	// rerankOrdered records that `ranked` is the reranker's ordering rather than
+	// the fusion order. The depth of the final selection is only meaningful
+	// against a reranked list, so the attribute set below is skipped when the
+	// reranker did not run or failed and `ranked` is still the fusion order.
+	rerankOrdered := false
 	if e.rerankerConfigured() {
 		decision := planRerank(e.cfg.RetrievalRerankPolicy, route, req.Question, stabilized)
 		span.SetAttributes(
@@ -365,10 +370,14 @@ cacheMiss:
 				partialErrors = append(partialErrors, "reranker: "+err.Error())
 				rerankErr = err.Error()
 			} else {
-				// How deep into the input the reranker actually reached. This is the
-				// evidence for choosing RETRIEVAL_RERANK_INPUT_K: if the deepest
-				// result always sits near the head of the pool, the tail of the pool
-				// is being scored for nothing. -1 when the mapping is unavailable.
+				// How deep into the input the reranker actually reached: what a
+				// cap on the input would truncate. This is deliberately not the
+				// depth of the final selection -- the reranker returns up to
+				// defaultRerankTopK candidates and most of them are never used,
+				// so this number answers "what did the reranker look at" while
+				// retrieval.deepest_selected_input_rank answers "what did the
+				// answer use". -1 when the mapping is unavailable.
+				rerankOrdered = true
 				rerankSpan.SetAttributes(
 					attribute.Int("rerank.result_count", len(reranked)),
 					attribute.Int("rerank.deepest_used_input_rank", deepestInputRank(reranked, stabilized)),
@@ -395,6 +404,27 @@ cacheMiss:
 		e.logRerankDecision(req, route, decision, fused, ranked, "")
 	}
 	ranked, diversity := diversifyCandidates(ranked, req.TopK, defaultMaxChunksPerDocument)
+
+	// deepest_selected_input_rank is the depth in the fused order of the
+	// candidates that survived into the context. A candidate sitting deeper than
+	// RETRIEVAL_RERANK_INPUT_K in the fused order is one that a cap removes
+	// before it is ever scored, so this is the number that says whether the knob
+	// can change an answer rather than just the discarded tail of the reranker's
+	// output.
+	//
+	// It is recorded on the retrieval span rather than on the rerank span
+	// because it cannot be known until diversification has run, and because the
+	// rerank span's duration should stay the duration of the reranker call.
+	//
+	// It bounds which candidates a cap would withhold; it does not by itself
+	// prove that the surviving ones keep their order, so the shipped value is
+	// confirmed by comparing the returned sources with the cap on and off.
+	// Measured live (2026-09-23) with no cap: the reranker reached fused rank 47
+	// of 50, which is what disproved the assumption that the pool tail is scored
+	// for nothing.
+	if rerankOrdered {
+		span.SetAttributes(attribute.Int("retrieval.deepest_selected_input_rank", deepestInputRank(ranked, stabilized)))
+	}
 
 	cacheStoreCtx, cacheStoreSpan := tracer.Start(ctx, "Retrieval.CacheStore")
 	// Never cache an empty result set: a cached empty hit would make every
@@ -585,11 +615,12 @@ func rankOfCandidate(candidates []Candidate, id string) int {
 }
 
 // deepestInputRank reports the last position in pool that any candidate in
-// selected occupies, 0-based. It answers "how deep into the pool did the
-// reranker actually reach", which is the evidence for sizing
-// RETRIEVAL_RERANK_INPUT_K: if this stays near the head of the pool, the tail
-// was scored and then discarded. Returns -1 when nothing could be mapped, so a
-// missing mapping cannot be misread as "reached rank 0".
+// selected occupies, 0-based. It answers "how deep into the pool did this set
+// reach", and it is called twice with different second arguments: against the
+// reranker's own output to report rerank.deepest_used_input_rank, and against
+// the context that survived diversification to report
+// retrieval.deepest_selected_input_rank. Returns -1 when nothing could be
+// mapped, so a missing mapping cannot be misread as "reached rank 0".
 func deepestInputRank(selected, pool []Candidate) int {
 	if len(selected) == 0 || len(pool) == 0 {
 		return -1

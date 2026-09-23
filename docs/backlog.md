@@ -42,7 +42,7 @@ P-SEC-0 到 P-SEC-5 已落地。默认 Compose 绑回环、登录限流、`/metr
 | P-CAP-5 | 问答真流式 | done | SSE 在 grounding 前推送 token；校验失败发 `replace`；`done.answer` 为最终答案 | 本文件 |
 | P-CAP-4 | 入库阶段耗时展示 | done | 任务/文档返回 `stage_timings`；上传页和文档页展示；Grafana Parse/Embed/Store/OCR p95。演示栈短文本 parse 4ms / embed 7.9s / store 314ms / total 8.2s | 本文件 |
 | P-CAP-6 | 本地 embedding keep-alive | done | Ollama `keep_alive=24h` + worker/query-api 启动预热已重建进演示栈。短文本 embed 7.9s→487ms，HTTP 202 为 28ms，就绪 2.0s。问答检索 350–430ms，首字 3–5s 是远程 LLM（**2026-09-10 测，当时可选 reranker 未运行**；reranker 开启后检索 ~23s，见 P-CAP-7） | 本文件 |
-| P-CAP-7 | rerank 的上限限的是输出，不是算力 | pending | `internal/retrieval/engine.go:330-333` 把 `rerankTopK` 封顶 20 并当作 `top_n` 传下去，但 `documents` 仍是**全部**稳定化候选；`services/reranker-service/app/reranker.py:41-42` 对每个文档都算分，`top_n` 只在 `:77` 裁剪返回值。于是 CPU 上 ~0.5s/对 × 37–50 对 = 20–26s/次问答，只为产出最终 5 条。缺「送入 rerank 的候选数」旋钮，`RETRIEVAL_CANDIDATE_K` 一个键同时决定融合池与 rerank 成本。修法是限制输入，会改变检索质量，须走 P-CAP-2 评测轨证明无回退；且本机不得与演示栈并起第二套 Compose，故本轮只记录未修 | [`ingestion-capacity.md`](ingestion-capacity.md) |
+| P-CAP-7 | rerank 的上限限的是输出，不是算力 | done | 2026-09-23 把两个数拆开：新增 `RETRIEVAL_RERANK_INPUT_K`（送入 reranker 的候选数，`0`=不限=默认），并加两个观测属性 `rerank.deepest_used_input_rank` 与 `retrieval.deepest_selected_input_rank`。演示栈 8 题实测（缓存先清）：**最终进入上下文的候选最深来自融合第 34/50 位**，即池尾会被重排进前 5，不是算完即丢 → 上限保持 0；设 35 时 8/8 题返回来源逐条不变、rerank 步 median 22.7s→17.1s，但余量只有 1 个位次；设 5 时 8/8 题来源改变、rerank 步降到 9.7%（反向验证）。低于 `RETRIEVAL_FINAL_TOP_K` 的值启动即拒 | [`ingestion-capacity.md`](ingestion-capacity.md) |
 
 ## Product experience UAT
 
