@@ -35,9 +35,14 @@ type documentView struct {
 	Error       string            `json:"error,omitempty"`
 	Metadata    map[string]string `json:"metadata"`
 	UploadedBy  string            `json:"uploaded_by"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	CompletedAt *time.Time        `json:"completed_at,omitempty"`
+	// UploadedByName is the uploader's username, resolved by the store. The
+	// registry shows a name; UploadedBy alone is a UUID. It is resolved server
+	// side because the user directory is admin-only while this endpoint serves
+	// every role.
+	UploadedByName string     `json:"uploaded_by_name,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 	// Controlled-document governance. DocStatus is the document's lifecycle as a
 	// knowledge source (active/superseded/archived) and is a different axis from
 	// Status above, which is the ETL processing state.
@@ -65,6 +70,7 @@ func toDocView(d docstore.Document) documentView {
 		Error:             d.Error,
 		Metadata:          d.Metadata,
 		UploadedBy:        d.UploadedBy,
+		UploadedByName:    d.UploadedByName,
 		CreatedAt:         d.CreatedAt,
 		UpdatedAt:         d.UpdatedAt,
 		DocStatus:         d.DocStatus,

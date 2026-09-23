@@ -37,6 +37,9 @@ export type Document = {
   file_size?: number;
   metadata?: Record<string, unknown>;
   uploaded_by?: string;
+  // Username for uploaded_by, resolved by the API. The user directory is
+  // admin-only, so the registry cannot look it up in the browser.
+  uploaded_by_name?: string;
   created_at: string;
   updated_at?: string;
   completed_at?: string;

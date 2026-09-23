@@ -360,7 +360,7 @@ export default function DocumentsPage() {
                     <td className="px-4 py-2.5 text-xs text-slate-500">{formatDate(doc.created_at)}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500">
                       {(() => {
-                        const up = formatUploader(doc.uploaded_by);
+                        const up = formatUploader(doc.uploaded_by, doc.uploaded_by_name);
                         return up.title ? (
                           <span title={up.title}>{up.label}</span>
                         ) : (

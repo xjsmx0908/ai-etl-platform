@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -198,7 +199,7 @@ func TestEnsureDemoShowcaseDocumentSeedsDerivedDigestAndOutbox(t *testing.T) {
 	mock.ExpectExec("INSERT INTO documents").WithArgs(
 		cfg.DemoTenantID, doc.docID, doc.fileName, demoShowcaseSourceKey(doc), doc.digest,
 		int64(len(demoShowcaseSourceBytes(doc))), doc.permission,
-		"user-1", now, "admin-1", demoSpaceID, doc.publication, len(doc.chunks),
+		"user-1", now, doc.owner, demoSpaceID, doc.publication, len(doc.chunks), "admin-1",
 	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO ingestion_jobs").WithArgs(
 		doc.versionID, doc.eventID, cfg.DemoTenantID, doc.docID, "demo-sig-"+doc.docID, task, now,
@@ -232,6 +233,23 @@ func TestDemoPayrollChunksCarrySensitiveEvidence(t *testing.T) {
 	for _, needle := range []string{"银行账号", "社保公积金", "不得对外提供"} {
 		if !strings.Contains(joined, needle) {
 			t.Fatalf("payroll chunks missing %q in %q", needle, joined)
+		}
+	}
+}
+
+// The owner column's definition (migration 0004) is "business role or user",
+// deliberately distinct from uploaded_by, which records who performed the upload.
+// Seeding the demo admin's user id here put a 36-character identifier wherever an
+// administrator was meant to read a name — the release center detail card, the
+// compatibility route and the document detail page.
+func TestDemoShowcaseOwnersAreBusinessRoles(t *testing.T) {
+	uuidRE := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	for _, doc := range demoShowcaseDocuments() {
+		if strings.TrimSpace(doc.owner) == "" {
+			t.Fatalf("%s seeds no accountable owner", doc.docID)
+		}
+		if uuidRE.MatchString(doc.owner) {
+			t.Fatalf("%s seeds a user id as its accountable owner: %q", doc.docID, doc.owner)
 		}
 	}
 }

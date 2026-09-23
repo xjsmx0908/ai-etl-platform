@@ -301,7 +301,7 @@ export default function DocumentDetailPage() {
             <dt className="text-xs text-slate-400">上传者</dt>
             <dd>
               {(() => {
-                const up = formatUploader(doc.uploaded_by);
+                const up = formatUploader(doc.uploaded_by, doc.uploaded_by_name);
                 return up.title ? <span title={up.title}>{up.label}</span> : up.label;
               })()}
             </dd>

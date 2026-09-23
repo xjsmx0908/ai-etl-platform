@@ -2,6 +2,7 @@ package docstore
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +21,8 @@ func docRowColumns() []string {
 	return []string{"tenant_id", "doc_id", "file_name", "object_key", "file_hash", "file_size",
 		"content_type", "permission", "status", "stage", "chunks_done", "chunks_total", "error",
 		"metadata", "uploaded_by", "created_at", "updated_at", "completed_at",
-		"doc_status", "effective_date", "supersedes", "owner", "knowledge_space_id", "publication_status", "deletion_status", "stage_timings"}
+		"doc_status", "effective_date", "supersedes", "owner", "knowledge_space_id", "publication_status", "deletion_status", "stage_timings",
+		"uploaded_by_name"}
 }
 
 func docRow() *pgxmock.Rows {
@@ -28,7 +30,8 @@ func docRow() *pgxmock.Rows {
 		AddRow("acme", "doc-1", "a.pdf", "acme/doc-1.pdf", "abc123", int64(1024), "application/pdf",
 			"internal", "completed", "completed", 4, 4, "", map[string]string{"k": "v"},
 			"u-1", time.Now(), time.Now(), tPtr(time.Now()),
-			"active", tPtr(time.Now()), "", "owner-hr", "user-uploads", "published", "active", []byte(`{"parse_ms":12,"embed_ms":34}`))
+			"active", tPtr(time.Now()), "", "owner-hr", "user-uploads", "published", "active", []byte(`{"parse_ms":12,"embed_ms":34}`),
+			"hr-admin")
 }
 
 func TestUpsert(t *testing.T) {
@@ -76,6 +79,30 @@ func TestGet(t *testing.T) {
 	if d.StageTimings.ParseMS != 12 || d.StageTimings.EmbedMS != 34 {
 		t.Fatalf("unexpected stage timings: %+v", d.StageTimings)
 	}
+	if d.UploadedByName != "hr-admin" {
+		t.Fatalf("uploaded_by_name not carried through the shared scan: %q", d.UploadedByName)
+	}
+}
+
+// The registry renders a username, and the user directory is admin-only, so the
+// name has to come back with the row. Pinned at the source level as well: a
+// future edit that drops the subquery from documentColumns would still compile
+// and still pass TestGet only if the scan kept a matching column, so assert the
+// join is actually in the list every full-row read shares.
+func TestDocumentColumnsResolveUploaderName(t *testing.T) {
+	if !strings.Contains(documentColumns, "u.id::text = documents.uploaded_by") {
+		t.Fatalf("documentColumns no longer resolves the uploader name:\n%s", documentColumns)
+	}
+	// Casting the uuid side, not uploaded_by: the column is TEXT DEFAULT '' and
+	// may hold a non-UUID value, where ::uuid would raise and fail the listing.
+	if strings.Contains(documentColumns, "documents.uploaded_by::uuid") {
+		t.Fatalf("documentColumns casts uploaded_by to uuid; a non-UUID value would fail the query:\n%s", documentColumns)
+	}
+	// The subquery is nullable for rows whose uploader is unknown; the scan reads
+	// a plain string, so it must be coalesced.
+	if !strings.Contains(documentColumns, "COALESCE(") {
+		t.Fatalf("documentColumns does not coalesce the nullable uploader name:\n%s", documentColumns)
+	}
 }
 
 func TestGet_NotFound(t *testing.T) {
@@ -109,7 +136,7 @@ func TestList_WithFilters(t *testing.T) {
 		WillReturnRows(docRow().AddRow("acme", "doc-2", "b.docx", "acme/doc-2.docx", "def", int64(2048),
 			"application/docx", "internal", "completed", "completed", 2, 2, "", map[string]string{},
 			"u-1", time.Now(), time.Now(), tPtr(time.Now()),
-			"superseded", tPtr(time.Now()), "doc-1", "", "user-uploads", "retired", "active", []byte(`{}`)))
+			"superseded", tPtr(time.Now()), "doc-1", "", "user-uploads", "retired", "active", []byte(`{}`), ""))
 	mock.ExpectQuery("SELECT count").WithArgs("acme", "completed", []string{"internal"}, "%contract%").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 

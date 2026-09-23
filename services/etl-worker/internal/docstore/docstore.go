@@ -59,9 +59,13 @@ type Document struct {
 	Error       string
 	Metadata    map[string]string
 	UploadedBy  string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	CompletedAt time.Time
+	// UploadedByName is the uploader's username, resolved alongside the row (see
+	// documentColumns). Empty when uploaded_by names no user in this tenant, e.g.
+	// for rows seeded before the account existed.
+	UploadedByName string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	CompletedAt    time.Time
 
 	// Controlled-document governance (migration 0004).
 	DocStatus         string    // active | superseded | archived
@@ -398,11 +402,20 @@ func listWhere(q ListQuery) (string, []any) {
 
 // documentColumns is the single column list every full-row read shares, so
 // scanDocument's argument order can never drift from one of the queries.
+//
+// uploaded_by_name is resolved here rather than in the browser because the user
+// directory is admin-only (GET /v1/users), while the document registry is
+// readable by every role; a client-side lookup would 403 for readonly and user
+// accounts. The comparison casts the *uuid* side, not uploaded_by: the column is
+// TEXT DEFAULT '' and may hold a non-UUID value, and casting that to uuid would
+// raise and take the whole listing down instead of just leaving the name empty.
 const documentColumns = `tenant_id, doc_id, file_name, object_key, file_hash, file_size,
 	content_type, permission, status, stage, chunks_done, chunks_total,
 	error, metadata, uploaded_by, created_at, updated_at, completed_at,
 	doc_status, effective_date, supersedes, owner, knowledge_space_id, publication_status, deletion_status,
-	stage_timings`
+	stage_timings,
+	COALESCE((SELECT u.username FROM users u
+		WHERE u.tenant_id = documents.tenant_id AND u.id::text = documents.uploaded_by), '')`
 
 func scanDocument(row pgx.Row) (Document, bool, error) {
 	var d Document
@@ -413,7 +426,7 @@ func scanDocument(row pgx.Row) (Document, bool, error) {
 		&d.ContentType, &d.Permission, &d.Status, &d.Stage, &d.ChunksDone, &d.ChunksTotal,
 		&d.Error, &metadata, &d.UploadedBy, &d.CreatedAt, &d.UpdatedAt, &completedAt,
 		&d.DocStatus, &effectiveDate, &d.Supersedes, &d.Owner, &d.KnowledgeSpaceID, &d.PublicationStatus, &d.DeletionStatus,
-		&timingsRaw)
+		&timingsRaw, &d.UploadedByName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Document{}, false, nil
 	}

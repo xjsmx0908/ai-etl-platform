@@ -223,6 +223,11 @@ func ensureDemoShowcaseDocument(tx pgx.Tx, ctx context.Context, cfg config.Confi
 	// The declared size is measured, not asserted: a row claiming 2048 bytes for
 	// a 111-byte object is the same lie in a smaller place.
 	sourceSize := int64(len(demoShowcaseSourceBytes(doc)))
+	// $14 is the admin UUID the previous seed wrote into owner. A row still
+	// holding that value is corrected in place; a row an administrator has since
+	// edited is left alone. Without this branch the fix would only ever reach a
+	// fresh database: the conflict branch updates nothing unless a column in its
+	// WHERE moves, so an already-seeded deployment would keep rendering the UUID.
 	if _, err := tx.Exec(ctx, `INSERT INTO documents (
 			tenant_id,doc_id,file_name,object_key,file_hash,file_size,content_type,permission,status,stage,
 			chunks_done,chunks_total,uploaded_by,completed_at,doc_status,effective_date,owner,knowledge_space_id,publication_status,deletion_status
@@ -230,11 +235,13 @@ func ensureDemoShowcaseDocument(tx pgx.Tx, ctx context.Context, cfg config.Confi
 		ON CONFLICT (tenant_id, doc_id) DO UPDATE SET
 			object_key=EXCLUDED.object_key,
 			file_size=EXCLUDED.file_size,
+			owner=CASE WHEN documents.owner=$14 THEN EXCLUDED.owner ELSE documents.owner END,
 			updated_at=now()
 		WHERE documents.object_key IS DISTINCT FROM EXCLUDED.object_key
-		   OR documents.file_size IS DISTINCT FROM EXCLUDED.file_size`,
+		   OR documents.file_size IS DISTINCT FROM EXCLUDED.file_size
+		   OR (documents.owner=$14 AND documents.owner IS DISTINCT FROM EXCLUDED.owner)`,
 		cfg.DemoTenantID, doc.docID, doc.fileName, sourceKey, doc.digest, sourceSize, doc.permission,
-		userID, now, adminID, demoSpaceID, doc.publication, len(doc.chunks)); err != nil {
+		userID, now, doc.owner, demoSpaceID, doc.publication, len(doc.chunks), adminID); err != nil {
 		return fmt.Errorf("seed demo document %s: %w", doc.docID, err)
 	}
 	// A completed job is a published one, so the terminal fixture sets
@@ -405,7 +412,14 @@ type demoShowcaseDocument struct {
 	generationID string
 	digest       string
 	published    bool
-	chunks       []string
+	// owner is the accountable owner shown in the release center and on the
+	// document detail page. It is a business role, not a user id: the column's
+	// definition (migration 0004) is "business role or user", deliberately
+	// distinct from uploaded_by which records who performed the upload. Seeding
+	// the demo admin's UUID here rendered as a 36-character identifier wherever
+	// an administrator was meant to read a name.
+	owner string
+	chunks []string
 }
 
 func demoShowcaseDocuments() []demoShowcaseDocument {
@@ -413,17 +427,17 @@ func demoShowcaseDocuments() []demoShowcaseDocument {
 		{
 			docID: demoPublishedDocID, fileName: "员工手册.md", permission: "public", publication: "published",
 			versionID: demoPublishedVersionID, eventID: "demo-event-handbook", generationID: demoPublishedGeneration,
-			digest: "sha256:demo-handbook", published: true, chunks: demoHandbookChunks(),
+			digest: "sha256:demo-handbook", published: true, owner: "人力资源部", chunks: demoHandbookChunks(),
 		},
 		{
 			docID: demoPendingDocID, fileName: "新员工入职指南.md", permission: "internal", publication: "draft",
 			versionID: demoPendingVersionID, eventID: "demo-event-onboarding", generationID: demoPendingGeneration,
-			digest: "sha256:demo-onboarding", published: false, chunks: demoOnboardingChunks(),
+			digest: "sha256:demo-onboarding", published: false, owner: "人力资源部", chunks: demoOnboardingChunks(),
 		},
 		{
 			docID: demoConfidentialDocID, fileName: "薪酬核算说明.md", permission: "confidential", publication: "draft",
 			versionID: demoConfidentialVersionID, eventID: "demo-event-payroll", generationID: demoConfidentialGeneration,
-			digest: "sha256:demo-payroll", published: false, chunks: demoPayrollChunks(),
+			digest: "sha256:demo-payroll", published: false, owner: "财务部", chunks: demoPayrollChunks(),
 		},
 	}
 }

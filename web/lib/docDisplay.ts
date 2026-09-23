@@ -44,11 +44,23 @@ export function getFileTypeMeta(fileName: string): FileTypeMeta {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Render an uploader id nicely: demo users by name, real UUIDs truncated. */
-export function formatUploader(id?: string): { label: string; title?: string } {
+/**
+ * Render a document's uploader.
+ *
+ * The registry receives `uploaded_by_name` alongside each row, because the user
+ * directory is admin-only (GET /v1/users) while the registry serves every role —
+ * a lookup here would 403 for readonly and user accounts. The id is only shown
+ * truncated when no account matches it, which happens for rows whose uploader no
+ * longer exists.
+ *
+ * An earlier version tried to map the literals "demo-user" / "demo-admin" to
+ * Chinese labels. Those branches could never fire: uploaded_by always holds
+ * auth.GetUserID(), a UUID. The demo case is now handled by the same name lookup
+ * as every other account.
+ */
+export function formatUploader(id?: string, name?: string): { label: string; title?: string } {
+  if (name) return { label: name, title: id || undefined };
   if (!id) return { label: "—" };
-  if (id === "demo-user") return { label: "演示用户" };
-  if (id === "demo-admin") return { label: "演示管理员" };
   if (UUID_RE.test(id)) return { label: `${id.slice(0, 8)}…`, title: id };
   return { label: id };
 }

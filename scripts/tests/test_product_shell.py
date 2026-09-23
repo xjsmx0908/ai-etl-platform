@@ -86,6 +86,48 @@ class ProductShellTests(unittest.TestCase):
         self.assertNotIn("可量化", page)
         self.assertNotIn("语义检索", page)
 
+    def test_documents_show_uploader_name_not_truncated_uuid(self):
+        """The registry renders a username; a truncated UUID is not a name.
+
+        The name has to arrive with the row. GET /v1/users is admin-only while
+        /documents serves every role, so resolving it in the browser (the way
+        /audit does) would 403 for readonly and user accounts.
+        """
+        list_page = (ROOT / "web/app/(app)/documents/page.tsx").read_text(encoding="utf-8")
+        detail_page = (ROOT / "web/app/(app)/documents/[id]/page.tsx").read_text(encoding="utf-8")
+        helper = (ROOT / "web/lib/docDisplay.ts").read_text(encoding="utf-8")
+        for page in (list_page, detail_page):
+            self.assertIn("formatUploader(doc.uploaded_by, doc.uploaded_by_name)", page)
+        self.assertIn("if (name) return { label: name", helper)
+        # Dead branches: uploaded_by always holds auth.GetUserID(), a UUID, so a
+        # literal comparison against a username can never match.
+        self.assertNotIn('id === "demo-user"', helper)
+        self.assertNotIn('id === "demo-admin"', helper)
+
+    def test_document_api_resolves_uploader_name_server_side(self):
+        store = (ROOT / "services/etl-worker/internal/docstore/docstore.go").read_text(encoding="utf-8")
+        handler = (ROOT / "services/etl-worker/cmd/api/doc_handlers.go").read_text(encoding="utf-8")
+        types = (ROOT / "web/lib/types.ts").read_text(encoding="utf-8")
+        self.assertIn("u.id::text = documents.uploaded_by", store)
+        self.assertIn("uploaded_by_name", handler)
+        self.assertIn("uploaded_by_name?: string", types)
+
+    def test_demo_seed_owner_is_a_business_role(self):
+        """The owner column is "business role or user", not a user id column.
+
+        The behavioural evidence is the deployed stack (the demo documents must
+        render a role after a restart), so this only pins the two things a
+        refactor could silently drop: the readable value, and the convergence
+        clause that reaches an already-seeded database.
+        """
+        seed = (ROOT / "services/etl-worker/cmd/api/demo_showcase.go").read_text(encoding="utf-8")
+        self.assertIn("userID, now, doc.owner, demoSpaceID", seed)
+        # Without the conflict branch an already-seeded deployment keeps the UUID
+        # forever: DO UPDATE only runs when a column named in its WHERE moves.
+        self.assertIn("documents.owner=$14", seed)
+        self.assertIn('owner: "人力资源部"', seed)
+        self.assertIn('owner: "财务部"', seed)
+
 
 if __name__ == "__main__":
     unittest.main()
