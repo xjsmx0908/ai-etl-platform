@@ -52,6 +52,7 @@
 | UAT-021 | 美观 UX | S3 | `/agent` `/release-center` `/documents/[id]` | admin | 已修复 | 责任人显示用户 UUID 而不是人名或部门 | 2026-09-23 复验：`/agent` 与 `/release-center` 显示「责任人：人力资源部」，详情页「责任人」为「财务部」 |
 | UAT-022 | 美观 UX | S3 | `/documents` `/documents/[id]` | 全部 | 已修复 | 上传者列显示截断 UUID 而不是用户名 | 2026-09-23 复验：列表三行与详情页「上传者」均为 `demo-user`，页面不再出现 `c189da83…` |
 | UAT-023 | 使用逻辑 | S3 | `/documents/[id]` | 全部 | 待产品确认 | 元数据块直出内部检索字段，与同页中文空间名打架 | 2026-09-23 真实页面复验 |
+| UAT-024 | 功能缺陷 | S2 | `/documents/[id]` `/documents` | 全部 | 已修复 | 没有任何发布记录的文档读不出自己的切块：详情页显示「暂无切块」，同一页的搜索框也搜不到它 | 2026-09-23 复验：`/documents/demo-doc-onboarding` 显示「文档切块（3）」并列出正文 |
 
 2026-09-09 已完成 D1 复验，旧九条不再处于「待复验」。UAT-001～016 于 2026-09-09 至 2026-09-11 关闭。UAT-017～020 于 2026-09-22 真实页面复验关闭，逐条证据见各条「复验」。
 
@@ -60,6 +61,8 @@
 2026-09-23 补走其余页面：`/`（重定向到 `/qa`）、`/agent`、`/data`、`/observe`、`/qa`、`/quality`、`/users`，另加 `/documents` 与 `/documents/[id]`。加上 2026-09-22 的登录、文档、审计、发布中心，章程页面矩阵 11 页都已在真实页面上走过一轮。本轮只巡检，未改产品代码，新开 UAT-021～023。证据 `artifacts/product-experience-acceptance/2026-09-23-uat-rest/`。
 
 2026-09-23 修复 UAT-021 与 UAT-022（`94b9941`、`e9c0857`），并在重建后的 `:3100` 上复验关闭。两条都是「同一件事在库里是 id、在界面上应该是名字」，但根因在两端：UAT-022 是展示层拿不到名字（`uploaded_by` 永远是 UUID），UAT-021 是演示种子把用户 id 写进了人读列。**UAT-022 没有按本条原先的建议做**——原建议让两个页面改用 `actorDisplay(doc.uploaded_by, users)`，而 `GET /v1/users` 是 admin-only（`cmd/api/main.go:508`）、文档列表服务所有角色，照做会让 readonly 与 user 账号拿到 403。改成在服务端随行下发 `uploaded_by_name`。证据 `artifacts/product-experience-acceptance/2026-09-23-uat021-022/`。
+
+2026-09-23 修复 UAT-024（`be4b8c2`），并在重建后的 `:3100` 上复验关闭。这条**不是**用户反馈出来的，是去查「发布中心验收矩阵第 3 项」为什么在审批前读不到 `chunk_ids` 时挖到的：`GET /v1/documents/{docID}/chunks` 与 `GET /v1/documents/search` 两个端点都挂 `publicationrelease.ResolveVisibility`，而那是**检索证据**策略、对没有已发布权威的文档 fail-closed —— 于是「读这份文档自己的内容」被「这块能不能当回答证据」的判据管住了。证据 `artifacts/product-experience-acceptance/2026-09-23-document-content-visibility/`。
 
 三条被查过但**不建单**的观察写在文件末尾「本轮未建单的缺口」，含 `/agent` 与 `/release-center` 上的 `Fetch: net::ERR_ABORTED`：它在 CDP 里是 `canceled=true` + `initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取，页面既无红色横幅也无失败文案，属噪声而非缺陷。
 
@@ -388,6 +391,24 @@
 - 归属：产品 / 前端
 - 建议：先确认这个块给谁看。给运维看就补一句「内部检索字段」的说明；给业务用户看就把 `knowledge_space_id` / `knowledge_base_id` 走 `spaceLabel`，把 `applicable_scope` 折进「系统详情」。渲染处是 `web/app/(app)/documents/[id]/page.tsx:371-382`，纯展示改动，不碰检索过滤逻辑。
 
+### UAT-024 没有发布记录的文档读不出自己的切块
+
+- 类型：功能缺陷 · 级别：S2 · 状态：已修复
+- 页面：`/documents/[id]`、`/documents` · 角色：全部
+- 复现：
+  1. 打开 `/documents/demo-doc-onboarding`（demo 租户，`publication_status='draft'`，Qdrant 里 3 块）。
+  2. 页面「文档切块（0）」+「暂无切块」，看起来这份文档没有内容。
+  3. 在 `/documents` 的搜索框里搜「试用期」（只出现在这份文档里）——列表里明明显示着它，却搜不到。
+- 期望：一份文档自己的切块应当能读；空态要区分「真的没有块」和「有块但不给看」。
+- 实际：`GET /v1/documents/{docID}/chunks` 返回 `{"total":0}`，`GET /v1/documents/search?q=试用期` 返回空。两份未发布演示文档（`demo-doc-onboarding`、`demo-doc-payroll`）都是 0，而同为 3 块的已发布 `demo-doc-handbook` 是 3。default 租户另有 `doc-1788350741430636808`（0 而非 24）、`HR-2024-003`（0 而非 1）。
+- 真因：两个端点都挂 `publicationrelease.ResolveVisibility`，那是**检索证据**策略 —— 只有「已 resolved 且 manifest 健康的已发布 release」或「legacy `publication_status='published'` 且引用不带代际身份」才可见，其余 fail-closed。可这两个端点问的是另一个问题：「这份文档现在有哪些块」。新上传文档的 `publication_status` 默认 `'draft'`（`internal/docstore/docstore.go` 的 `COALESCE(NULLIF($24,''),'draft')`），于是**任何尚未发布的文档**都被判成不可读。引入该过滤的 `9915e38` 提交说明写的是「document detail only lists the published release, so QA switches to the new content」，意图是**在多个代际之间选已发布的那一代**，不是「未发布文档不可读」；当时 `docsearch_test.go` 用的是**桩**可见性解析器（`visible: {"gen-published": true}`），只验了「被取代的代际被过滤」，这个退化对回归完全隐形。
+- 修复：在 `internal/publicationrelease/postgres.go` 增加 `ResolveDocumentContentVisibility`，与 `ResolveVisibility` **只在「从未发布过的文档」上不同** —— 没有已发布代际就没有需要隐藏的旧代际，全部可见；有已发布代际的文档保持严格匹配，所以「替换发布后详情页切到新代际」的行为不变。两个端点改用新的 `documentContentVisibility` 接口（**刻意不复用 `retrieval.VisibilityResolver`**，注释写明原因）。判据必须是「identity 非空」而不是「`document_releases` 里有行」——那张表对每份入库文档都有行，`published_version_id` 保持 NULL 直到真正发布。
+- 反向验证：基线正例先通过，三个变异（改回不可见 / 有 release 行即视为有代际 / 放宽已发布匹配）各自让新测试报红，每次按 sha256 复原。
+- 权限：**没有跟着放宽**。两个端点各自保留独立的权限过滤（`permissionAllowed` + `ListChunksByDoc(allowed)` / `AllowedPermissionsForRole`）。线上对照：同一关键词「员工手册」，admin 看到 `demo-doc-payroll`（confidential），user 看不到；user 直读 payroll 的 chunks 得 `404`。
+- 证据：`artifacts/product-experience-acceptance/2026-09-23-document-content-visibility/`
+- 归属：后端
+- 建议：已修复。顺带查清的**另一件事**见「本轮未建单的缺口」。
+
 ## 本轮未建单的缺口
 
 - 机密双审已于 2026-09-09-fix 补测通过，不再作为缺口。
@@ -398,6 +419,7 @@
 - `/agent` 与 `/release-center` 的 `Fetch: net::ERR_ABORTED` **不是缺陷**。CDP 事件显示 `canceled=true`、`initiator=script`，失败对象是 Next 对 `/documents/demo-doc-handbook?_rsc=…` 的 RSC 预取（`?_rsc=` 是预取的标记），即浏览器侧主动取消的投机请求，不是服务端失败（服务端失败会带状态码而不是 `ERR_ABORTED`）。同一形状在两次重载与 `/release-center` 基线上各复现一次，页面无 `role="alert"` / 红色横幅 / 失败文案，且列表与详情数据完整渲染。默认视口下不设 1440×900 也复现同样结果，与视口无关。判据与原始日志见证据目录 `notes.md`。
 - `/quality` 自报「最近一次真实评测 2026-09-11」，是页面主动显示的日期，未判为缺陷。
 - `scripts/web-page-probe.cjs --login` 在 Chrome profile 已存在会话时会失败（登录页直接跳走，找不到体验登录按钮）。这是巡检工具的限制，不是产品缺陷：本轮改成复用 profile 里的会话，或对 default 租户用现签 token 加 `--cookie`。下一轮可让 `--login` 在已登录时直接跳过。
+- **已发布文档在详情页显示空切块，而 Qdrant 里有当前代际的块**（2026-09-23 查 UAT-024 时顺带查清，**未修**）。`ADM-2024-001` / `SEC-2024-001` 都有健康的已发布代际（`index_manifests` 的 `state=active`、`expected/qdrant/elasticsearch_count` 三者相等、两个摘要都对得上），策略 SQL 逐字命中它们，Qdrant 里也各有一块身份完全匹配 —— 但 `GET /v1/documents/{docID}/chunks` 返回 0。真因在端点数据源的**跨代际内容去重**：`QdrantStorer.ListChunksByDoc`（`internal/store/store.go:531`）按归一化内容去重（本意是挡历史 parser 的包含式重叠），而 `ADM-2024-001` 那 2 块的 `norm_sha256` **完全相同**（`474a312b86f23982`），scroll 顺序把**空身份**那块排在前面，去重于是保留了它、丢掉了匹配已发布代际的那块；策略对「有已发布代际」的文档要求引用带身份并精确匹配，留下的空身份块因此全被拒。`SEC-2024-001` 同理（3 块去重后剩 2 块，身份都是空的）。这与 UAT-024 **方向不同**：UAT-024 是「没有发布记录却被当成不可读」，这个是「有发布记录但去重留下了旧块」。判据与原始 payload 见 `artifacts/product-experience-acceptance/2026-09-23-document-content-visibility/qdrant-content.txt` 与同目录 `notes.md`。修法需要先定「同一文档跨代际内容相同的块该保留哪一块」，会动到去重策略本身，影响面比 UAT-024 大，留待单独决策。
 
 ## 新增问题模板
 
