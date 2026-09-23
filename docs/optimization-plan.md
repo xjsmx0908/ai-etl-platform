@@ -35,7 +35,7 @@
 | 系统设计 | 服务边界清晰、CI 门禁完整、租户/权限/证据链设计是扎实的；**配置一致性**已由 §2.2 / §2.3 修掉（并加了契约测试），剩下的问题是**状态文档三源冲突**、**单文件职责过载** |
 | 可靠性 | **真正的短板在故障恢复路径**：瞬时失败被持久化后没有自愈机制，重试路径要么不存在、要么复读旧结果。见 §1.3 |
 | 最紧急项 | **没有 P0 挂着**。三项 P0 都已处理：ES 永久 yellow（§1.1.1）、全栈无备份（§1.2）、磁盘濒满（§1.1.2，可用空间 9.2GB → 63GB）。下一步按 §7 的执行顺序走 |
-| 已修复项 | 16 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）+ 配置键一致性：3 个切块死键、26 个未文档化的键、3 个 compose 漏传的检索键（§2.2 / §2.3）。见 §1.1、§1.2、§1.3、§2.2、§2.3 |
+| 已修复项 | 16 个功能缺陷 + ES 永久 yellow（真因是**单节点配了 1 副本**，不是磁盘水位）+ P0 备份与恢复演练（§1.2）+ ES 水位百分比化、宿主机磁盘告警、磁盘回收（§1.1.2）+ 配置键一致性：3 个切块死键、26 个未文档化的键、3 个 compose 漏传的检索键、5 个「模板写了但两边都没接」的接线缺口（§2.2 / §2.3 / §8）。见 §1.1、§1.2、§1.3、§2.2、§2.3、§8 |
 
 ---
 
@@ -1553,31 +1553,39 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
   默认值都是从代码里读出来的（`internal/config/config.go`、`services/doc-parser-service/app/config.py`、
   或 compose 的 `:-` 默认值），**没有一个是猜的**。5 处 compose 硬编码改成插值时默认值与改前
   逐字相同，所以**现有部署的行为一个字都没变** —— 变的是「现在改得动」。
-- **契约测试只覆盖两个方向，有一类同类问题没有覆盖**：根模板里还有 **18 个键**既没被任何
-  compose 文件插值、也没有任何宿主脚本读取，即「写在 `.env` 里不会生效」。完整清单：
+- **契约测试原先只覆盖两个方向，第三类已补齐（2026-09-23）**：根模板顶层键 ⊆ compose 插值 ∪
+  宿主脚本读取 —— 缺的正是「模板写了但两边都没接」这一类。判据补上后实测缺口 **13 个**，
+  与「18 − 5」精确吻合，说明清单没有算错。这 13 个分两类，**都是刻意不可达**：
 
-  ```
-  KAFKA_BROKERS        REDIS_CACHE_ADDR     REDIS_STATE_ADDR    STORE_ENDPOINT
-  S3_ENDPOINT          REDIS_ADDR           REDIS_DB            PG_DSN
-  MINIO_ROOT_USER      MINIO_ROOT_PASSWORD  REDIS_CACHE_PASSWORD
-  REDIS_STATE_PASSWORD NOTIFICATION_WEBHOOK_TOKEN
-  TASK_STATUS_STORE    TASK_STATUS_TTL      MULTIPART_MAX_MEMORY_MB
-  OUTBOX_RELAY_BATCH_SIZE  OUTBOX_RELAY_LEASE
-  ```
+  | 类 | 键 | 为什么不改 |
+  |---|---|---|
+  | 集群内地址（5） | `KAFKA_BROKERS`、`REDIS_CACHE_ADDR`、`REDIS_STATE_ADDR`、`STORE_ENDPOINT`、`S3_ENDPOINT` | compose 直接写死成服务名。改成可配置等于「允许连集群外的 Kafka/Redis/Qdrant/MinIO」，那是产品决定 |
+  | 旧回退值（2） | `REDIS_ADDR`、`REDIS_DB` | 容器里已被 `REDIS_CACHE_*` / `REDIS_STATE_*` 覆盖；只在「不经 compose 直接跑服务」时才生效 |
+  | 已被 `_FILE` 取代的 secret（6） | `PG_DSN`、`MINIO_ROOT_USER`、`MINIO_ROOT_PASSWORD`、`REDIS_CACHE_PASSWORD`、`REDIS_STATE_PASSWORD`、`NOTIFICATION_WEBHOOK_TOKEN` | 容器读的是 `<KEY>_FILE`。**`EnvSecret` 先读明文键再读 `_FILE`**，所以透传明文会盖掉 secret 文件里那份 |
 
-  分三类：**集群内地址**（`REDIS_*_ADDR`、`STORE_ENDPOINT`、`S3_ENDPOINT`、`KAFKA_BROKERS`，
-  compose 直接写死成服务名）、**已由 `_FILE` 形式的 secret 取代**（`PG_DSN`、
-  `MINIO_ROOT_USER/PASSWORD`、`*_PASSWORD`、`NOTIFICATION_WEBHOOK_TOKEN`）、
-  **在 compose 里完全没有引用**（`TASK_STATUS_*`、`MULTIPART_MAX_MEMORY_MB`、
-  `OUTBOX_RELAY_*`）。**三类都没有动**：前两类要改成可配置是产品决定（要不要允许外部
-  Redis/PG、要不要走明文 secret），第三类需要先确认代码侧默认值是否够用。
-  契约测试不检查这一类 —— 它只断言「compose 会插值的键」和「代码会读的键」，
-  不检查「模板写了但两边都没接」的键。**这是已知的覆盖缺口，不是已经做完的事。**
+  **原先记为「在 compose 里完全没有引用」的 5 个键经核实是纯粹的接线缺口**，代码侧默认值够用，
+  已在 `docker-compose.yml` 里补上透传，默认值与 `config.go` 逐字相同（`TASK_STATUS_STORE=auto`、
+  `TASK_STATUS_TTL=168h`、`MULTIPART_MAX_MEMORY_MB=4`、`OUTBOX_RELAY_BATCH_SIZE=50`、
+  `OUTBOX_RELAY_LEASE=30s`），所以现有部署行为不变：
+
+  | 键 | 消费方 | 为什么必须透传 |
+  |---|---|---|
+  | `TASK_STATUS_STORE` / `TASK_STATUS_TTL` | query-api（`cmd/api/task_handlers.go:22`）**与** etl-worker（`cmd/worker/main.go:392`） | `auto` 按 `ENVIRONMENT` 解析，两个进程必须拿到同一个值，否则 worker 写的状态 API 读不到 |
+  | `MULTIPART_MAX_MEMORY_MB` | query-api（`cmd/api/upload_handlers.go:223`） | 每请求的内存缓冲，会乘 `UPLOAD_MAX_CONCURRENCY` |
+  | `OUTBOX_RELAY_BATCH_SIZE` / `OUTBOX_RELAY_LEASE` | query-api（`cmd/api/main.go:263` 与 `:376`） | **一个键管两条 outbox 中继**（入库 admission→Kafka、通知 webhook） |
+
+  这个类别不再靠「记得别加死键」维持：`NOT_REACHABLE_KEYS` 是一张必须逐条给出理由的白名单，
+  `test_every_root_template_key_reaches_the_process` 断言「顶层键 ⊆ 可达 ∪ 白名单」，
+  `test_unreachable_keys_are_flagged_next_to_the_key` 断言提示语**贴着那把键**（8 行以内），
+  两条都有判据自检。反向验证 4/4：拆掉一处透传 / 删一条白名单 / 删一处提示语 / 新增一个死键，
+  四条绕过路径全部报红。**顺带删掉 `docker-compose.yml` 里重复声明的 `HTTP_WRITE_TIMEOUT`**
+  （query-api 段出现两次，Compose 取最后一个 → 靠前那处是死行，改它没反应）。
 
   **顺带修掉的 5 个**：`CHUNK_OVERLAP` / `MAX_CHUNK_SIZE` / `MIN_CHUNK_SIZE`（§2.2），
   以及 `RETRIEVAL_MIN_RELEVANCE` / `RETRIEVAL_GROUNDING_LOW_BOUND` /
   `RETRIEVAL_GROUNDING_HIGH_BOUND`（compose 的 query-api 段漏传了这三个检索旋钮，
-  已补上并重建验证）。清单从 23 降到 18，**没有一个新增**。
+  已补上并重建验证）。清单从 23 降到 18，**没有一个新增**；2026-09-23 又补上第三类的
+  5 个接线缺口，**降到 13**，剩下 13 个全是刻意不可达的（见上表）。
 
 - **本轮踩到一个「本机绿、服务器红」的假失败，值得单独记**：契约测试第一版用
   `rglob("*.go")` 扫 `services/etl-worker`，本机 262 个 `.go` 全绿，远端 6365 个

@@ -363,6 +363,11 @@ services:
       - PIPELINE_TIMEOUT=${PIPELINE_TIMEOUT:-4h}
       - PIPELINE_MAX_RETRIES=${PIPELINE_MAX_RETRIES:-1}
       - INGESTION_JOB_LEASE=${INGESTION_JOB_LEASE:-18h}
+      # Same task-status store the API reads; "auto" resolves by ENVIRONMENT, so
+      # worker and API must be given the same value or the worker writes status
+      # where the API does not look.
+      - TASK_STATUS_STORE=${TASK_STATUS_STORE:-auto}
+      - TASK_STATUS_TTL=${TASK_STATUS_TTL:-168h}
       - KAFKA_BROKERS=kafka:9092
       - KAFKA_TOPIC=${KAFKA_TOPIC:-doc-processing}
       - OCR_KAFKA_TOPIC=${OCR_KAFKA_TOPIC:-doc-processing-ocr}
@@ -487,10 +492,20 @@ services:
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       - HTTP_READ_TIMEOUT=${HTTP_READ_TIMEOUT:-15s}
       - HTTP_READ_HEADER_TIMEOUT=${HTTP_READ_HEADER_TIMEOUT:-10s}
-      - HTTP_WRITE_TIMEOUT=${HTTP_WRITE_TIMEOUT:-60s}
+      # HTTP_WRITE_TIMEOUT is declared once, below with HTTP_HANDLER_TIMEOUT. It
+      # used to appear twice in this list; Compose keeps the last one, so editing
+      # the copy that used to sit here changed nothing.
       - HTTP_IDLE_TIMEOUT=${HTTP_IDLE_TIMEOUT:-120s}
       - HTTP_MAX_HEADER_BYTES=${HTTP_MAX_HEADER_BYTES:-1048576}
       - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-100}
+      # In-memory slice of a multipart upload before Go spills parts to disk.
+      # MAX_UPLOAD_SIZE_MB caps the document; this caps the buffer, and it is per
+      # request, so it multiplies by UPLOAD_MAX_CONCURRENCY.
+      - MULTIPART_MAX_MEMORY_MB=${MULTIPART_MAX_MEMORY_MB:-4}
+      # Upload/task status store. "auto" picks memory in dev and Redis otherwise,
+      # which is why the value is passed through rather than pinned to redis.
+      - TASK_STATUS_STORE=${TASK_STATUS_STORE:-auto}
+      - TASK_STATUS_TTL=${TASK_STATUS_TTL:-168h}
       - IDEMPOTENCY_TTL=${IDEMPOTENCY_TTL:-24h}
       # API uses both: evictable semantic cache and durable Agent/idempotency state.
       - REDIS_CACHE_ADDR=redis-cache:6379
@@ -597,6 +612,14 @@ services:
       - NOTIFICATION_WEBHOOK_URL=${NOTIFICATION_WEBHOOK_URL:-http://alert-webhook-service:8092/notifications}
       - NOTIFICATION_WEBHOOK_TOKEN_FILE=/run/secrets/alert_webhook_token
       - NOTIFICATION_WEBHOOK_TIMEOUT=${NOTIFICATION_WEBHOOK_TIMEOUT:-5s}
+      # One knob for both outbox relays this process runs: the ingestion outbox
+      # (admission -> Kafka) and the notification outbox (approval/workflow
+      # webhooks). BatchSize is how many pending rows one pass claims; Lease is
+      # how long a claim is held before another replica may claim it again. Both
+      # relays are at-least-once, so a lease shorter than a delivery causes a
+      # duplicate send, not a lost one.
+      - OUTBOX_RELAY_BATCH_SIZE=${OUTBOX_RELAY_BATCH_SIZE:-50}
+      - OUTBOX_RELAY_LEASE=${OUTBOX_RELAY_LEASE:-30s}
       - WORKFLOW_CALLBACK_TOKEN=${WORKFLOW_CALLBACK_TOKEN:-}
       - WORKFLOW_CALLBACK_TOKEN_FILE=${WORKFLOW_CALLBACK_TOKEN_FILE:-}
       - S3_ENDPOINT=minio:9000
