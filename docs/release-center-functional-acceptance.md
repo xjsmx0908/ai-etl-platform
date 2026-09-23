@@ -73,6 +73,15 @@ Agent 状态依赖故障与两票人工例外、internal 敏感阻断、提示�
 只通过 Compose 控制面停止并恢复隔离栈 `redis-state`；业务输入和结果仍通过认证
 HTTP API 写入及观察，不向生产服务加入测试端点或测试模式。
 
+对 `redis-state` 的探活**必须带认证**。该服务用 `--requirepass` 启动（口令来自
+`redis_password` secret），而不带认证的 `redis-cli ping` 会打印
+`NOAUTH Authentication required.` 并**以退出码 0 结束** —— 探活因此既不成功也不失败，
+只会一直等到超时，把一个健康的服务报成「redis-state did not recover」，并让矩阵在
+第 4 个场景就中止。两个验收脚本统一从 `release-center-functional-acceptance.py` 的
+`redis_exec_command()` 取命令，由它照容器自身 healthcheck 的写法在容器内读 secret
+（`REDISCLI_AUTH=$(tr -d '\r\n' < /run/secrets/redis_password)`），
+不在宿主上再存一份口令。回归断言见 `scripts/tests/test_release_center_functional_acceptance.py`。
+
 Token 预算专项验收（真实模型、独立隔离栈）:
 
 ```bash

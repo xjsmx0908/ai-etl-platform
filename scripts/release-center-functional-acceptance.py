@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -50,9 +51,26 @@ def multipart(fields: dict[str, str], filename: str, content: str) -> tuple[byte
     return b"".join(out), boundary
 
 
+def redis_exec_command(*args: str) -> list[str]:
+    """Build the command that runs `redis-cli` inside the redis-state service.
+
+    redis-state requires a password (`--requirepass`, fed from the `redis_password`
+    secret in docker-compose.yml). An unauthenticated `redis-cli ping` answers
+    "NOAUTH Authentication required." **with exit status 0**, so a probe that
+    skips the secret neither succeeds nor fails -- it just spins until it times
+    out, and the outage scenario reports "redis-state did not recover" even though
+    the service is healthy. Read the secret inside the container exactly like the
+    service's own healthcheck does, rather than duplicating it on the host.
+    """
+    auth = "REDISCLI_AUTH=$(tr -d '\\r\\n' < /run/secrets/redis_password)"
+    return [
+        "docker", "compose", "exec", "-T", "redis-state", "sh", "-c",
+        f"{auth} redis-cli " + " ".join(shlex.quote(arg) for arg in args),
+    ]
+
+
 class AcceptanceError(RuntimeError):
     pass
-
 
 class Client:
     def __init__(self, base: str):
@@ -164,7 +182,7 @@ class Runner:
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             result = subprocess.run(
-                ["docker", "compose", "exec", "-T", "redis-state", "redis-cli", "ping"],
+                redis_exec_command("ping"),
                 check=False,
                 cwd=Path(__file__).resolve().parents[1],
                 stdout=subprocess.PIPE,

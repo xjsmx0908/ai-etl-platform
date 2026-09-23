@@ -73,6 +73,32 @@ class ReleaseCenterFunctionalAcceptanceTests(unittest.TestCase):
         self.assertIn("docker compose down -v --remove-orphans", runner)
         self.assertIn("release-center-functional-acceptance.py", runner)
 
+    def test_redis_probe_authenticates_with_the_service_secret(self):
+        """redis-state needs a password, and an unauthenticated probe does not fail -- it hangs.
+
+        `redis-cli ping` against a password-protected server prints
+        "NOAUTH Authentication required." and **exits 0**. The agent-outage scenario
+        restarts redis-state and waits for the probe to say PONG, so without the
+        secret it could not tell "not up yet" from "up but unauthenticated" and
+        reported "redis-state did not recover" on a perfectly healthy service --
+        which stopped the matrix before its last nine scenarios.
+        """
+        driver = load_driver()
+        command = driver.redis_exec_command("ping")
+        joined = " ".join(command)
+        self.assertIn("REDISCLI_AUTH", joined)
+        self.assertIn("/run/secrets/redis_password", joined)
+        self.assertLess(joined.index("REDISCLI_AUTH"), joined.index("redis-cli"))
+        self.assertTrue(command[-1].rstrip().endswith("ping"), command[-1])
+
+    def test_review_recovery_suite_reuses_the_authenticated_probe(self):
+        source = (ROOT / "scripts" / "release-center-review-recovery-acceptance.py").read_text(encoding="utf-8")
+        # 复用同一份实现，避免「修了一个忘了另一个」——这两个脚本曾经各有一份不带认证的探活
+        self.assertIn("functional.redis_exec_command", source)
+        self.assertNotIn('"redis-state", "redis-cli"', source)
+        functional_source = (ROOT / "scripts" / "release-center-functional-acceptance.py").read_text(encoding="utf-8")
+        self.assertNotIn('"redis-state", "redis-cli"', functional_source)
+
 
 if __name__ == "__main__":
     unittest.main()

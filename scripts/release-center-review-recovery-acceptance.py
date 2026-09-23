@@ -93,7 +93,26 @@ def compose_service(action: str, service: str) -> None:
 
 
 def redis_cli(*args: str) -> str:
-    result = compose_cmd("exec", "-T", "redis-state", "redis-cli", *args)
+    """Run `redis-cli` inside the redis-state service, authenticated.
+
+    redis-state requires a password (`--requirepass`, fed from the `redis_password`
+    secret in docker-compose.yml). Without `REDISCLI_AUTH` the server answers
+    "NOAUTH Authentication required." **with exit status 0**, so this helper would
+    hand that sentence back to its caller as if it were data, and `wait_redis_state`
+    would spin until it timed out on a perfectly healthy service.
+
+    The invocation (including how the secret is read) comes from the shared driver,
+    so the two acceptance suites cannot drift apart on this again.
+    """
+    result = subprocess.run(
+        functional.redis_exec_command(*args),
+        check=False,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+    )
     if result.returncode != 0:
         raise AcceptanceError(f"redis-cli {' '.join(args)} failed: {sanitize(result.stderr or result.stdout)}")
     return result.stdout
@@ -102,9 +121,11 @@ def redis_cli(*args: str) -> str:
 def wait_redis_state(timeout: int = 60) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        result = compose_cmd("exec", "-T", "redis-state", "redis-cli", "ping")
-        if result.returncode == 0 and result.stdout.strip() == "PONG":
-            return
+        try:
+            if redis_cli("ping").strip() == "PONG":
+                return
+        except AcceptanceError:
+            pass
         time.sleep(1)
     raise AcceptanceError("redis-state did not recover")
 
