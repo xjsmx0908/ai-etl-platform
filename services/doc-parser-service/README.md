@@ -134,6 +134,8 @@ curl http://localhost:8000/healthz
 2. **段落边界**：空行作为段落分隔
 3. **短段落合并**：< MIN_CHUNK_SIZE 的段落下一个合并
 4. **超大块切分**：> MAX_CHUNK_SIZE 强制切分 + 重叠
+5. **切点回退到句子边界**：强制切分点与重叠窗口的起点都回退到最近的分隔符（换行 > 句末标点 > 句内标点），
+   块不以半句开头或结尾；只装重叠的尾块不发出
 
 ## 性能
 
@@ -154,6 +156,11 @@ parserClient := parser.NewClient("http://parser-service:8000")
 // 解析文档
 chunks, err := parserClient.ParseFile(ctx, task)
 ```
+
+> **纯文本不走本服务**：`.txt` / `.md` / `.csv` / `.log` 由 Worker 侧 `internal/parser/parser.go`
+> 自己切块（`pipeline.go` 的 `requiresParserService`）。两侧必须保持同一套切点判据 —— 一边按字符
+> 算上限、切点回退到分隔符、只装重叠的尾块不发出；改任一侧都要同步另一侧，并各自跑
+> `internal/parser/parser_test.go` 与 `tests/test_chunker.py`。
 
 ## 未来扩展
 
