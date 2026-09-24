@@ -553,9 +553,8 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 
 	var offset any
 	var chunks []StoredChunk
-	// seen maps a chunk's normalized content to the position its kept copy holds
-	// in chunks, so a later duplicate can replace it when it carries more
-	// identity.
+	// seen maps a stored chunk id to the position its kept copy holds in chunks,
+	// so a later point carrying more identity can replace it.
 	seen := make(map[string]int)
 	for {
 		body := map[string]interface{}{
@@ -615,18 +614,24 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 			if md, ok := p.Payload["metadata"].(map[string]interface{}); ok {
 				chunk.Metadata = stringMetadata(md)
 			}
-			// Defensive read-side deduplication for historical parser output: old
-			// paragraph overlap could emit a chunk fully contained in the following
-			// chunk. Keep the richer chunk and never show both in document details.
+			// Defensive read-side deduplication for repeated points: a document that
+			// was ingested twice (a re-seed or a re-index appends instead of
+			// replacing) holds more than one point for the same chunk id. One copy
+			// may come from a legacy write carrying no generation identity, the other
+			// from the managed generation that superseded it. Which copy survives
+			// decides whether the chunk is visible at all: publication policy matches
+			// a chunk to its published generation by identity, so a copy with no
+			// identity never matches and the whole document reads as empty. Prefer the
+			// copy that carries an identity rather than whichever the scroll returned
+			// first.
 			//
-			// The same content can also arrive as a byte-identical pair -- one copy
-			// from a legacy write carrying no generation identity, one from the
-			// managed generation that superseded it. Which copy survives decides
-			// whether the chunk is visible at all: publication policy matches a chunk
-			// to its published generation by identity, so a copy with no identity
-			// never matches and the whole document reads as empty. Prefer the copy
-			// that carries an identity rather than whichever the scroll returned first.
-			key := strings.Join(strings.Fields(chunk.Content), " ")
+			// The key is the chunk id, deliberately not the content. Keying on content
+			// also hides every chunk whose body happens to match a sibling's, and the
+			// retrieval layer does not hide those -- it can return a chunk the document
+			// page never shows, so a citation naming it cannot be checked. The endpoint
+			// stays faithful to the store: one entry per stored chunk id, and
+			// scripts/check-index-consistency.py asserts exactly that.
+			key := chunk.ChunkID
 			if at, exists := seen[key]; exists {
 				if !carriesIdentity(chunks[at]) && carriesIdentity(chunk) {
 					chunks[at] = chunk

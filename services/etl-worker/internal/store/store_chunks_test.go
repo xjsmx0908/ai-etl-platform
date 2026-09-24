@@ -239,9 +239,9 @@ func TestQdrantListChunksByDocKeepsTheCopyCarryingIdentity(t *testing.T) {
 	}
 }
 
-// Deduplication must stay keyed on content. A chunk without identity that has
-// different content is still a chunk of this document, and must not be dropped
-// merely because a sibling chunk carries an identity.
+// A chunk without identity that has different content is still a chunk of this
+// document, and must not be dropped merely because a sibling chunk carries an
+// identity.
 func TestQdrantListChunksByDocKeepsIdentitylessChunkWithDistinctContent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/points/scroll") {
@@ -270,5 +270,80 @@ func TestQdrantListChunksByDocKeepsIdentitylessChunkWithDistinctContent(t *testi
 	}
 	if chunks[0].ChunkID != "c1" || chunks[1].ChunkID != "c2" {
 		t.Fatalf("expected index order c1,c2, got %q,%q", chunks[0].ChunkID, chunks[1].ChunkID)
+	}
+}
+
+// Two different chunk ids can carry a byte-identical body: a document ingested
+// twice produces the same text under different ids. Retrieval deduplicates by
+// content and keeps whichever copy ranks first, so it can return either id --
+// hiding one of them here would let a citation name a chunk the detail page
+// never shows. Both stay visible; only repeated points for one chunk id collapse.
+func TestQdrantListChunksByDocKeepsDistinctChunkIDsWithIdenticalContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/points/scroll") {
+			_, _ = w.Write([]byte(`{"result":{"points":[
+				{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,
+					"document_version_id":"job-1","generation_id":"gen-1"}},
+				{"payload":{"chunk_id":"c2","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":1,
+					"document_version_id":"job-1","generation_id":"gen-1"}}
+			],"next_page_offset":null}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	qs, err := NewQdrantStorer(srv.URL, "", "docs", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qs.Close()
+
+	chunks, err := qs.ListChunksByDoc(context.Background(), "t1", "d1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected both chunk ids to stay visible, got %d: %+v", len(chunks), chunks)
+	}
+	if chunks[0].ChunkID != "c1" || chunks[1].ChunkID != "c2" {
+		t.Fatalf("expected index order c1,c2, got %q,%q", chunks[0].ChunkID, chunks[1].ChunkID)
+	}
+}
+
+// Repeated points for one chunk id still collapse to a single entry, and the
+// survivor is the copy carrying identity -- one entry per stored chunk id is the
+// contract the cross-layer consistency check asserts.
+func TestQdrantListChunksByDocCollapsesRepeatedPointsForOneChunkID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/points/scroll") {
+			_, _ = w.Write([]byte(`{"result":{"points":[
+				{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0}},
+				{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,
+					"document_version_id":"job-1","generation_id":"gen-1"}},
+				{"payload":{"chunk_id":"c2","doc_id":"d1","tenant_id":"t1","content":"另一段","index":1}}
+			],"next_page_offset":null}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	qs, err := NewQdrantStorer(srv.URL, "", "docs", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer qs.Close()
+
+	chunks, err := qs.ListChunksByDoc(context.Background(), "t1", "d1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 entries (one per chunk id), got %d: %+v", len(chunks), chunks)
+	}
+	if chunks[0].ChunkID != "c1" || chunks[1].ChunkID != "c2" {
+		t.Fatalf("expected index order c1,c2, got %q,%q", chunks[0].ChunkID, chunks[1].ChunkID)
+	}
+	if chunks[0].GenerationID != "gen-1" || chunks[0].DocumentVersionID != "job-1" {
+		t.Fatalf("expected the copy carrying identity to survive, got %+v", chunks[0])
 	}
 }
