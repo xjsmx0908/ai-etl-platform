@@ -36,7 +36,11 @@
 """
 
 import importlib.util
+import json
+import os
+import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -412,6 +416,120 @@ class ScrollPagesTest(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             MODULE.scroll_pages(fetch)
+
+
+class LoadBaselineTest(unittest.TestCase):
+    """基线：已知的、已归因的不一致，按 (kind, doc_id) 索引，带归属人与过期时间。
+
+    按 (kind, doc_id) 而不是按判定的细节索引，因为细节每轮都会变（chunk id 列表会变长、
+    计数会动一格），而被容忍的那件事没变。按细节索引会让每次重跑都把同一个已知问题报成新的。
+
+    缺归属人或缺过期时间的条目**拒绝加载**：一条没人负责、永不过期的例外，和一条没人打算
+    修的问题分不出来 —— 而后者正是这个机制要防的状态。
+    """
+
+    def write(self, payload):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(payload, handle, ensure_ascii=False)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def entry(self, **overrides):
+        base = {"kind": "space_key_unset", "doc_id": "SEC-2024-001", "owner": "platform", "expires": "2026-12-31"}
+        base.update(overrides)
+        return base
+
+    def test_entries_are_keyed_by_kind_and_doc_id(self):
+        path = self.write({"entries": [self.entry()]})
+        self.assertEqual(list(MODULE.load_baseline(path)), [("space_key_unset", "SEC-2024-001")])
+
+    def test_an_entry_without_an_owner_is_rejected(self):
+        path = self.write({"entries": [self.entry(owner="")]})
+        with self.assertRaises(ValueError):
+            MODULE.load_baseline(path)
+
+    def test_an_entry_without_an_expiry_is_rejected(self):
+        path = self.write({"entries": [self.entry(expires="")]})
+        with self.assertRaises(ValueError):
+            MODULE.load_baseline(path)
+
+    def test_an_entry_without_a_doc_id_is_rejected(self):
+        path = self.write({"entries": [self.entry(doc_id="")]})
+        with self.assertRaises(ValueError):
+            MODULE.load_baseline(path)
+
+    def test_an_empty_baseline_loads_as_empty(self):
+        self.assertEqual(MODULE.load_baseline(self.write({})), {})
+
+
+class PartitionFindingsTest(unittest.TestCase):
+    """退出码回答的是「这一轮知道了上一轮不知道的事吗」，不是「这个部署完美吗」。
+
+    长期为已知原因红的检查会没人看，而没人看的检查比没有检查更糟 —— 这是接 CI 的前提。
+    """
+
+    def finding(self, kind, doc_id):
+        return {"kind": kind, "doc_id": doc_id}
+
+    def entry(self, kind, doc_id, expires):
+        return (kind, doc_id), {"kind": kind, "doc_id": doc_id, "owner": "platform", "expires": expires}
+
+    def test_a_finding_with_no_baseline_entry_is_new(self):
+        new, expired, suppressed = MODULE.partition_findings(
+            [self.finding("space_key_unset", "d1")], {}, date(2026, 9, 24)
+        )
+        self.assertEqual(len(new), 1)
+        self.assertEqual(expired, [])
+        self.assertEqual(suppressed, [])
+
+    def test_an_unexpired_entry_suppresses(self):
+        baseline = dict([self.entry("space_key_unset", "d1", "2026-12-31")])
+        new, expired, suppressed = MODULE.partition_findings(
+            [self.finding("space_key_unset", "d1")], baseline, date(2026, 9, 24)
+        )
+        self.assertEqual(new, [])
+        self.assertEqual(expired, [])
+        self.assertEqual(len(suppressed), 1)
+
+    def test_an_expired_entry_stops_suppressing(self):
+        # 过期不是「继续容忍」，是「重新论证」—— 所以它必须让这一轮失败。
+        baseline = dict([self.entry("space_key_unset", "d1", "2026-09-23")])
+        new, expired, suppressed = MODULE.partition_findings(
+            [self.finding("space_key_unset", "d1")], baseline, date(2026, 9, 24)
+        )
+        self.assertEqual(new, [])
+        self.assertEqual(len(expired), 1)
+        self.assertEqual(suppressed, [])
+
+    def test_an_entry_expiring_today_still_suppresses(self):
+        # 边界：当天到期算未过期，否则到期日当天会闪一次红。
+        baseline = dict([self.entry("space_key_unset", "d1", "2026-09-24")])
+        _, expired, suppressed = MODULE.partition_findings(
+            [self.finding("space_key_unset", "d1")], baseline, date(2026, 9, 24)
+        )
+        self.assertEqual(expired, [])
+        self.assertEqual(len(suppressed), 1)
+
+    def test_the_match_needs_both_kind_and_doc_id(self):
+        # 同一份文档的另一种判定不是同一条例外。
+        baseline = dict([self.entry("space_key_unset", "d1", "2026-12-31")])
+        new, _, suppressed = MODULE.partition_findings(
+            [self.finding("citation_unverifiable", "d1")], baseline, date(2026, 9, 24)
+        )
+        self.assertEqual(len(new), 1)
+        self.assertEqual(suppressed, [])
+
+    def test_a_different_document_is_not_suppressed(self):
+        baseline = dict([self.entry("space_key_unset", "d1", "2026-12-31")])
+        new, _, suppressed = MODULE.partition_findings(
+            [self.finding("space_key_unset", "d2")], baseline, date(2026, 9, 24)
+        )
+        self.assertEqual(len(new), 1)
+        self.assertEqual(suppressed, [])
+
+    def test_no_findings_and_no_baseline_is_clean(self):
+        self.assertEqual(MODULE.partition_findings([], {}, date(2026, 9, 24)), ([], [], []))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "environment": "the running demo stack, tenant `default`",
+  "note": [
+    "Inconsistencies that have been traced to a cause and are tolerated until the",
+    "date below. The consistency check fails only on findings that are new or whose",
+    "entry here has expired, so this file is what keeps a known-and-explained",
+    "condition from turning the check permanently red.",
+    "",
+    "Every entry carries an owner and an expiry on purpose: an exception nobody owns",
+    "and that never expires cannot be told apart from a finding nobody intends to fix.",
+    "When a date passes, the finding comes back as `expired` and the check fails until",
+    "someone re-justifies it.",
+    "",
+    "All thirteen share one cause. Both findings compare the stored points against",
+    "something that only describes the *current* generation: the chunks endpoint lists",
+    "the active generation, and the knowledge-space check needs a stored copy carrying",
+    "metadata.knowledge_base_id. These documents were ingested before generation-scoped",
+    "writes existed, so their points carry no document_version_id, no generation_id and,",
+    "for the space-key cases, no metadata at all. The store keeps every generation by",
+    "design, so the legacy copy is expected to sit beside the current one rather than",
+    "under it. Rewriting those points would mean re-ingesting the documents, which",
+    "changes their doc_id and breaks every citation that names them."
+  ],
+  "entries": [
+    {
+      "kind": "citation_unverifiable",
+      "doc_id": "doc-1788331217639048684",
+      "reason": "legacy copy without a generation identity; the chunks endpoint lists the active generation only",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "citation_unverifiable",
+      "doc_id": "SEC-2024-001",
+      "reason": "legacy copy without a generation identity; the chunks endpoint lists the active generation only",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "citation_unverifiable",
+      "doc_id": "PM-2024-001",
+      "reason": "legacy copy without a generation identity; the chunks endpoint lists the active generation only",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "citation_unverifiable",
+      "doc_id": "PROC-2024-001",
+      "reason": "legacy copy without a generation identity; the chunks endpoint lists the active generation only",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "citation_unverifiable",
+      "doc_id": "FIN-2024-001",
+      "reason": "legacy copy without a generation identity; the chunks endpoint lists the active generation only",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "space_key_unset",
+      "doc_id": "doc-1787110042247074480",
+      "reason": "the only stored copy predates metadata.knowledge_base_id, so the vector branch cannot filter it into a space",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "space_key_unset",
+      "doc_id": "PUB-2024-002",
+      "reason": "the only stored copy predates metadata.knowledge_base_id, so the vector branch cannot filter it into a space",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "space_key_unset",
+      "doc_id": "PUB-2024-003",
+      "reason": "the only stored copy predates metadata.knowledge_base_id, so the vector branch cannot filter it into a space",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "space_key_unset",
+      "doc_id": "SEC-2024-001",
+      "reason": "the only stored copy predates metadata.knowledge_base_id, so the vector branch cannot filter it into a space",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "space_key_unset",
+      "doc_id": "PM-2024-001",
+      "reason": "the only stored copy predates metadata.knowledge_base_id, so the vector branch cannot filter it into a space",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "space_key_unset",
+      "doc_id": "PROC-2024-001",
+      "reason": "the only stored copy predates metadata.knowledge_base_id, so the vector branch cannot filter it into a space",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "space_key_unset",
+      "doc_id": "FIN-2024-001",
+      "reason": "the only stored copy predates metadata.knowledge_base_id, so the vector branch cannot filter it into a space",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "space_key_unset",
+      "doc_id": "HR-2024-003",
+      "reason": "the only stored copy predates metadata.knowledge_base_id, so the vector branch cannot filter it into a space",
+      "owner": "platform-team",
+      "expires": "2026-12-31"
+    }
+  ]
+}

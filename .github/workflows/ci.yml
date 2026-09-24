@@ -191,6 +191,113 @@ jobs:
           QUERY_API_HOST_PORT=0 \
           docker compose config > /dev/null
 
+  # Cross-layer index consistency.
+  #
+  # Four layers describe the same documents -- the registry (documents /
+  # index_manifests), the vectors (Qdrant), the full-text index
+  # (Elasticsearch) and the chunks endpoint the UI reads -- and nothing in this
+  # repository compares them. A published document can therefore be visible in
+  # one layer and invisible in another with no test, alert or reconcile job
+  # noticing; the manifest reconciler only covers documents that have a
+  # manifest row, so anything that never got one is outside its reach by
+  # construction.
+  #
+  # That is not hypothetical. On 2026-09-02 the Elasticsearch disk crossed the
+  # flood-stage watermark, the index was flipped to read-only-allow-delete and
+  # every write answered 429. The sink retried, exhausted its attempts, and
+  # moved the messages to `es:index:deadletter` -- a Redis list that only ever
+  # gets written to. Two published documents stayed invisible to keyword search
+  # for three weeks. `scripts/check-index-consistency.py` is what would have
+  # caught it; this job is what makes it run without a person remembering to.
+  #
+  # The check runs inside the compose network because docker-compose.eval.yml
+  # deliberately resets the backend ports to nothing (`ports: !reset []`), so
+  # Elasticsearch and Qdrant are not reachable from the runner. Only the query
+  # API is, on a random loopback port, which is enough to mint a token.
+  #
+  # NOT YET IN `required-checks`. The steps below are assembled from the same
+  # primitives the eval job uses, but this job has not been observed to run end
+  # to end -- the host this was written on cannot start the eval stack. Add it
+  # to `required-checks` only after a run has gone green.
+  index-consistency:
+    name: Cross-layer Index Consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Seed an isolated stack through the eval runner, which already knows how
+      # to bring the overlay up, create the eval users and publish documents.
+      # The rate floors are zeroed on purpose: this job measures layer
+      # agreement, not answer quality, and a red here should mean the layers
+      # disagree rather than that an answer drifted.
+      - name: Seed an isolated stack through the eval runner
+        env:
+          COMPOSE_FILE: docker-compose.yml:docker-compose.eval.yml
+          COMPOSE_PROJECT_NAME: ai-etl-consistency
+        run: |
+          python3 scripts/run-evals.py \
+            --keep-services \
+            --compose-project ai-etl-consistency \
+            --min-hit-rate 0 --min-pass-rate 0 \
+            --min-answer-pass-rate 0 --min-negative-pass-rate 0
+
+      - name: Mint an admin token
+        run: |
+          port="$(docker compose port query-api 8080 | head -1 | sed 's/.*://')"
+          if [ -z "$port" ]; then
+            echo "query-api has no published port; the stack did not come up" >&2
+            exit 1
+          fi
+          token="$(curl -fsS --noproxy '*' -X POST "http://127.0.0.1:${port}/v1/auth/login" \
+            -H 'Content-Type: application/json' \
+            -d "{\"username\":\"${BOOTSTRAP_ADMIN_USERNAME:-admin}\",\"password\":\"${BOOTSTRAP_ADMIN_PASSWORD:-admin}\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+          echo "::add-mask::${token}"
+          echo "AI_ETL_TOKEN=${token}" >> "$GITHUB_ENV"
+
+      - name: Read the store API key
+        run: |
+          key="$(docker compose exec -T qdrant cat /run/secrets/store_api_key | tr -d '\r\n')"
+          echo "::add-mask::${key}"
+          echo "QDRANT_API_KEY=${key}" >> "$GITHUB_ENV"
+
+      # No --baseline here on purpose. The baseline in scripts/ describes the
+      # long-running demo tenant, where a set of legacy points is known and
+      # attributed. This stack is built fresh by the step above, so every
+      # inconsistency it finds is a new one and the check should fail on it.
+      - name: Run the consistency check inside the compose network
+        run: |
+          mkdir -p artifacts/index-consistency
+          docker run --rm \
+            --network ai-etl-consistency_default \
+            -v "$PWD/scripts:/scripts:ro" \
+            -v "$PWD/artifacts/index-consistency:/reports" \
+            -e AI_ETL_TOKEN \
+            -e QDRANT_API_KEY \
+            python:3.12-alpine \
+            python /scripts/check-index-consistency.py \
+              --api-base http://query-api:8080 \
+              --es http://elasticsearch:9200 \
+              --qdrant http://qdrant:6333 \
+              --report-dir /reports
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-consistency-report
+          path: artifacts/index-consistency/
+          if-no-files-found: warn
+
+      - name: Tear down
+        if: always()
+        env:
+          COMPOSE_FILE: docker-compose.yml:docker-compose.eval.yml
+          COMPOSE_PROJECT_NAME: ai-etl-consistency
+        run: docker compose down -v --remove-orphans
+
   observability:
     name: Observability Config and Alert Tests
     runs-on: ubuntu-latest

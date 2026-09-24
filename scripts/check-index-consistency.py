@@ -40,11 +40,17 @@ duplicate_chunk_points  more than one stored point carries the same chunk_id *wi
                            Several points for one chunk id across *different*
                            generations is the design, not a finding.
 
-Exit status: 0 when every layer agrees, 1 when any finding is reported.
+Exit status: 0 when every finding is either absent or covered by an unexpired
+baseline entry, 1 when any finding is new or its baseline entry has expired, 2
+when the baseline itself cannot be read. The exit code answers "did this run
+learn something the previous run did not know", not "is the deployment
+perfect" -- a check that stays red for known reasons stops being read, and a
+check nobody reads is worse than no check.
 """
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import json
 import os
 import sys
@@ -418,6 +424,60 @@ def classify_payload_fields(doc_id, document, points):
     return findings
 
 
+def load_baseline(path):
+    """Known inconsistencies that are tolerated until they expire.
+
+    Keyed by (kind, doc_id) rather than by the finding's detail, because the
+    detail legitimately changes run to run -- a chunk id list grows, a count
+    moves by one -- while the thing being tolerated stays the same. Keying on
+    the detail would make every re-run report the same known issue as new.
+
+    An entry without an owner or an expiry is rejected rather than loaded. An
+    exception nobody owns and that never expires cannot be told apart from a
+    finding nobody intends to fix, which is the exact state this mechanism
+    exists to prevent.
+    """
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    entries = {}
+    for entry in payload.get("entries") or []:
+        kind = (entry.get("kind") or "").strip()
+        doc_id = (entry.get("doc_id") or "").strip()
+        owner = (entry.get("owner") or "").strip()
+        expires = (entry.get("expires") or "").strip()
+        if not kind or not doc_id:
+            raise ValueError(f"baseline entry needs both kind and doc_id: {entry!r}")
+        if not owner:
+            raise ValueError(f"baseline entry {kind}/{doc_id} has no owner")
+        if not expires:
+            raise ValueError(f"baseline entry {kind}/{doc_id} has no expiry")
+        entries[(kind, doc_id)] = entry
+    return entries
+
+
+def partition_findings(findings, baseline, today):
+    """Split findings into (new, expired, suppressed).
+
+    `today` is passed in rather than read from the clock so the rule is testable
+    and so a run can be replayed against a past date.
+
+    An entry whose expiry has passed stops suppressing: the finding moves to
+    `expired`, which fails the run. That is the whole point of an expiry -- a
+    tolerated inconsistency has to be re-justified, not merely re-declared.
+    """
+    new, expired, suppressed = [], [], []
+    for finding in findings:
+        entry = baseline.get((finding.get("kind"), finding.get("doc_id")))
+        if entry is None:
+            new.append(finding)
+            continue
+        if date.fromisoformat(entry["expires"]) < today:
+            expired.append(finding)
+            continue
+        suppressed.append(finding)
+    return new, expired, suppressed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-base", default=os.environ.get("AI_ETL_API", DEFAULT_API))
@@ -429,12 +489,25 @@ def main() -> int:
     parser.add_argument("--qdrant-key", default=os.environ.get("QDRANT_API_KEY", ""))
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--report-dir", default=DEFAULT_REPORT_DIR)
+    parser.add_argument(
+        "--baseline",
+        default=os.environ.get("AI_ETL_CONSISTENCY_BASELINE", ""),
+        help="JSON file of known inconsistencies to tolerate until they expire",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     if not args.token:
         print("AI_ETL_TOKEN (or --token) is required", file=sys.stderr)
         return 2
+
+    baseline = {}
+    if args.baseline:
+        try:
+            baseline = load_baseline(args.baseline)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            print(f"baseline could not be read: {error}", file=sys.stderr)
+            return 2
 
     documents = list_documents(args.api_base, args.token, args.limit)
     if not args.quiet:
@@ -470,10 +543,17 @@ def main() -> int:
     for finding in findings:
         by_kind.setdefault(finding["kind"], []).append(finding)
 
+    new_findings, expired_findings, suppressed = partition_findings(findings, baseline, date.today())
+
     if not args.quiet:
         print(f"documents checked: {checked}")
         for kind in sorted(by_kind):
             print(f"  {kind:<24} {len(by_kind[kind])}")
+        if baseline:
+            print(
+                f"baseline         : {len(baseline)} entries, "
+                f"{len(suppressed)} suppressed, {len(expired_findings)} expired"
+            )
 
     report = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -482,6 +562,14 @@ def main() -> int:
         "collection": args.collection,
         "documents_checked": checked,
         "counts": {kind: len(items) for kind, items in sorted(by_kind.items())},
+        "baseline": {
+            "path": args.baseline,
+            "entries": len(baseline),
+            "suppressed": len(suppressed),
+            "expired": len(expired_findings),
+        },
+        "new_findings": new_findings,
+        "expired_findings": expired_findings,
         "findings": findings,
     }
 
@@ -495,15 +583,19 @@ def main() -> int:
             print(f"report           : {path}")
 
     if not args.quiet:
-        for finding in findings:
-            print(f"  - [{finding['kind']}] {finding['doc_id']} {finding.get('file_name', '')}")
-            if finding.get("hidden_chunk_ids"):
-                print(f"      hidden: {finding['hidden_chunk_ids']}")
-            for key in ("unset_chunk_ids", "drifted_chunk_ids", "duplicated_chunk_ids"):
-                if finding.get(key):
-                    print(f"      {key}: {finding[key][:8]}")
+        for label, items in (("new", new_findings), ("expired", expired_findings), ("tolerated", suppressed)):
+            if not items:
+                continue
+            print(f"  {label}:")
+            for finding in items:
+                print(f"    - [{finding['kind']}] {finding['doc_id']} {finding.get('file_name', '')}")
+                if finding.get("hidden_chunk_ids"):
+                    print(f"        hidden: {finding['hidden_chunk_ids']}")
+                for key in ("unset_chunk_ids", "drifted_chunk_ids", "duplicated_chunk_ids"):
+                    if finding.get(key):
+                        print(f"        {key}: {finding[key][:8]}")
 
-    return 1 if findings else 0
+    return 1 if (new_findings or expired_findings) else 0
 
 
 if __name__ == "__main__":

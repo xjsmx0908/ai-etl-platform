@@ -49,6 +49,9 @@ docs/evals/private/*
 /artifacts/release-center-review-recovery-acceptance/
 /artifacts/release-center-real-model-scenarios-acceptance/
 /artifacts/product-experience-acceptance/
+# Cross-layer consistency reports: one file per run, named by timestamp, so
+# committing them would add a new file every time the check runs.
+/artifacts/index-consistency/
 
 # Real enterprise documents supplied for local-only evaluation
 rag_datas/
