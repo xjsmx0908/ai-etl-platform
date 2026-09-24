@@ -16,7 +16,25 @@ import (
 
 const (
 	queueOpIndex = "index"
+
+	// defaultDeadLetterMax bounds the dead-letter list. The number is a size
+	// decision, not a round one: a measured dead-letter entry is ~25KB because
+	// RetryMessage embeds the whole chunk *including its embedding vector*
+	// (90 entries measured at 2.1MB on the deployed stack), so 2000 entries is
+	// about 50MB - roughly a tenth of the 512MB Redis instance they share with
+	// the retry queue, the ingestion checkpoints, the job leases and the outbox.
+	defaultDeadLetterMax = 2000
 )
+
+// DeadLetterStats reports the dead-letter queue as it stands after one write.
+type DeadLetterStats struct {
+	// Depth is how many entries are retained, after the write and the trim.
+	Depth int64
+	// Dropped is how many of the oldest entries this write had to discard to
+	// stay within the cap. Anything above zero means diagnostic records were
+	// lost, and it is the only place that loss is visible.
+	Dropped int64
+}
 
 // RetryMessage represents one full-text indexing retry job.
 type RetryMessage struct {
@@ -33,7 +51,8 @@ type RetryMessage struct {
 type RetryQueue interface {
 	Enqueue(ctx context.Context, msg RetryMessage) error
 	Pop(ctx context.Context, block time.Duration) (RetryMessage, bool, error)
-	EnqueueDeadLetter(ctx context.Context, msg RetryMessage) error
+	EnqueueDeadLetter(ctx context.Context, msg RetryMessage) (DeadLetterStats, error)
+	DeadLetterDepth(ctx context.Context) (int64, error)
 	Close() error
 }
 
@@ -42,6 +61,7 @@ type RedisRetryQueue struct {
 	client        *redis.Client
 	key           string
 	deadLetterKey string
+	deadLetterMax int
 	pollInterval  time.Duration
 }
 
@@ -50,6 +70,7 @@ func NewRedisRetryQueue(
 	addr, password string,
 	db int,
 	key, deadLetterKey string,
+	deadLetterMax int,
 	pollInterval time.Duration,
 ) (*RedisRetryQueue, error) {
 	if key == "" {
@@ -57,6 +78,9 @@ func NewRedisRetryQueue(
 	}
 	if deadLetterKey == "" {
 		return nil, fmt.Errorf("es dead-letter queue key is required")
+	}
+	if deadLetterMax <= 0 {
+		deadLetterMax = defaultDeadLetterMax
 	}
 	if pollInterval <= 0 {
 		pollInterval = 500 * time.Millisecond
@@ -81,6 +105,7 @@ func NewRedisRetryQueue(
 		client:        client,
 		key:           key,
 		deadLetterKey: deadLetterKey,
+		deadLetterMax: deadLetterMax,
 		pollInterval:  pollInterval,
 	}, nil
 }
@@ -201,16 +226,51 @@ func memberToString(member interface{}) string {
 	}
 }
 
-// EnqueueDeadLetter stores permanently failed retry messages.
-func (q *RedisRetryQueue) EnqueueDeadLetter(ctx context.Context, msg RetryMessage) error {
+// EnqueueDeadLetter stores permanently failed retry messages, keeping only the
+// newest deadLetterMax entries.
+//
+// The cap is not tidiness. This list shares one Redis instance with the retry
+// queue, the ingestion checkpoints, the job leases and the outbox, and that
+// instance runs with maxmemory-policy=noeviction - so an unbounded list does not
+// fail on its own, it fills the instance until *every* write fails and ingestion
+// stops with it. The scenario that fills it is the same one that created the
+// entries: ES rejecting writes for long enough that chunks exhaust their retries.
+func (q *RedisRetryQueue) EnqueueDeadLetter(ctx context.Context, msg RetryMessage) (DeadLetterStats, error) {
+	var stats DeadLetterStats
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return fmt.Errorf("marshal es dead-letter message: %w", err)
+		return stats, fmt.Errorf("marshal es dead-letter message: %w", err)
 	}
-	if err := q.client.RPush(ctx, q.deadLetterKey, data).Err(); err != nil {
-		return fmt.Errorf("redis rpush es dead-letter message: %w", err)
+	// Push, read the length and trim in one round trip: three separate calls
+	// would be three chances to leave the list over its cap if one of them
+	// failed, and this path runs while ES is already unhealthy.
+	pipe := q.client.Pipeline()
+	pipe.RPush(ctx, q.deadLetterKey, data)
+	depthCmd := pipe.LLen(ctx, q.deadLetterKey)
+	// LTRIM with a negative start counts from the tail, so -max..-1 keeps
+	// exactly the newest max entries. A shorter list is left alone.
+	pipe.LTrim(ctx, q.deadLetterKey, int64(-q.deadLetterMax), -1)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return stats, fmt.Errorf("redis push es dead-letter message: %w", err)
 	}
-	return nil
+	stats.Depth = depthCmd.Val()
+	if stats.Depth > int64(q.deadLetterMax) {
+		stats.Dropped = stats.Depth - int64(q.deadLetterMax)
+		stats.Depth = int64(q.deadLetterMax)
+	}
+	return stats, nil
+}
+
+// DeadLetterDepth reports the current number of retained entries. It exists so
+// the depth gauge can be seeded at startup: without that the series would appear
+// only once something had already gone wrong, and a panel asking "how many are
+// stuck" would read as zero until the first failure.
+func (q *RedisRetryQueue) DeadLetterDepth(ctx context.Context) (int64, error) {
+	depth, err := q.client.LLen(ctx, q.deadLetterKey).Result()
+	if err != nil {
+		return 0, fmt.Errorf("redis llen es dead-letter: %w", err)
+	}
+	return depth, nil
 }
 
 // Close closes Redis client.
@@ -225,10 +285,11 @@ type memoryRetryItem struct {
 
 // MemoryRetryQueue is in-memory queue for tests/dev with delayed retry support.
 type MemoryRetryQueue struct {
-	mu          sync.Mutex
-	closed      bool
-	items       []memoryRetryItem
-	deadLetters []RetryMessage
+	mu            sync.Mutex
+	closed        bool
+	items         []memoryRetryItem
+	deadLetters   []RetryMessage
+	deadLetterMax int
 }
 
 // NewMemoryRetryQueue creates an in-memory retry queue.
@@ -237,8 +298,19 @@ func NewMemoryRetryQueue(size int) *MemoryRetryQueue {
 		size = 100
 	}
 	return &MemoryRetryQueue{
-		items: make([]memoryRetryItem, 0, size),
+		items:         make([]memoryRetryItem, 0, size),
+		deadLetterMax: defaultDeadLetterMax,
 	}
+}
+
+// WithDeadLetterMax overrides the dead-letter cap. The Redis queue takes it from
+// configuration; the in-memory queue is test/dev only, so it carries the default
+// and this exists so a test can drive the trim without 2000 pushes.
+func (q *MemoryRetryQueue) WithDeadLetterMax(max int) *MemoryRetryQueue {
+	if max > 0 {
+		q.deadLetterMax = max
+	}
+	return q
 }
 
 // Enqueue pushes message into memory queue.
@@ -319,14 +391,31 @@ func (q *MemoryRetryQueue) Pop(ctx context.Context, block time.Duration) (RetryM
 }
 
 // EnqueueDeadLetter stores message in dead-letter bucket for inspection in tests.
-func (q *MemoryRetryQueue) EnqueueDeadLetter(_ context.Context, msg RetryMessage) error {
+// It applies the same retention rule as the Redis queue so a test that drives
+// the trim exercises the real semantics rather than a simplified copy.
+func (q *MemoryRetryQueue) EnqueueDeadLetter(_ context.Context, msg RetryMessage) (DeadLetterStats, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
-		return fmt.Errorf("memory retry queue closed")
+		return DeadLetterStats{}, fmt.Errorf("memory retry queue closed")
 	}
 	q.deadLetters = append(q.deadLetters, msg)
-	return nil
+	var stats DeadLetterStats
+	if over := len(q.deadLetters) - q.deadLetterMax; over > 0 {
+		// Drop from the front: the newest entries describe the incident that is
+		// still happening, the oldest describe one that is over.
+		q.deadLetters = append([]RetryMessage(nil), q.deadLetters[over:]...)
+		stats.Dropped = int64(over)
+	}
+	stats.Depth = int64(len(q.deadLetters))
+	return stats, nil
+}
+
+// DeadLetterDepth reports the retained dead-letter count.
+func (q *MemoryRetryQueue) DeadLetterDepth(_ context.Context) (int64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return int64(len(q.deadLetters)), nil
 }
 
 // DeadLetters returns a copy of dead-letter messages (test helper).

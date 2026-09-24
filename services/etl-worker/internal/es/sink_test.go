@@ -103,6 +103,7 @@ func TestAsyncSink_Enqueue_WhenQueueFails_ReturnsError(t *testing.T) {
 
 type queueStub struct {
 	enqueueErr error
+	deadLetter DeadLetterStats
 }
 
 func (q *queueStub) Enqueue(_ context.Context, _ RetryMessage) error {
@@ -111,8 +112,11 @@ func (q *queueStub) Enqueue(_ context.Context, _ RetryMessage) error {
 func (q *queueStub) Pop(context.Context, time.Duration) (RetryMessage, bool, error) {
 	return RetryMessage{}, false, nil
 }
-func (q *queueStub) EnqueueDeadLetter(context.Context, RetryMessage) error {
-	return nil
+func (q *queueStub) EnqueueDeadLetter(context.Context, RetryMessage) (DeadLetterStats, error) {
+	return q.deadLetter, nil
+}
+func (q *queueStub) DeadLetterDepth(context.Context) (int64, error) {
+	return q.deadLetter.Depth, nil
 }
 func (q *queueStub) Close() error {
 	return nil
@@ -185,7 +189,7 @@ func TestAsyncSink_DeadLetterHookFires(t *testing.T) {
 	defer sink.Close()
 
 	var hookCalls int32
-	sink.SetDeadLetterHook(func() {
+	sink.SetDeadLetterHook(func(DeadLetterStats) {
 		atomic.AddInt32(&hookCalls, 1)
 	})
 
@@ -220,5 +224,47 @@ func TestIsRetryableError(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("isRetryableError(%q)=%v want %v", tc.err, got, tc.want)
 		}
+	}
+}
+
+// TestPushDeadLetterForwardsQueueStatsToHook closes the last link in the chain
+// from the queue to the metrics. The hook is the only path those numbers take,
+// so a hook that fires without them leaves the depth gauge and the dropped
+// counter at zero forever - the same shape of defect as a counter nobody feeds.
+func TestPushDeadLetterForwardsQueueStatsToHook(t *testing.T) {
+	// A real indexer rather than nil: NewAsyncSink starts the replay loop and
+	// Close() closes the indexer, so a nil one panics on shutdown and would make
+	// this test pass or fail for reasons unrelated to the hook.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	idx, err := NewHTTPIndexer(srv.URL, "", "documents_text")
+	if err != nil {
+		t.Fatalf("new indexer: %v", err)
+	}
+
+	stub := &queueStub{deadLetter: DeadLetterStats{Depth: 7, Dropped: 2}}
+	sink := NewAsyncSink(idx, stub, time.Second, 1, time.Millisecond, time.Millisecond, 0)
+	defer sink.Close()
+
+	var (
+		calls int
+		got   DeadLetterStats
+	)
+	sink.SetDeadLetterHook(func(stats DeadLetterStats) {
+		calls++
+		got = stats
+	})
+
+	if err := sink.pushDeadLetter(context.Background(), RetryMessage{Op: queueOpIndex, Chunk: model.Chunk{ChunkID: "c1"}}); err != nil {
+		t.Fatalf("pushDeadLetter: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("hook called %d times, want 1", calls)
+	}
+	if got.Depth != 7 || got.Dropped != 2 {
+		t.Fatalf("hook received %+v, want {Depth:7 Dropped:2}", got)
 	}
 }

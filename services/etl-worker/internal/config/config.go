@@ -78,12 +78,19 @@ type Config struct {
 	StoreCollection string
 
 	// Elasticsearch (eventual consistency full-text index)
-	ESAddress          string
-	ESAPIKey           string
-	ESIndex            string
-	ESIndexReplicas    int
-	ESQueueKey         string
-	ESDeadLetterKey    string
+	ESAddress       string
+	ESAPIKey        string
+	ESIndex         string
+	ESIndexReplicas int
+	ESQueueKey      string
+	ESDeadLetterKey string
+	// ESDeadLetterMax caps the dead-letter list. It is a size decision rather
+	// than a policy one: a measured entry is ~25KB (the message embeds the chunk
+	// and its embedding vector), the list shares a 512MB noeviction Redis with
+	// the retry queue, the checkpoints, the leases and the outbox, and an
+	// unbounded list does not fail on its own - it fills the instance until
+	// every write fails and ingestion stops with it.
+	ESDeadLetterMax    int
 	ESReplayPeriod     time.Duration
 	ESMaxRetries       int
 	ESRetryBaseBackoff time.Duration
@@ -368,6 +375,7 @@ func Load() Config {
 		ESIndexReplicas:    EnvInt("ES_INDEX_REPLICAS", 0),
 		ESQueueKey:         EnvStr("ES_QUEUE_KEY", "es:index:retry"),
 		ESDeadLetterKey:    EnvStr("ES_DEADLETTER_KEY", "es:index:deadletter"),
+		ESDeadLetterMax:    EnvInt("ES_DEADLETTER_MAX", 2000),
 		ESReplayPeriod:     EnvDuration("ES_REPLAY_PERIOD", 2*time.Second),
 		ESMaxRetries:       EnvInt("ES_MAX_RETRIES", 12),
 		ESRetryBaseBackoff: EnvDuration("ES_RETRY_BASE_BACKOFF", 2*time.Second),
@@ -617,6 +625,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.ESDeadLetterKey) == "" {
 		return fmt.Errorf("ES_DEADLETTER_KEY is required")
+	}
+	if c.ESDeadLetterMax <= 0 {
+		return fmt.Errorf("ES_DEADLETTER_MAX must be > 0, got %d", c.ESDeadLetterMax)
 	}
 	if c.ESRetryBaseBackoff <= 0 {
 		return fmt.Errorf("ES_RETRY_BASE_BACKOFF must be > 0, got %s", c.ESRetryBaseBackoff)

@@ -41,14 +41,22 @@ type AsyncSink struct {
 	wg       sync.WaitGroup
 
 	// onDeadLetter is invoked (non-blocking) whenever a chunk moves to the
-	// dead-letter set, so callers can count it in metrics/alerting.
-	onDeadLetter func()
+	// dead-letter set, carrying the queue depth and how many entries retention
+	// had to discard, so callers can publish both in metrics/alerting.
+	onDeadLetter func(stats DeadLetterStats)
 }
 
 // SetDeadLetterHook registers a callback invoked when a chunk is dropped to
 // the ES dead-letter set. Used to surface Qdrant/ES divergence in metrics.
-func (s *AsyncSink) SetDeadLetterHook(fn func()) {
+func (s *AsyncSink) SetDeadLetterHook(fn func(stats DeadLetterStats)) {
 	s.onDeadLetter = fn
+}
+
+// DeadLetterDepth reports how many entries the dead-letter list currently holds.
+// Exposed so the owning process can seed its depth gauge at startup instead of
+// leaving the series absent until the first failure.
+func (s *AsyncSink) DeadLetterDepth(ctx context.Context) (int64, error) {
+	return s.queue.DeadLetterDepth(ctx)
 }
 
 // NewAsyncSink builds sink and starts replay worker.
@@ -248,15 +256,24 @@ func (s *AsyncSink) randFloat64() float64 {
 func (s *AsyncSink) pushDeadLetter(ctx context.Context, msg RetryMessage) error {
 	dlqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := s.queue.EnqueueDeadLetter(dlqCtx, msg); err != nil {
+	stats, err := s.queue.EnqueueDeadLetter(dlqCtx, msg)
+	if err != nil {
 		slog.Error("es dead-letter enqueue failed",
 			"chunk_id", msg.Chunk.ChunkID, "doc_id", msg.Chunk.DocID, "retry", msg.Retry, "error", err)
 		return err
 	}
 	slog.Warn("es message moved to dead-letter",
-		"chunk_id", msg.Chunk.ChunkID, "doc_id", msg.Chunk.DocID, "retry", msg.Retry)
+		"chunk_id", msg.Chunk.ChunkID, "doc_id", msg.Chunk.DocID, "retry", msg.Retry,
+		"dead_letter_depth", stats.Depth)
+	if stats.Dropped > 0 {
+		// Discarding a diagnostic record is itself an event: it means the cap is
+		// too small for the incident in progress, and the entries that would
+		// explain it are the ones being thrown away.
+		slog.Error("es dead-letter queue at capacity, oldest entries discarded",
+			"dropped", stats.Dropped, "dead_letter_depth", stats.Depth)
+	}
 	if s.onDeadLetter != nil {
-		s.onDeadLetter()
+		s.onDeadLetter(stats)
 	}
 	return nil
 }

@@ -82,6 +82,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ESDeadLetterKey != "es:index:deadletter" {
 		t.Errorf("expected ESDeadLetterKey default, got %s", cfg.ESDeadLetterKey)
 	}
+	// The cap must have a default: zero would mean "unbounded" to the queue, and
+	// the list shares a 512MB noeviction Redis with the retry queue, the
+	// checkpoints and the leases.
+	if cfg.ESDeadLetterMax != 2000 {
+		t.Errorf("expected ESDeadLetterMax=2000, got %d", cfg.ESDeadLetterMax)
+	}
 	if cfg.ESReplayPeriod != 2*time.Second {
 		t.Errorf("expected ESReplayPeriod=2s, got %v", cfg.ESReplayPeriod)
 	}
@@ -222,6 +228,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("ES_INDEX", "docs_v2")
 	os.Setenv("ES_QUEUE_KEY", "es:retry:v2")
 	os.Setenv("ES_DEADLETTER_KEY", "es:dead:v2")
+	os.Setenv("ES_DEADLETTER_MAX", "500")
 	os.Setenv("ES_REPLAY_PERIOD", "5s")
 	os.Setenv("ES_MAX_RETRIES", "20")
 	os.Setenv("ES_RETRY_BASE_BACKOFF", "3s")
@@ -279,6 +286,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("ES_INDEX")
 		os.Unsetenv("ES_QUEUE_KEY")
 		os.Unsetenv("ES_DEADLETTER_KEY")
+		os.Unsetenv("ES_DEADLETTER_MAX")
 		os.Unsetenv("ES_REPLAY_PERIOD")
 		os.Unsetenv("ES_MAX_RETRIES")
 		os.Unsetenv("ES_RETRY_BASE_BACKOFF")
@@ -357,6 +365,9 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.ESDeadLetterKey != "es:dead:v2" {
 		t.Errorf("expected ESDeadLetterKey override, got %s", cfg.ESDeadLetterKey)
+	}
+	if cfg.ESDeadLetterMax != 500 {
+		t.Errorf("expected ESDeadLetterMax override 500, got %d", cfg.ESDeadLetterMax)
 	}
 	if cfg.ESReplayPeriod != 5*time.Second {
 		t.Errorf("expected ESReplayPeriod=5s, got %v", cfg.ESReplayPeriod)
@@ -677,6 +688,17 @@ func TestValidate_ESReplayPeriodAndRetries(t *testing.T) {
 	cfg.ESMaxRetries = 0
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for ESMaxRetries < 1")
+	}
+
+	// A non-positive cap is not "unlimited" - the queue treats <= 0 as "use the
+	// default", so accepting it here would let a typo in the deployment silently
+	// pick a different retention than the one on the config sheet.
+	for _, max := range []int{0, -1} {
+		cfg = Load()
+		cfg.ESDeadLetterMax = max
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("expected error for ESDeadLetterMax=%d", max)
+		}
 	}
 
 	cfg = Load()

@@ -118,9 +118,18 @@ func main() {
 	}
 	// Surface Qdrant/ES divergence: a chunk reaching ES dead-letter means the
 	// vector store has it but the full-text index never will.
-	fullTextSink.SetDeadLetterHook(func() {
+	fullTextSink.SetDeadLetterHook(func(stats es.DeadLetterStats) {
 		prom.ESDeadLetter.WithLabelValues("es").Inc()
+		prom.SetDeadLetterState(stats.Depth, stats.Dropped)
 	})
+	// Seed the depth gauge from the queue rather than leaving it unset: a
+	// dead-letter list still holding entries from an earlier incident must not
+	// read as zero until the next one arrives.
+	if depth, depthErr := fullTextSink.DeadLetterDepth(context.Background()); depthErr != nil {
+		slog.Warn("could not read es dead-letter depth at startup", "error", depthErr)
+	} else {
+		prom.SetDeadLetterState(depth, 0)
+	}
 	defer func() {
 		if fullTextSink != nil {
 			_ = fullTextSink.Close()
@@ -438,6 +447,7 @@ func newFullTextSink(cfg config.Config) (*es.AsyncSink, error) {
 		cfg.RedisStateDB,
 		cfg.ESQueueKey,
 		cfg.ESDeadLetterKey,
+		cfg.ESDeadLetterMax,
 		cfg.ESReplayPeriod,
 	)
 	if err != nil {

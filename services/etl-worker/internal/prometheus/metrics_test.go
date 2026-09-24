@@ -422,3 +422,42 @@ func TestQueryMetricsSkipUnmeasuredValuesAndNormalizeLabels(t *testing.T) {
 		t.Fatalf("normalized failures = %v, want 1", got)
 	}
 }
+
+func TestSetDeadLetterStateSetsDepthAndAccumulatesDrops(t *testing.T) {
+	m := New("ai_etl_dlq_metrics")
+
+	// The startup seed: depth read from the queue, nothing discarded.
+	m.SetDeadLetterState(90, 0)
+	if got := gaugeValue(t, m.ESDeadLetterDepth); got != 90 {
+		t.Fatalf("depth = %v, want 90", got)
+	}
+	if got := counterValue(t, m.ESDeadLetterDropped); got != 0 {
+		t.Fatalf("dropped = %v, want 0", got)
+	}
+
+	// A negative depth means "not measured" - the read failed. Setting the gauge
+	// to it would be rejected by Prometheus, and setting it to 0 would claim an
+	// empty queue during the outage that made the read fail.
+	m.SetDeadLetterState(-1, 0)
+	if got := gaugeValue(t, m.ESDeadLetterDepth); got != 90 {
+		t.Fatalf("depth after a failed read = %v, want the previous 90", got)
+	}
+
+	// Dropped is per write and the counter accumulates, so two discarding writes
+	// of 2 and 3 entries must leave 5 - the sum is the loss that no other series
+	// reports.
+	m.SetDeadLetterState(2000, 2)
+	m.SetDeadLetterState(2000, 3)
+	if got := counterValue(t, m.ESDeadLetterDropped); got != 5 {
+		t.Fatalf("dropped = %v, want 5", got)
+	}
+	if got := gaugeValue(t, m.ESDeadLetterDepth); got != 2000 {
+		t.Fatalf("depth = %v, want 2000 (the cap)", got)
+	}
+
+	// A write that fits must not move the counter.
+	m.SetDeadLetterState(1999, 0)
+	if got := counterValue(t, m.ESDeadLetterDropped); got != 5 {
+		t.Fatalf("dropped after a non-discarding write = %v, want 5", got)
+	}
+}

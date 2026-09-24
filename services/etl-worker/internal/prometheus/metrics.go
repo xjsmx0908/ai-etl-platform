@@ -51,7 +51,17 @@ type Metrics struct {
 	DLQMessages           *prometheus.CounterVec
 	// ESDeadLetter counts chunks that permanently failed ES indexing. Non-zero
 	// means Qdrant and ES are silently diverging — alert on it.
-	ESDeadLetter             *prometheus.CounterVec
+	ESDeadLetter *prometheus.CounterVec
+	// ESDeadLetterDepth is how many entries the dead-letter list currently
+	// holds. The counter above only ever goes up, so it cannot answer "how much
+	// is stuck right now" — which is the question an operator asks during an
+	// outage, and the one that says whether the cap is about to start
+	// discarding records.
+	ESDeadLetterDepth prometheus.Gauge
+	// ESDeadLetterDropped counts dead-letter entries discarded to stay within
+	// the cap. Any increase is real loss of diagnostic records: it means the
+	// incident outgrew the buffer, so the oldest evidence is gone.
+	ESDeadLetterDropped      prometheus.Counter
 	IngestionOutboxPending   prometheus.Gauge
 	IngestionOutboxRetried   prometheus.Gauge
 	IngestionOutboxOldestAge prometheus.Gauge
@@ -197,6 +207,18 @@ func New(namespace string) *Metrics {
 			},
 			[]string{"reason"},
 		),
+		ESDeadLetterDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: "es",
+			Name:      "deadletter_depth",
+			Help:      "Dead-letter entries currently retained",
+		}),
+		ESDeadLetterDropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "es",
+			Name:      "deadletter_dropped_total",
+			Help:      "Dead-letter entries discarded to stay within the retention cap",
+		}),
 		IngestionOutboxPending: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace, Subsystem: "ingestion", Name: "outbox_pending",
 			Help: "Committed ingestion outbox events not yet published to Kafka",
@@ -443,6 +465,8 @@ func New(namespace string) *Metrics {
 		m.StoreFailures,
 		m.DLQMessages,
 		m.ESDeadLetter,
+		m.ESDeadLetterDepth,
+		m.ESDeadLetterDropped,
 		m.IngestionOutboxPending,
 		m.IngestionOutboxRetried,
 		m.IngestionOutboxOldestAge,
@@ -522,6 +546,25 @@ func (m *Metrics) SetNotificationOperations(pending, retried int, oldestAge time
 	m.NotificationOutboxPending.Set(float64(pending))
 	m.NotificationOutboxRetried.Set(float64(retried))
 	m.NotificationOutboxOldestAge.Set(nonNegativeDuration(oldestAge).Seconds())
+}
+
+// SetDeadLetterState publishes the ES dead-letter queue's depth and how many
+// entries were just discarded to stay within its cap.
+//
+// Both numbers come from the queue itself rather than from a local count, so
+// they cannot drift from what is actually stored. The depth gauge is also seeded
+// from the queue at startup, which is why it has a series before the first
+// failure instead of appearing only once something has gone wrong.
+func (m *Metrics) SetDeadLetterState(depth, dropped int64) {
+	if m == nil {
+		return
+	}
+	if depth >= 0 {
+		m.ESDeadLetterDepth.Set(float64(depth))
+	}
+	if dropped > 0 {
+		m.ESDeadLetterDropped.Add(float64(dropped))
+	}
 }
 
 func (m *Metrics) SetIngestionOperations(pending, retried int, oldestAge time.Duration, jobs map[string]int, expiredLeases int) {

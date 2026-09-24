@@ -37,6 +37,28 @@ groups:
             full-text index. Query results may silently miss full-text hits.
             Investigate ES connectivity and consider re-indexing affected docs.
 
+      # Deliberately no `for`: a drop is irreversible loss of the only record of
+      # which chunks never reached the full-text index, so waiting out a 15m
+      # window only delays the page. ESDeadLetterNonZero above says chunks are
+      # failing; this says the buffer holding them has overflowed and is now
+      # discarding the oldest evidence.
+      #
+      # There is no threshold alert on ai_etl_es_deadletter_depth on purpose.
+      # Nothing consumes that list by design, so a non-zero depth is a standing
+      # backlog rather than an event - an alert on it would fire forever and be
+      # tuned out. Depth belongs on the panel; this counter is the pageable one.
+      - alert: ESDeadLetterDropped
+        expr: increase(ai_etl_es_deadletter_dropped_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: ES dead-letter queue overflowed and discarded diagnostic records
+          description: >-
+            The dead-letter list reached ES_DEADLETTER_MAX and trimmed its oldest
+            entries, so part of the record of what failed to index is gone. Raise
+            the cap, or fix the ES outage that is producing the entries, before
+            the list fills again.
+
       - alert: IngestionOutboxStalled
         expr: max(ai_etl_ingestion_outbox_oldest_age_seconds) > 300
         for: 10m
