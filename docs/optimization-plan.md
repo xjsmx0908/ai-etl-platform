@@ -1642,6 +1642,14 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
   两个切块器的单测（旧代码红 → 新代码绿）、线上端到端切块断言、以及一次针对性的检索断言
   （证据含完整关键句、答案完整生成）。**这三条都不等价于 47 条黄金集的 Recall 数字**，
   所以这一项如实记为未验证。
+- **跨层对账（`scripts/check-index-consistency.py`）没有接进 CI 或验收族，接入方式待决策**。
+  现有的 CI / 验收脚本（`e2e-smoke.sh`、`governance-acceptance.sh`、`release-center-*-acceptance.sh`）
+  一律叠 `docker-compose.eval.yml`，而它对 `postgres` / `qdrant` / `elasticsearch` 都是 `ports: !reset []`
+  —— **刻意把后端宿主端口收起来**（免得隔离栈和演示栈抢端口）；对账脚本要同时读 Postgres / Qdrant / ES / 端点
+  四层，因此不能直接塞进这些 job。两条可选路径：① 让脚本在 compose 网络内运行（走 `docker compose exec`）；
+  ② 加一个只为该 job 暴露端口的 compose 覆盖 + 新 workflow。**两条都无法在本机端到端验证**
+  （`e2e-smoke.yml` 是 `workflow_dispatch` / `workflow_call`，本机没有 `gh`，也没有别的入口在 Actions 上真跑一次），
+  所以没有先写上去 —— 避免出现一个没人跑过、只在 CI 里红的步骤。
 - **§4.1 邀请式自助开户：实现过，已撤回**。产品方在 2026-09-22 明确否决。完整切片在分支
   `invite-onboarding`（`24388f6`），未进 `master`；库里新建的 `user_invites` 表已 `DROP`、
   `schema_migrations` 里那一行已删除。**主线上的 `CONTINUATION.md §4` 那条断言因此仍然成立**：
