@@ -58,6 +58,7 @@ export async function consumeQuerySSEStream<TSource = unknown, TMeta = { duratio
             sources: payload.sources,
             citations: payload.citations,
             ttft: payload.ttft,
+            refusal_reason: payload.refusal_reason,
           } as TMeta);
           return "done";
         case "error":

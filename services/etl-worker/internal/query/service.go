@@ -182,6 +182,11 @@ type queryStream struct {
 // Response represents the query result returned to the client.
 type Response struct {
 	Answer string `json:"answer"`
+	// RefusalReason is set only when Answer is a refusal, and names which of the
+	// Refusal* reasons produced it. It exists so a caller can act on the cause
+	// (ask for access, publish the document, rephrase) without parsing prose.
+	// Empty means the answer is a real answer.
+	RefusalReason string `json:"refusal_reason,omitempty"`
 	// Sources is the legacy name for all retrieved evidence. New clients should
 	// use RetrievedSources and Citations so evidence considered by the model is
 	// never presented as if the answer actually cited it.
@@ -302,10 +307,78 @@ type AccessContext struct {
 	Role     string
 }
 
-// NoEvidenceAnswer is returned when retrieval yields no sufficiently relevant
-// evidence. Callers and evals treat it as an explicit refusal rather than an answer.
+// NoEvidenceAnswer is the sentence the *system prompt* asks the model to reply
+// with when the reference documents cannot answer the question. It is also the
+// canonical form any model-authored refusal is normalised to. It is NOT
+// necessarily the sentence the caller receives: once the system knows *why* it
+// is refusing, it answers with the matching reason-specific sentence below —
+// telling a user "no related documents found" when a document exists but is
+// unpublished or outside their access scope sends them off to create a
+// duplicate of something they already have.
 const NoEvidenceAnswer = "未找到相关文档，无法回答该问题。"
 
+// Refusal reasons are the machine-readable counterpart of the refusal sentence.
+// Callers branch on this instead of parsing Chinese prose; the UI renders the
+// sentence that goes with it.
+const (
+	// RefusalNoEvidence: retrieval returned nothing usable. The system cannot
+	// separate "the corpus does not have it" from "it is outside your access
+	// scope", because permission filtering happens inside the search backends
+	// and reports no count — so the sentence names both possibilities instead of
+	// asserting the document does not exist.
+	RefusalNoEvidence = "no_evidence"
+	// RefusalExactEvidenceMissing: the question carried a strong identifier
+	// (contract/order/ticket id) that no surviving candidate contained.
+	RefusalExactEvidenceMissing = "exact_evidence_missing"
+	// RefusalEvidenceFiltered: documents matched, but the publish-state or
+	// governance filters removed every one of them.
+	RefusalEvidenceFiltered = "evidence_filtered"
+	// RefusalInsufficientSupport: candidates survived, but the model refused, or
+	// the post-generation verifier found the answer unsupported by them.
+	RefusalInsufficientSupport = "insufficient_support"
+	// RefusalSensitiveContent: the generated answer matched credential-like
+	// patterns and was withheld.
+	RefusalSensitiveContent = "sensitive_content"
+)
+
+// refusalAnswers maps a reason to the sentence the caller receives. Every
+// reason a caller can see must be listed here; refusalAnswer falls back to the
+// canonical sentence so an unmapped reason can never ship an empty answer.
+var refusalAnswers = map[string]string{
+	RefusalNoEvidence:           "未找到可用的相关文档。可能尚未收录，也可能不在你的访问范围内。",
+	RefusalExactEvidenceMissing: "未找到与该标识符匹配的文档。请确认编号是否正确，或该文档是否已入库。",
+	RefusalEvidenceFiltered:     "找到了相关文档，但它尚未发布或已被取代，当前不能作为回答依据。",
+	RefusalInsufficientSupport:  "找到了相关文档，但其中内容不足以支撑这个问题的回答。",
+	RefusalSensitiveContent:     SensitiveAnswerRefusal,
+}
+
+// refusalAnswer returns the sentence for a reason, falling back to the canonical
+// sentence for an unknown or empty reason.
+func refusalAnswer(reason string) string {
+	if answer, ok := refusalAnswers[reason]; ok {
+		return answer
+	}
+	return NoEvidenceAnswer
+}
+
+// isRefusalAnswer reports whether a sentence is one this package emits as a
+// refusal — the canonical one, or any reason-specific one. Used by the streaming
+// path to decide whether the buffered text must be replaced, and by callers that
+// only have the text.
+func isRefusalAnswer(answer string) bool {
+	trimmed := strings.TrimSpace(answer)
+	for _, candidate := range refusalAnswers {
+		if trimmed == candidate {
+			return true
+		}
+	}
+	return trimmed == NoEvidenceAnswer
+}
+
+// refusalMarkers are substrings that mean the *model* wrote a refusal of its
+// own. They are deliberately loose (the model paraphrases), which is why they
+// must not be used to recognise the sentences this package emits — those are
+// matched exactly by isRefusalAnswer.
 var refusalMarkers = []string{
 	NoEvidenceAnswer,
 	"未找到相关文档",
@@ -644,10 +717,14 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	// one surviving evidence candidate before calling the LLM.
 	if !retrieval.ExactEvidenceSufficient(req.Question, candidates) {
 		emit("screening", "证据筛选完成", "completed")
-		emit("refused", "未找到足够的有效证据", "completed")
-		span.SetAttributes(attribute.Bool("retrieval.exact_evidence_insufficient", true))
+		emit("refused", refusalAnswer(RefusalExactEvidenceMissing), "completed")
+		span.SetAttributes(
+			attribute.Bool("retrieval.exact_evidence_insufficient", true),
+			attribute.String("refusal.reason", RefusalExactEvidenceMissing),
+		)
 		return Response{
-			Answer:           NoEvidenceAnswer,
+			Answer:           refusalAnswer(RefusalExactEvidenceMissing),
+			RefusalReason:    RefusalExactEvidenceMissing,
 			Sources:          []SourceContext{},
 			RetrievedSources: []SourceContext{},
 			Citations:        []SourceContext{},
@@ -669,11 +746,24 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	}
 
 	if len(sources) == 0 {
+		// Distinguish "documents matched but were filtered out" from "nothing
+		// matched at all". Only the former can be stated with certainty — a
+		// document removed by permission filtering never reaches this layer and
+		// leaves no count, so the no-evidence sentence names that possibility
+		// instead of asserting the document does not exist.
+		refusalReason := RefusalNoEvidence
+		if unpublishedFiltered > 0 || gov.retiredFiltered > 0 {
+			refusalReason = RefusalEvidenceFiltered
+		}
 		emit("screening", "证据筛选完成", "completed")
-		emit("refused", "未找到足够的有效证据", "completed")
-		span.SetAttributes(attribute.Bool("retrieval.no_supporting_evidence", true))
+		emit("refused", refusalAnswer(refusalReason), "completed")
+		span.SetAttributes(
+			attribute.Bool("retrieval.no_supporting_evidence", true),
+			attribute.String("refusal.reason", refusalReason),
+		)
 		return Response{
-			Answer:           NoEvidenceAnswer,
+			Answer:           refusalAnswer(refusalReason),
+			RefusalReason:    refusalReason,
 			Sources:          []SourceContext{},
 			RetrievedSources: []SourceContext{},
 			Citations:        []SourceContext{},
@@ -721,9 +811,13 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	// that could be mistaken for supporting evidence.
 	if answer == NoEvidenceAnswer {
 		emit("refused", "回答缺少可验证证据", "completed")
-		span.SetAttributes(attribute.Bool("llm.refused_for_lack_of_evidence", true))
+		span.SetAttributes(
+			attribute.Bool("llm.refused_for_lack_of_evidence", true),
+			attribute.String("refusal.reason", RefusalInsufficientSupport),
+		)
 		resp := Response{
-			Answer:           NoEvidenceAnswer,
+			Answer:           refusalAnswer(RefusalInsufficientSupport),
+			RefusalReason:    RefusalInsufficientSupport,
 			Sources:          []SourceContext{},
 			RetrievedSources: []SourceContext{},
 			Citations:        []SourceContext{},
@@ -768,12 +862,16 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	if groundingChecked && !groundingPassed {
 		emit("verifying", "回答校验未通过", "completed")
 		emit("refused", "回答未通过证据校验", "completed")
-		span.SetAttributes(attribute.Bool("llm.ungrounded_answer_blocked", true))
+		span.SetAttributes(
+			attribute.Bool("llm.ungrounded_answer_blocked", true),
+			attribute.String("refusal.reason", RefusalInsufficientSupport),
+		)
 		info := annotateInfo(retrievalInfoFromResult(retrievalResult, candidates, access.Role, allowedPermissions))
 		info.GroundingChecked = true
 		info.GroundingPassed = false
 		resp := Response{
-			Answer:           NoEvidenceAnswer,
+			Answer:           refusalAnswer(RefusalInsufficientSupport),
+			RefusalReason:    RefusalInsufficientSupport,
 			Sources:          []SourceContext{},
 			RetrievedSources: []SourceContext{},
 			Citations:        []SourceContext{},
@@ -800,18 +898,26 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	retrievalInfo.GroundingPassed = groundingPassed
 	retrievalInfo.GroundingUnavailable = groundingUnavailable
 
+	// refusalReason stays empty on the answering path; it is set below only when
+	// the answer is replaced by a refusal.
+	refusalReason := ""
 	if releasecenter.ContainsSensitiveData(answer) {
 		if s.sensitiveAnswerHook != nil {
 			s.sensitiveAnswerHook(ctx, access, answer)
 		}
 		emit("refused", "回答包含敏感信息，已拒绝输出", "completed")
-		span.SetAttributes(attribute.Bool("llm.sensitive_answer_blocked", true))
+		span.SetAttributes(
+			attribute.Bool("llm.sensitive_answer_blocked", true),
+			attribute.String("refusal.reason", RefusalSensitiveContent),
+		)
 		answer = SensitiveAnswerRefusal
+		refusalReason = RefusalSensitiveContent
 		sources = []SourceContext{}
 	}
 
 	resp := Response{
 		Answer:           answer,
+		RefusalReason:    refusalReason,
 		Sources:          sources,
 		RetrievedSources: sources,
 		Citations:        citationsFromAnswer(answer, sources),
@@ -956,7 +1062,9 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 	}
 	if streamed.Len() == 0 {
 		writeEvent("delta", map[string]string{"text": resp.Answer})
-	} else if streamed.String() != resp.Answer || resp.Answer == NoEvidenceAnswer {
+	} else if streamed.String() != resp.Answer || isRefusalAnswer(resp.Answer) {
+		// A refusal always replaces whatever was streamed: a partially streamed
+		// answer followed by a refusal sentence would read as both at once.
 		writeEvent("replace", map[string]any{
 			"text":              resp.Answer,
 			"sources":           resp.Citations,
@@ -967,6 +1075,7 @@ func (s *Service) HandleQueryStreaming(w http.ResponseWriter, r *http.Request) {
 
 	done := map[string]any{
 		"answer":            resp.Answer,
+		"refusal_reason":    resp.RefusalReason,
 		"sources":           resp.Citations,
 		"citations":         resp.Citations,
 		"retrieved_sources": resp.RetrievedSources,

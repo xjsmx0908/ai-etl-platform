@@ -203,6 +203,12 @@ export type AnswerMeta = {
   sources?: Source[];
   citations?: Source[];
   ttft?: string;
+  // Set only when `answer` is a refusal; names which reason produced it so the
+  // UI can state the cause and the next step instead of one generic sentence.
+  // Values come from the backend's Refusal* constants: no_evidence |
+  // exact_evidence_missing | evidence_filtered | insufficient_support |
+  // sensitive_content.
+  refusal_reason?: string;
 };
 
 export type TaskStatus = {

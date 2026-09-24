@@ -291,8 +291,11 @@ func TestHandleQueryStreamingRefusesWhenAllCandidatesFailRelevanceGate(t *testin
 	svc.HandleQueryStreaming(w, req.WithContext(ctx))
 
 	body := w.Body.String()
-	if !strings.Contains(body, `"sources":[]`) || !strings.Contains(body, NoEvidenceAnswer) {
+	if !strings.Contains(body, `"sources":[]`) || !strings.Contains(body, refusalAnswer(RefusalNoEvidence)) {
 		t.Fatalf("expected SSE refusal with no sources, got %s", body)
+	}
+	if !strings.Contains(body, `"refusal_reason":"`+RefusalNoEvidence+`"`) {
+		t.Fatalf("expected the refusal reason to reach the stream, got %s", body)
 	}
 	if calls := llmCalls.Load(); calls != 0 {
 		t.Fatalf("expected relevance gate to avoid LLM call, got %d", calls)
@@ -339,8 +342,10 @@ func TestHandleQueryRejectsStrongIdentifierWithoutMatchingEvidence(t *testing.T)
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Answer != NoEvidenceAnswer || len(response.Sources) != 0 || len(response.Citations) != 0 {
-		t.Fatalf("expected canonical refusal without evidence, got %+v", response)
+	if response.Answer != refusalAnswer(RefusalExactEvidenceMissing) ||
+		response.RefusalReason != RefusalExactEvidenceMissing ||
+		len(response.Sources) != 0 || len(response.Citations) != 0 {
+		t.Fatalf("expected identifier-specific refusal without evidence, got %+v", response)
 	}
 	if response.Retrieval == nil || !response.Retrieval.ExactEvidenceRequired || response.Retrieval.ExactEvidenceMatched {
 		t.Fatalf("expected failed exact-evidence diagnostic, got %+v", response.Retrieval)
@@ -350,6 +355,111 @@ func TestHandleQueryRejectsStrongIdentifierWithoutMatchingEvidence(t *testing.T)
 	}
 	if llmCalls.Load() != 0 {
 		t.Fatalf("strong identifier mismatch must block LLM, got %d calls", llmCalls.Load())
+	}
+}
+
+// TestHandleQueryRefusalDistinguishesFilteredEvidence pins the distinction the
+// evidence_filtered sentence exists for: retrieval did match a chunk, but the
+// document is not published, so the system can state the publish state instead
+// of claiming nothing matched. The published control case proves the assertion
+// discriminates - same question, same chunk, answerable policy. Without it the
+// filtered assertion would also pass if the pipeline simply never retrieved
+// anything.
+func TestHandleQueryRefusalDistinguishesFilteredEvidence(t *testing.T) {
+	run := func(t *testing.T, publicationStatus string) (Response, int32) {
+		t.Helper()
+
+		embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+		}))
+		defer embedSrv.Close()
+
+		qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"result":{"points":[{"score":0.95,"payload":{"chunk_id":"c-1","doc_id":"draft-doc","content":"月度薪酬于每月十五日发放。","tenant_id":"tenant-a"}}]}}`))
+		}))
+		defer qdrantSrv.Close()
+
+		var llmCalls atomic.Int32
+		llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			llmCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"月度薪酬于每月十五日发放。"}}]}`))
+		}))
+		defer llmSrv.Close()
+		t.Setenv("LLM_ENDPOINT", llmSrv.URL)
+		t.Setenv("LLM_API_KEY", "test-key")
+		t.Setenv("LLM_MODEL", "test-llm")
+
+		store := knowledgecatalog.NewMemoryStore(
+			[]knowledgecatalog.Space{{
+				ID: "user-uploads", TenantID: "tenant-a", Slug: "user-uploads",
+				Name: "User uploads", Kind: knowledgecatalog.SpaceKindProduction,
+				IsDefault: true, Active: true,
+			}},
+			nil,
+			[]knowledgecatalog.DocumentPolicy{{
+				DocID:             "draft-doc",
+				KnowledgeSpaceID:  "user-uploads",
+				PublicationStatus: publicationStatus,
+			}},
+		)
+		svc := NewService(config.Config{
+			EmbedEndpoint: embedSrv.URL, EmbedModel: "test-embed",
+			StoreEndpoint: qdrantSrv.URL, StoreCollection: "docs",
+			SparseK1: 1.2, SparseB: 0.75, SparseAvgDL: 256,
+		}).WithKnowledgeCatalog(knowledgecatalog.New(store))
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/query",
+			strings.NewReader(`{"question":"月度薪酬什么时候发放","top_k":5}`))
+		ctx := context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a")
+		ctx = context.WithValue(ctx, auth.CtxUserID, "alice")
+		ctx = context.WithValue(ctx, auth.CtxPermission, "admin")
+		w := httptest.NewRecorder()
+
+		svc.HandleQuery(w, req.WithContext(ctx))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp Response
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return resp, llmCalls.Load()
+	}
+
+	filtered, filteredLLMCalls := run(t, "draft")
+	if filtered.RefusalReason != RefusalEvidenceFiltered {
+		t.Fatalf("expected refusal reason %q, got %q (answer %q)",
+			RefusalEvidenceFiltered, filtered.RefusalReason, filtered.Answer)
+	}
+	if filtered.Answer != refusalAnswer(RefusalEvidenceFiltered) {
+		t.Fatalf("expected the filtered-evidence sentence, got %q", filtered.Answer)
+	}
+	if !strings.Contains(filtered.Answer, "尚未发布") {
+		t.Fatalf("filtered-evidence sentence must name the publish state, got %q", filtered.Answer)
+	}
+	if len(filtered.Sources) != 0 || len(filtered.Citations) != 0 {
+		t.Fatalf("refusal must carry no sources, got %+v", filtered.Sources)
+	}
+	if filtered.Retrieval == nil || filtered.Retrieval.UnpublishedFiltered == 0 {
+		t.Fatalf("expected the diagnostic to report the filtered count, got %+v", filtered.Retrieval)
+	}
+	if filteredLLMCalls != 0 {
+		t.Fatalf("filtered evidence must not reach the LLM, got %d calls", filteredLLMCalls)
+	}
+
+	answered, answeredLLMCalls := run(t, "published")
+	if answered.RefusalReason != "" {
+		t.Fatalf("published evidence must not be refused, got reason %q (answer %q)",
+			answered.RefusalReason, answered.Answer)
+	}
+	if len(answered.Sources) == 0 {
+		t.Fatalf("expected the published document to be used as evidence, got %+v", answered)
+	}
+	if answeredLLMCalls != 1 {
+		t.Fatalf("expected exactly one LLM call on the answering path, got %d", answeredLLMCalls)
 	}
 }
 
@@ -594,8 +704,11 @@ func TestHandleQueryStreamingReplacesAnswerWhenGroundingFails(t *testing.T) {
 	if !strings.Contains(body, "项目成员必须每季度完成安全培训。") {
 		t.Fatalf("expected streamed provisional answer, got %s", body)
 	}
-	if !strings.Contains(body, "event: replace") || !strings.Contains(body, NoEvidenceAnswer) {
-		t.Fatalf("expected streamed answer to be replaced by canonical refusal, got %s", body)
+	if !strings.Contains(body, "event: replace") || !strings.Contains(body, refusalAnswer(RefusalInsufficientSupport)) {
+		t.Fatalf("expected streamed answer to be replaced by a refusal, got %s", body)
+	}
+	if !strings.Contains(body, `"refusal_reason":"`+RefusalInsufficientSupport+`"`) {
+		t.Fatalf("expected the refusal reason to reach the stream, got %s", body)
 	}
 	if !strings.Contains(body, `"grounding_checked":true`) || strings.Contains(body, `"grounding_passed":true`) {
 		t.Fatalf("expected failed grounding verdict in done event, got %s", body)
@@ -657,8 +770,10 @@ func TestHandleQueryRefusesGroundedAnswerThatDoesNotAnswerQuestion(t *testing.T)
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Answer != NoEvidenceAnswer || len(response.Sources) != 0 || len(response.Citations) != 0 {
-		t.Fatalf("expected canonical source-free refusal, got %+v", response)
+	if response.Answer != refusalAnswer(RefusalInsufficientSupport) ||
+		response.RefusalReason != RefusalInsufficientSupport ||
+		len(response.Sources) != 0 || len(response.Citations) != 0 {
+		t.Fatalf("expected source-free refusal for insufficient support, got %+v", response)
 	}
 	if response.Retrieval == nil || !response.Retrieval.GroundingChecked || response.Retrieval.GroundingPassed {
 		t.Fatalf("expected failed answer verification, got %+v", response.Retrieval)
@@ -1143,5 +1258,91 @@ func TestGenerateAnswerOpensCircuitAndRecordsRejection(t *testing.T) {
 	}
 	if got := observer.outcomes[len(observer.outcomes)-1]; got != llmOutcomeCircuitOpen {
 		t.Fatalf("expected circuit_open outcome, got %q", got)
+	}
+}
+
+// TestRefusalReasonsAreAllMappedAndDistinct pins the refusal contract: every
+// reason a caller can observe has its own sentence, the sentences do not
+// collide, and the sentence for "nothing usable came back" does not assert that
+// the document is absent — permission filtering happens inside the search
+// backends and reports no count, so the system genuinely cannot tell "not
+// ingested" from "not visible to you".
+func TestRefusalReasonsAreAllMappedAndDistinct(t *testing.T) {
+	reasons := []string{
+		RefusalNoEvidence,
+		RefusalExactEvidenceMissing,
+		RefusalEvidenceFiltered,
+		RefusalInsufficientSupport,
+		RefusalSensitiveContent,
+	}
+
+	seen := make(map[string]string, len(reasons))
+	for _, reason := range reasons {
+		answer := refusalAnswer(reason)
+		if strings.TrimSpace(answer) == "" {
+			t.Fatalf("reason %q has no sentence", reason)
+		}
+		if previous, ok := seen[answer]; ok {
+			t.Fatalf("reasons %q and %q share the same sentence %q", previous, reason, answer)
+		}
+		seen[answer] = reason
+		if !isRefusalAnswer(answer) {
+			t.Fatalf("sentence for %q is not recognised as a refusal: %q", reason, answer)
+		}
+	}
+
+	// A refusal must not claim the document does not exist when the real cause
+	// may be an access boundary.
+	noEvidence := refusalAnswer(RefusalNoEvidence)
+	if !strings.Contains(noEvidence, "访问范围") {
+		t.Fatalf("no-evidence sentence must name the access-scope possibility, got %q", noEvidence)
+	}
+	if strings.Contains(noEvidence, "未找到相关文档") {
+		t.Fatalf("no-evidence sentence must not reuse the canonical non-existence claim, got %q", noEvidence)
+	}
+
+	// The filtered case is the one the system can state with certainty.
+	if !strings.Contains(refusalAnswer(RefusalEvidenceFiltered), "尚未发布") {
+		t.Fatalf("filtered-evidence sentence must name the publish state, got %q",
+			refusalAnswer(RefusalEvidenceFiltered))
+	}
+
+	// Unknown reasons must fall back rather than ship an empty answer.
+	if got := refusalAnswer(""); got != NoEvidenceAnswer {
+		t.Fatalf("expected empty reason to fall back to the canonical sentence, got %q", got)
+	}
+	if got := refusalAnswer("no_such_reason"); got != NoEvidenceAnswer {
+		t.Fatalf("expected unknown reason to fall back to the canonical sentence, got %q", got)
+	}
+}
+
+// TestIsRefusalAnswerDoesNotMatchRealAnswers is the negative half: the predicate
+// the streaming path uses to force a replace must not fire on ordinary answers,
+// or every streamed answer would be rewritten.
+func TestIsRefusalAnswerDoesNotMatchRealAnswers(t *testing.T) {
+	answers := []string{
+		"月度薪酬于每月十五日发放，遇法定节假日提前至最近一个工作日。来源: demo-doc-payroll",
+		"文档中没有写明该条款的生效日期，但列明了适用主体。来源: SEC-2024-001",
+		"",
+	}
+	for _, answer := range answers {
+		if isRefusalAnswer(answer) {
+			t.Fatalf("real answer wrongly classified as a refusal: %q", answer)
+		}
+	}
+	if !isRefusalAnswer(NoEvidenceAnswer) {
+		t.Fatalf("the canonical sentence must be recognised as a refusal")
+	}
+}
+
+// TestResponseCarriesNoRefusalReasonOnTheAnsweringPath guards the field's
+// meaning: an empty reason is what tells a caller the answer is a real answer.
+func TestResponseCarriesNoRefusalReasonOnTheAnsweringPath(t *testing.T) {
+	encoded, err := json.Marshal(Response{Answer: "月度薪酬于每月十五日发放。"})
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if strings.Contains(string(encoded), "refusal_reason") {
+		t.Fatalf("answering path must omit refusal_reason, got %s", encoded)
 	}
 }

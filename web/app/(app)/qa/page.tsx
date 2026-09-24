@@ -79,6 +79,29 @@ function groundingLabel(retrieval?: AnswerMeta["retrieval"]): { value: string; h
     : { value: "拦截（无据拒答）", highlight: true };
 }
 
+// Why the system refused, and what the reader can do about it. The backend
+// sends `refusal_reason` because one generic sentence ("no related documents
+// found") is wrong when the document exists but is unpublished or outside the
+// reader's access scope — that sends people off to create a duplicate of
+// something they already have.
+const REFUSAL_EXPLANATIONS: Record<string, string> = {
+  no_evidence:
+    "检索没有返回可用的证据。可能是知识库里还没有这份材料，也可能是它不在你的访问范围内 —— 两种情况下系统都无法确认，所以不会替你猜。",
+  exact_evidence_missing:
+    "问题里带了编号（合同号 / 工单号一类），但没有任何一份可用的文档包含这个编号。请确认编号是否正确，以及对应文档是否已经入库。",
+  evidence_filtered:
+    "确实找到了相关文档，但它尚未发布、或者已经被更新的版本取代，因此不能作为回答依据。需要用它回答的话，请先发布该文档。",
+  insufficient_support:
+    "找到了相关文档，但其中的内容不足以支撑这个问题的回答 —— 系统在证据不足时拒绝作答，避免编造。可以换个更贴近文档内容的问法。",
+  sensitive_content:
+    "生成的回答命中了疑似凭据（密码 / 密钥一类）的内容，已按安全策略拒绝输出。该回答已被记录并审计。",
+};
+
+function refusalExplanation(reason?: string): string {
+  if (reason && REFUSAL_EXPLANATIONS[reason]) return REFUSAL_EXPLANATIONS[reason];
+  return "系统在检索到可支撑证据前拒绝作答，避免幻觉编造。";
+}
+
 function exactEvidenceLabel(retrieval?: AnswerMeta["retrieval"]): { value: string; highlight: boolean } {
   if (!retrieval) return { value: "—", highlight: false };
   if (!retrieval.exact_evidence_required) return { value: "不需要", highlight: false };
@@ -208,7 +231,13 @@ export default function QaPage() {
     void stream(q);
   };
 
-  const isRefusal = answer.includes("未找到相关文档");
+  // Prefer the backend's structured reason; fall back to the sentences so a
+  // cached or older response still renders as a refusal rather than as an answer.
+  const isRefusal =
+    Boolean(meta.refusal_reason) ||
+    ["未找到可用的相关文档", "未找到与该标识符匹配的文档", "找到了相关文档，但", "未找到相关文档", "抱歉，该回答包含疑似敏感信息"].some(
+      (prefix) => answer.startsWith(prefix)
+    );
 
   return (
     <div className="space-y-6">
@@ -341,10 +370,8 @@ export default function QaPage() {
                 <div className="flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
                   <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
                   <div>
-                    <p className="font-medium">未找到相关文档，无法回答该问题。</p>
-                    <p className="mt-1 text-xs text-amber-600">
-                      系统在检索到可支撑证据前拒绝作答，避免幻觉编造。
-                    </p>
+                    <p className="font-medium">{answer}</p>
+                    <p className="mt-1 text-xs text-amber-600">{refusalExplanation(meta.refusal_reason)}</p>
                   </div>
                 </div>
               ) : answer ? (

@@ -70,6 +70,16 @@ NEGATIVE_FALLBACK_MARKERS = (
     "无法从参考文档",
     "参考文档不足",
     "未提供相关",
+    # Reason-specific refusal sentences. The backend now tells the caller WHY it
+    # refused instead of always claiming "no related documents found" — a
+    # document that exists but is unpublished or outside the caller's access
+    # scope used to be reported as absent. Every sentence must be listed here or
+    # a correct refusal would be scored as a hallucinated answer.
+    "未找到可用的相关文档",
+    "未找到与该标识符匹配的文档",
+    "尚未发布或已被取代，当前不能作为回答依据",
+    "其中内容不足以支撑这个问题的回答",
+    "抱歉，该回答包含疑似敏感信息",
 )
 
 # Dataset tokens that express "cite the source" rather than a literal substring.
