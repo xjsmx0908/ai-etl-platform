@@ -15,11 +15,14 @@
 这里只测判定规则（纯函数 classify_document），不连服务 —— 规则写错时症状是「对账
 永远报绿」，光靠跑一次正例发现不了。
 
-三条判定（classify_document，比较块的**集合**）：
+四条判定（classify_document，比较块的**集合**）：
   keyword_unsearchable   ES 里没有块而 Qdrant 有 → 全文召回静默丢掉这份文档
   count_mismatch         ES 与 Qdrant 的块数不一致
   citation_unverifiable  端点隐藏了 Qdrant 仍在提供的块 → 引用里的 chunk id
                          在文档页面上找不到
+  registry_count_stale   登记表自己的块数（chunks_done / chunks_total）与存储不一致
+                         → 文档清单与详情页渲染的就是这两个数，于是「有块的文档」
+                           在页面上显示成「—」，而其它层看起来都对
 
 三条判定（classify_payload_fields，比较存储点上的**字段**）：
   space_key_unset        点的 metadata.knowledge_base_id 与文档的知识空间不一致
@@ -95,6 +98,101 @@ class ClassifyDocumentTest(unittest.TestCase):
             "d1", {"file_name": "a.txt"}, ["d1_0001", "d1_0000", "d1_0001"], 3, []
         )
         self.assertEqual(findings[0]["hidden_chunk_ids"], ["d1_0000", "d1_0001"])
+
+    def test_stale_registry_counters_are_reported(self):
+        findings = MODULE.classify_document(
+            "d1",
+            {"file_name": "a.txt", "chunks_done": 0, "chunks_total": 0},
+            ["d1_0000"],
+            1,
+            ["d1_0000"],
+        )
+        self.assertEqual(kinds(findings), ["registry_count_stale"])
+        self.assertEqual(findings[0]["stored_chunks"], 1)
+        self.assertEqual(findings[0]["registry_chunks_total"], 0)
+
+    def test_registry_counters_that_match_report_nothing(self):
+        findings = MODULE.classify_document(
+            "d1",
+            {"file_name": "a.txt", "chunks_done": 1, "chunks_total": 1},
+            ["d1_0000"],
+            1,
+            ["d1_0000"],
+        )
+        self.assertEqual(findings, [])
+
+    def test_registry_done_counter_alone_is_enough_to_report(self):
+        # The total can be right while the progress counter is wrong: the page renders
+        # both, so comparing only one of them leaves half the column unchecked.
+        findings = MODULE.classify_document(
+            "d1",
+            {"file_name": "a.txt", "chunks_done": 2, "chunks_total": 1},
+            ["d1_0000"],
+            1,
+            ["d1_0000"],
+        )
+        self.assertEqual(kinds(findings), ["registry_count_stale"])
+        self.assertEqual(findings[0]["registry_chunks_done"], 2)
+
+    def test_registry_counters_are_compared_even_with_nothing_stored(self):
+        findings = MODULE.classify_document(
+            "d1",
+            {"file_name": "a.txt", "chunks_done": 5, "chunks_total": 5},
+            [],
+            0,
+            [],
+        )
+        self.assertEqual(kinds(findings), ["registry_count_stale"])
+        self.assertEqual(findings[0]["stored_chunks"], 0)
+
+    def test_zero_total_detail_says_the_page_reads_a_dash(self):
+        # Both document pages render `chunks_total ? done/total : "-"`, so a zero
+        # total is the one case where the reader sees no number at all.
+        findings = MODULE.classify_document(
+            "d1",
+            {"file_name": "a.txt", "chunks_done": 0, "chunks_total": 0},
+            ["d1_0000"],
+            1,
+            ["d1_0000"],
+        )
+        self.assertEqual(kinds(findings), ["registry_count_stale"])
+        self.assertIn("dash", findings[0]["detail"])
+
+    def test_nonzero_mismatch_detail_does_not_claim_a_dash(self):
+        # A non-zero total renders a number, not a dash. Saying otherwise would
+        # mislabel the finding for every re-ingested document.
+        findings = MODULE.classify_document(
+            "d1",
+            {"file_name": "a.txt", "chunks_done": 2, "chunks_total": 2},
+            ["d1_0000", "d1_0001", "d1_0002"],
+            3,
+            ["d1_0000", "d1_0001", "d1_0002"],
+        )
+        self.assertEqual(kinds(findings), ["registry_count_stale"])
+        self.assertNotIn("dash", findings[0]["detail"])
+
+    def test_stored_points_are_reported_next_to_distinct_chunks(self):
+        # A re-ingested document keeps every generation in the store. Reporting the
+        # point count next to the distinct chunk count is what lets a reader tell
+        # "the counters are stale" from "the store holds superseded copies".
+        findings = MODULE.classify_document(
+            "d1",
+            {"file_name": "a.txt", "chunks_done": 0, "chunks_total": 0},
+            ["d1_0000", "d1_0000", "d1_0001"],
+            3,
+            ["d1_0000", "d1_0001"],
+        )
+        self.assertEqual(kinds(findings), ["registry_count_stale"])
+        self.assertEqual(findings[0]["stored_chunks"], 2)
+        self.assertEqual(findings[0]["stored_points"], 3)
+
+    def test_registry_row_without_counters_is_not_a_disagreement(self):
+        # A caller that does not pass the registry row must not be told its counters
+        # are stale -- the rule has no opinion without both fields.
+        findings = MODULE.classify_document(
+            "d1", {"file_name": "a.txt"}, ["d1_0000"], 1, ["d1_0000"]
+        )
+        self.assertEqual(findings, [])
 
     def test_file_name_and_publication_status_are_carried_through(self):
         findings = MODULE.classify_document(

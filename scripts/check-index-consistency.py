@@ -21,6 +21,10 @@ keyword_unsearchable    Elasticsearch holds no chunks for a document Qdrant does
 citation_unverifiable   the chunks endpoint hides chunks Qdrant still serves
                         -> a citation can name a chunk the document page never shows
 count_mismatch          Elasticsearch and Qdrant disagree on the chunk count
+registry_count_stale    the registry's own chunk counters disagree with the store
+                        -> the document list and the detail page render those
+                           numbers, so the page reads "-" for a document that
+                           does have chunks
 space_key_unset         stored points whose metadata.knowledge_base_id is not the
                         document's knowledge space
                         -> the vector branch cannot return them inside that space,
@@ -194,6 +198,49 @@ def classify_document(doc_id, document, stored_ids, indexed_count, visible_ids):
                 ),
             }
         )
+
+    # The registry's own counters are a fifth statement about the same fact: how
+    # many chunks this document has. Both document pages render them, so a stale
+    # counter is visible to the reader while every other layer looks right. Only
+    # compared when the registry answered with both fields -- an absent field is
+    # not a disagreement, and inventing one would make this rule fire on every
+    # caller that does not pass the registry row.
+    #
+    # The baseline is the *distinct stored chunk ids*, not the published
+    # generation's count: this layer has no way to tell which generation the
+    # counters were last written for (they are written per ingestion, and a
+    # re-ingested document keeps every generation in the store). That makes the
+    # rule's claim conditional, so the detail has to be too -- a zero total means
+    # the page renders a dash, a non-zero one means the page renders a count that
+    # disagrees. Calling both "reads a dash" would be a wrong label on half the
+    # population.
+    if "chunks_done" in document and "chunks_total" in document:
+        expected = len(set(stored_ids))
+        if document["chunks_done"] != expected or document["chunks_total"] != expected:
+            if not document["chunks_total"]:
+                detail = (
+                    "the registry never recorded a chunk total for this document: "
+                    "both document pages render a dash where a document that does "
+                    "have chunks should show a count"
+                )
+            else:
+                detail = (
+                    "the registry's chunk counters disagree with the store, and both "
+                    "document pages render these numbers"
+                )
+            findings.append(
+                {
+                    "kind": "registry_count_stale",
+                    "doc_id": doc_id,
+                    "file_name": file_name,
+                    "publication_status": publication_status,
+                    "stored_chunks": expected,
+                    "stored_points": len(stored_ids),
+                    "registry_chunks_done": document["chunks_done"],
+                    "registry_chunks_total": document["chunks_total"],
+                    "detail": detail,
+                }
+            )
 
     return findings
 
