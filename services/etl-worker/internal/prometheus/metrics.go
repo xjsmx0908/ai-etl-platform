@@ -43,7 +43,6 @@ type Metrics struct {
 	HTTPRequestInFlight *prometheus.GaugeVec
 
 	// Pipeline metrics
-	ChunksProcessed       *prometheus.CounterVec
 	PipelineStageDuration *prometheus.HistogramVec
 	EmbedDuration         *prometheus.HistogramVec
 	EmbedFailures         *prometheus.CounterVec
@@ -131,15 +130,6 @@ func New(namespace string) *Metrics {
 				Help:      "Number of HTTP requests currently being processed",
 			},
 			[]string{"handler"},
-		),
-		ChunksProcessed: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Namespace: namespace,
-				Subsystem: "pipeline",
-				Name:      "chunks_processed_total",
-				Help:      "Total number of chunks processed",
-			},
-			[]string{"tenant_id", "status"},
 		),
 		PipelineStageDuration: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -446,7 +436,6 @@ func New(namespace string) *Metrics {
 	prometheus.MustRegister(
 		m.HTTPRequestDuration,
 		m.HTTPRequestInFlight,
-		m.ChunksProcessed,
 		m.PipelineStageDuration,
 		m.EmbedDuration,
 		m.EmbedFailures,
