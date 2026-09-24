@@ -306,6 +306,7 @@ func main() {
 	// sources — governance the chunk index cannot express, because chunk payloads
 	// are written once at ingest and never updated in place.
 	qs := query.NewServiceWithObserver(cfg, prom).
+		WithQueryObserver(prom).
 		WithGovernance(docStore).
 		WithDocuments(docStore).
 		WithKnowledgeCatalog(knowledgeCatalog).

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1344,5 +1347,401 @@ func TestResponseCarriesNoRefusalReasonOnTheAnsweringPath(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "refusal_reason") {
 		t.Fatalf("answering path must omit refusal_reason, got %s", encoded)
+	}
+}
+
+// recordingQueryObserver captures what a metrics adapter is told. The wiring
+// from the refusal branches to the counters is asserted here rather than
+// through Prometheus: the query package has to report the same decision it
+// acted on, and a branch that sets the sentence but not the reason would
+// otherwise count as "answered" while the caller receives a refusal.
+type recordingQueryObserver struct {
+	mu       sync.Mutex
+	outcomes []recordedQueryOutcome
+	refusals []string
+	failures []string
+}
+
+type recordedQueryOutcome struct {
+	tenantID  string
+	status    string
+	duration  time.Duration
+	retrieved int
+}
+
+func (o *recordingQueryObserver) RecordQueryOutcome(tenantID, status string, duration time.Duration, retrieved int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.outcomes = append(o.outcomes, recordedQueryOutcome{tenantID, status, duration, retrieved})
+}
+
+func (o *recordingQueryObserver) RecordQueryRefusal(_ string, reason string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.refusals = append(o.refusals, reason)
+}
+
+func (o *recordingQueryObserver) RecordQueryFailure(_ string, stage string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.failures = append(o.failures, stage)
+}
+
+// snapshot returns the single recorded outcome plus both counter slices. It
+// fails loudly when the pipeline reported anything other than exactly one
+// outcome, because a second report would double every rate derived from it.
+func (o *recordingQueryObserver) snapshot(t *testing.T) (recordedQueryOutcome, []string, []string) {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.outcomes) != 1 {
+		t.Fatalf("expected exactly one recorded outcome, got %+v", o.outcomes)
+	}
+	return o.outcomes[0],
+		append([]string(nil), o.refusals...),
+		append([]string(nil), o.failures...)
+}
+
+// queryFixtureOptions describes the fake backends for one query. The zero value
+// is a working retrieval that returns a single irrelevant chunk.
+type queryFixtureOptions struct {
+	points       string
+	answer       string
+	grounding    bool
+	minRelevance float64
+	catalog      *knowledgecatalog.Catalog
+	hook         func(context.Context, AccessContext, string)
+	qdrantStatus int
+}
+
+type queryFixture struct {
+	svc      *Service
+	obs      *recordingQueryObserver
+	llmCalls *atomic.Int32
+}
+
+func newQueryFixture(t *testing.T, opts queryFixtureOptions) *queryFixture {
+	t.Helper()
+
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+	}))
+	t.Cleanup(embedSrv.Close)
+
+	qdrantStatus := opts.qdrantStatus
+	points := opts.points
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if qdrantStatus != 0 {
+			w.WriteHeader(qdrantStatus)
+			_, _ = w.Write([]byte(`{"status":{"error":"backend unavailable"}}`))
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"result":{"points":[%s]}}`, points)
+	}))
+	t.Cleanup(qdrantSrv.Close)
+
+	answer := opts.answer
+	llmCalls := &atomic.Int32{}
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		llmCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		content := answer
+		if opts.grounding && strings.Contains(string(body), "回答：") {
+			content = `{"supported":true,"answers_question":false}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": content}}},
+		})
+	}))
+	t.Cleanup(llmSrv.Close)
+	t.Setenv("LLM_ENDPOINT", llmSrv.URL)
+	t.Setenv("LLM_API_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-llm")
+
+	obs := &recordingQueryObserver{}
+	svc := NewService(config.Config{
+		EmbedEndpoint:               embedSrv.URL,
+		EmbedModel:                  "test-embed",
+		StoreEndpoint:               qdrantSrv.URL,
+		StoreCollection:             "docs",
+		RetrievalMinRelevance:       opts.minRelevance,
+		RetrievalGroundingCheck:     opts.grounding,
+		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingHighBound: 0.7,
+		SparseK1:                    1.2,
+		SparseB:                     0.75,
+		SparseAvgDL:                 256,
+	}).WithQueryObserver(obs)
+	if opts.catalog != nil {
+		svc = svc.WithKnowledgeCatalog(opts.catalog)
+	}
+	if opts.hook != nil {
+		svc = svc.WithSensitiveAnswerHook(opts.hook)
+	}
+	return &queryFixture{svc: svc, obs: obs, llmCalls: llmCalls}
+}
+
+// post drives one query through the real HTTP handler. It deliberately does not
+// assert a status code: the failure paths need the recorder, not a 200.
+func (f *queryFixture) post(t *testing.T, question string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/query",
+		strings.NewReader(fmt.Sprintf(`{"question":%q,"top_k":5}`, question)))
+	ctx := context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a")
+	ctx = context.WithValue(ctx, auth.CtxUserID, "alice")
+	ctx = context.WithValue(ctx, auth.CtxPermission, "admin")
+	w := httptest.NewRecorder()
+	f.svc.HandleQuery(w, req.WithContext(ctx))
+	return w
+}
+
+func (f *queryFixture) ask(t *testing.T, question string) Response {
+	t.Helper()
+	w := f.post(t, question)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp
+}
+
+// TestQueryObserverRecordsEveryRefusalReason walks all five refusal branches
+// end to end and asserts the observer was told the same reason the caller was.
+// The reason is a closed set used as a metric label, so a branch that reports
+// the wrong one (or none) is a production-visibility defect that no response
+// assertion can see.
+func TestQueryObserverRecordsEveryRefusalReason(t *testing.T) {
+	draftCatalog := func() *knowledgecatalog.Catalog {
+		return knowledgecatalog.New(knowledgecatalog.NewMemoryStore(
+			[]knowledgecatalog.Space{{
+				ID: "user-uploads", TenantID: "tenant-a", Slug: "user-uploads",
+				Name: "User uploads", Kind: knowledgecatalog.SpaceKindProduction,
+				IsDefault: true, Active: true,
+			}},
+			nil,
+			[]knowledgecatalog.DocumentPolicy{{
+				DocID:             "draft-doc",
+				KnowledgeSpaceID:  "user-uploads",
+				PublicationStatus: "draft",
+			}},
+		))
+	}
+
+	cases := []struct {
+		reason string
+		build  func(t *testing.T) (*queryFixture, string)
+	}{
+		{
+			reason: RefusalNoEvidence,
+			build: func(t *testing.T) (*queryFixture, string) {
+				return newQueryFixture(t, queryFixtureOptions{
+					points:       `{"score":0.4,"payload":{"chunk_id":"weak-1","doc_id":"unrelated","content":"unrelated context","tenant_id":"tenant-a"}}`,
+					answer:       "unsupported answer",
+					minRelevance: 0.8,
+				}), "办公用品怎么领"
+			},
+		},
+		{
+			reason: RefusalExactEvidenceMissing,
+			build: func(t *testing.T) (*queryFixture, string) {
+				return newQueryFixture(t, queryFixtureOptions{
+					points: `{"score":0.95,"payload":{"chunk_id":"unrelated-1","doc_id":"unrelated","content":"合同审批的一般流程说明。","tenant_id":"tenant-a"}}`,
+					answer: "不应生成",
+				}), "请查合同 CN-2026-0001 的审批状态"
+			},
+		},
+		{
+			reason: RefusalEvidenceFiltered,
+			build: func(t *testing.T) (*queryFixture, string) {
+				return newQueryFixture(t, queryFixtureOptions{
+					points:  `{"score":0.95,"payload":{"chunk_id":"c-1","doc_id":"draft-doc","content":"月度薪酬于每月十五日发放。","tenant_id":"tenant-a"}}`,
+					answer:  "月度薪酬于每月十五日发放。",
+					catalog: draftCatalog(),
+				}), "月度薪酬什么时候发放"
+			},
+		},
+		{
+			reason: RefusalInsufficientSupport,
+			build: func(t *testing.T) (*queryFixture, string) {
+				return newQueryFixture(t, queryFixtureOptions{
+					points:    `{"score":0.52,"payload":{"chunk_id":"training-1","doc_id":"training","content":"项目成员必须每季度完成安全培训。","tenant_id":"tenant-a"}}`,
+					answer:    "项目成员必须每季度完成安全培训。来源: training",
+					grounding: true,
+				}), "机密项目的成员名单是什么？"
+			},
+		},
+		{
+			reason: RefusalSensitiveContent,
+			build: func(t *testing.T) (*queryFixture, string) {
+				return newQueryFixture(t, queryFixtureOptions{
+					points: `{"score":0.95,"payload":{"chunk_id":"ops-1","doc_id":"ops-manual","content":"数据库口令保存在运维手册中。","tenant_id":"tenant-a"}}`,
+					answer: "运维手册里写着 password: hunter2",
+				}), "数据库口令是什么"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.reason, func(t *testing.T) {
+			fixture, question := tc.build(t)
+
+			resp := fixture.ask(t, question)
+			if resp.RefusalReason != tc.reason {
+				t.Fatalf("caller was told %q (%q), want %q", resp.RefusalReason, resp.Answer, tc.reason)
+			}
+
+			outcome, refusals, failures := fixture.obs.snapshot(t)
+			if outcome.status != "refused" {
+				t.Fatalf("a refusal must not be recorded as %q", outcome.status)
+			}
+			if len(refusals) != 1 || refusals[0] != tc.reason {
+				t.Fatalf("expected refusal counter %q exactly once, got %v", tc.reason, refusals)
+			}
+			if len(failures) != 0 {
+				t.Fatalf("a refusal is not a failure, got %v", failures)
+			}
+		})
+	}
+}
+
+// TestQueryObserverRecordsAnsweredPathWithoutRefusal is the control for the
+// table above: without it, an observer that counted every query as a refusal
+// would still satisfy those assertions.
+func TestQueryObserverRecordsAnsweredPathWithoutRefusal(t *testing.T) {
+	fixture := newQueryFixture(t, queryFixtureOptions{
+		points: `{"score":0.95,"payload":{"chunk_id":"c-1","doc_id":"handbook","content":"月度薪酬于每月十五日发放。","tenant_id":"tenant-a"}}`,
+		answer: "月度薪酬于每月十五日发放。来源: handbook",
+	})
+
+	resp := fixture.ask(t, "月度薪酬什么时候发放")
+	if resp.RefusalReason != "" {
+		t.Fatalf("expected a real answer, got refusal %q", resp.RefusalReason)
+	}
+
+	outcome, refusals, failures := fixture.obs.snapshot(t)
+	if outcome.status != "answered" {
+		t.Fatalf("expected status answered, got %q", outcome.status)
+	}
+	if outcome.retrieved != 1 {
+		t.Fatalf("expected the one retrieved chunk to be measured, got %d", outcome.retrieved)
+	}
+	if len(refusals) != 0 {
+		t.Fatalf("an answer must not touch the refusal counter, got %v", refusals)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("an answer is not a failure, got %v", failures)
+	}
+}
+
+// TestQueryObserverRecordsRetrievalFailure pins two things at once: the failure
+// is labelled with the stage that broke, and the chunk count stays unmeasured
+// rather than being reported as a real zero.
+func TestQueryObserverRecordsRetrievalFailure(t *testing.T) {
+	fixture := newQueryFixture(t, queryFixtureOptions{qdrantStatus: http.StatusInternalServerError})
+
+	w := fixture.post(t, "月度薪酬什么时候发放")
+	if w.Code < 500 {
+		t.Fatalf("expected a server error, got %d: %s", w.Code, w.Body.String())
+	}
+
+	outcome, refusals, failures := fixture.obs.snapshot(t)
+	if outcome.status != "failed" {
+		t.Fatalf("expected status failed, got %q", outcome.status)
+	}
+	if outcome.retrieved >= 0 {
+		t.Fatalf("retrieval never returned, so the count must stay unmeasured, got %d", outcome.retrieved)
+	}
+	if len(failures) != 1 || failures[0] != "retrieval" {
+		t.Fatalf("expected one retrieval failure, got %v", failures)
+	}
+	if len(refusals) != 0 {
+		t.Fatalf("a failure is not a refusal, got %v", refusals)
+	}
+}
+
+// TestQueryObserverRecordsKnowledgeCatalogFailure covers the other server-side
+// stage. It fails closed with 503 before retrieval runs, so a missing stage
+// label here would make an unusable catalog indistinguishable from an
+// unclassified crash.
+func TestQueryObserverRecordsKnowledgeCatalogFailure(t *testing.T) {
+	fixture := newQueryFixture(t, queryFixtureOptions{catalog: knowledgecatalog.New(nil)})
+
+	w := fixture.post(t, "月度薪酬什么时候发放")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+
+	outcome, _, failures := fixture.obs.snapshot(t)
+	if outcome.status != "failed" {
+		t.Fatalf("expected status failed, got %q", outcome.status)
+	}
+	if len(failures) != 1 || failures[0] != "knowledge_catalog" {
+		t.Fatalf("expected one knowledge_catalog failure, got %v", failures)
+	}
+}
+
+// TestQueryObserverIgnoresRejectedRequests: a 403 is a request the system is
+// designed to refuse, not a broken component. Recording it would create a
+// failure rate that no operator can act on.
+func TestQueryObserverIgnoresRejectedRequests(t *testing.T) {
+	obs := &recordingQueryObserver{}
+	store := knowledgecatalog.NewMemoryStore(
+		[]knowledgecatalog.Space{{ID: "finance", TenantID: "acme", Kind: knowledgecatalog.SpaceKindProduction, Active: true}},
+		nil,
+		nil,
+	)
+	svc := NewService(config.Config{}).
+		WithQueryObserver(obs).
+		WithKnowledgeCatalog(knowledgecatalog.New(store))
+	req := httptest.NewRequest(http.MethodPost, "/v1/query",
+		strings.NewReader(`{"question":"预算","knowledge_space_id":"finance"}`))
+	ctx := context.WithValue(req.Context(), auth.CtxTenantID, "acme")
+	ctx = context.WithValue(ctx, auth.CtxUserID, "alice")
+	ctx = context.WithValue(ctx, auth.CtxPermission, "user")
+	w := httptest.NewRecorder()
+
+	svc.HandleQuery(w, req.WithContext(ctx))
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(obs.outcomes) != 0 || len(obs.failures) != 0 || len(obs.refusals) != 0 {
+		t.Fatalf("a rejected request must not be recorded as a query outcome, got %+v / %v / %v",
+			obs.outcomes, obs.failures, obs.refusals)
+	}
+}
+
+// TestQueryFailureStageMapsEverySentinelError pins the label mapping. Every
+// caller in this package wraps with %w, so this also proves errors.Is sees
+// through the wrapping - a plain equality check would silently send every
+// failure to the "internal" bucket.
+func TestQueryFailureStageMapsEverySentinelError(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		stage     string
+		isFailure bool
+	}{
+		{"no error", nil, "", false},
+		{"authorization rejection", fmt.Errorf("%w: finance", ErrKnowledgeForbidden), "", false},
+		{"retrieval", fmt.Errorf("%w: dial tcp: connection refused", ErrSearchFailed), "retrieval", true},
+		{"generation", fmt.Errorf("%w: upstream 500", ErrGenerationFailed), "generation", true},
+		{"knowledge catalog", fmt.Errorf("%w: store closed", ErrKnowledgeUnavailable), "knowledge_catalog", true},
+		{"unclassified", errors.New("boom"), "internal", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stage, isFailure := queryFailureStage(tc.err)
+			if stage != tc.stage || isFailure != tc.isFailure {
+				t.Fatalf("queryFailureStage(%v) = (%q, %v), want (%q, %v)",
+					tc.err, stage, isFailure, tc.stage, tc.isFailure)
+			}
+		})
 	}
 }

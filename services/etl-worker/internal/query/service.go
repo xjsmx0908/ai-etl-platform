@@ -39,6 +39,7 @@ type Service struct {
 	breaker            *circuit.Breaker
 	tracer             trace.Tracer
 	llmObserver        LLMObserver
+	queryObserver      QueryObserver
 	systemPrompt       string
 	promptVersion      string
 
@@ -105,6 +106,13 @@ func (s *Service) WithSensitiveAnswerHook(hook func(context.Context, AccessConte
 	return s
 }
 
+// WithQueryObserver attaches a metrics adapter that receives whole-query
+// outcomes, including the refusals no other metric can see.
+func (s *Service) WithQueryObserver(observer QueryObserver) *Service {
+	s.queryObserver = observer
+	return s
+}
+
 // ResolveKnowledgeSpace exposes the catalog decision to the upload handler so
 // reads and writes share one policy module.
 func (s *Service) ResolveKnowledgeSpace(ctx context.Context, requestedSpaceID string, access AccessContext, capability knowledgecatalog.Capability) (knowledgecatalog.Space, error) {
@@ -127,6 +135,21 @@ type LLMObserver interface {
 	// RecordLLMTokens reports prompt/completion token consumption after a
 	// successful LLM call. Implementations that do not track tokens may ignore it.
 	RecordLLMTokens(model string, promptTokens, completionTokens int64)
+}
+
+// QueryObserver receives whole-query outcomes for metrics adapters. It is
+// deliberately separate from LLMObserver: a refusal is neither an LLM failure
+// nor an HTTP failure — it is a 200 with no sources, and the only layer that
+// knows why it happened is this package.
+type QueryObserver interface {
+	// RecordQueryOutcome reports one finished query. status is "answered",
+	// "refused" or "failed". retrieved is the number of chunks retrieval
+	// returned, before any evidence filtering.
+	RecordQueryOutcome(tenantID, status string, duration time.Duration, retrieved int)
+	// RecordQueryRefusal names the reason, from the Refusal* constants.
+	RecordQueryRefusal(tenantID, reason string)
+	// RecordQueryFailure reports a query that ended in a server error.
+	RecordQueryFailure(tenantID, stage string)
 }
 
 type llmModelInitializer interface {
@@ -569,6 +592,28 @@ func (s *Service) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// queryFailureStage maps a pipeline error to the stage label on
+// ai_etl_query_failures_total. The second return value is false when the error
+// is not a failure at all: an authorization rejection is a 403 the caller is
+// supposed to receive, and counting it as a failure would report a broken
+// component that is working as designed.
+func queryFailureStage(err error) (stage string, isFailure bool) {
+	switch {
+	case err == nil:
+		return "", false
+	case errors.Is(err, ErrKnowledgeForbidden):
+		return "", false
+	case errors.Is(err, ErrSearchFailed):
+		return "retrieval", true
+	case errors.Is(err, ErrGenerationFailed):
+		return "generation", true
+	case errors.Is(err, ErrKnowledgeUnavailable):
+		return "knowledge_catalog", true
+	default:
+		return "internal", true
+	}
+}
+
 // Ask executes the RAG query pipeline for an authenticated caller.
 func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (response Response, err error) {
 	return s.ask(ctx, req, access, queryStream{})
@@ -600,6 +645,51 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	// the vector search and the LLM context.
 	req.TopK = clampTopK(req.TopK)
 	allowedPermissions := AllowedPermissionsForRole(access.Role)
+
+	start := time.Now()
+	// Record the outcome on every exit path, including the refusals. This is
+	// deliberately a defer rather than a call at each return: there are five
+	// refusal branches and four error branches, and a metric that depends on
+	// remembering to call it at each one will drift the first time a branch is
+	// added.
+	//
+	// It is armed before the knowledge catalog resolves, because that lookup is
+	// the first thing that can fail server-side: an unreachable catalog turns
+	// every query into a 503, and that is exactly the outage the failure counter
+	// exists to show.
+	//
+	// retrieved stays negative until retrieval actually returns: a query that
+	// died in retrieval has no chunk count, and reporting 0 there would drag the
+	// retrieval-count histogram down with values that were never measured.
+	retrieved := -1
+	defer func() {
+		if s.queryObserver == nil {
+			return
+		}
+		stage, isFailure := queryFailureStage(err)
+		// A rejected request is not a query outcome. Authorization failures and
+		// the validation errors are refused before the pipeline runs, so
+		// counting them would show a failure rate with no failing component
+		// behind it.
+		if err != nil && !isFailure {
+			return
+		}
+		status := "answered"
+		switch {
+		case response.RefusalReason != "":
+			status = "refused"
+		case err != nil:
+			status = "failed"
+		}
+		s.queryObserver.RecordQueryOutcome(access.TenantID, status, time.Since(start), retrieved)
+		if response.RefusalReason != "" {
+			s.queryObserver.RecordQueryRefusal(access.TenantID, response.RefusalReason)
+		}
+		if isFailure {
+			s.queryObserver.RecordQueryFailure(access.TenantID, stage)
+		}
+	}()
+
 	var resolvedSpace knowledgecatalog.Space
 	if s.catalog != nil {
 		resolvedSpace, err = s.catalog.Resolve(ctx, knowledgecatalog.Principal{
@@ -622,7 +712,6 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 		attribute.Int("question_len", len(req.Question)),
 	)
 
-	start := time.Now()
 	emit := func(stage, message, state string) {
 		if stream.progress != nil {
 			stream.progress(QueryProgress{Stage: stage, Message: message, State: state})
@@ -647,6 +736,7 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 		slog.Error("retrieval failed", "error", err)
 		return Response{}, fmt.Errorf("%w: %v", ErrSearchFailed, err)
 	}
+	retrieved = len(retrievalResult.Sources)
 	emit("retrieving", "文档检索完成", "completed")
 	emit("screening", "正在筛选并校验有效证据…", "running")
 	if len(retrievalResult.PartialErrors) > 0 {

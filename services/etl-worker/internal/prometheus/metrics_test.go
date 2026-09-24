@@ -359,3 +359,66 @@ func TestObserveStageRecordsHistograms(t *testing.T) {
 		t.Fatalf("store count = %d, want 1", got)
 	}
 }
+
+func TestQueryMetricsRecordOutcomeRefusalAndFailure(t *testing.T) {
+	m := New("ai_etl_query_metrics")
+
+	m.RecordQueryOutcome("tenant-a", "answered", 1500*time.Millisecond, 5)
+	m.RecordQueryOutcome("tenant-a", "refused", 900*time.Millisecond, 3)
+	m.RecordQueryRefusal("tenant-a", "insufficient_support")
+	m.RecordQueryRefusal("tenant-a", "insufficient_support")
+	m.RecordQueryRefusal("tenant-a", "evidence_filtered")
+	m.RecordQueryFailure("tenant-a", "retrieval")
+
+	if got := histogramCount(t, m.QueryDuration.WithLabelValues("tenant-a", "answered").(prometheus.Metric)); got != 1 {
+		t.Fatalf("answered duration samples = %d, want 1", got)
+	}
+	// A refusal must be its own status. Folding it into "answered" would erase the
+	// only signal that says the system stopped answering.
+	if got := histogramCount(t, m.QueryDuration.WithLabelValues("tenant-a", "refused").(prometheus.Metric)); got != 1 {
+		t.Fatalf("refused duration samples = %d, want 1", got)
+	}
+	if got := histogramCount(t, m.RetrievalCount.WithLabelValues("tenant-a").(prometheus.Metric)); got != 2 {
+		t.Fatalf("retrieval count samples = %d, want 2", got)
+	}
+	if got := counterValue(t, m.QueryRefusals.WithLabelValues("tenant-a", "insufficient_support")); got != 2 {
+		t.Fatalf("insufficient_support refusals = %v, want 2", got)
+	}
+	if got := counterValue(t, m.QueryRefusals.WithLabelValues("tenant-a", "evidence_filtered")); got != 1 {
+		t.Fatalf("evidence_filtered refusals = %v, want 1", got)
+	}
+	// The reason label is what makes the counter actionable, so the two reasons
+	// must not collapse into one series.
+	if got := counterValue(t, m.QueryFailures.WithLabelValues("tenant-a", "retrieval")); got != 1 {
+		t.Fatalf("retrieval failures = %v, want 1", got)
+	}
+}
+
+func TestQueryMetricsSkipUnmeasuredValuesAndNormalizeLabels(t *testing.T) {
+	m := New("ai_etl_query_metrics_norm")
+
+	// A negative duration or retrieval count means "not measured". Recording it as
+	// zero would make a missing measurement look like a fast query that found
+	// nothing, which is the opposite of what an operator would conclude.
+	m.RecordQueryOutcome("", "", -1, -1)
+	if got := histogramCount(t, m.QueryDuration.WithLabelValues("unknown", "unknown").(prometheus.Metric)); got != 0 {
+		t.Fatalf("negative duration must be skipped, got %d samples", got)
+	}
+	if got := histogramCount(t, m.RetrievalCount.WithLabelValues("unknown").(prometheus.Metric)); got != 0 {
+		t.Fatalf("negative retrieved must be skipped, got %d samples", got)
+	}
+
+	m.RecordQueryOutcome("", "", 0, 0)
+	if got := histogramCount(t, m.QueryDuration.WithLabelValues("unknown", "unknown").(prometheus.Metric)); got != 1 {
+		t.Fatalf("zero duration is a real measurement, got %d samples", got)
+	}
+
+	m.RecordQueryRefusal("", "")
+	m.RecordQueryFailure("", "")
+	if got := counterValue(t, m.QueryRefusals.WithLabelValues("unknown", "unknown")); got != 1 {
+		t.Fatalf("normalized refusals = %v, want 1", got)
+	}
+	if got := counterValue(t, m.QueryFailures.WithLabelValues("unknown", "unknown")); got != 1 {
+		t.Fatalf("normalized failures = %v, want 1", got)
+	}
+}

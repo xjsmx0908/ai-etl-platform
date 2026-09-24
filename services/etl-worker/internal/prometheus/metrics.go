@@ -76,9 +76,14 @@ type Metrics struct {
 	SCIMEnabledSince          *prometheus.GaugeVec
 
 	// Query metrics
-	QueryDuration          *prometheus.HistogramVec
-	QueryFailures          *prometheus.CounterVec
-	RetrievalCount         *prometheus.HistogramVec
+	QueryDuration  *prometheus.HistogramVec
+	QueryFailures  *prometheus.CounterVec
+	RetrievalCount *prometheus.HistogramVec
+	// QueryRefusals counts queries the system declined to answer, by reason.
+	// A refusal is an HTTP 200 that carries no sources, so neither the HTTP
+	// metrics nor QueryFailures can see it — without this, "the verifier broke
+	// and every query now refuses" leaves no trace in production.
+	QueryRefusals          *prometheus.CounterVec
 	LLMRequests            *prometheus.CounterVec
 	LLMRequestDuration     *prometheus.HistogramVec
 	LLMConsecutiveFailures *prometheus.GaugeVec
@@ -294,6 +299,15 @@ func New(namespace string) *Metrics {
 			},
 			[]string{"tenant_id", "stage"},
 		),
+		QueryRefusals: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "query",
+				Name:      "refusals_total",
+				Help:      "Queries declined to answer, by refusal reason",
+			},
+			[]string{"tenant_id", "reason"},
+		),
 		RetrievalCount: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: namespace,
@@ -461,6 +475,7 @@ func New(namespace string) *Metrics {
 		m.SCIMEnabledSince,
 		m.QueryDuration,
 		m.QueryFailures,
+		m.QueryRefusals,
 		m.RetrievalCount,
 		m.LLMRequests,
 		m.LLMRequestDuration,
@@ -624,6 +639,51 @@ func (m *Metrics) ObserveStage(stage, tenant, outcome string, duration time.Dura
 			m.StoreFailures.WithLabelValues(tenant, outcome).Inc()
 		}
 	}
+}
+
+// RecordQueryOutcome reports one finished query. Refusals are recorded with
+// status="refused" rather than folded into the answering path: a refusal is a
+// successful response, so nothing else in the metric surface can separate it
+// from an answer.
+func (m *Metrics) RecordQueryOutcome(tenantID, status string, duration time.Duration, retrieved int) {
+	if m == nil {
+		return
+	}
+	if duration >= 0 {
+		m.QueryDuration.WithLabelValues(
+			normalizedLabel(tenantID, "unknown"),
+			normalizedLabel(status, "unknown"),
+		).Observe(duration.Seconds())
+	}
+	if retrieved >= 0 {
+		m.RetrievalCount.WithLabelValues(normalizedLabel(tenantID, "unknown")).Observe(float64(retrieved))
+	}
+}
+
+// RecordQueryRefusal counts a refusal by reason. The reasons are the query
+// package's Refusal* constants — a closed set, so the label stays
+// low-cardinality.
+func (m *Metrics) RecordQueryRefusal(tenantID, reason string) {
+	if m == nil {
+		return
+	}
+	m.QueryRefusals.WithLabelValues(
+		normalizedLabel(tenantID, "unknown"),
+		normalizedLabel(reason, "unknown"),
+	).Inc()
+}
+
+// RecordQueryFailure counts a query that ended in a server error, labelled by
+// the stage that failed. Client errors (4xx) are not failures and are never
+// reported here.
+func (m *Metrics) RecordQueryFailure(tenantID, stage string) {
+	if m == nil {
+		return
+	}
+	m.QueryFailures.WithLabelValues(
+		normalizedLabel(tenantID, "unknown"),
+		normalizedLabel(stage, "unknown"),
+	).Inc()
 }
 
 // Handler returns an HTTP handler for the /metrics endpoint.

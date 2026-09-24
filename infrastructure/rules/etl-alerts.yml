@@ -224,3 +224,43 @@ groups:
           severity: warning
         annotations:
           summary: Knowledge Release Center API 5xx rate is above 5%
+
+      # A refusal is a successful HTTP 200 that carries no sources, so neither
+      # QueryApiHighErrorRate nor QueryApiHighLatency can see it. This is the
+      # only rule that notices "the system stopped answering".
+      #
+      # The threshold is deliberately near 1 rather than a "reasonable" share:
+      # refusing an off-corpus question is correct behaviour, so any threshold
+      # low enough to catch a slow decline would also fire on ordinary traffic.
+      # At 90% the cause is not a judgement call - one reason dominates, and
+      # the reason label names the component behind it.
+      - alert: QueryRefusalRateNearTotal
+        expr: |
+          sum(rate(ai_etl_query_refusals_total[15m]))
+          /
+          clamp_min(sum(rate(ai_etl_query_duration_seconds_count[15m])), 1) > 0.9
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Nearly every query is being refused
+          description: >-
+            More than 90% of finished queries were refused. Break the reason
+            down with
+            sum by (reason) (rate(ai_etl_query_refusals_total[15m])) :
+            evidence_filtered rising means documents stopped being published,
+            insufficient_support means the grounding check started rejecting
+            everything, sensitive_content means the output filter is tripping on
+            ordinary answers, and no_evidence means retrieval returned nothing.
+
+      - alert: QueryFailuresNonZero
+        expr: sum by (stage) (increase(ai_etl_query_failures_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Queries are failing at stage {{ $labels.stage }}
+          description: >-
+            The query pipeline is returning 5xx. The stage label names the
+            component that broke: retrieval, generation, knowledge_catalog or
+            internal. Authorization rejections are not counted here.
