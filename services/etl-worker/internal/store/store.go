@@ -528,6 +528,14 @@ type StoredChunk struct {
 // permissions and returns them sorted by chunk index. Used by the document
 // detail page to render a document's chunks. An empty allowedPermissions list
 // omits the permission clause entirely.
+//
+// It returns every stored chunk that survives exact-content deduplication and
+// deliberately does NOT hide a chunk merely because a sibling chunk contains it.
+// Hiding such a chunk here hides it only from this endpoint: the retrieval index
+// still serves it, so a citation could name a chunk the detail page never shows
+// and the reader could not check it. Keeping the endpoint faithful to the store
+// is what makes citations resolvable -- scripts/check-index-consistency.py
+// asserts exactly that (endpoint chunks == stored chunks).
 func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID string, allowedPermissions []string) ([]StoredChunk, error) {
 	if tenantID == "" || docID == "" {
 		return nil, fmt.Errorf("tenant_id and doc_id are required")
@@ -635,7 +643,7 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 	}
 
 	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
-	return removeContainedAdjacentChunks(chunks), nil
+	return chunks, nil
 }
 
 // carriesIdentity reports whether a chunk names the version and generation it
@@ -643,28 +651,6 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 // pair, so a chunk missing either half can never be selected as the current one.
 func carriesIdentity(chunk StoredChunk) bool {
 	return chunk.DocumentVersionID != "" && chunk.GenerationID != ""
-}
-
-func removeContainedAdjacentChunks(chunks []StoredChunk) []StoredChunk {
-	if len(chunks) < 2 {
-		return chunks
-	}
-	result := make([]StoredChunk, 0, len(chunks))
-	for _, chunk := range chunks {
-		normalized := strings.Join(strings.Fields(chunk.Content), " ")
-		if len(result) > 0 {
-			previous := strings.Join(strings.Fields(result[len(result)-1].Content), " ")
-			if previous != "" && strings.Contains(normalized, previous) && float64(len(previous))/float64(len(normalized)) >= 0.65 {
-				result[len(result)-1] = chunk
-				continue
-			}
-			if normalized != "" && strings.Contains(previous, normalized) && float64(len(normalized))/float64(len(previous)) >= 0.65 {
-				continue
-			}
-		}
-		result = append(result, chunk)
-	}
-	return result
 }
 
 // strVal returns a payload value as a string when it is one.

@@ -89,7 +89,12 @@ func TestQdrantListChunksByDoc(t *testing.T) {
 	}
 }
 
-func TestQdrantListChunksByDocHidesLegacyContainedOverlap(t *testing.T) {
+// A chunk fully contained in a sibling chunk is still a chunk of this document.
+// The endpoint used to hide it, but hiding it here does not remove it from the
+// retrieval index -- a citation could then name a chunk the detail page never
+// shows. The endpoint stays faithful to the store instead; the cross-layer
+// consistency check asserts endpoint chunks == stored chunks.
+func TestQdrantListChunksByDocKeepsContainedOverlapVisible(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/points/scroll") {
 			_, _ = w.Write([]byte(`{"result":{"points":[
@@ -110,8 +115,11 @@ func TestQdrantListChunksByDocHidesLegacyContainedOverlap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(chunks) != 1 || chunks[0].ChunkID != "c2" {
-		t.Fatalf("expected only richer chunk c2, got %+v", chunks)
+	if len(chunks) != 2 {
+		t.Fatalf("expected both chunks to stay visible, got %d: %+v", len(chunks), chunks)
+	}
+	if chunks[0].ChunkID != "c1" || chunks[1].ChunkID != "c2" {
+		t.Fatalf("expected index order c1,c2, got %q,%q", chunks[0].ChunkID, chunks[1].ChunkID)
 	}
 }
 
