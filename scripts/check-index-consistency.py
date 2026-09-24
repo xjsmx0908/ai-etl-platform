@@ -25,15 +25,20 @@ registry_count_stale    the registry's own chunk counters disagree with the stor
                         -> the document list and the detail page render those
                            numbers, so the page reads "-" for a document that
                            does have chunks
-space_key_unset         stored points whose metadata.knowledge_base_id is not the
-                        document's knowledge space
+space_key_unset         chunks with no stored copy carrying the document's knowledge
+                        space
                         -> the vector branch cannot return them inside that space,
-                           so part of the document is keyword-only
+                           so part of the document is keyword-only. A chunk whose
+                           *current* copy carries the key is not reported, even when a
+                           superseded copy has no metadata at all.
 permission_drift        stored points whose permission differs from the registry
                         -> retrieval filters on the stale value (leak or black-hole)
-duplicate_chunk_points  more than one stored point carries the same chunk_id
-                        -> re-seeding appends instead of replacing; counts and
-                           digests can still look right while the store is not
+duplicate_chunk_points  more than one stored point carries the same chunk_id *within
+                        the same generation*
+                        -> a write that should have replaced appended instead; counts
+                           and digests can still look right while the store is not.
+                           Several points for one chunk id across *different*
+                           generations is the design, not a finding.
 
 Exit status: 0 when every layer agrees, 1 when any finding is reported.
 """
@@ -139,7 +144,13 @@ def qdrant_points(qdrant, collection, doc_id, api_key):
         body = {
             "filter": {"must": [{"key": "doc_id", "match": {"value": doc_id}}]},
             "limit": 1000,
-            "with_payload": ["chunk_id", "permission", "metadata"],
+            "with_payload": [
+                "chunk_id",
+                "permission",
+                "metadata",
+                "document_version_id",
+                "generation_id",
+            ],
             "with_vector": False,
         }
         if offset is not None:
@@ -160,6 +171,8 @@ def qdrant_points(qdrant, collection, doc_id, api_key):
                     "chunk_id": data.get("chunk_id") or str(point.get("id")),
                     "permission": data.get("permission", ""),
                     "knowledge_base_id": metadata.get("knowledge_base_id", ""),
+                    "document_version_id": data.get("document_version_id") or "",
+                    "generation_id": data.get("generation_id") or "",
                 }
             )
         return page, result.get("next_page_offset")
@@ -305,8 +318,21 @@ def classify_payload_fields(doc_id, document, points):
     permission = (document.get("permission") or "").strip()
 
     if space:
-        unset = sorted({point["chunk_id"] for point in points
-                        if (point.get("knowledge_base_id") or "").strip() != space})
+        # A chunk id is unreachable inside the space only when *no* stored copy of it
+        # carries the document's space key. Grouping by chunk id is the whole point:
+        # the store keeps every generation, and the superseded copies from the
+        # 2026-08-16 seed carry no metadata at all while the current generation
+        # carries the right key. A per-point rule therefore flags chunks that the
+        # space-filtered branch does reach -- which is a wrong label, not a finding.
+        # Live check: `HR-2024-001_0000` has two points, the current one
+        # (`metadata.knowledge_base_id = enterprise-demo`) and a metadata-less legacy
+        # one; the chunk is reachable, and the per-point rule flagged it.
+        carries = {}
+        for point in points:
+            chunk_id = point["chunk_id"]
+            ok = (point.get("knowledge_base_id") or "").strip() == space
+            carries[chunk_id] = carries.get(chunk_id, False) or ok
+        unset = sorted(chunk_id for chunk_id, ok in carries.items() if not ok)
         if unset:
             findings.append(
                 {
@@ -319,9 +345,10 @@ def classify_payload_fields(doc_id, document, points):
                     "points_unset": len(unset),
                     "unset_chunk_ids": unset,
                     "detail": (
-                        "stored points do not carry the document's knowledge space: "
-                        "the vector branch cannot return them inside that space, so "
-                        "those chunks are reachable by keyword search only"
+                        "no stored copy of these chunks carries the document's "
+                        "knowledge space: the vector branch cannot return them inside "
+                        "that space, so those chunks are reachable by keyword search "
+                        "only"
                     ),
                 }
             )
@@ -346,11 +373,29 @@ def classify_payload_fields(doc_id, document, points):
                 }
             )
 
-    counts = {}
+    # The alarm is NOT "one chunk id, several points". A point id is derived from the
+    # identity it belongs to -- `chunkIDToUint(generation_id + "\x00" + chunk_id)` in
+    # UpsertGeneration -- and Qdrant overwrites any point whose id already exists. So
+    # re-writing the same generation replaces, and two points can only share a chunk
+    # id when they belong to *different* generations. That is the design: the store
+    # keeps every generation so a re-ingest does not lose the published one before the
+    # new one is promoted. Live check: 116 chunk ids across 114 documents have more
+    # than one point, and **zero** of them share an identity.
+    #
+    # The real alarm is the opposite shape: one chunk id, several points *with the same
+    # identity*. The id derivation makes that impossible, so if it ever fires the
+    # derivation changed or something wrote with a different scheme -- i.e. a write
+    # that is no longer idempotent, which is exactly what silently duplicates chunks.
+    by_identity = {}
     for point in points:
-        counts[point["chunk_id"]] = counts.get(point["chunk_id"], 0) + 1
-    duplicated = sorted(chunk_id for chunk_id, count in counts.items() if count > 1)
-    if duplicated:
+        identity = (point["chunk_id"], point.get("document_version_id") or "",
+                    point.get("generation_id") or "")
+        by_identity[identity] = by_identity.get(identity, 0) + 1
+
+    non_idempotent = sorted(
+        chunk_id for (chunk_id, _, _), count in by_identity.items() if count > 1
+    )
+    if non_idempotent:
         findings.append(
             {
                 "kind": "duplicate_chunk_points",
@@ -358,12 +403,14 @@ def classify_payload_fields(doc_id, document, points):
                 "file_name": file_name,
                 "publication_status": publication_status,
                 "points_total": len(points),
-                "unique_chunk_ids": len(counts),
-                "duplicated_chunk_ids": duplicated,
+                "unique_chunk_ids": len({point["chunk_id"] for point in points}),
+                "duplicated_chunk_ids": non_idempotent,
                 "detail": (
-                    "more than one stored point carries the same chunk id: a re-seed "
-                    "or re-index appended instead of replacing, so the store holds "
-                    "stale copies that counts and digests cannot see"
+                    "the same chunk id appears more than once *within one generation*: "
+                    "the point id is derived from (generation, chunk id), so a write "
+                    "that used the same identity should have replaced instead of "
+                    "appending -- the store now holds copies no count or digest can "
+                    "tell apart"
                 ),
             }
         )

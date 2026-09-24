@@ -26,10 +26,13 @@
                            在页面上显示成「—」，而其它层看起来都对
 
 三条判定（classify_payload_fields，比较存储点上的**字段**）：
-  space_key_unset        点的 metadata.knowledge_base_id 与文档的知识空间不一致
-                         → 这些块在该空间内进不了向量分支，只剩关键词可召回
+  space_key_unset        某个 chunk id 的**所有**存储拷贝都不带文档的知识空间
+                         → 该块在该空间内进不了向量分支，只剩关键词可召回
+                         （只要有一份拷贝带对就不报 —— 存储保留每个代际）
   permission_drift       点的 permission 与登记表不一致 → 检索按旧值过滤（越权或黑洞）
-  duplicate_chunk_points 同一个 chunk_id 有多个存储点 → 重跑种子是追加而不是替换
+  duplicate_chunk_points 同一个 chunk_id 在**同一个代际**里有多个存储点 → 某次写入没有替换
+                         （点 id 由 (代际, chunk id) 派生，Qdrant 对已存在的 id 是覆盖；
+                          跨代际的多份是设计，不报）
 """
 
 import importlib.util
@@ -208,11 +211,25 @@ class ClassifyDocumentTest(unittest.TestCase):
 
 
 def points(*entries):
-    """Build stored-point rows the way qdrant_points() shapes them."""
-    return [
-        {"chunk_id": chunk_id, "permission": permission, "knowledge_base_id": space}
-        for chunk_id, permission, space in entries
-    ]
+    """Build stored-point rows the way qdrant_points() shapes them.
+
+    Each entry is `(chunk_id, permission, knowledge_base_id)`, or
+    `(chunk_id, permission, knowledge_base_id, document_version_id, generation_id)`
+    when the rule needs to tell generations apart.
+    """
+    rows = []
+    for entry in entries:
+        chunk_id, permission, space = entry[:3]
+        rows.append(
+            {
+                "chunk_id": chunk_id,
+                "permission": permission,
+                "knowledge_base_id": space,
+                "document_version_id": entry[3] if len(entry) > 3 else "",
+                "generation_id": entry[4] if len(entry) > 4 else "",
+            }
+        )
+    return rows
 
 
 class ClassifyPayloadFieldsTest(unittest.TestCase):
@@ -244,6 +261,22 @@ class ClassifyPayloadFieldsTest(unittest.TestCase):
         self.assertEqual(findings[0]["points_unset"], 2)
         self.assertEqual(findings[0]["unset_chunk_ids"], ["d1_0000", "d1_0001"])
 
+    def test_a_chunk_id_whose_other_copy_carries_the_key_is_not_reported(self):
+        # 存储保留每个代际，被取代的旧拷贝可能完全没有 metadata。只要**有一份**拷贝带对了
+        # 空间键，这个 chunk 在该空间内就是召得回的 —— 按点判定会把它误报成「只剩关键词」。
+        # 线上 `HR-2024-001_0000` 正是这个形状。
+        findings = MODULE.classify_payload_fields(
+            "d1",
+            {"file_name": "a.txt", "knowledge_space_id": "sp", "permission": "internal"},
+            points(
+                ("d1_0000", "internal", "sp", "ver-2", "gen-2"),
+                ("d1_0000", "internal", "", "", ""),
+                ("d1_0001", "internal", "", "ver-2", "gen-2"),
+            ),
+        )
+        self.assertEqual(kinds(findings), ["space_key_unset"])
+        self.assertEqual(findings[0]["unset_chunk_ids"], ["d1_0001"])
+
     def test_document_without_a_space_is_not_compared_against_one(self):
         # 文档自己没有空间时没有可比对象 —— 否则每个带空间值的点都会被误报。
         findings = MODULE.classify_payload_fields(
@@ -263,23 +296,44 @@ class ClassifyPayloadFieldsTest(unittest.TestCase):
         self.assertEqual(findings[0]["registry_permission"], "internal")
         self.assertEqual(findings[0]["drifted_chunk_ids"], ["d1_0001"])
 
-    def test_two_points_for_one_chunk_id_are_reported(self):
+    def test_two_points_for_one_chunk_id_in_one_generation_are_reported(self):
+        # 同一个代际里出现两份同 chunk id —— 点 id 由 (代际, chunk id) 派生，Qdrant 对已存在的
+        # id 是覆盖，所以这种形状意味着某次写入**没有**替换，是真正的不幂等。
         findings = MODULE.classify_payload_fields(
             "d1",
             {"file_name": "a.txt", "knowledge_space_id": "sp", "permission": "internal"},
             points(
-                ("d1_0000", "internal", "sp"),
-                ("d1_0000", "internal", ""),
-                ("d1_0001", "internal", "sp"),
+                ("d1_0000", "internal", "sp", "ver-1", "gen-1"),
+                ("d1_0000", "internal", "sp", "ver-1", "gen-1"),
+                ("d1_0001", "internal", "sp", "ver-1", "gen-1"),
             ),
         )
-        self.assertEqual(
-            sorted(kinds(findings)), ["duplicate_chunk_points", "space_key_unset"]
-        )
-        duplicate = [f for f in findings if f["kind"] == "duplicate_chunk_points"][0]
+        self.assertEqual(kinds(findings), ["duplicate_chunk_points"])
+        duplicate = findings[0]
         self.assertEqual(duplicate["duplicated_chunk_ids"], ["d1_0000"])
         self.assertEqual(duplicate["points_total"], 3)
         self.assertEqual(duplicate["unique_chunk_ids"], 2)
+
+    def test_two_points_for_one_chunk_id_across_generations_are_not_reported(self):
+        # 跨代际的同一 chunk id 是**设计**：存储保留每个代际，这样重复入库不会在新代际
+        # 发布之前丢掉已发布的那一份。线上 116 个这样的 chunk id，0 个同身份 ——
+        # 把它们报成「重复入库是追加」就是给设计贴错标签。
+        #
+        # 身份是 (版本, 代际) 两个维度，所以三对点分别只差代际、只差版本、两者都差 ——
+        # 少写一个维度就会把其中一对误报成「不幂等」。
+        findings = MODULE.classify_payload_fields(
+            "d1",
+            {"file_name": "a.txt", "knowledge_space_id": "sp", "permission": "internal"},
+            points(
+                ("d1_0000", "internal", "sp", "ver-1", "gen-1"),
+                ("d1_0000", "internal", "sp", "ver-2", "gen-2"),
+                ("d1_0001", "internal", "sp", "ver-1", "gen-1"),
+                ("d1_0001", "internal", "sp", "ver-1", "gen-2"),
+                ("d1_0002", "internal", "sp", "ver-1", "gen-1"),
+                ("d1_0002", "internal", "sp", "ver-2", "gen-1"),
+            ),
+        )
+        self.assertEqual(findings, [])
 
     def test_document_without_stored_points_reports_nothing(self):
         findings = MODULE.classify_payload_fields(
