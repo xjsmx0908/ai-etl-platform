@@ -99,6 +99,33 @@ def es_count(es, index, doc_id):
     return payload["hits"]["total"]["value"]
 
 
+MAX_SCROLL_PAGES = 10000
+
+
+def scroll_pages(fetch):
+    """Every point, following next_page_offset to the end.
+
+    Qdrant's scroll returns at most `limit` points per call plus a next_page_offset.
+    Ignoring that offset silently truncates the document -- and since every finding
+    here compares the stored ids against another layer, a truncated read makes the
+    stored side *smaller* and the check *quieter*. That is the worst direction for a
+    check to be wrong: it hides problems instead of inventing them. One document in
+    the live tenant has 2170 stored points, so this is not hypothetical.
+
+    `fetch(offset)` returns `(points, next_page_offset)`. The page cap only exists to
+    turn a server that never terminates into an error rather than a hang.
+    """
+    points, offset, pages = [], None, 0
+    while True:
+        page, offset = fetch(offset)
+        points.extend(page)
+        pages += 1
+        if offset is None:
+            return points
+        if pages >= MAX_SCROLL_PAGES:
+            raise RuntimeError(f"scroll did not terminate after {pages} pages")
+
+
 def qdrant_points(qdrant, collection, doc_id, api_key):
     """One entry per stored point: the chunk id plus the fields retrieval filters on.
 
@@ -107,29 +134,37 @@ def qdrant_points(qdrant, collection, doc_id, api_key):
     the only ones this check has an opinion about.
     """
     headers = {"api-key": api_key} if api_key else {}
-    payload = http_json(
-        f"{qdrant}/collections/{collection}/points/scroll",
-        method="POST",
-        body={
+
+    def fetch(offset):
+        body = {
             "filter": {"must": [{"key": "doc_id", "match": {"value": doc_id}}]},
             "limit": 1000,
             "with_payload": ["chunk_id", "permission", "metadata"],
             "with_vector": False,
-        },
-        headers=headers,
-    )
-    points = []
-    for point in payload.get("result", {}).get("points", []):
-        data = point.get("payload", {})
-        metadata = data.get("metadata") or {}
-        points.append(
-            {
-                "chunk_id": data.get("chunk_id") or str(point.get("id")),
-                "permission": data.get("permission", ""),
-                "knowledge_base_id": metadata.get("knowledge_base_id", ""),
-            }
+        }
+        if offset is not None:
+            body["offset"] = offset
+        payload = http_json(
+            f"{qdrant}/collections/{collection}/points/scroll",
+            method="POST",
+            body=body,
+            headers=headers,
         )
-    return points
+        result = payload.get("result", {})
+        page = []
+        for point in result.get("points", []):
+            data = point.get("payload", {})
+            metadata = data.get("metadata") or {}
+            page.append(
+                {
+                    "chunk_id": data.get("chunk_id") or str(point.get("id")),
+                    "permission": data.get("permission", ""),
+                    "knowledge_base_id": metadata.get("knowledge_base_id", ""),
+                }
+            )
+        return page, result.get("next_page_offset")
+
+    return scroll_pages(fetch)
 
 
 def qdrant_chunk_ids(points):

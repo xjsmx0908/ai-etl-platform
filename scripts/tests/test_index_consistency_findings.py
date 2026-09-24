@@ -12,8 +12,9 @@
 的 manifest 对账只覆盖**有 manifest 行**的文档，所以从来没有拿到过 manifest 的文档
 在构造上就在它的射程之外。
 
-这里只测判定规则（纯函数 classify_document），不连服务 —— 规则写错时症状是「对账
-永远报绿」，光靠跑一次正例发现不了。
+这里只测判定规则（纯函数 classify_document）与分页（scroll_pages），不连服务 —— 规则写错时症状是
+「对账永远报绿」，光靠跑一次正例发现不了；而分页写错时症状是对账**变安静**（存储侧被读短），
+同样发现不了。
 
 四条判定（classify_document，比较块的**集合**）：
   keyword_unsearchable   ES 里没有块而 Qdrant 有 → 全文召回静默丢掉这份文档
@@ -303,6 +304,60 @@ class ClassifyPayloadFieldsTest(unittest.TestCase):
             points(("d1_0000", " internal ", "sp"), ("d1_0001", "internal", "sp")),
         )
         self.assertEqual(findings, [])
+
+
+class ScrollPagesTest(unittest.TestCase):
+    """分页：Qdrant 的 scroll 每次最多返回 `limit` 个点，另给一个 next_page_offset。
+
+    忽略那个 offset 会把文档**读短**，而对账的每一条判定都是拿存储侧的 id 去和另一层比 ——
+    读短了存储侧就变小，于是检查**变安静**而不是变吵。这是检查最不该错的方向：它会漏掉问题。
+    线上有 1 份文档有 2170 个存储点，所以这不是假想。
+    """
+
+    def test_every_page_is_collected_in_order(self):
+        pages = [
+            (["a", "b"], "offset-1"),
+            (["c"], "offset-2"),
+            (["d"], None),
+        ]
+        calls = []
+
+        def fetch(offset):
+            calls.append(offset)
+            return pages[len(calls) - 1]
+
+        self.assertEqual(MODULE.scroll_pages(fetch), ["a", "b", "c", "d"])
+        self.assertEqual(calls, [None, "offset-1", "offset-2"])
+
+    def test_a_single_page_makes_one_call(self):
+        calls = []
+
+        def fetch(offset):
+            calls.append(offset)
+            return (["only"], None)
+
+        self.assertEqual(MODULE.scroll_pages(fetch), ["only"])
+        self.assertEqual(calls, [None])
+
+    def test_the_offset_from_one_page_is_passed_to_the_next(self):
+        seen = []
+
+        def fetch(offset):
+            seen.append(offset)
+            if offset is None:
+                return (["first"], "cursor")
+            return (["second"], None)
+
+        MODULE.scroll_pages(fetch)
+        self.assertEqual(seen, [None, "cursor"])
+
+    def test_a_server_that_never_terminates_raises_instead_of_hanging(self):
+        # 只给一页就停下来的实现在这里也会「通过」—— 所以必须钉住「不终止要报错」。
+        def fetch(offset):
+            return (["more"], "again")
+
+        with self.assertRaises(RuntimeError):
+            MODULE.scroll_pages(fetch)
 
 
 if __name__ == "__main__":
