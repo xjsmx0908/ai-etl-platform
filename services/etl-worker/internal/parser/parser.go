@@ -46,7 +46,9 @@ func New(cfg config.Config, m *metrics.Collector) *Parser {
 //   - Markdown headings (# ## ### etc.) always start a new chunk
 //   - Empty lines act as paragraph boundaries
 //   - Short paragraphs (< MinChunkSize) are merged with the next one
-//   - Oversized paragraphs are force-split with overlap
+//   - Oversized paragraphs are force-split with overlap, and every cut is
+//     pulled back to a sentence or line boundary so no chunk starts or ends
+//     mid-sentence
 //
 // The channel is closed when parsing completes or an error occurs.
 func (p *Parser) ParseStream(ctx context.Context, task model.Task, out chan<- model.Chunk) (err error) {
@@ -71,6 +73,11 @@ func (p *Parser) ParseStream(ctx context.Context, task model.Task, out chan<- mo
 	var buf strings.Builder
 	idx := 0
 
+	// overlapOnly tracks whether the buffer holds nothing but the overlap
+	// carried over from the previous force split. Such a buffer is a pure
+	// duplicate of the previous chunk's tail and must not be emitted on its own.
+	overlapOnly := false
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -82,12 +89,13 @@ func (p *Parser) ParseStream(ctx context.Context, task model.Task, out chan<- mo
 
 		// Markdown heading detection: always starts a new chunk
 		if isMarkdownHeading(line) && buf.Len() > 0 {
-			if err := p.emit(ctx, out, task, &idx, buf.String()); err != nil {
+			if err := p.emitOversized(ctx, out, task, &idx, buf.String()); err != nil {
 				return err
 			}
 			buf.Reset()
 			buf.WriteString(line)
 			buf.WriteByte('\n')
+			overlapOnly = false
 			continue
 		}
 
@@ -95,12 +103,16 @@ func (p *Parser) ParseStream(ctx context.Context, task model.Task, out chan<- mo
 		if strings.TrimSpace(line) == "" && buf.Len() > 0 {
 			// Only emit if buffer exceeds minimum chunk size (merge short paragraphs)
 			if utf8.RuneCountInString(buf.String()) >= MinChunkSize {
-				if err := p.emit(ctx, out, task, &idx, buf.String()); err != nil {
+				if err := p.emitOversized(ctx, out, task, &idx, buf.String()); err != nil {
 					return err
 				}
-				overlap := p.overlap(buf.String())
+				// Paragraph boundaries are semantic boundaries. Overlap only
+				// helps when force-splitting one oversized body; copying a whole
+				// paragraph into the next chunk creates near-duplicate chunks and
+				// lets repeated headers dominate retrieval. The parser service
+				// chunker behaves the same way.
 				buf.Reset()
-				buf.WriteString(overlap)
+				overlapOnly = false
 			}
 			// If too short, keep accumulating (paragraph merge)
 			continue
@@ -108,21 +120,28 @@ func (p *Parser) ParseStream(ctx context.Context, task model.Task, out chan<- mo
 
 		buf.WriteString(line)
 		buf.WriteByte('\n')
+		overlapOnly = false
 
-		// Force split for oversized paragraphs
-		if buf.Len() >= p.cfg.MaxChunkSize {
-			if err := p.emit(ctx, out, task, &idx, buf.String()); err != nil {
+		// Force split for oversized paragraphs. MaxChunkSize is a character
+		// budget (the same unit the parser service and .env.example document),
+		// so it is measured in runes, and the cut is pulled back to a natural
+		// boundary: a byte-length test both let a single long line through
+		// whole and cut sentences in half.
+		if utf8.RuneCountInString(buf.String()) >= p.cfg.MaxChunkSize {
+			if err := p.emitOversized(ctx, out, task, &idx, buf.String()); err != nil {
 				return err
 			}
 			overlap := p.overlap(buf.String())
 			buf.Reset()
 			buf.WriteString(overlap)
+			overlapOnly = overlap != ""
 		}
 	}
 
-	// Flush remaining content
-	if buf.Len() > 0 {
-		if err := p.emit(ctx, out, task, &idx, buf.String()); err != nil {
+	// Flush remaining content. A buffer holding nothing but the carried overlap
+	// repeats the previous chunk, so it is skipped.
+	if buf.Len() > 0 && !overlapOnly {
+		if err := p.emitOversized(ctx, out, task, &idx, buf.String()); err != nil {
 			return err
 		}
 	}
@@ -321,11 +340,127 @@ func (p *Parser) emit(ctx context.Context, out chan<- model.Chunk, task model.Ta
 	}
 }
 
+// Boundary characters used when force-splitting a body that carries no
+// structural markers. Strongest first: a line break, then a sentence
+// terminator, then a clause separator. Ending a piece just after one of these
+// keeps whole sentences inside a single chunk instead of cutting a sentence in
+// half across two chunks -- a split sentence is retrievable by neither.
+const (
+	lineBreak           = "\n"
+	sentenceTerminators = "。！？!?；;…"
+	clauseSeparators    = "，、,：:"
+	boundaryChars       = lineBreak + sentenceTerminators + clauseSeparators
+)
+
+// splitBoundaryEnd returns the largest rune offset <= limit that lands just
+// after a natural boundary, falling back to limit when the window holds none
+// (for example one unbroken sentence longer than maxSize).
+func splitBoundaryEnd(runes []rune, start, limit, minSize int) int {
+	if limit >= len(runes) {
+		return len(runes)
+	}
+	floor := start + minSize
+	if floor <= start {
+		floor = start + 1
+	}
+	if floor >= limit {
+		return limit
+	}
+	for _, chars := range []string{lineBreak, sentenceTerminators, clauseSeparators} {
+		for offset := limit; offset > floor; offset-- {
+			if strings.ContainsRune(chars, runes[offset-1]) {
+				return offset
+			}
+		}
+	}
+	return limit
+}
+
+// snapToBoundary moves candidate forward to the next boundary start so a chunk
+// never begins mid-sentence. It returns candidate unchanged when no boundary
+// exists before limit.
+func snapToBoundary(runes []rune, candidate, limit int) int {
+	if candidate <= 0 {
+		return 0
+	}
+	if strings.ContainsRune(boundaryChars, runes[candidate-1]) {
+		return candidate
+	}
+	for offset := candidate + 1; offset < limit; offset++ {
+		if strings.ContainsRune(boundaryChars, runes[offset-1]) {
+			return offset
+		}
+	}
+	return candidate
+}
+
+// splitOversized splits text into pieces of at most maxSize runes, each ending
+// just after a natural boundary and carrying a rune-safe overlap into the next
+// piece. It mirrors the parser service's force split so both chunkers agree on
+// where a chunk ends.
+func splitOversized(text string, maxSize, overlap, minSize int) []string {
+	runes := []rune(text)
+	if len(runes) <= maxSize {
+		return []string{text}
+	}
+	pieces := make([]string, 0, len(runes)/maxSize+1)
+	pos := 0
+	for pos < len(runes) {
+		limit := pos + maxSize
+		if limit > len(runes) {
+			limit = len(runes)
+		}
+		end := splitBoundaryEnd(runes, pos, limit, minSize)
+		if piece := strings.TrimSpace(string(runes[pos:end])); piece != "" {
+			pieces = append(pieces, piece)
+		}
+		if end >= len(runes) {
+			break
+		}
+		// Move the start inside the overlap window, but never backwards (a
+		// stalled position would loop forever) and never mid-sentence.
+		next := end - overlap
+		if next < 0 {
+			next = 0
+		}
+		next = snapToBoundary(runes, next, end)
+		if next > pos {
+			pos = next
+		} else {
+			pos = end
+		}
+	}
+	return pieces
+}
+
+// emitOversized emits content as one or more boundary-aligned chunks.
+func (p *Parser) emitOversized(ctx context.Context, out chan<- model.Chunk, task model.Task, idx *int, content string) error {
+	for _, piece := range splitOversized(content, p.cfg.MaxChunkSize, p.cfg.ChunkOverlap, MinChunkSize) {
+		if err := p.emit(ctx, out, task, idx, piece); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// overlap returns the trailing overlap window of s, snapped forward to a
+// boundary and never cut mid-rune. Slicing bytes here used to both mangle
+// multi-byte characters and hand the next chunk a half-sentence to open with.
 func (p *Parser) overlap(s string) string {
-	if len(s) <= p.cfg.ChunkOverlap {
+	if p.cfg.ChunkOverlap <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= p.cfg.ChunkOverlap {
 		return s
 	}
-	return s[len(s)-p.cfg.ChunkOverlap:]
+	tail := runes[len(runes)-p.cfg.ChunkOverlap:]
+	for offset := 1; offset < len(tail); offset++ {
+		if strings.ContainsRune(boundaryChars, tail[offset-1]) {
+			return string(tail[offset:])
+		}
+	}
+	return string(tail)
 }
 
 func copyStringMap(in map[string]string) map[string]string {

@@ -146,3 +146,110 @@ def test_oversized_sheet_repeats_header_on_each_chunk(monkeypatch):
     joined = "\n".join(item["content"] for item in chunks)
     assert "G00001\t员工1\t装备承制" in joined
     assert "G00011\t员工11\t装备承制" in joined
+
+
+# --- force-split boundary regression (2026-09-24) ---------------------------
+# An unstructured body (no blank lines, no headings) longer than MAX_CHUNK_SIZE
+# used to be cut at raw character offsets. Three consequences, all reproducible
+# against the deployed parser: a chunk could begin and end mid-sentence, a
+# terminator-free sentence straddling the cut was whole in no chunk, and the
+# overlap tail was re-emitted as its own trailing chunk. See
+# docs/optimization-plan.md §1.3 缺陷 21.
+
+PROBE_SENTENCES = (
+    "本次巡检覆盖了全部接入通道与导出链路。",
+    "每个通道都记录了请求标识与处理耗时。",
+    "审计条目按租户隔离并且不可跨租户检索。",
+    "文档在入库前会先做一次哈希校验。",
+    "解析失败的任务会进入重试队列并保留原始输入。",
+    "权限判定发生在检索之前而不是之后。",
+    "引用必须指向当前已发布的代际。",
+    "被取代的版本仍保留自己的审批证据。",
+    "索引水位与磁盘余量各自独立告警。",
+    "备份脚本会在写入前校验源对象的完整性。",
+    "所有对外端口默认绑定在回环地址上。",
+    "登录限流发生在口令校验之前。",
+    "任务状态由单一存储负责而不是各处各写一份。",
+    "检索结果会先做一次内容去重再排序。",
+    "预审结论只描述发布资格不描述合规程度。",
+)
+
+# Carries no internal terminator, so any character-level cut lands inside it.
+PROBE_LONG_SENTENCE = (
+    "当同一份文档在入库过程中被中断并重新投递时系统必须依据检查点恢复已完成的解析与向量化结果"
+    "而不能把整份文档从头重新处理一遍否则既浪费算力也会因为两次运行之间的切块边界差异而在检索"
+    "索引里留下两份内容相近但身份不同的块进而让同一个问句在两次检索之间返回不同的证据集合"
+)
+
+
+def _unstructured_probe_text() -> str:
+    filler = ""
+    index = 0
+    while len(filler) < 500:
+        filler += PROBE_SENTENCES[index % len(PROBE_SENTENCES)]
+        index += 1
+    return filler[:500] + PROBE_LONG_SENTENCE + "后续小节继续描述其余通道的观测口径与保留期限。" * 2
+
+
+def _assert_chunks_start_and_end_on_boundaries(text, chunks, min_size):
+    contents = [item["content"] for item in chunks]
+    for content in contents:
+        start = text.index(content)
+        assert start == 0 or text[start - 1] in "。！？；\n", content[:40]
+        assert content.endswith("。"), content[-40:]
+    # No chunk may be a re-emitted tail of another chunk, and no chunk may fall
+    # below the configured minimum size.
+    for i, outer in enumerate(contents):
+        for j, inner in enumerate(contents):
+            if i != j:
+                assert not (len(inner) < len(outer) and inner in outer), inner[:40]
+    assert not [content for content in contents if len(content) < min_size]
+
+
+def test_force_split_keeps_sentences_whole_and_drops_the_duplicate_tail(monkeypatch):
+    monkeypatch.setattr(
+        chunker,
+        "get_settings",
+        lambda: SimpleNamespace(MIN_CHUNK_SIZE=128, MAX_CHUNK_SIZE=600, CHUNK_OVERLAP=50),
+    )
+    text = _unstructured_probe_text()
+    assert "\n" not in text and len(text) > 600
+
+    chunks = chunker.chunk_text(text, doc_id="probe", tenant_id="tenant-a")
+
+    _assert_chunks_start_and_end_on_boundaries(text, chunks, 128)
+    assert any(PROBE_LONG_SENTENCE in item["content"] for item in chunks)
+
+
+def test_force_split_ends_every_chunk_on_a_sentence_boundary(monkeypatch):
+    monkeypatch.setattr(
+        chunker,
+        "get_settings",
+        lambda: SimpleNamespace(MIN_CHUNK_SIZE=20, MAX_CHUNK_SIZE=120, CHUNK_OVERLAP=40),
+    )
+    sentences = [f"第{index:02d}句说明了一个独立的业务规则并给出处理口径。" for index in range(1, 21)]
+    text = "".join(sentences)
+
+    chunks = chunker.chunk_text(text, doc_id="policy", tenant_id="tenant-a")
+
+    assert len(chunks) >= 2
+    for sentence in sentences:
+        assert any(sentence in item["content"] for item in chunks), sentence
+    _assert_chunks_start_and_end_on_boundaries(text, chunks, 20)
+
+
+def test_force_split_overlap_restarts_on_a_sentence_boundary(monkeypatch):
+    monkeypatch.setattr(
+        chunker,
+        "get_settings",
+        lambda: SimpleNamespace(MIN_CHUNK_SIZE=20, MAX_CHUNK_SIZE=120, CHUNK_OVERLAP=40),
+    )
+    lines = [f"第{index:02d}行说明了一个独立的业务规则并给出处理口径。" for index in range(1, 11)]
+    text = "\n".join(lines)
+
+    chunks = chunker.chunk_text(text, doc_id="policy", tenant_id="tenant-a")
+
+    assert len(chunks) >= 2
+    _assert_chunks_start_and_end_on_boundaries(text, chunks, 20)
+    for item in chunks:
+        assert item["content"].split("\n")[0].endswith("。"), item["content"][:40]

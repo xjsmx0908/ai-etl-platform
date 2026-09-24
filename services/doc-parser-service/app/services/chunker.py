@@ -54,7 +54,8 @@ def chunk_text(
             if current:
                 chunks.extend(
                     split_oversized_chunk(current, doc_id, tenant_id, chunk_idx,
-                                         permission, file_hash, metadata, max_size, overlap)
+                                         permission, file_hash, metadata, max_size, overlap,
+                                         min_size)
                 )
                 chunk_idx = len(chunks)
             buffer = [line]
@@ -67,7 +68,8 @@ def chunk_text(
             if chunk_text:
                 chunks.extend(
                     split_oversized_chunk(chunk_text, doc_id, tenant_id, chunk_idx, 
-                                         permission, file_hash, metadata, max_size, overlap)
+                                         permission, file_hash, metadata, max_size, overlap,
+                                         min_size)
                 )
                 chunk_idx = len(chunks)
             buffer = [line]
@@ -81,7 +83,8 @@ def chunk_text(
             if len(buffer_text) >= min_size:
                 chunks.extend(
                     split_oversized_chunk(buffer_text, doc_id, tenant_id, chunk_idx,
-                                         permission, file_hash, metadata, max_size, overlap)
+                                         permission, file_hash, metadata, max_size, overlap,
+                                         min_size)
                 )
                 chunk_idx = len(chunks)
                 
@@ -103,21 +106,34 @@ def chunk_text(
         if len(buffer_text) >= max_size and not is_tabular_content(buffer_text):
             chunks.extend(
                 split_oversized_chunk(buffer_text, doc_id, tenant_id, chunk_idx,
-                                     permission, file_hash, metadata, max_size, overlap)
+                                     permission, file_hash, metadata, max_size, overlap,
+                                     min_size)
             )
             chunk_idx = len(chunks)
             
-            # Keep overlap
+            # Keep overlap, but snap the carried tail forward to a sentence
+            # start: an overlap that begins mid-sentence makes the next chunk
+            # open with a half-clause that no keyword query can reach.
             last_chunk = chunks[-1]['content'] if chunks else ''
-            buffer = [get_overlap(last_chunk, overlap)] if overlap > 0 else []
+            buffer = []
+            if overlap > 0 and last_chunk:
+                overlap_text = _trim_to_sentence_start(get_overlap(last_chunk, overlap))
+                if overlap_text:
+                    buffer = [overlap_text]
     
-    # Flush remaining content
+    # Flush remaining content. A buffer holding nothing but the overlap carried
+    # over from the previous force-split is a pure duplicate of that chunk's
+    # tail: emitting it would add a near-duplicate chunk that the exact-content
+    # dedup below cannot catch, because it is a substring rather than an equal
+    # string.
     if buffer:
         chunk_text = '\n'.join(buffer).strip()
-        if chunk_text:
+        last_chunk_text = chunks[-1]['content'] if chunks else ''
+        if chunk_text and not (last_chunk_text and chunk_text in last_chunk_text):
             chunks.extend(
                 split_oversized_chunk(chunk_text, doc_id, tenant_id, chunk_idx,
-                                     permission, file_hash, metadata, max_size, overlap)
+                                     permission, file_hash, metadata, max_size, overlap,
+                                     min_size)
             )
 
     # Drop low-value chunks (signature pages, tables of contents, near-empty
@@ -226,6 +242,64 @@ def is_heading(line: str) -> bool:
     return 1 <= level <= 6 and len(stripped) > level and stripped[level] == ' '
 
 
+# Boundary characters used when force-splitting a body that carries no
+# structural markers. Strongest first: a line break, then a sentence
+# terminator, then a clause separator. Ending a chunk just after one of these
+# keeps whole sentences inside a single chunk instead of cutting a sentence in
+# half across two chunks -- a split sentence is retrievable by neither.
+LINE_BREAK = "\n"
+SENTENCE_TERMINATORS = "。！？!?；;…"
+CLAUSE_SEPARATORS = "，、,：:"
+BOUNDARY_CHARS = LINE_BREAK + SENTENCE_TERMINATORS + CLAUSE_SEPARATORS
+
+
+def _find_split_end(text: str, start: int, limit: int, min_size: int) -> int:
+    """Largest end offset <= limit that lands just after a natural boundary.
+
+    Falls back to ``limit`` only when the window holds no boundary at all,
+    e.g. one unbroken sentence longer than ``max_size``.
+    """
+    if limit >= len(text):
+        return len(text)
+    floor = max(start + min_size, start + 1)
+    if floor >= limit:
+        return limit
+
+    line_break = text.rfind(LINE_BREAK, floor, limit)
+    if line_break != -1:
+        return line_break + 1
+
+    for terminators in (SENTENCE_TERMINATORS, CLAUSE_SEPARATORS):
+        for offset in range(limit, floor, -1):
+            if text[offset - 1] in terminators:
+                return offset
+    return limit
+
+
+def _snap_to_boundary(text: str, candidate: int, limit: int) -> int:
+    """Move ``candidate`` forward to the next boundary start.
+
+    Used for the overlap start so the next chunk never begins mid-sentence.
+    Returns ``candidate`` unchanged when no boundary exists before ``limit``.
+    """
+    if candidate <= 0:
+        return 0
+    if text[candidate - 1] in BOUNDARY_CHARS:
+        return candidate
+    for offset in range(candidate + 1, limit):
+        if text[offset - 1] in BOUNDARY_CHARS:
+            return offset
+    return candidate
+
+
+def _trim_to_sentence_start(text: str) -> str:
+    """Drop the leading partial sentence from an overlap window."""
+    for offset in range(1, len(text)):
+        if text[offset - 1] in BOUNDARY_CHARS:
+            return text[offset:]
+    return text
+
+
 def split_oversized_chunk(
     text: str,
     doc_id: str,
@@ -235,7 +309,8 @@ def split_oversized_chunk(
     file_hash: str,
     metadata: Dict[str, str],
     max_size: int,
-    overlap: int
+    overlap: int,
+    min_size: int = 0
 ) -> List[Dict[str, Any]]:
     """Split oversized chunk into smaller pieces with overlap"""
     chunks = []
@@ -273,12 +348,14 @@ def split_oversized_chunk(
         if chunks:
             return chunks
     
-    # Force split with overlap
+    # Force split with overlap. Chunk ends are pulled back to the closest
+    # boundary and overlap starts are pushed forward to one, so a sentence is
+    # never cut across two chunks.
     pos = 0
     local_idx = 0
     while pos < len(text):
-        # Take chunk-sized slice
-        end = min(pos + max_size, len(text))
+        # Take chunk-sized slice, snapped back to a natural boundary
+        end = _find_split_end(text, pos, min(pos + max_size, len(text)), min_size)
         chunk_text = text[pos:end].strip()
         
         if chunk_text:
@@ -295,10 +372,13 @@ def split_oversized_chunk(
             })
             local_idx += 1
         
-        # Move position with overlap
+        # Move position with overlap, never backwards (a stalled position would
+        # loop forever) and never mid-sentence.
         if end >= len(text):
             break
-        pos = end - overlap if overlap < end else 0
+        next_pos = end - overlap if overlap < end else 0
+        next_pos = _snap_to_boundary(text, next_pos, end)
+        pos = next_pos if next_pos > pos else end
     
     return chunks
 
@@ -348,6 +428,8 @@ def split_tabular_text(text: str, max_size: int) -> List[str]:
 
 def get_overlap(text: str, overlap_size: int) -> str:
     """Get overlap suffix from text"""
+    if overlap_size <= 0:
+        return ""
     if len(text) <= overlap_size:
         return text
     return text[-overlap_size:]

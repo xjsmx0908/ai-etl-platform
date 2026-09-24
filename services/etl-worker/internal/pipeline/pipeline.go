@@ -546,7 +546,7 @@ func (p *Pipeline) processTask(ctx context.Context, task model.Task) (resultErr 
 				TenantID: task.TenantID, DocumentID: task.DocID, DocumentVersionID: task.JobID,
 			},
 			Definition: indexmanifest.BuildDefinition{
-				ChunkerVersion:    fmt.Sprintf("parser-v1:size=%d:overlap=%d", p.cfg.MaxChunkSize, p.cfg.ChunkOverlap),
+				ChunkerVersion:    fmt.Sprintf("parser-v2:size=%d:overlap=%d", p.cfg.MaxChunkSize, p.cfg.ChunkOverlap),
 				EmbeddingModel:    p.cfg.EmbedModel,
 				VectorDimension:   p.cfg.EmbedDimension,
 				SchemaVersion:     "generation-payload-v1",
