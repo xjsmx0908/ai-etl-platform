@@ -331,3 +331,51 @@ tests:
               severity: warning
             exp_annotations:
               summary: Knowledge Release Center API 5xx rate is above 5%
+
+  # The dead-letter rules are pinned here because they are the only place where
+  # "diagnostic records were destroyed" is observable at all. A wrong expression
+  # still passes `promtool check rules` - that only validates syntax.
+  - name: a dead-letter drop alerts at once, and a quiet queue stays silent
+    interval: 1m
+    input_series:
+      # Flat, then a single step of 2. The rule deliberately has no `for`: the
+      # entries are already gone, so waiting out a window only delays the page.
+      - series: 'ai_etl_es_deadletter_dropped_total{job="etl-worker"}'
+        values: '0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ESDeadLetterDropped
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ESDeadLetterDropped
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: etl-worker
+            exp_annotations:
+              summary: ES dead-letter queue overflowed and discarded diagnostic records
+              description: The dead-letter list reached ES_DEADLETTER_MAX and trimmed its oldest entries, so part of the record of what failed to index is gone. Raise the cap, or fix the ES outage that is producing the entries, before the list fills again.
+
+  - name: sustained dead letters alert, a burst that stops does not
+    interval: 1m
+    input_series:
+      # A counter that steps every minute. `increase(...[15m]) > 0` only stays
+      # true while entries keep arriving, so this pair of assertions pins both
+      # halves: the 15m `for` is real (silent at 15m) and it does eventually
+      # fire (firing at 20m).
+      - series: 'ai_etl_es_deadletter_total{reason="es",job="etl-worker"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ESDeadLetterNonZero
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ESDeadLetterNonZero
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              reason: es
+              job: etl-worker
+            exp_annotations:
+              summary: Chunks permanently failed ES indexing (Qdrant/ES divergence)
+              description: Some chunks exist in the vector store but never reached the full-text index. Query results may silently miss full-text hits. Investigate ES connectivity and consider re-indexing affected docs.
