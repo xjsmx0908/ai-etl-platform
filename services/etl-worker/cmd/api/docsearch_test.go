@@ -164,6 +164,101 @@ func TestHandleDocumentChunksListsChunksOfANeverPublishedDocument(t *testing.T) 
 	}
 }
 
+// TestHandleDocumentChunksCollapsesRepeatedPointsForOneChunkID pins that the page
+// shows each chunk once. The store hands back every stored copy, because which
+// copy is the current one is a publication question, so the collapsing happens
+// here -- after the publication filter, preferring the copy that names the
+// version and generation it came from.
+//
+// A document with no published release has no superseded generation to hide, so
+// the filter keeps every copy and the collapse is the only thing standing between
+// the reader and the same chunk listed several times.
+func TestHandleDocumentChunksCollapsesRepeatedPointsForOneChunkID(t *testing.T) {
+	docs := newFakeDocStore()
+	seedDoc(docs, "acme", "d1", "internal")
+	lister := &fakeChunkLister{chunks: map[string][]store.StoredChunk{
+		"d1": {
+			{ChunkID: "c1", DocID: "d1", TenantID: "acme", Content: "同一段内容", Index: 0},
+			{ChunkID: "c1", DocID: "d1", TenantID: "acme", DocumentVersionID: "job-1", GenerationID: "gen-1",
+				Content: "同一段内容", Index: 0, Metadata: map[string]string{"order": "A-0"}},
+			{ChunkID: "c2", DocID: "d1", TenantID: "acme", Content: "另一段", Index: 1},
+		},
+	}}
+	handler := handleDocumentChunks(docs, lister, testQueryService(),
+		documentContentVisibilityStub{visible: map[string]bool{"": true, "gen-1": true}})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents/d1/chunks", nil)
+	req = req.WithContext(ctxWithRole("acme", "user"))
+	req.SetPathValue("docID", "d1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Total int `json:"total"`
+		Items []struct {
+			ChunkID  string            `json:"chunk_id"`
+			Index    int               `json:"index"`
+			Metadata map[string]string `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Total != 2 || len(resp.Items) != 2 {
+		t.Fatalf("expected one entry per chunk id, got total=%d items=%d: %s", resp.Total, len(resp.Items), rec.Body.String())
+	}
+	if resp.Items[0].ChunkID != "c1" || resp.Items[1].ChunkID != "c2" {
+		t.Fatalf("expected index order c1,c2, got %+v", resp.Items)
+	}
+	if resp.Items[0].Metadata["order"] != "A-0" {
+		t.Fatalf("expected the copy naming its generation to survive, got %+v", resp.Items[0])
+	}
+}
+
+// The collapse must run after the publication filter, not before it. Collapsing
+// first would let whichever copy the store returned first stand for the chunk
+// id; when a document had been ingested more than once that copy can belong to a
+// superseded generation, and the filter would then drop the whole chunk id --
+// taking the published copy off the page while retrieval still serves it and a
+// citation can still name it.
+func TestHandleDocumentChunksKeepsAChunkWhoseFirstCopyIsSuperseded(t *testing.T) {
+	docs := newFakeDocStore()
+	seedDoc(docs, "acme", "d1", "internal")
+	lister := &fakeChunkLister{chunks: map[string][]store.StoredChunk{
+		"d1": {
+			{ChunkID: "c1", DocID: "d1", TenantID: "acme", DocumentVersionID: "job-old", GenerationID: "gen-old",
+				Content: "80 yuan", Index: 0},
+			{ChunkID: "c1", DocID: "d1", TenantID: "acme", DocumentVersionID: "job-new", GenerationID: "gen-published",
+				Content: "120 yuan", Index: 0},
+			{ChunkID: "c2", DocID: "d1", TenantID: "acme", DocumentVersionID: "job-new", GenerationID: "gen-published",
+				Content: "second", Index: 1},
+		},
+	}}
+	handler := handleDocumentChunks(docs, lister, testQueryService(),
+		documentContentVisibilityStub{visible: map[string]bool{"gen-published": true}})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/documents/d1/chunks", nil)
+	req = req.WithContext(ctxWithRole("acme", "user"))
+	req.SetPathValue("docID", "d1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "80 yuan") {
+		t.Fatalf("superseded copy must not be served, body=%s", body)
+	}
+	if !strings.Contains(body, "120 yuan") {
+		t.Fatalf("published copy must survive, body=%s", body)
+	}
+	if !strings.Contains(body, `"chunk_id":"c1"`) {
+		t.Fatalf("chunk id c1 must stay on the page, body=%s", body)
+	}
+}
+
 func TestHandleDocumentChunks_NotFoundForCrossTenantRoleOrMissing(t *testing.T) {
 	docs := newFakeDocStore()
 	seedDoc(docs, "acme", "d1", "internal")

@@ -178,32 +178,31 @@ func TestQdrantListChunksByDocNoPermissionFilter(t *testing.T) {
 	}
 }
 
-// A chunk can exist twice with byte-identical content: one copy from a legacy
-// write that carried no generation identity, one from the managed generation
-// that superseded it. Which copy survives decides whether the chunk is visible
-// at all -- publication policy matches a chunk to its published generation by
-// identity, so keeping the anonymous copy makes the whole document read as
-// empty on the detail page. The kept copy must be the one carrying identity,
-// and the outcome must not depend on the order the scroll returns them in.
+// Repeated points for one chunk id come back as they are stored: one entry per
+// point, never one entry per chunk id. Which copy is the current one is decided
+// by the document's published generation, and this layer does not read that --
+// the caller applies publication policy and only then collapses.
 //
-// A copy carrying only half of the pair (a generation but no version) is not
-// identity either: publication policy requires both halves, so it must not
-// outrank a copy that has both.
-func TestQdrantListChunksByDocKeepsTheCopyCarryingIdentity(t *testing.T) {
+// Collapsing here chose by scroll order, and when a document had been ingested
+// more than once those copies belonged to different generations: a first copy
+// from a superseded generation failed the caller's policy filter, which took the
+// whole chunk id off the detail page even though the published copy was still in
+// the index and still served by retrieval.
+func TestQdrantListChunksByDocReturnsEveryStoredCopy(t *testing.T) {
 	anonymous := `{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0}}`
-	halfIdentified := `{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,` +
-		`"generation_id":"gen-1"}}`
-	identified := `{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,` +
-		`"document_version_id":"job-1","generation_id":"gen-1","metadata":{"order":"A-0"}}}`
+	superseded := `{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,` +
+		`"document_version_id":"job-old","generation_id":"gen-old"}}`
+	published := `{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,` +
+		`"document_version_id":"job-new","generation_id":"gen-new","metadata":{"order":"A-0"}}}`
 
 	for _, tc := range []struct {
 		name   string
 		points string
+		want   string
 	}{
-		{"anonymous first", anonymous + "," + identified},
-		{"identified first", identified + "," + anonymous},
-		{"half identity does not outrank full identity", halfIdentified + "," + identified},
-		{"full identity outranks half identity", identified + "," + halfIdentified},
+		{"superseded copy first", superseded + "," + published, "job-old/gen-old,job-new/gen-new"},
+		{"published copy first", published + "," + superseded, "job-new/gen-new,job-old/gen-old"},
+		{"anonymous copy alongside", anonymous + "," + published, "/,job-new/gen-new"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -224,16 +223,22 @@ func TestQdrantListChunksByDocKeepsTheCopyCarryingIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(chunks) != 1 {
-				t.Fatalf("expected the duplicate pair to collapse to 1 chunk, got %d: %+v", len(chunks), chunks)
+			got := make([]string, 0, len(chunks))
+			for _, chunk := range chunks {
+				got = append(got, chunk.DocumentVersionID+"/"+chunk.GenerationID)
 			}
-			if chunks[0].GenerationID != "gen-1" || chunks[0].DocumentVersionID != "job-1" {
-				t.Fatalf("expected the copy carrying identity to survive, got %+v", chunks[0])
+			if strings.Join(got, ",") != tc.want {
+				t.Fatalf("expected every stored copy in scroll order %q, got %q", tc.want, strings.Join(got, ","))
 			}
-			// The replacement is decided after the payload fields are decoded, so the
-			// surviving copy must still carry them.
-			if chunks[0].Metadata["order"] != "A-0" {
-				t.Fatalf("expected the surviving copy to keep its metadata, got %+v", chunks[0].Metadata)
+			// Nothing is decoded away on the way out, so the copy that names its
+			// generation still carries the rest of its payload too.
+			for _, chunk := range chunks {
+				if chunk.GenerationID != "gen-new" {
+					continue
+				}
+				if chunk.Metadata["order"] != "A-0" {
+					t.Fatalf("expected the identified copy to keep its metadata, got %+v", chunk.Metadata)
+				}
 			}
 		})
 	}
@@ -307,43 +312,5 @@ func TestQdrantListChunksByDocKeepsDistinctChunkIDsWithIdenticalContent(t *testi
 	}
 	if chunks[0].ChunkID != "c1" || chunks[1].ChunkID != "c2" {
 		t.Fatalf("expected index order c1,c2, got %q,%q", chunks[0].ChunkID, chunks[1].ChunkID)
-	}
-}
-
-// Repeated points for one chunk id still collapse to a single entry, and the
-// survivor is the copy carrying identity -- one entry per stored chunk id is the
-// contract the cross-layer consistency check asserts.
-func TestQdrantListChunksByDocCollapsesRepeatedPointsForOneChunkID(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/points/scroll") {
-			_, _ = w.Write([]byte(`{"result":{"points":[
-				{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0}},
-				{"payload":{"chunk_id":"c1","doc_id":"d1","tenant_id":"t1","content":"同一段内容","index":0,
-					"document_version_id":"job-1","generation_id":"gen-1"}},
-				{"payload":{"chunk_id":"c2","doc_id":"d1","tenant_id":"t1","content":"另一段","index":1}}
-			],"next_page_offset":null}}`))
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-	qs, err := NewQdrantStorer(srv.URL, "", "docs", 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer qs.Close()
-
-	chunks, err := qs.ListChunksByDoc(context.Background(), "t1", "d1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 entries (one per chunk id), got %d: %+v", len(chunks), chunks)
-	}
-	if chunks[0].ChunkID != "c1" || chunks[1].ChunkID != "c2" {
-		t.Fatalf("expected index order c1,c2, got %q,%q", chunks[0].ChunkID, chunks[1].ChunkID)
-	}
-	if chunks[0].GenerationID != "gen-1" || chunks[0].DocumentVersionID != "job-1" {
-		t.Fatalf("expected the copy carrying identity to survive, got %+v", chunks[0])
 	}
 }

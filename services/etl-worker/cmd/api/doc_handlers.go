@@ -446,6 +446,7 @@ func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister, qs *q
 			}
 			list = filtered
 		}
+		list = collapseChunksByChunkID(list)
 		items := make([]chunkView, 0, len(list))
 		for _, c := range list {
 			items = append(items, chunkView{ChunkID: c.ChunkID, Index: c.Index, Content: c.Content, Metadata: c.Metadata})
@@ -456,6 +457,41 @@ func handleDocumentChunks(docs docstore.Store, chunks documentChunkLister, qs *q
 			"items":  items,
 		})
 	}
+}
+
+// collapseChunksByChunkID keeps one entry per stored chunk id.
+//
+// A document that was ingested more than once holds several stored points for
+// the same chunk id -- one per generation, appended rather than replaced -- and
+// the page must show each chunk once, as the generation the document currently
+// publishes. This runs after the publication filter on purpose: collapsing
+// first would let an arbitrary copy stand for the chunk id, and a copy from a
+// superseded generation fails the filter, which would take the whole chunk id
+// off the page while the retrieval index still serves it. The copies arrive in
+// no particular order, so the tie is broken by preferring a copy that names the
+// version and generation it came from.
+func collapseChunksByChunkID(chunks []store.StoredChunk) []store.StoredChunk {
+	kept := make([]store.StoredChunk, 0, len(chunks))
+	at := make(map[string]int, len(chunks))
+	for _, chunk := range chunks {
+		if i, seen := at[chunk.ChunkID]; seen {
+			if !carriesGenerationIdentity(kept[i]) && carriesGenerationIdentity(chunk) {
+				kept[i] = chunk
+			}
+			continue
+		}
+		at[chunk.ChunkID] = len(kept)
+		kept = append(kept, chunk)
+	}
+	return kept
+}
+
+// carriesGenerationIdentity reports whether a chunk names the version and
+// generation it came from. Publication policy matches a chunk to a published
+// release by that pair, so a chunk carrying only one half of it can never be
+// selected as the current one.
+func carriesGenerationIdentity(chunk store.StoredChunk) bool {
+	return chunk.DocumentVersionID != "" && chunk.GenerationID != ""
 }
 
 // documentSearcher searches indexed chunk content (ES BM25, tenant+permission

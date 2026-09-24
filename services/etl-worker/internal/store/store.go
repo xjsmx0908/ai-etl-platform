@@ -525,17 +525,23 @@ type StoredChunk struct {
 }
 
 // ListChunksByDoc scrolls all points for a (tenant, doc) visible to the given
-// permissions and returns them sorted by chunk index. Used by the document
-// detail page to render a document's chunks. An empty allowedPermissions list
-// omits the permission clause entirely.
+// permissions and returns one entry per stored point, sorted by chunk index. Used
+// by the document detail page to render a document's chunks. An empty
+// allowedPermissions list omits the permission clause entirely.
 //
-// It returns every stored chunk that survives exact-content deduplication and
-// deliberately does NOT hide a chunk merely because a sibling chunk contains it.
-// Hiding such a chunk here hides it only from this endpoint: the retrieval index
-// still serves it, so a citation could name a chunk the detail page never shows
-// and the reader could not check it. Keeping the endpoint faithful to the store
-// is what makes citations resolvable -- scripts/check-index-consistency.py
-// asserts exactly that (endpoint chunks == stored chunks).
+// It deliberately does NOT hide a chunk merely because a sibling chunk contains
+// it, and deliberately does NOT collapse repeated points for one chunk id. Both
+// are policy questions this layer cannot answer: which copy of a chunk id is the
+// current one is decided by the document's published generation, and only the
+// caller holds that. Collapsing here picked whichever copy the scroll returned
+// first, and when a document had been ingested more than once those copies
+// belonged to different generations. A first copy from a superseded generation
+// made the caller's policy filter drop the whole chunk id -- including the
+// published copy the retrieval index still serves -- so the detail page hid a
+// chunk a citation could name and the reader could not check it. The endpoint
+// stays faithful to the store and the caller collapses after applying policy;
+// scripts/check-index-consistency.py asserts exactly that (endpoint chunk ids ==
+// stored chunk ids).
 func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID string, allowedPermissions []string) ([]StoredChunk, error) {
 	if tenantID == "" || docID == "" {
 		return nil, fmt.Errorf("tenant_id and doc_id are required")
@@ -553,9 +559,6 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 
 	var offset any
 	var chunks []StoredChunk
-	// seen maps a stored chunk id to the position its kept copy holds in chunks,
-	// so a later point carrying more identity can replace it.
-	seen := make(map[string]int)
 	for {
 		body := map[string]interface{}{
 			"limit":        100,
@@ -614,31 +617,6 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 			if md, ok := p.Payload["metadata"].(map[string]interface{}); ok {
 				chunk.Metadata = stringMetadata(md)
 			}
-			// Defensive read-side deduplication for repeated points: a document that
-			// was ingested twice (a re-seed or a re-index appends instead of
-			// replacing) holds more than one point for the same chunk id. One copy
-			// may come from a legacy write carrying no generation identity, the other
-			// from the managed generation that superseded it. Which copy survives
-			// decides whether the chunk is visible at all: publication policy matches
-			// a chunk to its published generation by identity, so a copy with no
-			// identity never matches and the whole document reads as empty. Prefer the
-			// copy that carries an identity rather than whichever the scroll returned
-			// first.
-			//
-			// The key is the chunk id, deliberately not the content. Keying on content
-			// also hides every chunk whose body happens to match a sibling's, and the
-			// retrieval layer does not hide those -- it can return a chunk the document
-			// page never shows, so a citation naming it cannot be checked. The endpoint
-			// stays faithful to the store: one entry per stored chunk id, and
-			// scripts/check-index-consistency.py asserts exactly that.
-			key := chunk.ChunkID
-			if at, exists := seen[key]; exists {
-				if !carriesIdentity(chunks[at]) && carriesIdentity(chunk) {
-					chunks[at] = chunk
-				}
-				continue
-			}
-			seen[key] = len(chunks)
 			chunks = append(chunks, chunk)
 		}
 		if len(sr.Result.NextPageOffset) == 0 || string(sr.Result.NextPageOffset) == "null" {
@@ -649,13 +627,6 @@ func (q *QdrantStorer) ListChunksByDoc(ctx context.Context, tenantID, docID stri
 
 	sort.SliceStable(chunks, func(i, j int) bool { return chunks[i].Index < chunks[j].Index })
 	return chunks, nil
-}
-
-// carriesIdentity reports whether a chunk names the version and generation it
-// came from. Publication policy matches a chunk to a published release by that
-// pair, so a chunk missing either half can never be selected as the current one.
-func carriesIdentity(chunk StoredChunk) bool {
-	return chunk.DocumentVersionID != "" && chunk.GenerationID != ""
 }
 
 // strVal returns a payload value as a string when it is one.
