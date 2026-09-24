@@ -21,6 +21,15 @@ keyword_unsearchable    Elasticsearch holds no chunks for a document Qdrant does
 citation_unverifiable   the chunks endpoint hides chunks Qdrant still serves
                         -> a citation can name a chunk the document page never shows
 count_mismatch          Elasticsearch and Qdrant disagree on the chunk count
+space_key_unset         stored points whose metadata.knowledge_base_id is not the
+                        document's knowledge space
+                        -> the vector branch cannot return them inside that space,
+                           so part of the document is keyword-only
+permission_drift        stored points whose permission differs from the registry
+                        -> retrieval filters on the stale value (leak or black-hole)
+duplicate_chunk_points  more than one stored point carries the same chunk_id
+                        -> re-seeding appends instead of replacing; counts and
+                           digests can still look right while the store is not
 
 Exit status: 0 when every layer agrees, 1 when any finding is reported.
 """
@@ -86,7 +95,13 @@ def es_count(es, index, doc_id):
     return payload["hits"]["total"]["value"]
 
 
-def qdrant_chunk_ids(qdrant, collection, doc_id, api_key):
+def qdrant_points(qdrant, collection, doc_id, api_key):
+    """One entry per stored point: the chunk id plus the fields retrieval filters on.
+
+    The payload is restricted to those fields on purpose. Requesting the whole
+    payload pulls every chunk body back for no reason, and the filter fields are
+    the only ones this check has an opinion about.
+    """
     headers = {"api-key": api_key} if api_key else {}
     payload = http_json(
         f"{qdrant}/collections/{collection}/points/scroll",
@@ -94,16 +109,30 @@ def qdrant_chunk_ids(qdrant, collection, doc_id, api_key):
         body={
             "filter": {"must": [{"key": "doc_id", "match": {"value": doc_id}}]},
             "limit": 1000,
-            "with_payload": True,
+            "with_payload": ["chunk_id", "permission", "metadata"],
             "with_vector": False,
         },
         headers=headers,
     )
-    ids = []
+    points = []
     for point in payload.get("result", {}).get("points", []):
-        chunk_id = point.get("payload", {}).get("chunk_id")
-        ids.append(chunk_id or str(point.get("id")))
-    return ids
+        data = point.get("payload", {})
+        metadata = data.get("metadata") or {}
+        points.append(
+            {
+                "chunk_id": data.get("chunk_id") or str(point.get("id")),
+                "permission": data.get("permission", ""),
+                "knowledge_base_id": metadata.get("knowledge_base_id", ""),
+            }
+        )
+    return points
+
+
+def qdrant_chunk_ids(points):
+    """The stored chunk ids in storage order. Duplicates are preserved on purpose:
+    a second point for the same chunk is itself a finding, and dropping it here
+    would erase the evidence before classify_payload_fields can see it."""
+    return [point["chunk_id"] for point in points]
 
 
 def endpoint_chunk_ids(api, token, doc_id):
@@ -169,6 +198,97 @@ def classify_document(doc_id, document, stored_ids, indexed_count, visible_ids):
     return findings
 
 
+def classify_payload_fields(doc_id, document, points):
+    """Return the findings about the payload fields retrieval filters on.
+
+    Qdrant retrieval adds `metadata.knowledge_base_id` and `permission` clauses
+    whenever the request names a space or an access scope (internal/retrieval/
+    qdrant.go), and Elasticsearch adds the same clauses (elastic.go). Those two
+    values are written at ingestion into the index while the authoritative copy
+    lives in Postgres, so they can drift the same way the chunk set can -- and
+    the drift is invisible end to end, because the keyword branch still reaches
+    the document. Defect 9 was this shape (ES file_name was never written), and
+    scripts/backfill-es-file-name.sh / scripts/backfill-qdrant-permission.sh
+    exist because it happened before.
+
+    Kept pure so the rules can be unit tested without a running stack.
+    """
+    findings = []
+    if not points:
+        return findings
+
+    file_name = document.get("file_name", "")
+    publication_status = document.get("publication_status", "")
+    space = (document.get("knowledge_space_id") or "").strip()
+    permission = (document.get("permission") or "").strip()
+
+    if space:
+        unset = sorted({point["chunk_id"] for point in points
+                        if (point.get("knowledge_base_id") or "").strip() != space})
+        if unset:
+            findings.append(
+                {
+                    "kind": "space_key_unset",
+                    "doc_id": doc_id,
+                    "file_name": file_name,
+                    "publication_status": publication_status,
+                    "knowledge_space_id": space,
+                    "points_total": len(points),
+                    "points_unset": len(unset),
+                    "unset_chunk_ids": unset,
+                    "detail": (
+                        "stored points do not carry the document's knowledge space: "
+                        "the vector branch cannot return them inside that space, so "
+                        "those chunks are reachable by keyword search only"
+                    ),
+                }
+            )
+
+    if permission:
+        drifted = sorted({point["chunk_id"] for point in points
+                          if (point.get("permission") or "").strip() != permission})
+        if drifted:
+            findings.append(
+                {
+                    "kind": "permission_drift",
+                    "doc_id": doc_id,
+                    "file_name": file_name,
+                    "publication_status": publication_status,
+                    "registry_permission": permission,
+                    "drifted_chunk_ids": drifted,
+                    "detail": (
+                        "stored points disagree with the registry on permission: "
+                        "retrieval filters on the stored value, so the document can "
+                        "leak to a role that may not read it or vanish for one that may"
+                    ),
+                }
+            )
+
+    counts = {}
+    for point in points:
+        counts[point["chunk_id"]] = counts.get(point["chunk_id"], 0) + 1
+    duplicated = sorted(chunk_id for chunk_id, count in counts.items() if count > 1)
+    if duplicated:
+        findings.append(
+            {
+                "kind": "duplicate_chunk_points",
+                "doc_id": doc_id,
+                "file_name": file_name,
+                "publication_status": publication_status,
+                "points_total": len(points),
+                "unique_chunk_ids": len(counts),
+                "duplicated_chunk_ids": duplicated,
+                "detail": (
+                    "more than one stored point carries the same chunk id: a re-seed "
+                    "or re-index appended instead of replacing, so the store holds "
+                    "stale copies that counts and digests cannot see"
+                ),
+            }
+        )
+
+    return findings
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-base", default=os.environ.get("AI_ETL_API", DEFAULT_API))
@@ -200,7 +320,8 @@ def main() -> int:
         checked += 1
 
         try:
-            stored = qdrant_chunk_ids(args.qdrant, args.collection, doc_id, args.qdrant_key)
+            points = qdrant_points(args.qdrant, args.collection, doc_id, args.qdrant_key)
+            stored = qdrant_chunk_ids(points)
             indexed = es_count(args.es, args.es_index, doc_id)
             visible = endpoint_chunk_ids(args.api_base, args.token, doc_id)
         except urllib.error.HTTPError as error:
@@ -214,6 +335,7 @@ def main() -> int:
             continue
 
         findings.extend(classify_document(doc_id, document, stored, indexed, visible))
+        findings.extend(classify_payload_fields(doc_id, document, points))
 
     by_kind = {}
     for finding in findings:
@@ -248,6 +370,9 @@ def main() -> int:
             print(f"  - [{finding['kind']}] {finding['doc_id']} {finding.get('file_name', '')}")
             if finding.get("hidden_chunk_ids"):
                 print(f"      hidden: {finding['hidden_chunk_ids']}")
+            for key in ("unset_chunk_ids", "drifted_chunk_ids", "duplicated_chunk_ids"):
+                if finding.get(key):
+                    print(f"      {key}: {finding[key][:8]}")
 
     return 1 if findings else 0
 
