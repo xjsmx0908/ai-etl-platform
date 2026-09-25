@@ -207,7 +207,7 @@ export type AnswerMeta = {
   // UI can state the cause and the next step instead of one generic sentence.
   // Values come from the backend's Refusal* constants: no_evidence |
   // exact_evidence_missing | evidence_filtered | insufficient_support |
-  // sensitive_content.
+  // sensitive_content | context_required.
   refusal_reason?: string;
 };
 

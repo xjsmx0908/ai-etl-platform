@@ -362,6 +362,14 @@ const (
 	// RefusalSensitiveContent: the generated answer matched credential-like
 	// patterns and was withheld.
 	RefusalSensitiveContent = "sensitive_content"
+	// RefusalContextRequired: the question referred back to a previous turn
+	// ("刚才那份文档", "上面说的第二点"), and this endpoint keeps no conversation
+	// state, so the referent is unknowable. Distinct from the other reasons
+	// because nothing is missing from the corpus and nothing was filtered: the
+	// question itself cannot be evaluated without history. The sentence has to
+	// say that, or the caller retries the same wording and gets the same
+	// refusal with no idea why.
+	RefusalContextRequired = "context_required"
 )
 
 // refusalAnswers maps a reason to the sentence the caller receives. Every
@@ -373,6 +381,7 @@ var refusalAnswers = map[string]string{
 	RefusalEvidenceFiltered:     "找到了相关文档，但它尚未发布或已被取代，当前不能作为回答依据。",
 	RefusalInsufficientSupport:  "找到了相关文档，但其中内容不足以支撑这个问题的回答。",
 	RefusalSensitiveContent:     SensitiveAnswerRefusal,
+	RefusalContextRequired:      "问题里用了指代上文的说法（「刚才那份」「上面说的」），而当前问答不保留会话上下文，无法确定你指的是哪一份。请把文档名或编号写进问题里再问一次。",
 }
 
 // refusalAnswer returns the sentence for a reason, falling back to the canonical
@@ -614,6 +623,19 @@ func queryFailureStage(err error) (stage string, isFailure bool) {
 	}
 }
 
+// unresolvedReferenceGateApplies reports whether this request should be refused
+// for referring back to a previous turn.
+//
+// Retrieval-only callers are exempt: they asked for the candidate list itself
+// (diagnostics, capacity runs) rather than for an answer, so whether the
+// question is answerable does not apply to them. The condition mirrors the
+// retrieval-only branch further down, which is likewise gated on diagnostics
+// being enabled — a request that sets RetrievalOnly without diagnostics is a
+// normal answer request, and must still be refused.
+func unresolvedReferenceGateApplies(cfg config.Config, req Request) bool {
+	return !(cfg.RetrievalDiagnosticsEnabled && req.RetrievalOnly)
+}
+
 // Ask executes the RAG query pipeline for an authenticated caller.
 func (s *Service) Ask(ctx context.Context, req Request, access AccessContext) (response Response, err error) {
 	return s.ask(ctx, req, access, queryStream{})
@@ -717,6 +739,36 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 			stream.progress(QueryProgress{Stage: stage, Message: message, State: state})
 		}
 	}
+	// A question that refers back to an earlier turn cannot be answered here:
+	// this endpoint keeps no conversation state, so the referent is absent from
+	// the request. Ungated, the answering path picks whichever candidate looks
+	// closest and answers from it — the citations stay faithful, so grounding
+	// passes, and the caller gets a confident answer to a question nobody
+	// asked. Measured before this gate existed: "刚才那份文档里还写了什么？"
+	// was answered out of the employee handbook, with `refusal_reason` unset.
+	//
+	// Checked before retrieval rather than after it, because no search result
+	// can supply a missing referent: searching would only spend latency and
+	// return candidates that look like evidence for a question that was never
+	// asked. It runs after the access checks so an unauthorized caller still
+	// gets the authorization answer, and it is skipped for retrieval-only
+	// callers, who asked for the candidate list itself (diagnostics, capacity
+	// runs) rather than for an answer — the same condition the retrieval-only
+	// branch below uses.
+	if unresolvedReferenceGateApplies(s.cfg, req) && retrieval.HasUnresolvedReference(req.Question) {
+		emit("screening", "问题形态检查完成", "completed")
+		emit("refused", refusalAnswer(RefusalContextRequired), "completed")
+		span.SetAttributes(attribute.String("refusal.reason", RefusalContextRequired))
+		return Response{
+			Answer:           refusalAnswer(RefusalContextRequired),
+			RefusalReason:    RefusalContextRequired,
+			Sources:          []SourceContext{},
+			RetrievedSources: []SourceContext{},
+			Citations:        []SourceContext{},
+			Duration:         time.Since(start).String(),
+		}, nil
+	}
+
 	emit("preparing", "正在确认检索范围…", "completed")
 	emit("retrieving", "正在检索相关文档…", "running")
 

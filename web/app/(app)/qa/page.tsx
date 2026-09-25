@@ -95,6 +95,8 @@ const REFUSAL_EXPLANATIONS: Record<string, string> = {
     "找到了相关文档，但其中的内容不足以支撑这个问题的回答 —— 系统在证据不足时拒绝作答，避免编造。可以换个更贴近文档内容的问法。",
   sensitive_content:
     "生成的回答命中了疑似凭据（密码 / 密钥一类）的内容，已按安全策略拒绝输出。该回答已被记录并审计。",
+  context_required:
+    "问题里用了指代上文的说法（「刚才那份」「上面说的」），但当前问答是单轮的，不保留会话上下文 —— 系统无从确定你指的是哪一份，所以不会随便挑一份来答。把文档名或编号写进问题里再问一次即可；如果上文就写在问题里，请把要问的那一段一并写进来。",
 };
 
 function refusalExplanation(reason?: string): string {
