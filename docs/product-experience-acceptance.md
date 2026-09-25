@@ -1,6 +1,6 @@
 # 产品体验验收规范
 
-最后核验：2026-09-23。
+最后核验：2026-09-25。
 
 这是面向真实 Web 工作台的体验验收门禁，覆盖页面美观、使用逻辑和功能缺陷。
 它不替代发布中心隔离栈、治理脚本或企业身份 staging；那些专项矩阵仍然
@@ -251,3 +251,4 @@
 | 2026-09-23-uat023 | 2026-09-23 | 阿简 | UAT-023 修复与复验 | 改 `web/app/(app)/documents/[id]/page.tsx` 元数据块的标题与说明（`internal` 侧零改动）。重建 `web` 后，`px-admin`（default 租户）在 `:3100` 打开 `/documents/doc-1789044422928850395`：块头渲染「内部检索字段」+「不代表业务分类」说明，同页「知识空间」仍渲染「用户上传」，`consoleErrors` 为空。反向验证 3 个变异各自让 `test_product_shell` 对应断言变红。UAT-023 关闭。证据 `artifacts/product-experience-acceptance/2026-09-23-uat023/` |
 | 2026-09-25-uat026 | 2026-09-25 | 阿简 | UAT-026 修复与复验（`77f9278`） | 改 `web/app/login/page.tsx` 两个体验入口的可见文案；`aria-label` 与 `grid-cols-2` 刻意不动（分别被 `scripts/web-page-probe.cjs` 与 `scripts/tests/test_demo_login.py` 依赖）。重建 `web` 后 1440×900 走真实页面（`--url /login`）：渲染「体验演示 · 选择角色」「普通用户视角」「管理员视角」，旧文案「体验问答」「体验发布预审」已清。`test_demo_login.py` 3/3、`npm run lint` 无警告。**契约测试的坑**：`assertIn` 是子串匹配，保留的 `aria-label` 会意外满足只改可见文案的断言、呈假绿，故断言同步更新。UAT-026 关闭。证据 `artifacts/product-experience-acceptance/2026-09-25-uat026-027/` |
 | 2026-09-25-uat027 | 2026-09-25 | 阿简 | UAT-027 修复与复验（`5af2de6`） | 改 `cmd/api/demo_showcase.go` 演示种子，新增 3 份已发布文档（差旅与报销标准 / 信息安全管理规范 / 员工假期管理规定，各 3 块带具体数字）。重建 `query-api` 后（种子每次启动收敛，无需迁移）：`demo` 租户 `published` 1 → 4、`draft` 仍 2；6 条 `index_manifests` 全部 `active` 3/3。普通用户身份（`POST /v1/auth/demo-login {"account":"user"}`）实测三问全部作答、`refusal_reason=none`、首位来源命中新增文档。发布中心两个演示状态与 `demo-doc-handbook` 未动；权限未放宽。反向验证：把种子里的 `docID` 改成 `demo-doc-handbook-removed`，`TestEnsureDemoShowcaseIndex_IndexesEveryShowcaseDocument` 报红，随后复原。UAT-027 关闭。证据 `artifacts/product-experience-acceptance/2026-09-25-uat026-027/` |
+| 2026-09-25-uat028 | 2026-09-25 | 阿简 | UAT-028 修复与线上断言（`bb7b270` `c77e55d` `d15ac00`） | 修复前「刚才那份文档里还写了什么？」「上面说的第二点是什么意思？」都以 `refusal_reason=none` 作答，来源分别是 `demo-doc-handbook` 与 `demo-doc-security` —— **引文逐字可核、grounding 通过，错的是前提**（单轮接口里没有任何东西能决定那个指代）。改 `internal/retrieval/reference_policy.go` 新增 47 条整短语判据 + `internal/query/service.go` 第 6 个弃答原因 `context_required` + 访问校验后检索前的闸门，前端 `REFUSAL_EXPLANATIONS` 与评测轨 `NEGATIVE_FALLBACK_MARKERS` 同步，跨语言契约测试钉住。重建 `query-api` 后线上断言 **11/11**：正例 5 句（含带 ASCII 空格的写法）全 `context_required` 且 `sources` 空，反例 6 句行为不变。反向验证：Go 判据改恒假 → 11 个正例与接线测试全红；Python 词表移除 1 条 → 契约测试报红并指名未覆盖句。**同轮决策：不引入多轮对话**，理由与重审条件见 `docs/adr/0012-single-turn-qa-boundary.md`。UAT-028 关闭。证据 `artifacts/product-experience-acceptance/2026-09-25-uat028/` |
