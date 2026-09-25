@@ -28,12 +28,21 @@ const (
 	demoPublishedDocID         = "demo-doc-handbook"
 	demoPendingDocID           = "demo-doc-onboarding"
 	demoConfidentialDocID      = "demo-doc-payroll"
+	demoTravelDocID            = "demo-doc-travel"
+	demoSecurityDocID          = "demo-doc-security"
+	demoLeaveDocID             = "demo-doc-leave"
 	demoPublishedVersionID     = "demo-job-handbook"
 	demoPendingVersionID       = "demo-job-onboarding"
 	demoConfidentialVersionID  = "demo-job-payroll"
+	demoTravelVersionID        = "demo-job-travel"
+	demoSecurityVersionID      = "demo-job-security"
+	demoLeaveVersionID         = "demo-job-leave"
 	demoPublishedGeneration    = "demo-gen-handbook"
 	demoPendingGeneration      = "demo-gen-onboarding"
 	demoConfidentialGeneration = "demo-gen-payroll"
+	demoTravelGeneration       = "demo-gen-travel"
+	demoSecurityGeneration     = "demo-gen-security"
+	demoLeaveGeneration        = "demo-gen-leave"
 )
 
 func ensureDemoShowcase(ctx context.Context, cfg config.Config, q db.Querier, objects demoSourceObjectStore) error {
@@ -439,6 +448,32 @@ func demoShowcaseDocuments() []demoShowcaseDocument {
 			versionID: demoConfidentialVersionID, eventID: "demo-event-payroll", generationID: demoConfidentialGeneration,
 			digest: "sha256:demo-payroll", published: false, owner: "财务部", chunks: demoPayrollChunks(),
 		},
+		// The three documents above are the release-center showcase: one
+		// published, one pending approval, one held back for its risk level.
+		// Those states are the demo, so they must not change.
+		//
+		// The three below exist because those states leave this tenant with
+		// exactly one answerable document. A visitor who signs in through the
+		// login page's ordinary-role entry lands here, so every business
+		// question came back as a refusal ("the retrieved content does not
+		// support an answer") and the product read as if it could not answer
+		// anything. They are published, readable by the ordinary role, and
+		// carry concrete figures so questions have something to hit.
+		{
+			docID: demoTravelDocID, fileName: "差旅与报销标准.md", permission: "internal", publication: "published",
+			versionID: demoTravelVersionID, eventID: "demo-event-travel", generationID: demoTravelGeneration,
+			digest: "sha256:demo-travel", published: true, owner: "财务部", chunks: demoTravelChunks(),
+		},
+		{
+			docID: demoSecurityDocID, fileName: "信息安全管理规范.md", permission: "internal", publication: "published",
+			versionID: demoSecurityVersionID, eventID: "demo-event-security", generationID: demoSecurityGeneration,
+			digest: "sha256:demo-security", published: true, owner: "信息技术部", chunks: demoSecurityChunks(),
+		},
+		{
+			docID: demoLeaveDocID, fileName: "员工假期管理规定.md", permission: "public", publication: "published",
+			versionID: demoLeaveVersionID, eventID: "demo-event-leave", generationID: demoLeaveGeneration,
+			digest: "sha256:demo-leave", published: true, owner: "人力资源部", chunks: demoLeaveChunks(),
+		},
 	}
 }
 
@@ -455,6 +490,30 @@ func demoPayrollChunks() []string {
 		"月度薪酬于每月十五日发放，遇法定节假日提前至最近一个工作日。",
 		"薪酬结构由基本工资、绩效奖金与专项补贴组成，绩效奖金依据上一季度考核结果核定。",
 		"员工个人银行账号、社保公积金缴纳基数与个税专项附加扣除信息属于敏感信息，仅限人力资源部与财务部授权人员查看，不得对外提供。",
+	}
+}
+
+func demoTravelChunks() []string {
+	return []string{
+		"员工出差前须在系统提交出差申请，经直属主管审批后生效。跨省出差或预计费用超过 5000 元的，需部门负责人二次审批。",
+		"住宿费按城市分级执行：一线城市每晚上限 600 元，省会城市 450 元，其他城市 350 元。市内交通凭票报销，长途交通优先选择高铁二等座。",
+		"差旅结束后 15 个工作日内提交报销，需附出差申请单、发票原件与行程单。超期未提交的，须由部门负责人书面说明后方可受理。",
+	}
+}
+
+func demoSecurityChunks() []string {
+	return []string{
+		"员工账号密码长度不得少于 12 位，须包含大小写字母、数字与符号，每 90 天更换一次。禁止在多个系统间复用同一密码，禁止将账号借予他人使用。",
+		"公司数据分为公开、内部、机密三级。内部数据仅限公司员工访问；机密数据须经数据所有者授权，访问行为全程留痕。",
+		"向外部提供内部或机密数据须经信息安全部门审批并签署保密协议。办公设备禁止安装未授权软件，移动存储设备接入内网前须完成加密登记。",
+	}
+}
+
+func demoLeaveChunks() []string {
+	return []string{
+		"员工入职满一年后享受带薪年假：工龄 1 至 10 年每年 5 天，10 至 20 年每年 10 天，20 年以上每年 15 天。年假须提前 3 个工作日在系统提交申请。",
+		"病假须提供二级以上医院证明，全年累计超过 15 天的，超出部分按基本工资的 80% 计发。事假为无薪假，全年累计不得超过 20 天。",
+		"所有请假均须在系统提交并由直属主管审批。连续请假超过 3 个工作日的，须部门负责人审批；超过 10 个工作日的，须人力资源部备案。",
 	}
 }
 

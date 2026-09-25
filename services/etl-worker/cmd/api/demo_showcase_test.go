@@ -102,8 +102,22 @@ func TestEnsureDemoShowcaseIndex_IndexesEveryShowcaseDocument(t *testing.T) {
 		t.Fatalf("index showcase: %v", err)
 	}
 	docs := demoShowcaseDocuments()
-	if len(docs) != 3 {
-		t.Fatalf("showcase documents=%d, want 3", len(docs))
+	// The list is the seed's single source of truth, so a silently emptied
+	// slice would make the loop below vacuous and leave this test green while
+	// checking nothing. Assert the three release-center showcase documents are
+	// present rather than pinning the total: the answerable-document seed may
+	// add more without weakening the guard.
+	for _, required := range []string{demoPublishedDocID, demoPendingDocID, demoConfidentialDocID} {
+		found := false
+		for _, doc := range docs {
+			if doc.docID == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("showcase document %s is missing from the seed", required)
+		}
 	}
 	backends := []struct {
 		name  string
