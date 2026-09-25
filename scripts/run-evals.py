@@ -80,6 +80,7 @@ NEGATIVE_FALLBACK_MARKERS = (
     "尚未发布或已被取代，当前不能作为回答依据",
     "其中内容不足以支撑这个问题的回答",
     "抱歉，该回答包含疑似敏感信息",
+    "不保留会话上下文",
 )
 
 # Dataset tokens that express "cite the source" rather than a literal substring.
