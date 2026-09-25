@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[2]
 class DemoLoginContractTests(unittest.TestCase):
     def test_login_page_offers_one_click_demo_accounts(self):
         page = (ROOT / "web/app/login/page.tsx").read_text(encoding="utf-8")
-        self.assertIn("体验问答", page)
+        self.assertIn("普通用户视角", page)
         self.assertIn("体验问答（普通账号）", page)
-        self.assertIn("体验发布预审", page)
+        self.assertIn("管理员视角", page)
         self.assertIn("体验发布预审（管理员）", page)
         self.assertIn("grid-cols-2", page)
         self.assertIn('demoLogin(account)', page)

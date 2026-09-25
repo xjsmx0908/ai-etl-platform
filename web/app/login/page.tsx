@@ -188,15 +188,15 @@ export default function LoginPage() {
               <div className={passwordEnabled || oidcEnabled ? "mt-4" : "mt-6"}>
                 {(passwordEnabled || oidcEnabled) && (
                   <div className="mb-2 flex items-center gap-3 text-[11px] text-slate-400">
-                    <span className="h-px flex-1 bg-slate-200" />体验演示<span className="h-px flex-1 bg-slate-200" />
+                    <span className="h-px flex-1 bg-slate-200" />体验演示 · 选择角色<span className="h-px flex-1 bg-slate-200" />
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-2">
                   <Button type="button" variant="secondary" size="sm" className="w-full" icon={MessageSquareText} loading={demoAccount === "user"} disabled={loading || !!demoAccount} aria-label="体验问答（普通账号）" onClick={() => void onDemo("user")}>
-                    体验问答
+                    普通用户视角
                   </Button>
                   <Button type="button" variant="secondary" size="sm" className="w-full" icon={Bot} loading={demoAccount === "admin"} disabled={loading || !!demoAccount} aria-label="体验发布预审（管理员）" onClick={() => void onDemo("admin")}>
-                    体验发布预审
+                    管理员视角
                   </Button>
                 </div>
               </div>
