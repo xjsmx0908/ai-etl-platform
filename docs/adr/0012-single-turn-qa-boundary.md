@@ -71,6 +71,26 @@ All three, not any one:
 3. A multi-turn evaluation set exists, so "it got worse" is detectable rather
    than argued.
 
+### Implementation order, if it is ever built
+
+The cost table above is a list, not a sequence. This is the sequence, recorded
+now so the work is scoped before it starts rather than after:
+
+| # | surface | blocks |
+| --- | --- | --- |
+| 1 | Per-turn permission re-evaluation — every carried passage carries its own identity (tenant, document, generation, permission) and is re-checked against *current* permissions each turn; unresolved identity fails closed | everything. Shipping multi-turn without it is an access-control defect, not a missing feature |
+| 2 | Conversation state — a new persisted object with tenant scoping, TTL and retention | 1 (the identity has to live somewhere) |
+| 3 | Citation attribution — a citation belongs to the turn that produced it, so the response shape, the SSE `done` payload, `web/lib/types.ts` and the web readers all change | 5 |
+| 4 | Context management — a truncation policy, plus an answer for what happens when the truncated part *was* the referent | 1 (a truncated passage cannot be re-checked) |
+| 5 | Injection surface — turn N's content is trusted context, so one poisoned document steers every later turn; it needs the treatment retrieved content gets, not the treatment instructions get | — |
+| 6 | Multi-turn evaluation set — the eval track is single-turn and `safety_refusal_rate` has no meaning for a conversation | — |
+
+Size: a new subsystem plus a cross-cutting change, larger than any single defect
+in `docs/optimization-plan.md` §1.3 — not a parameter on the existing endpoint.
+The cost is not the feature code; it is the lifecycle governance in (2) and the
+re-check in (1), both of which this repository requires to be tested,
+reverse-verified and asserted on the deployed stack before they count as done.
+
 ## Consequences
 
 - `context_required` is a new value on the `refusal_reason` wire field. Callers
