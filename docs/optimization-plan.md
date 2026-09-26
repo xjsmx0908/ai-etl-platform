@@ -1570,7 +1570,7 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 | Web `eslint --max-warnings=0` | 通过 |
 | Web `next build` | 通过 |
 
-**CI 门禁**（`.github/workflows/ci.yml`）：go / eval / python / reranker / web / compose / observability / trivy 八项汇入 `Required Checks`，设计是完整的。
+**CI 门禁**（`.github/workflows/ci.yml`）：go / eval / python / reranker / web / compose / observability / trivy 八项汇入 `Required Checks`，2026-09-26 又加进 `index-consistency`（九项）。**「设计完整」不等于「在跑」**：实测这八项里有四项**从来没有绿过**（`eval` / `web` / `observability` / `trivy`，见 §8），而 `index-consistency` 从引入它的那次提交起也一直是红的 —— 于是 `Required Checks` 对每一次 push 都报红，也就等于没人看。四个成因与修法在 §8。
 
 ---
 
@@ -1624,6 +1624,7 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 33 步（已完成） 回填那 99 行（`scripts/backfill-document-chunk-counts.py`，`5989882`）—— 先查清这两列只被两个页面渲染（检索 / 引用核对 / 评审都不读），回填值取存储里的去重 chunk id 数，附前后对照与可还原 SQL；对账 `registry_count_stale` 99 → 0、再跑一次 0 行待修。同日修掉对账脚本自己的分页缺陷（`67d79ab`：Qdrant scroll 不分页 → 大文档被读短），`count_mismatch` 那条 1 是它造的假读数，1 → 0
 第 34 步（已完成） 两条判定按身份收窄（`4c995c4`）：`duplicate_chunk_points` 48 → 0（点 id 派生 + Qdrant 覆盖，跨代际多份是设计）、`space_key_unset` 45 → 8（37 条的当前代际拷贝带着正确的空间键，只有被取代的旧拷贝没有 metadata）；剩余 8 条逐条归因为「只有不带身份的旧拷贝」
 第 35 步（已完成） §1.3 缺陷 30 + 宿主机磁盘：给只写不读的死信列表补一个消费者（按「意图是否已满足」判定后 ack，`2a2fba9`），并把磁盘回收做成默认 dry-run、带范围守卫、可重复执行的脚本（`b131844`）—— 线上 `LLEN` 90 → 0，磁盘 95% → 92%
+第 36 步（已完成） CI 端到端（2026-09-26）：① 把八个门禁里**从来没绿过的四个**逐个复现并修掉 —— `eval` 的一条契约要 `web/node_modules`（且它的失败把 `Run deterministic eval` 一起跳过了）、`promtool` 要读运行时密钥、`npm audit` 与 `trivy` 是同一个 `next` CRITICAL CVE；② 把 `index-consistency` 送上真正的 GitHub runner 并首次跑绿，然后按 OPEN-01 的判据加进 `required-checks`；③ 新增 `scripts/tests/test_ci_chronic_red_gates.py` 守两条性质（被关起来的契约必须有人开门、读密钥的检查必须拿到推导出来的占位文件），八条篡改反向验证。详见 §8
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
@@ -1744,8 +1745,41 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   改成 `chainguard/minio` 并**按摘要固定**（同一个服务端、同一份源码构建，镜像里带 `mc`，所以
   `mc ready local` 健康检查与 `MINIO_ROOT_*_FILE` 两个 secret 都不用改）。
   两条都修好之后，在隔离栈上实测：`documents checked: 47`、零发现、退出码 0。
-  **仍未闭环的部分**：这个 job 到今天为止**没有在真正的 GitHub runner 上绿过一次**，依据是本机按 job 步骤的
-  逐字复现加一次真实 CI 运行；所以它还没有进 `required-checks`，等一次真绿。
+  **闭环（2026-09-26）**：`ce84959` 那次 push 的 run `36232032517` 里，这个 job 九个步骤全部 success ——
+  首次在真正的 GitHub runner 上绿。代价是冷 runner 上约 23 分钟（要现建并灌满一整个栈），
+  这是把它加进 `required-checks` 时必须认下的成本。按 `open-items.md` OPEN-01 的判据（「一次真实的
+  GitHub Actions 运行里该 job 为绿」）它已经进 `required-checks`：`needs:` 里加一项，并加一行
+  `[ "${{ needs.index-consistency.result }}" = "success" ] || exit 1` —— **只进 `needs` 是不够的**，
+  那只是让 `Required Checks` 等它，结论仍然不参与退出码。
+- **CI 的八个门禁里有四个从来没绿过，而且都只在本机绿**（2026-09-26 实测并修掉）。会话前一次运行
+  （`9da3c870`）里，除 `index-consistency` 外还有四个 job 是红的；逐个复现后成因都不在被测代码里，而在
+  「job 所在的环境」—— 所以本机跑同一套测试永远看不到。**读法本身也是一条**：job 的日志匿名读是 403，
+  但 run/job 的结论与 `check-runs/{id}/annotations` 匿名可读，红在哪一步、失败在几秒内就死都看得出来。
+  ① **`eval`：一条契约要 `web/node_modules`，而这个 job 只装 Python 依赖**。`scripts/tests/test_query_sse_client.py`
+  驱动一个 node 壳去转译 `web/lib/querySSE.ts`，需要 `web/node_modules/typescript`；全新 checkout 上没有它，
+  壳以 `Cannot find module` 退出。更贵的是**它后面的步骤被跳过**：失败的 step 会跳过同一 job 里剩下的 step，
+  于是 `Run deterministic eval` —— 这个 job 赖以命名的门禁 —— **从来没有跑过一次**。修法照仓库已有的约定
+  （`test:reauth` 那样用环境变量开门），把这条契约搬到**装得起 node 依赖的 `web` job**（新增 `npm run test:sse`），
+  `eval` 里它跳过。**刻意不用「目录存在就跳过」**：那会让一个忘了 `npm ci` 的 runner 静默跳过契约还报绿。
+  ② **`observability`：`promtool check config` 会读配置引用的文件**，而 `prometheus.yml` 指向
+  `/run/secrets/metrics_token` 与 `/run/secrets/store_api_key` —— 真实部署挂载、runner 上没有，于是它每次 push
+  都因为一个与配置无关的原因红。`--syntax-only` 也能消掉，但它同时不再校验配置引用的规则文件、TLS 文件与
+  凭据文件，而那正是这一步的主要价值；所以改成**从配置里推导出占位文件**再挂进容器
+  （`grep -oE '/run/secrets/...' prometheus.yml`）：以后配置里多一个密钥会**响亮地失败**，而不是悄悄不覆盖。
+  ③ **`web` 的 `npm audit` 与 `trivy` 是同一个成因**：`next` 16.3.1 命中 CRITICAL 的 CVE-2026-75604
+  （Windows 宿主上的未认证 RCE）与 GHSA-2xp9-vwfh-vxw4。trivy 在本机报的一堆 CRITICAL 全部来自 `.gomod/`
+  （本机 Go 模块缓存，不入库），**在干净 checkout 上只剩 `web/package-lock.json` 里那一条** —— 两个门禁是
+  同一件事的两个读数。修法是 `next` → 16.3.6（非 major），`js-yaml` 4.3.1 → 4.3.2、`sharp` 0.35.3 → 0.35.4
+  随之升上来；本机复验 `npm audit --audit-level=high` 输出 `found 0 vulnerabilities`，`npm run lint` 与
+  `npm run build` 都通过（**后者是必须跑的**：升 minor 可能打断构建，而「audit 绿了」不是「构建还能过」）。
+  三条由 `scripts/tests/test_ci_chronic_red_gates.py` 钉住，它守的是**两条性质**而不是三个症状：
+  **一条被 `skipUnless` 关起来的契约必须有东西把它的门打开**（否则它会永远跳过而套件报绿），
+  以及**要读运行时密钥的检查必须拿到从配置推导出来的占位文件**。八条篡改逐个反向验证（拿掉
+  `required-checks` 的 `needs` 行、拿掉结果断言、在 `eval` 里开门、把 npm script 的变量名改错、
+  把推导改成硬编码、加 `--syntax-only`、在配置里加一个推导正则匹配不到的路径、把只许手工开门的门在 CI 里打开）
+  全部报红，文件逐字复原。**副产品**：这条「门必须有人开」的断言顺带扫出 `BACKUP_STACK_LIVE_TEST`
+  （备份契约要一个已部署的栈）也是从没被任何东西打开过 —— 它属于**合法的**手工门，所以现在**显式登记**
+  在测试的 `MANUAL_ONLY_GATES` 里并双向校验（CI 一旦开始开它，登记就失效报红）。
 - **对象存储依赖的是已归档的 MinIO 社区版**（2026-09-26 发现）。`minio/minio` 在 2026-09-11 从 Docker Hub
   整个下架（见上一条的成因 ②），现在用的是 Chainguard 用同一份源码构建的 `chainguard/minio`，**按摘要固定**。
   它能跑，但上游的社区分发已经结束 —— 这个 tag 之后不会有新的安全修复。**换不换对象存储是一次决定，

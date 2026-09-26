@@ -204,5 +204,35 @@ class TheSeedFailureNamesTheRealProblem(unittest.TestCase):
         self.assertIn("::error", job)
 
 
+class TheJobIsAllowedToBlockAMerge(unittest.TestCase):
+    """Green is worth nothing if a red is not allowed to stop anything.
+
+    This job existed from the commit that introduced it until 2026-09-26 without
+    ever passing, and nobody noticed, because `required-checks` did not list it.
+    A job that runs, fails and is not required is a signal with no consumer.
+    """
+
+    def test_required_checks_waits_for_this_job(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        block = text[text.index("\n  required-checks:\n"):]
+        needs = block[block.index("\n    needs:\n"): block.index("\n    steps:")]
+        self.assertIn(
+            "\n      - index-consistency",
+            needs,
+            "the consistency job is not in `required-checks.needs`, so it can go red "
+            "without stopping anything",
+        )
+
+    def test_required_checks_enforces_the_result(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        enforcement = text[text.index("- name: Enforce all required jobs passed"):]
+        self.assertIn(
+            '[ "${{ needs.index-consistency.result }}" = "success" ] || exit 1',
+            enforcement,
+            "being in `needs` only makes the job wait for it; without this line a "
+            "red consistency job still leaves Required Checks green",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

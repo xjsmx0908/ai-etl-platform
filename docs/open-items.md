@@ -28,18 +28,19 @@
 
 ## agent：我该做、没做完
 
-### OPEN-01 对账 CI job `index-consistency` 没在真正的 GitHub runner 上绿过
+### OPEN-01 对账 CI job 已绿一次，但「改动后」的那次运行还没复核
 - owner: agent
-- 判据: 一次真实的 GitHub Actions 运行里该 job 为绿。绿 → 加进 `required-checks`；红 → 如实写清卡在哪一步
-- 出处: `docs/optimization-plan.md` §8；`.github/workflows/ci.yml` 的 `index-consistency`
-- 锚: 没有在真正的 GitHub runner 上绿过一次
-- 锚: 所以它还没有进 `required-checks`，等一次真绿
+- 判据: 本次推送（把该 job 加进 `required-checks`，并修掉另外四个从没绿过的门禁）之后的那次
+  GitHub Actions 运行里，该 job 仍为绿、且 `Required Checks` 真的等它。绿 → 删掉本条；红 → 如实写清卡在哪一步
+- 出处: `docs/optimization-plan.md` §8；`.github/workflows/ci.yml` 的 `index-consistency` 与 `required-checks`
+- 锚: 闭环（2026-09-26）
 - 锚: 它**每次 push 都在跑**，只是**从来没绿过**
 - 锚: 在 Docker Hub 上没了
 - 锚: 拿 `documents-v2` 当 Qdrant 集合名
-- 已修掉的两条（2026-09-26）: ① job 猜栈的身份（管理员 `admin`、集合 `documents-v2`）—— 改成读
+- 已修掉的三条（2026-09-26）: ① job 猜栈的身份（管理员 `admin`、集合 `documents-v2`）—— 改成读
   `run-evals.py` 写出的 `stack-descriptor.json`；② `minio/minio` 被 Docker Hub 删除导致起栈就失败 ——
-  改成 `chainguard/minio` 按摘要固定。隔离栈上实测 `documents checked: 47`、零发现、退出码 0
+  改成 `chainguard/minio` 按摘要固定；③ 起栈失败被吞掉 —— `docker compose up` 加 `check=True`，
+  失败原因走 `::error` 注解。实测 run `36232032517` 九个步骤全部 success，首次在真正的 runner 上绿
 - 为什么它排第一: 整条跨层对账的意义就是「下一次漂移会被自动发现」，而这句话**没有证据** ——
   这恰恰是本轮一路在修的病（判定存在，却传不到会触发动作的地方），收口上又犯了一次。
   而且它比原先以为的更糟：不是「没跑过」，是**一直在跑、一直红、没人看**（不在 `required-checks` 里）
@@ -65,6 +66,15 @@
 - 锚: 身份按用户名全局唯一：users_username_key
 - 实测: 第二次播种在第 1 篇文档失败（`status: duplicate`，`duplicate_of` 指向上一次运行租户里的文档）；
   `eval-user` / `eval-readonly` 在 `users` 表里只存在一行，`users_username_key` 是 `lower(username)` 上的唯一索引
+
+### OPEN-23 `Run deterministic eval` 从这次推送起才第一次真的跑
+- owner: agent
+- 判据: 本次运行里该步的结论。绿 → 删掉本条；红 → 如实写清卡在哪一步
+- 出处: `docs/optimization-plan.md` §8（四个从没绿过的门禁）
+- 锚: 这个 job 赖以命名的门禁 —— **从来没有跑过一次**
+- 说明: 挡在它前面的那条契约（要 `web/node_modules`）已搬到 `web` job，所以从这次推送起它会真的执行。
+  **它能不能过是未知的** —— 此前没跑过就没有证据，这一条记的就是这个未知。它是「Deterministic RAG Eval」
+  这个 job 赖以命名的门禁，也是「这套检索质量有没有回归」唯一自动化的判据
 
 ### OPEN-02 切块改动（缺陷 21 / 22）未走 P-CAP-2 检索评测轨
 - owner: agent

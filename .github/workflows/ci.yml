@@ -163,6 +163,20 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      # This contract is a Python unittest in scripts/tests, but it drives a node
+      # harness that transpiles web/lib/querySSE.ts with the TypeScript compiler
+      # out of web/node_modules. This job is where that directory exists, so the
+      # contract runs here; the `eval` job skips it through RUN_QUERY_SSE_HARNESS
+      # instead of failing on a module that job never installs.
+      #
+      # It is not gated on the directory existing, deliberately. A directory
+      # check would let a runner that forgot `npm ci` skip the contract and
+      # still report green, which is the failure this step exists to end: the
+      # contract was red in `eval` on every push and green on any machine that
+      # happened to have node_modules.
+      - name: Test query SSE client contract
+        run: npm run test:sse
+
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
@@ -229,6 +243,12 @@ jobs:
   # 401), and a freshly built stack's collection is `documents` while the
   # long-running demo tenant's is `documents-v2` (so the check asked for a
   # collection that does not exist and reported a 404 on all 47 documents).
+  #
+  # This job is now in `required-checks`, which is a deliberate cost: it takes
+  # about 23 minutes on a cold runner because it builds and seeds a whole stack.
+  # It is the only thing in the repository that compares the four layers, so a
+  # red here has to block rather than sit in a list nobody reads -- which is
+  # exactly where it sat from the commit that introduced it until 2026-09-26.
   index-consistency:
     name: Cross-layer Index Consistency
     runs-on: ubuntu-latest
@@ -365,10 +385,40 @@ jobs:
       - name: Validate Grafana dashboard JSON
         run: python3 -m json.tool infrastructure/grafana/dashboards/ai-etl-platform.json > /dev/null
 
+      # `promtool check config` reads every file the config references, and
+      # prometheus.yml points at two runtime secrets under /run/secrets
+      # (metrics_token, store_api_key) that the real deployment mounts and this
+      # container does not. A bare run therefore fails with
+      # `stat /run/secrets/metrics_token: no such file or directory` on every
+      # push, for a reason that says nothing about the config itself.
+      #
+      # --syntax-only would silence that too, but it also stops validating the
+      # rule files, TLS files and credential files the config references, which
+      # is most of what this step is for. Placeholders keep the check whole.
+      #
+      # The placeholder paths are derived from prometheus.yml rather than listed
+      # here, so the step cannot go stale: a secret added to the config without
+      # a placeholder fails the check loudly instead of passing quietly. The
+      # `/run/secrets/` prefix is stripped because the directory is mounted *at*
+      # `/run/secrets` -- keeping the prefix would nest it one level too deep and
+      # the check would report the file as missing.
+      #
+      # `chmod a+rX` is not decoration. `mktemp -d` makes a 0700 directory and
+      # the prometheus image runs as `nobody`, so without it the check fails with
+      # `permission denied` instead of passing -- a different message for the
+      # same reason. Both failure modes were measured on a real host.
       - name: Validate Prometheus config and alert rules
         run: |
+          secrets="$(mktemp -d)"
+          grep -oE '/run/secrets/[A-Za-z0-9_.-]+' infrastructure/prometheus.yml \
+            | sort -u \
+            | while read -r path; do
+                printf 'ci-placeholder\n' > "${secrets}/${path#/run/secrets/}"
+              done
+          chmod -R a+rX "${secrets}"
           docker run --rm \
             -v "$PWD/infrastructure:/work:ro" \
+            -v "${secrets}:/run/secrets:ro" \
             --entrypoint promtool \
             prom/prometheus:latest \
             check config /work/prometheus.yml
@@ -433,6 +483,7 @@ jobs:
       - compose
       - observability
       - trivy
+      - index-consistency
     steps:
       - name: Enforce all required jobs passed
         run: |
@@ -444,6 +495,7 @@ jobs:
           echo "compose=${{ needs.compose.result }}"
           echo "observability=${{ needs.observability.result }}"
           echo "trivy=${{ needs.trivy.result }}"
+          echo "index-consistency=${{ needs.index-consistency.result }}"
 
           [ "${{ needs.go.result }}" = "success" ] || exit 1
           [ "${{ needs.eval.result }}" = "success" ] || exit 1
@@ -453,3 +505,4 @@ jobs:
           [ "${{ needs.compose.result }}" = "success" ] || exit 1
           [ "${{ needs.observability.result }}" = "success" ] || exit 1
           [ "${{ needs.trivy.result }}" = "success" ] || exit 1
+          [ "${{ needs.index-consistency.result }}" = "success" ] || exit 1

@@ -7,11 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
-    "test:reauth": "RUN_WEB_HTTP_CONTRACT=1 python3 ../scripts/tests/test_reauthentication_web_contract.py -v"
+    "test:reauth": "RUN_WEB_HTTP_CONTRACT=1 python3 ../scripts/tests/test_reauthentication_web_contract.py -v",
+    "test:sse": "RUN_QUERY_SSE_HARNESS=1 python3 ../scripts/tests/test_query_sse_client.py -v"
   },
   "dependencies": {
     "lucide-react": "^1.31.0",
-    "next": "16.3.1",
+    "next": "16.3.6",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
