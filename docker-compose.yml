@@ -164,7 +164,26 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    # Not `minio/minio`. On 2026-09-11 MinIO removed that repository from Docker
+    # Hub -- every tag, not just `latest` -- so an anonymous pull answers "pull
+    # access denied" and the Hub API returns 404. quay.io/minio/minio does not
+    # grant anonymous pull either (`access: []` in the token it hands out).
+    #
+    # This matters most in CI and on any host with a cold cache: `docker compose
+    # up` fails at the pull step, so the whole stack never starts. It is invisible
+    # on a machine that still has the old image cached, which is exactly why it
+    # went unnoticed until a real runner was observed.
+    #
+    # Chainguard publishes the same server built from the same source (this tag
+    # reports RELEASE.2026-09-22T19-25-18Z), and it ships `mc` too, so the
+    # healthcheck below and the MINIO_ROOT_*_FILE secrets work unchanged.
+    # Pinned by digest on purpose: a rolling tag would make "the stack came up"
+    # depend on a tag that can move.
+    #
+    # MinIO's community distribution is archived. This keeps the stack working;
+    # replacing the object store is a separate decision, recorded in
+    # docs/open-items.md.
+    image: chainguard/minio:latest@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
     ports:
       - "${COMPOSE_BIND:-127.0.0.1}:${MINIO_API_HOST_PORT:-9000}:9000"
       - "${COMPOSE_BIND:-127.0.0.1}:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
