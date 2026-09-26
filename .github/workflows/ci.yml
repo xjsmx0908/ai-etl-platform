@@ -245,7 +245,10 @@ jobs:
   # collection that does not exist and reported a 404 on all 47 documents).
   #
   # This job is now in `required-checks`, which is a deliberate cost: it takes
-  # about 23 minutes on a cold runner because it builds and seeds a whole stack.
+  # about 16-19 minutes of job wall time on a cold runner (977s and 1153s in the
+  # two runs that went green) because it builds and seeds a whole stack -- measure
+  # it from the job's started_at -> completed_at, not from the run's created_at,
+  # which includes queueing and overstates it.
   # It is the only thing in the repository that compares the four layers, so a
   # red here has to block rather than sit in a list nobody reads -- which is
   # exactly where it sat from the commit that introduced it until 2026-09-26.

@@ -92,6 +92,20 @@ class TestTamperingIsRejected(unittest.TestCase):
         shutil.copyfile(OPEN_ITEMS, items)
         return ledger, items
 
+    def replace_first_anchor_with(self, text: str, replacement: str) -> str:
+        """只替换**那一条锚的文本** —— 用切片，不用 `str.replace`。
+
+        为什么不能用 `text.replace(anchor, ..., 1)`：它替换的是**全文里先出现的同一段文字**，
+        而锚经常与它所在条目的标题逐字相同（`### OPEN-21 对象存储依赖的是已归档的 MinIO 社区版`
+        与它的 `- 锚:` 行就是逐字相同）→ 替换打在标题上、锚一点没动，于是「锚失效必须被拦住」
+        在**锚根本没被改**的情况下恒绿。实测：删掉 OPEN-01（它当时排在第一条、锚与标题不同）
+        之后，下面两条反向验证立刻变成 `exit 0` —— 它们此前是靠**条目的排列顺序**通过的，
+        不是靠「锚失效会被拦住」这个性质。
+        """
+        m = re.search(r"(?m)^- 锚: (.+)$", text)
+        self.assertIsNotNone(m, "open-items.md 里没有锚")
+        return text[: m.start(1)] + replacement + text[m.end(1):]
+
     def test_a_new_debt_line_without_a_classification_is_rejected(self):
         ledger, items = self.copy()
         with ledger.open("a", encoding="utf-8") as fh:
@@ -125,9 +139,8 @@ class TestTamperingIsRejected(unittest.TestCase):
     def test_an_anchor_that_no_longer_matches_is_rejected(self):
         ledger, items = self.copy()
         text = items.read_text(encoding="utf-8")
-        m = re.search(r"(?m)^- 锚: (.+)$", text)
-        self.assertIsNotNone(m)
-        edited = text.replace(m.group(1), "这段文字在台账里已经不存在了", 1)
+        edited = self.replace_first_anchor_with(text, "这段文字在台账里已经不存在了")
+        self.assertNotEqual(text, edited, "篡改没落到文件上")
         items.write_text(edited, encoding="utf-8")
         r = run_check(ledger, items)
         self.assertEqual(r.returncode, 1, "锚失效没有被拦住")
@@ -137,9 +150,9 @@ class TestTamperingIsRejected(unittest.TestCase):
         """短锚会「一片盖多行」，把没分类的行蒙过去。"""
         ledger, items = self.copy()
         text = items.read_text(encoding="utf-8")
-        m = re.search(r"(?m)^- 锚: (.+)$", text)
-        self.assertIsNotNone(m)
-        items.write_text(text.replace(m.group(1), "未验证", 1), encoding="utf-8")
+        edited = self.replace_first_anchor_with(text, "未验证")
+        self.assertNotEqual(text, edited, "篡改没落到文件上")
+        items.write_text(edited, encoding="utf-8")
         r = run_check(ledger, items)
         self.assertEqual(r.returncode, 1, "过短的锚没有被拦住")
         self.assertIn("锚太短", r.stderr)

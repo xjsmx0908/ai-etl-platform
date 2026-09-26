@@ -352,7 +352,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 **运行位置必须在 compose 网络内**：`docker-compose.eval.yml` 把 postgres / kafka / redis / qdrant / elasticsearch 的端口全部 `ports: !reset []` 收掉，只留 `query-api` 绑一个随机回环端口 —— 这是刻意的（隔离栈不该把后端暴露到宿主），但也意味着对账脚本**从 runner 上够不着 ES 和 Qdrant**。所以 CI 里用一个一次性容器挂进 `<project>_default` 网络跑：`docker run --rm --network ai-etl-consistency_default -v "$PWD/scripts:/scripts:ro" python:3.12-alpine python /scripts/check-index-consistency.py --es http://elasticsearch:9200 ...`。脚本只用 stdlib（`urllib`），那个容器不需要装任何东西。
 
-**新增 CI job `index-consistency`，但还没有加入 `required-checks`**：它先用 `scripts/run-evals.py --keep-services` 把隔离栈起起来并播种（那一步已经会起栈、建用户、上传发布），再 mint 一个 admin token，再在网络内跑对账，最后上传报告并 `down -v`。**2026-09-26 复核发现这段说明本身写错了**：这个 job 并不是「没跑过」—— 它每次 push 都在跑，只是从来没绿过；而当时写的「本机起不了 eval 栈」也不对，换一台装了 Docker 的机器就能起。它**没有在真正的 GitHub runner 上绿过一次**，所以还没进 `required-checks`；两个成因（job 猜栈的身份、`minio/minio` 被 Docker Hub 删除）见 §8 那一段。
+**新增 CI job `index-consistency`，现已加入 `required-checks`（2026-09-26）**：它先用 `scripts/run-evals.py --keep-services` 把隔离栈起起来并播种（那一步已经会起栈、建用户、上传发布），再 mint 一个 admin token，再在网络内跑对账，最后上传报告并 `down -v`。**2026-09-26 复核发现这段说明本身写错了**：这个 job 当时并非一次都没执行过 —— 它每次 push 都在跑，只是那时一直是红的；而当时写的「本机起不了 eval 栈」也不对，换一台装了 Docker 的机器就能起。它此前**没有在真正的 GitHub runner 上绿过一次**，所以那时进不了 `required-checks`；两个成因（job 猜栈的身份、`minio/minio` 被 Docker Hub 删除）见 §8 那一段。**修好后的复核**：run `36232032517` 首次跑绿；`1e49ec3` 那次 push 的 run `36233724927` 里它仍绿（九步全 success）且 `Required Checks` 为 success —— OPEN-01 的判据达成，条目已从 `open-items.md` 删除。
 
 **缺陷 16 只修了一半，另一半是刻意的**：72 字节上限是**存储格式的硬属性**（bcrypt 存不下），
 所有写密码的路径都必须拒；而**最小长度是产品策略**，管理员 API 从来接受任意非空密码，
@@ -1624,7 +1624,7 @@ $ psql -tAc "SELECT count(*) FILTER (WHERE object_key <> ''),
 第 33 步（已完成） 回填那 99 行（`scripts/backfill-document-chunk-counts.py`，`5989882`）—— 先查清这两列只被两个页面渲染（检索 / 引用核对 / 评审都不读），回填值取存储里的去重 chunk id 数，附前后对照与可还原 SQL；对账 `registry_count_stale` 99 → 0、再跑一次 0 行待修。同日修掉对账脚本自己的分页缺陷（`67d79ab`：Qdrant scroll 不分页 → 大文档被读短），`count_mismatch` 那条 1 是它造的假读数，1 → 0
 第 34 步（已完成） 两条判定按身份收窄（`4c995c4`）：`duplicate_chunk_points` 48 → 0（点 id 派生 + Qdrant 覆盖，跨代际多份是设计）、`space_key_unset` 45 → 8（37 条的当前代际拷贝带着正确的空间键，只有被取代的旧拷贝没有 metadata）；剩余 8 条逐条归因为「只有不带身份的旧拷贝」
 第 35 步（已完成） §1.3 缺陷 30 + 宿主机磁盘：给只写不读的死信列表补一个消费者（按「意图是否已满足」判定后 ack，`2a2fba9`），并把磁盘回收做成默认 dry-run、带范围守卫、可重复执行的脚本（`b131844`）—— 线上 `LLEN` 90 → 0，磁盘 95% → 92%
-第 36 步（已完成） CI 端到端（2026-09-26）：① 把八个门禁里**从来没绿过的四个**逐个复现并修掉 —— `eval` 的一条契约要 `web/node_modules`（且它的失败把 `Run deterministic eval` 一起跳过了）、`promtool` 要读运行时密钥、`npm audit` 与 `trivy` 是同一个 `next` CRITICAL CVE；② 把 `index-consistency` 送上真正的 GitHub runner 并首次跑绿，然后按 OPEN-01 的判据加进 `required-checks`；③ 新增 `scripts/tests/test_ci_chronic_red_gates.py` 守两条性质（被关起来的契约必须有人开门、读密钥的检查必须拿到推导出来的占位文件），八条篡改反向验证。详见 §8
+第 36 步（已完成） CI 端到端（2026-09-26）：① 把八个门禁里**从来没绿过的四个**逐个复现并修掉 —— `eval` 的一条契约要 `web/node_modules`（且它的失败把 `Run deterministic eval` 一起跳过了）、`promtool` 要读运行时密钥、`npm audit` 与 `trivy` 是同一个 `next` CRITICAL CVE；② 把 `index-consistency` 送上真正的 GitHub runner 并首次跑绿，然后按 OPEN-01 的判据加进 `required-checks`；③ 新增 `scripts/tests/test_ci_chronic_red_gates.py` 守两条性质（被关起来的契约必须有人开门、读密钥的检查必须拿到推导出来的占位文件），八条篡改反向验证；④ 复核 run `36233724927`（`1e49ec3`）**十个 job 全 success、run 结论 `success`** —— `index-consistency` 与 `Run deterministic eval` 都在里面，OPEN-01 与 OPEN-23 按判据删除。详见 §8
 ```
 
 **为什么是这个顺序**：第 1–4 步是「不做会丢数据或停服」，全部完成 —— 磁盘那一项从
@@ -1729,6 +1729,7 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   **先纠正一句当时写错的话**：workflow 注释里写「这个 job 还没被观察过能跑起来」，事实相反 ——
   它**每次 push 都在跑**，只是**从来没绿过**；它不在 `required-checks` 里，所以没人看。2026-09-26 用公开的
   checks API 逐次读它的结论才看到：它死在第一步「起栈」，耗时 2 秒、退出码 2，而且**引入它的那次提交就已经是红的**。
+  （这一段描述的是 2026-09-26 **修之前**的状态；同日修好并跑绿，见本节末的「闭环」与第二次复核。）
   两个成因都是「猜」出来的东西加一次环境变化，不是脚本逻辑：
   ① **job 猜了栈的身份**：它拿 `admin`/`admin` 登录（隔离栈引导出来的是 `eval-admin`，在每次运行新建的租户里），
   拿 `documents-v2` 当 Qdrant 集合名（那是长期演示租户的，新建的栈用 `documents`）。两者都不报错，而是**给出错答案**：
@@ -1746,11 +1747,17 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   `mc ready local` 健康检查与 `MINIO_ROOT_*_FILE` 两个 secret 都不用改）。
   两条都修好之后，在隔离栈上实测：`documents checked: 47`、零发现、退出码 0。
   **闭环（2026-09-26）**：`ce84959` 那次 push 的 run `36232032517` 里，这个 job 九个步骤全部 success ——
-  首次在真正的 GitHub runner 上绿。代价是冷 runner 上约 23 分钟（要现建并灌满一整个栈），
-  这是把它加进 `required-checks` 时必须认下的成本。按 `open-items.md` OPEN-01 的判据（「一次真实的
-  GitHub Actions 运行里该 job 为绿」）它已经进 `required-checks`：`needs:` 里加一项，并加一行
+  首次在真正的 GitHub runner 上绿。按 `open-items.md` OPEN-01 的判据（「一次真实的 GitHub Actions
+  运行里该 job 为绿」）它随后进 `required-checks`：`needs:` 里加一项，并加一行
   `[ "${{ needs.index-consistency.result }}" = "success" ] || exit 1` —— **只进 `needs` 是不够的**，
   那只是让 `Required Checks` 等它，结论仍然不参与退出码。
+  **判据的第二次复核（`1e49ec3` 那次 push，run `36233724927`）**：这个 job 仍绿（九步全 success，
+  第 4 步「Publish why the stack did not come up」按设计跳过），且 `Required Checks` 为 success ——
+  整份 run 十个 job 全 success、run 结论 `success`。于是 OPEN-01 按判据删除。
+  代价是冷 runner 上的墙钟时间：job 977 秒（约 16.3 分钟，其中起栈播种 957 秒），上一次 run 是
+  1153 秒（约 19.2 分钟）—— 要现建并灌满一整个栈，这是把它加进 `required-checks` 时必须认下的成本。
+  **别用 run 的 `created_at` → `updated_at` 量 job 耗时**（含排队，会多算；第一版就是这么写成
+  「约 23 分钟」的，实测两次分别是 19.2 与 16.3 分钟 —— 要量的是 job 的 `started_at` → `completed_at`）。
 - **CI 的八个门禁里有四个从来没绿过，而且都只在本机绿**（2026-09-26 实测并修掉）。会话前一次运行
   （`9da3c870`）里，除 `index-consistency` 外还有四个 job 是红的；逐个复现后成因都不在被测代码里，而在
   「job 所在的环境」—— 所以本机跑同一套测试永远看不到。**读法本身也是一条**：job 的日志匿名读是 403，
@@ -1758,7 +1765,8 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   ① **`eval`：一条契约要 `web/node_modules`，而这个 job 只装 Python 依赖**。`scripts/tests/test_query_sse_client.py`
   驱动一个 node 壳去转译 `web/lib/querySSE.ts`，需要 `web/node_modules/typescript`；全新 checkout 上没有它，
   壳以 `Cannot find module` 退出。更贵的是**它后面的步骤被跳过**：失败的 step 会跳过同一 job 里剩下的 step，
-  于是 `Run deterministic eval` —— 这个 job 赖以命名的门禁 —— **从来没有跑过一次**。修法照仓库已有的约定
+  于是 `Run deterministic eval` —— 这个 job 赖以命名的门禁 —— 在这之前**一次都没真的执行过**
+  （`1e49ec3` 那次 push 才第一次跑，结论 success，见上一条的第二次复核）。修法照仓库已有的约定
   （`test:reauth` 那样用环境变量开门），把这条契约搬到**装得起 node 依赖的 `web` job**（新增 `npm run test:sse`），
   `eval` 里它跳过。**刻意不用「目录存在就跳过」**：那会让一个忘了 `npm ci` 的 runner 静默跳过契约还报绿。
   ② **`observability`：`promtool check config` 会读配置引用的文件**，而 `prometheus.yml` 指向
