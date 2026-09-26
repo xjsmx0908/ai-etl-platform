@@ -605,7 +605,15 @@ def resolve_compose_project(raw: str) -> str:
 def api_base_from_compose_port(raw: str) -> str:
     match = re.search(r":(\d+)$", raw.strip())
     if not match:
-        raise EvalRunnerError(f"could not parse query-api host port: {raw!r}")
+        # This is the message a reader gets when the stack did not come up, so it
+        # has to name the thing that actually failed. `docker compose up` is run
+        # with check=True for the same reason: without it the compose error was
+        # discarded and this line was the whole story, which reads like a parsing
+        # bug rather than a stack that never started.
+        raise EvalRunnerError(
+            "query-api has no published port, so the stack did not come up "
+            f"(docker compose port returned {raw!r}); the compose error is above"
+        )
     return f"http://127.0.0.1:{match.group(1)}"
 
 
@@ -2201,7 +2209,17 @@ def main() -> int:
         if should_start_compose(api_base):
             print(f"[eval] compose project: {compose_project}")
             print("[eval] starting docker compose stack")
-            run_cmd(["docker", "compose", "up", "-d", "--build"], env=env, timeout_sec=900)
+            # check=True on purpose. Measured on a real runner: this call failed
+            # (the eval stack has never come up in CI) and the failure was
+            # discarded, so the run ended two lines later with "could not parse
+            # query-api host port: ''" -- an error that names the wrong problem and
+            # hides the compose output that names the right one.
+            run_cmd(
+                ["docker", "compose", "up", "-d", "--build"],
+                env=env,
+                check=True,
+                timeout_sec=900,
+            )
             started_services = True
             port_result = run_cmd(
                 ["docker", "compose", "port", "query-api", "8080"],

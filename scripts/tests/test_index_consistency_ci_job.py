@@ -168,5 +168,40 @@ class TheProbeFailureSaysWhichLayerFailed(unittest.TestCase):
             self.assertIn(f'probe_failure("{layer}"', source)
 
 
+class TheSeedFailureNamesTheRealProblem(unittest.TestCase):
+    """The seed step's failure has to point at the stack, not at a parser.
+
+    Measured on a real runner: the eval stack has never come up in CI, and what
+    the job reported was `could not parse query-api host port: ''` -- because
+    `docker compose up` was run without `check=True`, so its error was discarded
+    and the only surviving symptom was an empty port string.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = load_runner()
+
+    def test_a_missing_query_api_port_says_the_stack_did_not_come_up(self):
+        with self.assertRaises(self.runner.EvalRunnerError) as caught:
+            self.runner.api_base_from_compose_port("")
+        self.assertIn("stack did not come up", str(caught.exception))
+
+    def test_compose_up_is_checked_so_its_error_survives(self):
+        source = RUNNER.read_text(encoding="utf-8")
+        call = re.search(
+            r'run_cmd\(\s*\["docker", "compose", "up", "-d", "--build"\][^)]*\)', source, re.S
+        )
+        self.assertIsNotNone(call, "the compose up call moved; update this test")
+        self.assertIn("check=True", call.group(0))
+
+    def test_the_job_publishes_the_seed_output_when_it_fails(self):
+        job = job_block()
+        # `tee` keeps the output around; the failure step puts it where a person
+        # (or the API) can read it without a token.
+        self.assertIn("tee /tmp/seed.log", job)
+        self.assertIn("if: failure()", job)
+        self.assertIn("GITHUB_STEP_SUMMARY", job)
+
+
 if __name__ == "__main__":
     unittest.main()

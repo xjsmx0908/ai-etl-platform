@@ -246,13 +246,29 @@ jobs:
       # The rate floors are zeroed on purpose: this job measures layer
       # agreement, not answer quality, and a red here should mean the layers
       # disagree rather than that an answer drifted.
+      #
+      # The output is tee'd to a file so the failure can be published in the next
+      # step. A red here is most often "the stack did not come up", and that
+      # reason lives in this step's output -- which is not readable through the
+      # API without a token.
       - name: Seed an isolated stack through the eval runner
         run: |
+          set -o pipefail
           python3 scripts/run-evals.py \
             --keep-services \
             --compose-project ai-etl-consistency \
             --min-hit-rate 0 --min-pass-rate 0 \
-            --min-answer-pass-rate 0 --min-negative-pass-rate 0
+            --min-answer-pass-rate 0 --min-negative-pass-rate 0 2>&1 | tee /tmp/seed.log
+
+      - name: Publish why the stack did not come up
+        if: failure()
+        run: |
+          {
+            echo "### the seed step failed"
+            echo '```'
+            tail -80 /tmp/seed.log 2>/dev/null || echo "(no seed log was produced)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mint an admin token
         run: |
