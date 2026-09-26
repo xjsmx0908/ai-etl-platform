@@ -260,15 +260,21 @@ jobs:
             --min-hit-rate 0 --min-pass-rate 0 \
             --min-answer-pass-rate 0 --min-negative-pass-rate 0 2>&1 | tee /tmp/seed.log
 
+      # The reason a red here matters is almost always in this step's output, and
+      # a job log is not readable without a token. An annotation is: it is what
+      # the checks API returns. Newlines travel as `%0A`, and a literal `%` has to
+      # be escaped first or the message gets cut at it.
       - name: Publish why the stack did not come up
         if: failure()
         run: |
-          {
-            echo "### the seed step failed"
-            echo '```'
-            tail -80 /tmp/seed.log 2>/dev/null || echo "(no seed log was produced)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          tail -40 /tmp/seed.log 2>/dev/null | tr -d '\r' \
+            | sed -e 's/%/%25/g' \
+            | awk '{printf "%s%%0A", $0}' > /tmp/seed-annotation
+          message="$(cat /tmp/seed-annotation)"
+          if [ -z "$message" ]; then
+            message="(no seed log was produced)"
+          fi
+          echo "::error title=the seed step failed::$message"
 
       - name: Mint an admin token
         run: |

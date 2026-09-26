@@ -196,11 +196,12 @@ class TheSeedFailureNamesTheRealProblem(unittest.TestCase):
 
     def test_the_job_publishes_the_seed_output_when_it_fails(self):
         job = job_block()
-        # `tee` keeps the output around; the failure step puts it where a person
-        # (or the API) can read it without a token.
+        # `tee` keeps the output around; the failure step turns it into an
+        # annotation, which is the only one of the available channels that is
+        # readable through the checks API without a token.
         self.assertIn("tee /tmp/seed.log", job)
         self.assertIn("if: failure()", job)
-        self.assertIn("GITHUB_STEP_SUMMARY", job)
+        self.assertIn("::error", job)
 
 
 if __name__ == "__main__":
