@@ -28,16 +28,43 @@
 
 ## agent：我该做、没做完
 
-### OPEN-01 对账 CI job `index-consistency` 未端到端验证
+### OPEN-01 对账 CI job `index-consistency` 没在真正的 GitHub runner 上绿过
 - owner: agent
-- 判据: 在真实环境按 job 的步骤跑通一次。绿 → 加进 `required-checks`；红 → 修到绿，或如实写清卡在哪一步
-- 出处: `docs/optimization-plan.md` §7 第 34 步 / §8；`.github/workflows/ci.yml` 的 `index-consistency`
-- 锚: 新增 CI job `index-consistency`，但暂不加入 `required-checks`
-- 锚: 第 34 步的 CI 部分**如实记为未端到端验证**
-- 锚: 但那个 job 还没有端到端跑过，所以不在 `required-checks` 里
-- 锚: **未验证的部分要说清**：本机起不了 eval 栈
-- 为什么它排第一: 整条跨层对账的意义就是「下一次漂移会被自动发现」，而这句话目前**没有证据** ——
-  这恰恰是本轮一路在修的病（判定存在，却传不到会触发动作的地方），收口上又犯了一次
+- 判据: 一次真实的 GitHub Actions 运行里该 job 为绿。绿 → 加进 `required-checks`；红 → 如实写清卡在哪一步
+- 出处: `docs/optimization-plan.md` §8；`.github/workflows/ci.yml` 的 `index-consistency`
+- 锚: 没有在真正的 GitHub runner 上绿过一次
+- 锚: 所以它还没有进 `required-checks`，等一次真绿
+- 锚: 它**每次 push 都在跑**，只是**从来没绿过**
+- 锚: 在 Docker Hub 上没了
+- 锚: 拿 `documents-v2` 当 Qdrant 集合名
+- 已修掉的两条（2026-09-26）: ① job 猜栈的身份（管理员 `admin`、集合 `documents-v2`）—— 改成读
+  `run-evals.py` 写出的 `stack-descriptor.json`；② `minio/minio` 被 Docker Hub 删除导致起栈就失败 ——
+  改成 `chainguard/minio` 按摘要固定。隔离栈上实测 `documents checked: 47`、零发现、退出码 0
+- 为什么它排第一: 整条跨层对账的意义就是「下一次漂移会被自动发现」，而这句话**没有证据** ——
+  这恰恰是本轮一路在修的病（判定存在，却传不到会触发动作的地方），收口上又犯了一次。
+  而且它比原先以为的更糟：不是「没跑过」，是**一直在跑、一直红、没人看**（不在 `required-checks` 里）
+
+### OPEN-21 对象存储依赖的是已归档的 MinIO 社区版
+- owner: user
+- 判据: 定一个口径 —— 继续用 Chainguard 构建的 MinIO（能跑、但上游社区分发已结束、不会有新的安全修复），
+  或换成还在维护的 S3 实现（RustFS / Garage / SeaweedFS）。换的话要动 `docker-compose.yml` 的 minio 服务并
+  跑一次真实摄入/检索回归
+- 出处: `docs/optimization-plan.md` §8；`docker-compose.yml` 的 minio 服务
+- 锚: 对象存储依赖的是已归档的 MinIO 社区版
+- 锚: 换不换对象存储是一次决定
+- 为什么归 `user`: 这是**依赖选型**（供应链 + 长期维护），不是修一个坏掉的东西 —— 现在这套能跑，
+  换与不换的代价不对称，该由用户定口径
+
+### OPEN-22 `run-evals.py --keep-services` 的「再跑一次」走不通
+- owner: agent
+- 判据: 让「同一个栈上再跑一次」能成功（例如按租户区分身份，或让运行器复用上一次的租户），
+  或明确写清它不支持并让调用方知道
+- 出处: `docs/optimization-plan.md` §8；`scripts/run-evals.py` 的 `create_eval_user` / `login_eval_user`；
+  迁移 `0001_init.up.sql` 的 `users_username_key`
+- 锚: `run-evals.py --keep-services` 的「再跑一次」走不通
+- 锚: 身份按用户名全局唯一：users_username_key
+- 实测: 第二次播种在第 1 篇文档失败（`status: duplicate`，`duplicate_of` 指向上一次运行租户里的文档）；
+  `eval-user` / `eval-readonly` 在 `users` 表里只存在一行，`users_username_key` 是 `lower(username)` 上的唯一索引
 
 ### OPEN-02 切块改动（缺陷 21 / 22）未走 P-CAP-2 检索评测轨
 - owner: agent
@@ -245,3 +272,5 @@
 | 归进了「可做可不做」那一堆 | 同上：复述 2026-09-26 那次分类错误本身 |
 | 机械扫描就能拿到，我却没去扫 | 同上：说明机械扫描这个机制要解决的问题 |
 | `owner` 只有四个取值：**`agent`（我该做、没做完） | §8 在解释这份清单的字段定义 |
+| 第 34 步的 CI 部分当时记为「未端到端验证」 | 引用的是一句**被推翻的旧判断**（§7 第 34 步的说明 2026-09-26 已改），用来说明判断怎么变的；真欠账是 §8 与 OPEN-01 |
+| 它每次 push 都在跑，只是从来没绿过 | 复述被推翻的旧结论，不是新欠账；真欠账是 OPEN-01 |

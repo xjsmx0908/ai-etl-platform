@@ -352,7 +352,7 @@ ollama（bge-m3），不在栈内、不被任何备份覆盖。宿主机丢失�
 
 **运行位置必须在 compose 网络内**：`docker-compose.eval.yml` 把 postgres / kafka / redis / qdrant / elasticsearch 的端口全部 `ports: !reset []` 收掉，只留 `query-api` 绑一个随机回环端口 —— 这是刻意的（隔离栈不该把后端暴露到宿主），但也意味着对账脚本**从 runner 上够不着 ES 和 Qdrant**。所以 CI 里用一个一次性容器挂进 `<project>_default` 网络跑：`docker run --rm --network ai-etl-consistency_default -v "$PWD/scripts:/scripts:ro" python:3.12-alpine python /scripts/check-index-consistency.py --es http://elasticsearch:9200 ...`。脚本只用 stdlib（`urllib`），那个容器不需要装任何东西。
 
-**新增 CI job `index-consistency`，但暂不加入 `required-checks`**：它先用 `scripts/run-evals.py --keep-services` 把隔离栈起起来并播种（那一步已经会起栈、建用户、上传发布），再 mint 一个 admin token（`POST /v1/auth/login`，凭据取 `BOOTSTRAP_ADMIN_*`，默认 `admin`/`admin`），再在网络内跑对账，最后上传报告并 `down -v`。**这个 job 还没有端到端跑过** —— 本机起不了 eval 栈（`docker-compose.eval.yml` 要完整栈），所以 compose 网络的接线与 token 的 mint 是照着 eval job 用的同一批原语写的，但**没有被观察过能工作**。因此它现在是红的也拦不住合并，等一次真绿之后再进 `required-checks`；这一点写在 workflow 的注释里，不靠口头约定。
+**新增 CI job `index-consistency`，但还没有加入 `required-checks`**：它先用 `scripts/run-evals.py --keep-services` 把隔离栈起起来并播种（那一步已经会起栈、建用户、上传发布），再 mint 一个 admin token，再在网络内跑对账，最后上传报告并 `down -v`。**2026-09-26 复核发现这段说明本身写错了**：这个 job 并不是「没跑过」—— 它每次 push 都在跑，只是从来没绿过；而当时写的「本机起不了 eval 栈」也不对，换一台装了 Docker 的机器就能起。它**没有在真正的 GitHub runner 上绿过一次**，所以还没进 `required-checks`；两个成因（job 猜栈的身份、`minio/minio` 被 Docker Hub 删除）见 §8 那一段。
 
 **缺陷 16 只修了一半，另一半是刻意的**：72 字节上限是**存储格式的硬属性**（bcrypt 存不下），
 所有写密码的路径都必须拒；而**最小长度是产品策略**，管理员 API 从来接受任意非空密码，
@@ -1679,8 +1679,9 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
 第 33 步是回填，三条约束决定了它的形状：不删文档、不重解析、`_id` 按该点自己的身份派生（编造一个代际
 等于在修旧不一致的同时造一个新的）。第 34 步是让下一次能被自动发现，但**先做门禁语义、再做挂载** ——
 一个永远红的检查会没人看，所以基线带 `owner` 和 `expires`、只对新增或已过期报失败；CI job 在 compose
-网络内跑，因为 eval overlay 刻意收起了后端端口。第 34 步的 CI 部分**如实记为未端到端验证**（本机起不了
-eval 栈），因此没有进 `required-checks`。
+网络内跑，因为 eval overlay 刻意收起了后端端口。第 34 步的 CI 部分当时记为「未端到端验证」，这个判断
+2026-09-26 被推翻：job 一直在跑、一直红，而「本机起不了 eval 栈」是错的。它**没有在真正的 GitHub runner
+上绿过一次**，因此仍然没有进 `required-checks`。
 
 第 35 步把第 32 步那条判据收口，处理的是**同一对问题的两端**：一个**只写不读**的队列，和一台**没人管**的磁盘。
 死信列表这边，修法不是重放而是**按「意图是否已满足」判定后 ack** —— 一条死信的意图很窄（把这一块写进 ES），
@@ -1718,15 +1719,46 @@ eval 栈），因此没有进 `required-checks`。
   两个切块器的单测（旧代码红 → 新代码绿）、线上端到端切块断言、以及一次针对性的检索断言
   （证据含完整关键句、答案完整生成）。**这三条都不等价于 47 条黄金集的 Recall 数字**，
   所以这一项如实记为未验证。
-- **跨层对账已接进 CI（`60756c1`），但那个 job 还没有端到端跑过，所以不在 `required-checks` 里**。
+- **跨层对账已接进 CI（`60756c1`），但那个 job 从加进去那天起就一直是红的**。
   走的是「在 compose 网络内跑」这条路：`docker-compose.eval.yml` 对 `postgres` / `qdrant` / `elasticsearch`
   都是 `ports: !reset []` —— **刻意把后端宿主端口收起来**（免得隔离栈和演示栈抢端口），所以脚本从 runner
-  上够不着它们。新增的 `index-consistency` job 用一个一次性 `python:3.12-alpine` 容器挂进
+  上够不着它们。`index-consistency` job 用一个一次性 `python:3.12-alpine` 容器挂进
   `<project>_default` 网络跑（脚本只用 stdlib，容器不需要装任何东西），只从宿主拿一个 admin token。
   另一条路（加一个只为该 job 暴露端口的 compose 覆盖）没有走 —— 那会把这个 overlay 刻意收起的端口再打开。
-  **未验证的部分要说清**：本机起不了 eval 栈，所以 job 里的起栈 / mint token / 网络接线是照 `eval` job
-  用的同一批原语写的，但**没有被观察过能工作**；因此它现在是红的也拦不住合并，等一次真绿之后再进
-  `required-checks`。这一点写在 workflow 的注释里，不靠口头约定。
+  **先纠正一句当时写错的话**：workflow 注释里写「这个 job 还没被观察过能跑起来」，事实相反 ——
+  它**每次 push 都在跑**，只是**从来没绿过**；它不在 `required-checks` 里，所以没人看。2026-09-26 用公开的
+  checks API 逐次读它的结论才看到：它死在第一步「起栈」，耗时 2 秒、退出码 2，而且**引入它的那次提交就已经是红的**。
+  两个成因都是「猜」出来的东西加一次环境变化，不是脚本逻辑：
+  ① **job 猜了栈的身份**：它拿 `admin`/`admin` 登录（隔离栈引导出来的是 `eval-admin`，在每次运行新建的租户里），
+  拿 `documents-v2` 当 Qdrant 集合名（那是长期演示租户的，新建的栈用 `documents`）。两者都不报错，而是**给出错答案**：
+  前者是 401，后者是 47 篇文档全部 404、报成 `probe_failed` —— 看起来像一致性问题，其实是参数错。
+  改法是让 `run-evals.py` 在管理员登录成功之后写 `docs/evals/reports/stack-descriptor.json`（租户、管理员、
+  `STORE_COLLECTION`、`ES_INDEX`），job 只从它读；同时把 `COMPOSE_FILE` / `COMPOSE_PROJECT_NAME` 提到
+  job 级 env —— 缺了它们 `docker compose` 会按默认 project 解析，共享宿主机上答的是**演示栈**的端口，
+  干净 runner 上什么都不答。
+  ② **`minio/minio` 在 Docker Hub 上没了**：2026-09-11 MinIO 删掉了整个仓库（所有 tag，不只是 `latest`），
+  Hub API 返回 404；`quay.io/minio/minio` 也不给匿名拉（它发的令牌里 `access` 为空）。于是
+  `docker compose up` 在**拉镜像这一步**就失败，栈根本没起来。这一层原因当时看不见，是因为 `docker compose up`
+  没带 `check=True`：compose 的 stderr 被丢掉，两行之后抛的是「could not parse query-api host port: ''」，
+  把人指向「解析 bug」。本机一直没发现，是因为**镜像还在缓存里** —— 冷缓存（CI、新机器）才红。
+  改成 `chainguard/minio` 并**按摘要固定**（同一个服务端、同一份源码构建，镜像里带 `mc`，所以
+  `mc ready local` 健康检查与 `MINIO_ROOT_*_FILE` 两个 secret 都不用改）。
+  两条都修好之后，在隔离栈上实测：`documents checked: 47`、零发现、退出码 0。
+  **仍未闭环的部分**：这个 job 到今天为止**没有在真正的 GitHub runner 上绿过一次**，依据是本机按 job 步骤的
+  逐字复现加一次真实 CI 运行；所以它还没有进 `required-checks`，等一次真绿。
+- **对象存储依赖的是已归档的 MinIO 社区版**（2026-09-26 发现）。`minio/minio` 在 2026-09-11 从 Docker Hub
+  整个下架（见上一条的成因 ②），现在用的是 Chainguard 用同一份源码构建的 `chainguard/minio`，**按摘要固定**。
+  它能跑，但上游的社区分发已经结束 —— 这个 tag 之后不会有新的安全修复。**换不换对象存储是一次决定，
+  不是一次修复**：候选是 RustFS（Apache 2.0、MinIO 形态、2026-09-16 GA）、Garage、SeaweedFS；换任何一个都要
+  动 `docker-compose.yml` 的 minio 服务（启动形态不同，例如 RustFS 用 `RUSTFS_VOLUMES` 而不是 `server /data`）
+  并跑一次真实的摄入/检索回归。在那之前这条依赖是「能跑但无人维护」，登记在 `open-items.md`。
+- **`run-evals.py --keep-services` 的「再跑一次」走不通**（2026-09-26 实测）。第二次在同一个栈上运行时，第 1 篇
+  文档就失败：`upload failed ... status=200 ... 'status': 'duplicate'`，而 `duplicate_of` 指向**上一次运行那个
+  租户**里的文档。根因不是「去重跨租户」—— `GetByHash` 带着 `tenantID`，这一点我先猜错、读代码后推翻 ——
+  而是**身份按用户名全局唯一**：`users_username_key` 是 `lower(username)` 上的唯一索引，而运行器每次运行都
+  生成新的 `tenant_id` 却沿用 `eval-user` / `eval-readonly` 这两个固定用户名，于是第二次运行时
+  `create_eval_user` 幂等返回 409，`login_eval_user("eval-user")` 拿到的仍是**上一个租户**的身份，
+  上传因此落在旧租户、被判为重复内容。这条路径正是重试与对比运行要走的路（`--reuse-upload-map` 的注释也这么说）。
 - **跨层对账的 `citation_unverifiable` 还剩 5 条、`space_key_unset` 还剩 8 条「已归因的先决条件」，它们现在由基线抑制，而不是靠改判据**。脚本比的是「端点 vs 存储」—— 一份文档有健康的已发布身份时，不带代际身份的拷贝按设计就该被两端同时滤掉，所以这 13 条永远会出现在报告里（`space_key_unset` 那 8 条更直接：这些 chunk id 在存储里**只有**不带身份的旧拷贝）。改判据那条路（「先按发布策略过滤存储侧再比」）等于在 Python 里复刻 Go 的策略，还得再配一条防漂移的契约测试，代价大于收益；所以选的是**在退出码这一侧把「已知」和「新增」分开**：`scripts/index-consistency-baseline.json` 列出这 13 条，各带 `owner` 与 `expires`（2026-12-31），未过期就抑制、过期就重新报出来。于是脚本在演示环境上现在 `exit 0`，而不是永远 `exit 1`。**基线只描述长期运行的演示租户**；CI 那个 job 起的是全新栈，不传基线，任何不一致都算新增。**这份清单本身是债，不是豁免**：13 条要在到期前要么修掉、要么重新论证，`expires` 就是逼这件事发生的机制。
 - **ES 死信列表（`es:index:deadletter`）现在有界、可观测、也有消费者了（缺陷 28，`17d436f` 加界与观测；缺陷 30，`2a2fba9` 加消费者）**。
   它此前**只有写、没有读**：`internal/es/queue.go` 的 `EnqueueDeadLetter` 全仓没有第二个引用点，条目唯一的出口是到达上限时被 `LTRIM` 裁掉 —— 于是一个**已经解决的**故障永远挂在面板上、深度告警永远非零，而上限是在拿旧故障的证据换新故障的证据。这正是三周前那 90 条死信能静默躺着的原因之一。
