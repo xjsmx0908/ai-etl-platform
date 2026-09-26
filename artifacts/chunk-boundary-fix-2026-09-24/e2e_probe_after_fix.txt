@@ -1,0 +1,25 @@
+doc_id           : chunk-e2e-fixed-20260924
+text length      : 676  (one line: 1)
+key sentence     : [500, 630)
+
+upload           : HTTP 202
+                   {"task_id": "chunk-e2e-fixed-20260924", "job_id": "0ebbe3d8-5124-4c64-ad38-2c7777bc01f4", "event_id": "3fb28247-6636-48ef-9cad-57123df03c3d", "doc_id": "chunk-e2e-fixed-20260924", "status": "processing", "file": "default/chunk-e2e-fixed-20260924/versions/0ebbe3d8-5124-4c64-ad38-2c7777bc01f4-d7ad2c08b69c0358ee8ee663fad35899da925bb780f6bac42ce17e5c273c4e05-b281637e144329661e4ba130c6c3028228b2503a348
+
+task status      : queued
+task status      : processing
+task status      : completed
+task payload     : {"task_id": "chunk-e2e-fixed-20260924", "doc_id": "chunk-e2e-fixed-20260924", "tenant_id": "default", "job_id": "0ebbe3d8-5124-4c64-ad38-2c7777bc01f4", "event_id": "3fb28247-6636-48ef-9cad-57123df03c3d", "status": "completed", "stage": "completed", "chunks_done": 2, "total_chunks": 2, "file_path": "default/chunk-e2e-fixed-20260924/versions/0ebbe3d8-5124-4c64-ad38-2c7777bc01f4-d7ad2c08b69c0358ee8ee663fad35899da925bb780f6bac42ce17e5c273c4e05-b281637e144329661e4ba130c6c3028228b2503a348ece08ad37e1ef
+
+chunks returned  : 2
+[0] offset=0     len=496   prev_char='<start>'
+     head: 本次巡检覆盖了全部接入通道与导出链路。每个通道都
+     tail: 之前。任务状态由单一存储负责而不是各处各写一份。
+[1] offset=461   len=215   prev_char='。'
+     head: 登录限流发生在口令校验之前。任务状态由单一存储负
+     tail: 。后续小节继续描述其余通道的观测口径与保留期限。
+
+A 边界落在句子中间 : none
+B 含完整关键句的块 : [1]
+C 尾部片段重复     : none
+chunk lengths    : [496, 215]
+normalized dupes : 0

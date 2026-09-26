@@ -1,0 +1,33 @@
+### dead-letter list
+LLEN es:index:deadletter = 0
+ZCARD es:index:retry     = 0
+
+### worker metrics
+ai_etl_es_deadletter_depth 0
+ai_etl_es_deadletter_drained_total{outcome="drained"} 90
+ai_etl_es_deadletter_drained_total{outcome="error"} 0
+ai_etl_es_deadletter_drained_total{outcome="retained_missing"} 0
+ai_etl_es_deadletter_drained_total{outcome="retained_unavailable"} 0
+ai_etl_es_deadletter_drained_total{outcome="retained_unsupported"} 0
+ai_etl_es_deadletter_dropped_total 0
+
+### the acked chunks are still in the index
+{"count":32,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0}}
+
+### keyword recall for a phrase inside a drained chunk
+total: 25
+  doc-1788317207289560094_0007 chunk 7
+  doc-1788317207289560094_0000 chunk 0
+  doc-1788317207289560094_0024 chunk 24
+
+### drain log line from the restart
+etl-worker-1  | {"time":"2026-09-26T07:55:07.444213341Z","level":"INFO","msg":"es dead-letter drain pass complete","scanned":90,"drained":90,"retained_missing":0,"retained_unavailable":0,"retained_unsupported":0}
+
+### host disk and docker footprint
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda2       197G  179G   11G  95% /
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          65        30        102.9GB   80.69GB (78%)
+Containers      34        30        36.35MB   167.9kB (0%)
+Local Volumes   118       19        24.84GB   19.98GB (80%)
+Build Cache     159       0         56.46GB   1.514GB

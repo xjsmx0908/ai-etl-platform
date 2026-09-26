@@ -1,0 +1,28 @@
+question         : 文档入库被中断后重新投递时，系统依据什么恢复已完成的解析与向量化结果？
+answer (may be empty without an LLM): '系统依据**检查点（checkpoint）**恢复已完成的解析与向量化结果，而不是将整份文档从头重新处理一遍。\n\n来源: chunk-e2e-fixed-20260924'
+retrieved sources: 5
+[0] doc=chunk-e2e-fixed-20260924 chunk=chunk-e2e-fixed-20260924_0001 len=215
+     head: 登录限流发生在口令校验之前。任务状态由单一存储负责而不是各处各写一份。检索结果当
+     tail: 描述其余通道的观测口径与保留期限。后续小节继续描述其余通道的观测口径与保留期限。
+     contains whole key sentence: True
+[1] doc=doc-1788317207289560094 chunk=doc-1788317207289560094_0027 len=200
+     head: r logs --tail 200 <容器名称或ID>
+docker inspe
+     tail: 日志，检查内存、磁盘、端口、挂载文件和依赖服务。不要在未确认原因前反复重建容器。
+     contains whole key sentence: False
+[2] doc=doc-1789003736094926010 chunk=doc-1789003736094926010_0000 len=231
+     head: 入库容量夹具 typical-doc。Marker ICAP-TYPICAL。本
+     tail: ady 时延，内容没有业务含义。平台应解析、切分、生成向量并写入索引。 #02.
+     contains whole key sentence: False
+[3] doc=doc-1788316441601845458 chunk=doc-1788316441601845458_0000 len=34
+     head: Kafka recovery upload verification
+     tail: Kafka recovery upload verification
+     contains whole key sentence: False
+[4] doc=doc-1788331217639048684 chunk=doc-1788331217639048684_0063 len=649
+     head: --- Page 61 ---
+第 10 章  ________________
+     tail: CHECKOFF 命令、BYE 命令即可；
+若误差在±10%以外，则应返厂维修。
+     contains whole key sentence: False
+
+完整关键句出现在证据里 : [0]

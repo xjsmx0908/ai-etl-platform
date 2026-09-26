@@ -1,0 +1,100 @@
+DRY RUN -- nothing will be removed. Re-run with --apply to execute.
+
+== before ==
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda2       197G  179G   10G  95% /
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          97        30        103.1GB   77.88GB (75%)
+Containers      34        30        36.35MB   167.9kB (0%)
+Local Volumes   118       19        24.83GB   19.98GB (80%)
+Build Cache     233       0         55.21GB   3.926GB
+
+build cache: cap 20GB
+  before  Shared:		51.29GB
+  before  Private:	3.926GB
+  before  Reclaimable:	55.21GB
+  before  Total:		55.21GB
+  would run: docker builder prune -f --max-used-space 20GB
+  (a cap, not a reset: the 09-23 reset grew back to 55GB in four days)
+
+images owned by this project's throwaway stacks (pattern ^ai-etl-, excluding ^ai-etl-platform-):
+CANDIDATE	ai-etl-governance-acceptance-alert-webhook-service:latest	83.2MB	would-remove
+  remove  ai-etl-governance-acceptance-alert-webhook-service:latest (83.2MB)
+CANDIDATE	ai-etl-governance-acceptance-etl-worker:latest	411MB	would-remove
+  remove  ai-etl-governance-acceptance-etl-worker:latest (411MB)
+CANDIDATE	ai-etl-governance-acceptance-query-api:latest	168MB	would-remove
+  remove  ai-etl-governance-acceptance-query-api:latest (168MB)
+CANDIDATE	ai-etl-governance-acceptance-web:latest	275MB	would-remove
+  remove  ai-etl-governance-acceptance-web:latest (275MB)
+CANDIDATE	ai-etl-identity-demo-query-api:latest	168MB	would-remove
+  remove  ai-etl-identity-demo-query-api:latest (168MB)
+CANDIDATE	ai-etl-identity-demo-web:latest	274MB	would-remove
+  remove  ai-etl-identity-demo-web:latest (274MB)
+CANDIDATE	ai-etl-ingestion-crash-alert-webhook-service:latest	74.3MB	would-remove
+  remove  ai-etl-ingestion-crash-alert-webhook-service:latest (74.3MB)
+CANDIDATE	ai-etl-ingestion-crash-etl-worker:latest	409MB	would-remove
+  remove  ai-etl-ingestion-crash-etl-worker:latest (409MB)
+CANDIDATE	ai-etl-ingestion-crash-query-api:latest	166MB	would-remove
+  remove  ai-etl-ingestion-crash-query-api:latest (166MB)
+CANDIDATE	ai-etl-ingestion-crash-web:latest	274MB	would-remove
+  remove  ai-etl-ingestion-crash-web:latest (274MB)
+CANDIDATE	ai-etl-release-functional-alert-webhook-service:latest	74.4MB	would-remove
+  remove  ai-etl-release-functional-alert-webhook-service:latest (74.4MB)
+CANDIDATE	ai-etl-release-functional-etl-worker:latest	411MB	would-remove
+  remove  ai-etl-release-functional-etl-worker:latest (411MB)
+CANDIDATE	ai-etl-release-functional-parser-service:latest	1.84GB	would-remove
+  remove  ai-etl-release-functional-parser-service:latest (1.84GB)
+CANDIDATE	ai-etl-release-functional-query-api:latest	168MB	would-remove
+  remove  ai-etl-release-functional-query-api:latest (168MB)
+CANDIDATE	ai-etl-release-functional-web:latest	275MB	would-remove
+  remove  ai-etl-release-functional-web:latest (275MB)
+CANDIDATE	ai-etl-release-real-model-alert-webhook-service:latest	83.2MB	would-remove
+  remove  ai-etl-release-real-model-alert-webhook-service:latest (83.2MB)
+CANDIDATE	ai-etl-release-real-model-etl-worker:latest	411MB	would-remove
+  remove  ai-etl-release-real-model-etl-worker:latest (411MB)
+CANDIDATE	ai-etl-release-real-model-query-api:latest	168MB	would-remove
+  remove  ai-etl-release-real-model-query-api:latest (168MB)
+CANDIDATE	ai-etl-release-real-model-web:latest	275MB	would-remove
+  remove  ai-etl-release-real-model-web:latest (275MB)
+CANDIDATE	ai-etl-release-review-recovery-alert-webhook-service:latest	83.2MB	would-remove
+  remove  ai-etl-release-review-recovery-alert-webhook-service:latest (83.2MB)
+CANDIDATE	ai-etl-release-review-recovery-etl-worker:latest	411MB	would-remove
+  remove  ai-etl-release-review-recovery-etl-worker:latest (411MB)
+CANDIDATE	ai-etl-release-review-recovery-query-api:latest	168MB	would-remove
+  remove  ai-etl-release-review-recovery-query-api:latest (168MB)
+CANDIDATE	ai-etl-release-review-recovery-web:latest	275MB	would-remove
+  remove  ai-etl-release-review-recovery-web:latest (275MB)
+CANDIDATE	ai-etl-release-token-budget-alert-webhook-service:latest	83.2MB	would-remove
+  remove  ai-etl-release-token-budget-alert-webhook-service:latest (83.2MB)
+CANDIDATE	ai-etl-release-token-budget-etl-worker:latest	411MB	would-remove
+  remove  ai-etl-release-token-budget-etl-worker:latest (411MB)
+CANDIDATE	ai-etl-release-token-budget-query-api:latest	168MB	would-remove
+  remove  ai-etl-release-token-budget-query-api:latest (168MB)
+CANDIDATE	ai-etl-release-token-budget-web:latest	275MB	would-remove
+  remove  ai-etl-release-token-budget-web:latest (275MB)
+CANDIDATE	ai-etl-restore-query-api:latest	168MB	would-remove
+  remove  ai-etl-restore-query-api:latest (168MB)
+CANDIDATE	ai-etl-smoke-alert-webhook-service:latest	83.2MB	would-remove
+  remove  ai-etl-smoke-alert-webhook-service:latest (83.2MB)
+CANDIDATE	ai-etl-smoke-etl-worker:latest	411MB	would-remove
+  remove  ai-etl-smoke-etl-worker:latest (411MB)
+CANDIDATE	ai-etl-smoke-query-api:latest	168MB	would-remove
+  remove  ai-etl-smoke-query-api:latest (168MB)
+CANDIDATE	ai-etl-smoke-web:latest	274MB	would-remove
+  remove  ai-etl-smoke-web:latest (274MB)
+
+images: 32/32 removable, ~9030.9 MB of ~9030.9 MB listed
+
+not touched by design (reported so the next decision is not blind):
+  volumes:  active 19, size 24.83GB, reclaimable 19.98GB
+  base images (golang/node/python/...): left in place so the next build stays offline
+  other projects' images: left in place
+
+== after ==
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda2       197G  179G   10G  95% /
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          97        30        103.1GB   77.88GB (75%)
+Containers      34        30        36.35MB   167.9kB (0%)
+Local Volumes   118       19        24.83GB   19.98GB (80%)
+Build Cache     233       0         55.21GB   3.926GB
