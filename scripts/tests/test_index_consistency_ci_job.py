@@ -72,8 +72,23 @@ class TheJobReadsWhatTheRunnerWrites(unittest.TestCase):
         self.assertIn("STACK_DESCRIPTOR:", header)
 
     def test_every_key_the_job_reads_is_one_the_runner_writes(self):
-        referenced = set(re.findall(r"jq\s+(?:-\w+\s+)*\.([a-z_]+)\s+\"\$STACK_DESCRIPTOR\"", self.job))
+        # Every `jq` call that reads the descriptor, in either of the two shapes
+        # the job uses: `jq -r .key "$STACK_DESCRIPTOR"` and
+        # `jq -c '{username: .admin_username, ...}' "$STACK_DESCRIPTOR"`.
+        #
+        # The key charset matters. A first version captured `[a-z_]+`, which does
+        # not match a digit -- so `jq -r .store_collection_v2` was not seen as a
+        # key at all and the test stayed green on a typo it existed to catch.
+        referenced = set()
+        for call in re.findall(r"jq\b[^\n]*\$STACK_DESCRIPTOR", self.job):
+            referenced.update(re.findall(r"\.([A-Za-z0-9_]+)", call))
         self.assertTrue(referenced, "the job reads no key from the descriptor")
+        # The four the descriptor exists to carry; reading fewer means the job
+        # went back to knowing something it should have asked for.
+        self.assertTrue(
+            {"admin_username", "admin_password", "store_collection", "es_index"} <= referenced,
+            f"the job stopped reading part of the descriptor: {sorted(referenced)}",
+        )
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "stack-descriptor.json"
             self.runner.write_stack_descriptor(
