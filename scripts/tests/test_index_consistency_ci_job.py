@@ -1,0 +1,157 @@
+"""The `index-consistency` job and the eval runner must agree on one stack identity.
+
+The job was assembled from the same primitives the eval job uses and was never
+observed to run. It guessed three values the runner decides, and each guess
+produced a *wrong answer* rather than an error:
+
+  - the bootstrap admin is `eval-admin` in a per-run tenant, not `admin`; the
+    login answered 401, so the check never ran at all;
+  - a freshly built stack's Qdrant collection is `documents` while the
+    long-running demo tenant's is `documents-v2`; the check asked for the demo
+    name, got a 404 on every document, and reported 47 `probe_failed` findings --
+    a red that says nothing about cross-layer consistency;
+  - `docker compose` without COMPOSE_FILE / COMPOSE_PROJECT_NAME resolves against
+    the *default* project, which on a host that also runs the demo stack answers
+    with the demo stack's port, and on a bare runner answers nothing.
+
+The fix is that the runner writes `stack-descriptor.json` and the job reads it.
+These tests pin that contract mechanically: the consumer's key names must exist in
+the producer's output, and neither side may re-declare a value the other owns.
+"""
+import importlib.util
+import json
+import re
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+RUNNER = ROOT / "scripts" / "run-evals.py"
+CHECK = ROOT / "scripts" / "check-index-consistency.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+
+JOB_NAME = "index-consistency"
+
+# `run-evals.py` imports its sibling `judge_eval`, so the scripts directory has to
+# be importable before the module can be loaded.
+sys.path.insert(0, str(ROOT / "scripts"))
+
+
+def load_runner():
+    spec = importlib.util.spec_from_file_location("run_evals_for_ci_job_test", RUNNER)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def job_block() -> str:
+    """The text of the `index-consistency` job, up to the next job at the same level."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    start = text.index(f"\n  {JOB_NAME}:\n")
+    rest = text[start + 1:]
+    # A sibling job starts at two-space indentation with a bare `name:` key.
+    match = re.search(r"\n  [a-z][a-z0-9-]*:\n", rest[1:])
+    return rest if match is None else rest[: match.start() + 1]
+
+
+class TheJobReadsWhatTheRunnerWrites(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.runner = load_runner()
+        cls.job = job_block()
+
+    def test_the_job_exists_and_sets_the_compose_project_at_job_level(self):
+        # Job-level `env:` is the point: every step below runs `docker compose`,
+        # and a step that does not inherit these resolves against another project.
+        header = self.job.split("steps:", 1)[0]
+        self.assertIn("COMPOSE_FILE: docker-compose.yml:docker-compose.eval.yml", header)
+        self.assertIn("COMPOSE_PROJECT_NAME: ai-etl-consistency", header)
+        self.assertIn("STACK_DESCRIPTOR:", header)
+
+    def test_every_key_the_job_reads_is_one_the_runner_writes(self):
+        referenced = set(re.findall(r"jq\s+(?:-\w+\s+)*\.([a-z_]+)\s+\"\$STACK_DESCRIPTOR\"", self.job))
+        self.assertTrue(referenced, "the job reads no key from the descriptor")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "stack-descriptor.json"
+            self.runner.write_stack_descriptor(
+                path,
+                tenant_id="tenant-eval-test",
+                admin_username=self.runner.EVAL_ADMIN_USERNAME,
+                admin_password=self.runner.EVAL_ADMIN_PASSWORD,
+                env={"STORE_COLLECTION": "documents", "ES_INDEX": "documents_text"},
+            )
+            written = json.loads(path.read_text(encoding="utf-8"))
+        missing = sorted(referenced - set(written))
+        self.assertEqual(missing, [], f"the job reads keys the runner never writes: {missing}")
+
+    def test_the_descriptor_carries_the_names_the_check_is_pointed_at(self):
+        # Without these two the check falls back to its demo-tenant defaults and
+        # the run is red for a reason that is not a consistency problem.
+        self.assertIn('--collection "${collection}"', self.job)
+        self.assertIn('--es-index "${es_index}"', self.job)
+        self.assertIn('collection="$(jq -r .store_collection "$STACK_DESCRIPTOR")"', self.job)
+        self.assertIn('es_index="$(jq -r .es_index "$STACK_DESCRIPTOR")"', self.job)
+
+    def test_the_check_still_defaults_to_the_demo_tenant(self):
+        # The defaults are correct for the stack they were written for; the job
+        # overriding them is what makes them safe to keep.
+        source = CHECK.read_text(encoding="utf-8")
+        self.assertIn('DEFAULT_COLLECTION = "documents-v2"', source)
+        self.assertIn('DEFAULT_ES_INDEX = "documents_text_v2"', source)
+
+
+class NothingIsDeclaredTwice(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.job = job_block()
+        cls.runner_source = RUNNER.read_text(encoding="utf-8")
+
+    def test_the_job_does_not_re_declare_the_bootstrap_admin(self):
+        # The 401 came from this workflow guessing `admin`/`admin`.
+        self.assertNotIn("BOOTSTRAP_ADMIN_USERNAME", self.job)
+        self.assertNotIn("BOOTSTRAP_ADMIN_PASSWORD", self.job)
+        self.assertNotIn('"username":"admin"', self.job)
+
+    def test_the_bootstrap_password_has_exactly_one_definition(self):
+        # Two copies inside the runner is how the workflow acquired a third.
+        self.assertEqual(self.runner_source.count("eval-admin-password-2026"), 1)
+        self.assertEqual(self.runner_source.count('"eval-admin"'), 1)
+
+    def test_the_descriptor_is_written_after_the_login_it_describes(self):
+        # A descriptor naming an admin the stack rejects is worse than none: the
+        # next step then fails on credentials instead of on "the stack is not up".
+        login = self.runner_source.index("admin_token = login_eval_user(api_base, admin_username, admin_password)")
+        descriptor = self.runner_source.index("write_stack_descriptor(\n            descriptor_path,")
+        self.assertLess(login, descriptor)
+
+
+class TheProbeFailureSaysWhichLayerFailed(unittest.TestCase):
+    def test_a_probe_failure_names_the_layer_and_the_target(self):
+        # Measured: a wrong --collection produced 47 findings whose entire text
+        # was `HTTP 404 Not Found`, which reads as a consistency problem.
+        spec = importlib.util.spec_from_file_location("check_index_consistency_for_test", CHECK)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        class FakeError(Exception):
+            code = 404
+            reason = "Not Found"
+
+        finding = module.probe_failure("qdrant", "doc-1", "collection documents-v2", FakeError())
+        self.assertEqual(finding["kind"], "probe_failed")
+        self.assertEqual(finding["layer"], "qdrant")
+        self.assertIn("documents-v2", finding["detail"])
+
+    def test_the_check_probes_each_layer_separately(self):
+        source = CHECK.read_text(encoding="utf-8")
+        for layer in ("qdrant", "elasticsearch", "chunks endpoint"):
+            self.assertIn(f'probe_failure("{layer}"', source)
+
+
+if __name__ == "__main__":
+    unittest.main()

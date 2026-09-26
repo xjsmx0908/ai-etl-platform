@@ -39,6 +39,12 @@ duplicate_chunk_points  more than one stored point carries the same chunk_id *wi
                            and digests can still look right while the store is not.
                            Several points for one chunk id across *different*
                            generations is the design, not a finding.
+probe_failed            a layer could not be asked at all (the finding names the
+                        layer and the collection/index it asked for)
+                        -> this is a finding about the check's own arguments as
+                           often as about the deployment: a `--collection` that
+                           belongs to another tenant reads as 404 on every
+                           document, which is not a consistency problem
 
 Exit status: 0 when every finding is either absent or covered by an unexpired
 baseline entry, 1 when any finding is new or its baseline entry has expired, 2
@@ -478,14 +484,38 @@ def partition_findings(findings, baseline, today):
     return new, expired, suppressed
 
 
+def probe_failure(layer, doc_id, target, error):
+    """A probe that could not run says which layer and which name it asked for.
+
+    This is a finding about *the check's own configuration* as often as about the
+    deployment, and the two must not read the same. Measured: pointing `--collection`
+    at the long-running demo tenant's `documents-v2` while checking a freshly built
+    stack that uses `documents` produced 47 findings whose entire text was
+    `HTTP 404 Not Found` -- a red that looks like a consistency problem and is
+    actually a wrong argument. Naming the layer and the collection/index is what
+    turns that into a one-line diagnosis.
+    """
+    return {
+        "kind": "probe_failed",
+        "layer": layer,
+        "doc_id": doc_id,
+        "target": target,
+        "detail": f"{layer} {target}: HTTP {error.code} {error.reason}",
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-base", default=os.environ.get("AI_ETL_API", DEFAULT_API))
     parser.add_argument("--token", default=os.environ.get("AI_ETL_TOKEN", ""))
     parser.add_argument("--es", default=os.environ.get("AI_ETL_ES", DEFAULT_ES))
-    parser.add_argument("--es-index", default=os.environ.get("AI_ETL_ES_INDEX", DEFAULT_ES_INDEX))
+    parser.add_argument("--es-index", default=os.environ.get("AI_ETL_ES_INDEX", DEFAULT_ES_INDEX),
+                        help="the alias or physical index; defaults to the long-running "
+                             "demo tenant's index, so pass it for any other stack")
     parser.add_argument("--qdrant", default=os.environ.get("AI_ETL_QDRANT", DEFAULT_QDRANT))
-    parser.add_argument("--collection", default=os.environ.get("AI_ETL_COLLECTION", DEFAULT_COLLECTION))
+    parser.add_argument("--collection", default=os.environ.get("AI_ETL_COLLECTION", DEFAULT_COLLECTION),
+                        help="the Qdrant collection; defaults to the long-running demo "
+                             "tenant's, so pass it for any other stack")
     parser.add_argument("--qdrant-key", default=os.environ.get("QDRANT_API_KEY", ""))
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--report-dir", default=DEFAULT_REPORT_DIR)
@@ -523,19 +553,21 @@ def main() -> int:
 
         try:
             points = qdrant_points(args.qdrant, args.collection, doc_id, args.qdrant_key)
-            stored = qdrant_chunk_ids(points)
+        except urllib.error.HTTPError as error:
+            findings.append(probe_failure("qdrant", doc_id, f"collection {args.collection}", error))
+            continue
+        try:
             indexed = es_count(args.es, args.es_index, doc_id)
+        except urllib.error.HTTPError as error:
+            findings.append(probe_failure("elasticsearch", doc_id, f"index {args.es_index}", error))
+            continue
+        try:
             visible = endpoint_chunk_ids(args.api_base, args.token, doc_id)
         except urllib.error.HTTPError as error:
-            findings.append(
-                {
-                    "kind": "probe_failed",
-                    "doc_id": doc_id,
-                    "detail": f"HTTP {error.code} {error.reason}",
-                }
-            )
+            findings.append(probe_failure("chunks endpoint", doc_id, doc_id, error))
             continue
 
+        stored = qdrant_chunk_ids(points)
         findings.extend(classify_document(doc_id, document, stored, indexed, visible))
         findings.extend(classify_payload_fields(doc_id, document, points))
 

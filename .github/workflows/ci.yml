@@ -215,14 +215,28 @@ jobs:
   # Elasticsearch and Qdrant are not reachable from the runner. Only the query
   # API is, on a random loopback port, which is enough to mint a token.
   #
-  # NOT YET IN `required-checks`. The steps below are assembled from the same
-  # primitives the eval job uses, but this job has not been observed to run end
-  # to end -- the host this was written on cannot start the eval stack. Add it
-  # to `required-checks` only after a run has gone green.
+  # COMPOSE_FILE and COMPOSE_PROJECT_NAME sit at job level, not on the seed step.
+  # Every later step runs `docker compose`, and without them it resolves against
+  # the *default* project: on a host that also runs the demo stack, `docker compose
+  # port query-api 8080` answers 8080 and the check silently reads the demo
+  # deployment; on a bare runner it answers nothing and the step fails.
+  #
+  # Nothing about the stack is re-declared below. The tenant, the bootstrap admin
+  # and the store names all come from `docs/evals/reports/stack-descriptor.json`,
+  # which the eval runner writes once its own admin login succeeds. Every value
+  # here was guessed at first and each guess produced a wrong answer rather than
+  # an error: the bootstrap admin is `eval-admin` (not `admin`, so the login was a
+  # 401), and a freshly built stack's collection is `documents` while the
+  # long-running demo tenant's is `documents-v2` (so the check asked for a
+  # collection that does not exist and reported a 404 on all 47 documents).
   index-consistency:
     name: Cross-layer Index Consistency
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.eval.yml
+      COMPOSE_PROJECT_NAME: ai-etl-consistency
+      STACK_DESCRIPTOR: docs/evals/reports/stack-descriptor.json
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -233,9 +247,6 @@ jobs:
       # agreement, not answer quality, and a red here should mean the layers
       # disagree rather than that an answer drifted.
       - name: Seed an isolated stack through the eval runner
-        env:
-          COMPOSE_FILE: docker-compose.yml:docker-compose.eval.yml
-          COMPOSE_PROJECT_NAME: ai-etl-consistency
         run: |
           python3 scripts/run-evals.py \
             --keep-services \
@@ -245,6 +256,10 @@ jobs:
 
       - name: Mint an admin token
         run: |
+          if [ ! -f "$STACK_DESCRIPTOR" ]; then
+            echo "the eval runner did not write $STACK_DESCRIPTOR; the stack did not come up" >&2
+            exit 1
+          fi
           port="$(docker compose port query-api 8080 | head -1 | sed 's/.*://')"
           if [ -z "$port" ]; then
             echo "query-api has no published port; the stack did not come up" >&2
@@ -252,7 +267,7 @@ jobs:
           fi
           token="$(curl -fsS --noproxy '*' -X POST "http://127.0.0.1:${port}/v1/auth/login" \
             -H 'Content-Type: application/json' \
-            -d "{\"username\":\"${BOOTSTRAP_ADMIN_USERNAME:-admin}\",\"password\":\"${BOOTSTRAP_ADMIN_PASSWORD:-admin}\"}" \
+            -d "$(jq -c '{username: .admin_username, password: .admin_password}' "$STACK_DESCRIPTOR")" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
           echo "::add-mask::${token}"
           echo "AI_ETL_TOKEN=${token}" >> "$GITHUB_ENV"
@@ -267,8 +282,15 @@ jobs:
       # long-running demo tenant, where a set of legacy points is known and
       # attributed. This stack is built fresh by the step above, so every
       # inconsistency it finds is a new one and the check should fail on it.
+      #
+      # --collection and --es-index are passed rather than defaulted for the same
+      # reason: both defaults name the demo tenant's stores, and the names a fresh
+      # stack uses are in the descriptor.
       - name: Run the consistency check inside the compose network
         run: |
+          collection="$(jq -r .store_collection "$STACK_DESCRIPTOR")"
+          es_index="$(jq -r .es_index "$STACK_DESCRIPTOR")"
+          echo "checking collection=${collection} es_index=${es_index}"
           mkdir -p artifacts/index-consistency
           docker run --rm \
             --network ai-etl-consistency_default \
@@ -280,7 +302,9 @@ jobs:
             python /scripts/check-index-consistency.py \
               --api-base http://query-api:8080 \
               --es http://elasticsearch:9200 \
+              --es-index "${es_index}" \
               --qdrant http://qdrant:6333 \
+              --collection "${collection}" \
               --report-dir /reports
 
       - name: Upload the report
@@ -293,9 +317,6 @@ jobs:
 
       - name: Tear down
         if: always()
-        env:
-          COMPOSE_FILE: docker-compose.yml:docker-compose.eval.yml
-          COMPOSE_PROJECT_NAME: ai-etl-consistency
         run: docker compose down -v --remove-orphans
 
   observability:

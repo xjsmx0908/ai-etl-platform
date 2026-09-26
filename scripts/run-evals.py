@@ -45,6 +45,16 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_GOLDEN_SET = ROOT / "docs" / "evals" / "golden-set.json"
 DEFAULT_REPORT_DIR = ROOT / "docs" / "evals" / "reports"
 EVAL_COMPOSE_FILE = ROOT / "docker-compose.eval.yml"
+STACK_DESCRIPTOR_NAME = "stack-descriptor.json"
+
+# The bootstrap identity of a stack this runner creates. These two literals are
+# the only copy: `compose_env` hands them to the stack, and `write_stack_descriptor`
+# hands them to whoever has to reach the stack afterwards. A second copy is how
+# the `index-consistency` job came to log in as `admin`/`admin` — a user that
+# does not exist on an eval-seeded stack, so the job died with a 401 before the
+# check it exists for ever ran.
+EVAL_ADMIN_USERNAME = "eval-admin"
+EVAL_ADMIN_PASSWORD = "eval-admin-password-2026"
 QUALITY_LATEST_NAME = "latest.json"
 BAKED_QUALITY_LATEST = ROOT / "web" / "public" / "evals" / "latest.json"
 QUALITY_RECALL_NOTES = {
@@ -298,8 +308,8 @@ def compose_env(
             "COMPOSE_FILE": os.pathsep.join((str(ROOT / "docker-compose.yml"), str(EVAL_COMPOSE_FILE))),
             "QUERY_API_HOST_PORT": "0",
             "BOOTSTRAP_ADMIN_TENANT": tenant_id,
-            "BOOTSTRAP_ADMIN_USERNAME": "eval-admin",
-            "BOOTSTRAP_ADMIN_PASSWORD": "eval-admin-password-2026",
+            "BOOTSTRAP_ADMIN_USERNAME": EVAL_ADMIN_USERNAME,
+            "BOOTSTRAP_ADMIN_PASSWORD": EVAL_ADMIN_PASSWORD,
             # Isolated eval services expose only aggregate stage diagnostics;
             # this mirrors docker-compose.eval.yml for provenance hashing.
             "RETRIEVAL_DIAGNOSTICS_ENABLED": "true",
@@ -465,6 +475,43 @@ def load_upload_map(
     if missing:
         raise EvalRunnerError(f"upload map is missing dataset documents: {missing[:10]}")
     return tenant_id, documents
+
+
+def write_stack_descriptor(
+    path: Path,
+    *,
+    tenant_id: str,
+    admin_username: str,
+    admin_password: str,
+    env: Dict[str, str],
+) -> None:
+    """Record how this run built the stack, so a later step does not have to guess.
+
+    Every value a downstream step needs is decided here and nowhere else: the
+    tenant, the bootstrap admin, and the names of the two stores. Guessing any of
+    them produced a *wrong answer* rather than an error. Two live examples:
+
+    - The bootstrap admin is `eval-admin` in a per-run tenant, not `admin`. A
+      workflow that assumed `admin` got a 401 and never reached the check.
+    - `STORE_COLLECTION` is `documents` for a freshly built stack, while the
+      long-running demo tenant is `documents-v2`. Asking the fresh stack for
+      `documents-v2` is a 404 on every document, which the consistency check
+      reports as `probe_failed` — a red that says nothing about consistency.
+
+    `es_index` is the *alias* the services are configured with; the physical index
+    is `<alias>_v2` (internal/es/indexer.go). Both resolve for `_search`, so the
+    alias is the more durable of the two to hand out.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "tenant_id": tenant_id,
+        "admin_username": admin_username,
+        "admin_password": admin_password,
+        "store_collection": env.get("STORE_COLLECTION", "documents"),
+        "es_index": env.get("ES_INDEX", "documents_text"),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def elasticsearch_count_url(es_url: str, es_index: str) -> str:
@@ -2191,8 +2238,8 @@ def main() -> int:
             print("[eval] restarting etl-worker")
             run_cmd(["docker", "compose", "restart", "etl-worker"], env=env, timeout_sec=60)
             time.sleep(5)
-            admin_username = "eval-admin"
-            admin_password = "eval-admin-password-2026"
+            admin_username = EVAL_ADMIN_USERNAME
+            admin_password = EVAL_ADMIN_PASSWORD
         else:
             print(f"[eval] reusing existing Query API {api_base} (no compose)")
             print("[eval] waiting query-api healthz")
@@ -2212,6 +2259,19 @@ def main() -> int:
 
         print("[eval] provisioning catalog-member test users")
         admin_token = login_eval_user(api_base, admin_username, admin_password)
+        # Written only after the login above succeeded: a descriptor that names an
+        # admin the stack will not accept is worse than no descriptor, because the
+        # next step would fail with a credentials error instead of "the stack
+        # never came up".
+        descriptor_path = report_dir / STACK_DESCRIPTOR_NAME
+        write_stack_descriptor(
+            descriptor_path,
+            tenant_id=tenant_id,
+            admin_username=admin_username,
+            admin_password=admin_password,
+            env=env,
+        )
+        print(f"[eval] stack descriptor: {descriptor_path}")
         # User identities live in the isolated project's database, so they must
         # be provisioned even when document ids are reused from another run.
         # 409 is idempotent when --keep-services is used across retries.
