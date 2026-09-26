@@ -1758,6 +1758,9 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   1153 秒（约 19.2 分钟）—— 要现建并灌满一整个栈，这是把它加进 `required-checks` 时必须认下的成本。
   **别用 run 的 `created_at` → `updated_at` 量 job 耗时**（含排队，会多算；第一版就是这么写成
   「约 23 分钟」的，实测两次分别是 19.2 与 16.3 分钟 —— 要量的是 job 的 `started_at` → `completed_at`）。
+  **第三次（`d6736cf` 的 run `36238268930`，本轮收尾的文档与测试改动之后）**：整份 run 十个 job 全 success、
+  job 耗时 972 秒 —— 它同时证明本轮改过的 `test_open_items_contract.py` 在 Linux 上是绿的
+  （那个文件由 `eval` job 的 `unittest discover` 跑，984 秒里 `Run eval unit tests` 占 14 秒）。
 - **CI 的八个门禁里有四个从来没绿过，而且都只在本机绿**（2026-09-26 实测并修掉）。会话前一次运行
   （`9da3c870`）里，除 `index-consistency` 外还有四个 job 是红的；逐个复现后成因都不在被测代码里，而在
   「job 所在的环境」—— 所以本机跑同一套测试永远看不到。**读法本身也是一条**：job 的日志匿名读是 403，
