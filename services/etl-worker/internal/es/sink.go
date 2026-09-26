@@ -59,6 +59,15 @@ func (s *AsyncSink) DeadLetterDepth(ctx context.Context) (int64, error) {
 	return s.queue.DeadLetterDepth(ctx)
 }
 
+// NewDeadLetterDrainer builds the consumer for this sink's dead-letter list.
+//
+// The sink owns both halves of the judgement - the list and the index the list
+// is judged against - so building the drainer here is what keeps it from ever
+// being pointed at a different index than the one this sink writes to.
+func (s *AsyncSink) NewDeadLetterDrainer(interval time.Duration) *DeadLetterDrainer {
+	return NewDeadLetterDrainer(s.queue, s.indexer, interval)
+}
+
 // NewAsyncSink builds sink and starts replay worker.
 func NewAsyncSink(
 	indexer *HTTPIndexer,

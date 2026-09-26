@@ -130,6 +130,25 @@ func main() {
 	} else {
 		prom.SetDeadLetterState(depth, 0)
 	}
+	// Until this drain existed the dead-letter list had a writer and no reader:
+	// entries only left it by being trimmed off the front when the cap was
+	// reached, so a resolved incident stayed on the dashboard forever and the
+	// cap traded the evidence of an older incident for a newer one. The drain
+	// removes the entries whose chunk the full-text index already holds, and
+	// retains everything it cannot judge.
+	prom.SeedDeadLetterDrainOutcomes()
+	deadLetterDrainer := fullTextSink.NewDeadLetterDrainer(cfg.ESDeadLetterDrainInterval).
+		WithObserver(func(stats es.DeadLetterDrainStats) {
+			prom.ObserveDeadLetterDrain(stats.Drained, stats.RetainedMissing,
+				stats.RetainedUnavailable, stats.RetainedUnsupported, stats.Errors)
+			// The drain is the only thing that makes the depth gauge fall, so
+			// it republishes it rather than waiting for the next write.
+			if depth, depthErr := fullTextSink.DeadLetterDepth(context.Background()); depthErr != nil {
+				slog.Warn("could not refresh es dead-letter depth after drain", "error", depthErr)
+			} else {
+				prom.SetDeadLetterState(depth, 0)
+			}
+		})
 	defer func() {
 		if fullTextSink != nil {
 			_ = fullTextSink.Close()
@@ -234,6 +253,12 @@ func main() {
 	if generationOperations != nil {
 		go runGenerationOperationsMonitor(ctx, generationOperations, prom,
 			cfg.IngestionMetricsInterval, cfg.IndexReconcileMaxRepairs)
+	}
+	if cfg.ESDeadLetterDrainInterval > 0 {
+		go deadLetterDrainer.Run(ctx)
+	} else {
+		slog.Warn("es dead-letter drain disabled; entries will only leave the list when the cap trims them",
+			"es_deadletter_drain_interval", cfg.ESDeadLetterDrainInterval.String())
 	}
 
 	p.Run(ctx, source)

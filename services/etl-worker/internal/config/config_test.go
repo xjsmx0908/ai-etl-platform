@@ -88,6 +88,11 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ESDeadLetterMax != 2000 {
 		t.Errorf("expected ESDeadLetterMax=2000, got %d", cfg.ESDeadLetterMax)
 	}
+	// The drain must be on by default. A default of zero would leave the list
+	// with a writer and no reader, which is the state this change exists to end.
+	if cfg.ESDeadLetterDrainInterval != 5*time.Minute {
+		t.Errorf("expected ESDeadLetterDrainInterval=5m, got %v", cfg.ESDeadLetterDrainInterval)
+	}
 	if cfg.ESReplayPeriod != 2*time.Second {
 		t.Errorf("expected ESReplayPeriod=2s, got %v", cfg.ESReplayPeriod)
 	}
@@ -229,6 +234,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 	os.Setenv("ES_QUEUE_KEY", "es:retry:v2")
 	os.Setenv("ES_DEADLETTER_KEY", "es:dead:v2")
 	os.Setenv("ES_DEADLETTER_MAX", "500")
+	os.Setenv("ES_DEADLETTER_DRAIN_INTERVAL", "90s")
 	os.Setenv("ES_REPLAY_PERIOD", "5s")
 	os.Setenv("ES_MAX_RETRIES", "20")
 	os.Setenv("ES_RETRY_BASE_BACKOFF", "3s")
@@ -287,6 +293,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 		os.Unsetenv("ES_QUEUE_KEY")
 		os.Unsetenv("ES_DEADLETTER_KEY")
 		os.Unsetenv("ES_DEADLETTER_MAX")
+		os.Unsetenv("ES_DEADLETTER_DRAIN_INTERVAL")
 		os.Unsetenv("ES_REPLAY_PERIOD")
 		os.Unsetenv("ES_MAX_RETRIES")
 		os.Unsetenv("ES_RETRY_BASE_BACKOFF")
@@ -368,6 +375,9 @@ func TestLoad_EnvOverride(t *testing.T) {
 	}
 	if cfg.ESDeadLetterMax != 500 {
 		t.Errorf("expected ESDeadLetterMax override 500, got %d", cfg.ESDeadLetterMax)
+	}
+	if cfg.ESDeadLetterDrainInterval != 90*time.Second {
+		t.Errorf("expected ESDeadLetterDrainInterval override 90s, got %v", cfg.ESDeadLetterDrainInterval)
 	}
 	if cfg.ESReplayPeriod != 5*time.Second {
 		t.Errorf("expected ESReplayPeriod=5s, got %v", cfg.ESReplayPeriod)
@@ -698,6 +708,23 @@ func TestValidate_ESReplayPeriodAndRetries(t *testing.T) {
 		cfg.ESDeadLetterMax = max
 		if err := cfg.Validate(); err == nil {
 			t.Errorf("expected error for ESDeadLetterMax=%d", max)
+		}
+	}
+
+	// Zero disables the drain and is allowed; a negative interval would disable
+	// it just as silently, so it is a typo and is rejected. Without this pair the
+	// two are indistinguishable, and "the drain is off" is exactly the state that
+	// is hard to notice.
+	cfg = Load()
+	cfg.ESDeadLetterDrainInterval = 0
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("zero interval must be accepted as 'drain disabled', got %v", err)
+	}
+	for _, interval := range []time.Duration{-time.Second, -5 * time.Minute} {
+		cfg = Load()
+		cfg.ESDeadLetterDrainInterval = interval
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("expected error for ESDeadLetterDrainInterval=%v", interval)
 		}
 	}
 

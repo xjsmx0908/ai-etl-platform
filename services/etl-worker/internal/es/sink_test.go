@@ -118,6 +118,18 @@ func (q *queueStub) EnqueueDeadLetter(context.Context, RetryMessage) (DeadLetter
 func (q *queueStub) DeadLetterDepth(context.Context) (int64, error) {
 	return q.deadLetter.Depth, nil
 }
+
+// The dead-letter read and ack belong to the drain, not to the retry path these
+// tests exercise, so the stub reports an empty list. Implementing them is not
+// optional: the drain's two methods are part of RetryQueue precisely so that a
+// queue which cannot answer them fails to compile rather than silently draining
+// nothing.
+func (q *queueStub) DeadLetterEntries(context.Context, int64, int64) ([]DeadLetterEntry, error) {
+	return nil, nil
+}
+func (q *queueStub) AckDeadLetterEntries(context.Context, []DeadLetterEntry) (int64, error) {
+	return 0, nil
+}
 func (q *queueStub) Close() error {
 	return nil
 }

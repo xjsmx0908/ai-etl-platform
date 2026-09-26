@@ -90,12 +90,18 @@ type Config struct {
 	// the retry queue, the checkpoints, the leases and the outbox, and an
 	// unbounded list does not fail on its own - it fills the instance until
 	// every write fails and ingestion stops with it.
-	ESDeadLetterMax    int
-	ESReplayPeriod     time.Duration
-	ESMaxRetries       int
-	ESRetryBaseBackoff time.Duration
-	ESRetryMaxBackoff  time.Duration
-	ESRetryJitter      float64
+	ESDeadLetterMax int
+	// ESDeadLetterDrainInterval is how often the worker removes dead-letter
+	// records whose chunk the full-text index already holds. Zero disables the
+	// drain, and a disabled drain is not neutral: the list is capped and the cap
+	// discards the *oldest* records, so an undrained list trades the evidence of
+	// an older incident for the evidence of a newer one.
+	ESDeadLetterDrainInterval time.Duration
+	ESReplayPeriod            time.Duration
+	ESMaxRetries              int
+	ESRetryBaseBackoff        time.Duration
+	ESRetryMaxBackoff         time.Duration
+	ESRetryJitter             float64
 
 	// Sparse Vector (Hybrid Search / BM25)
 	SparseK1    float64 // BM25 k1 parameter
@@ -369,18 +375,19 @@ func Load() Config {
 		// single Elasticsearch node, where a replica shard can never be allocated:
 		// the allocator refuses to place a copy on the node that already holds the
 		// primary, so the cluster would stay yellow. Multi-node deployments set 1+.
-		ESAddress:          EnvStr("ES_ADDRESS", "http://elasticsearch:9200"),
-		ESAPIKey:           EnvSecret("ES_API_KEY", ""),
-		ESIndex:            EnvStr("ES_INDEX", "documents_text"),
-		ESIndexReplicas:    EnvInt("ES_INDEX_REPLICAS", 0),
-		ESQueueKey:         EnvStr("ES_QUEUE_KEY", "es:index:retry"),
-		ESDeadLetterKey:    EnvStr("ES_DEADLETTER_KEY", "es:index:deadletter"),
-		ESDeadLetterMax:    EnvInt("ES_DEADLETTER_MAX", 2000),
-		ESReplayPeriod:     EnvDuration("ES_REPLAY_PERIOD", 2*time.Second),
-		ESMaxRetries:       EnvInt("ES_MAX_RETRIES", 12),
-		ESRetryBaseBackoff: EnvDuration("ES_RETRY_BASE_BACKOFF", 2*time.Second),
-		ESRetryMaxBackoff:  EnvDuration("ES_RETRY_MAX_BACKOFF", 5*time.Minute),
-		ESRetryJitter:      EnvFloat("ES_RETRY_JITTER", 0.2),
+		ESAddress:                 EnvStr("ES_ADDRESS", "http://elasticsearch:9200"),
+		ESAPIKey:                  EnvSecret("ES_API_KEY", ""),
+		ESIndex:                   EnvStr("ES_INDEX", "documents_text"),
+		ESIndexReplicas:           EnvInt("ES_INDEX_REPLICAS", 0),
+		ESQueueKey:                EnvStr("ES_QUEUE_KEY", "es:index:retry"),
+		ESDeadLetterKey:           EnvStr("ES_DEADLETTER_KEY", "es:index:deadletter"),
+		ESDeadLetterMax:           EnvInt("ES_DEADLETTER_MAX", 2000),
+		ESDeadLetterDrainInterval: EnvDuration("ES_DEADLETTER_DRAIN_INTERVAL", 5*time.Minute),
+		ESReplayPeriod:            EnvDuration("ES_REPLAY_PERIOD", 2*time.Second),
+		ESMaxRetries:              EnvInt("ES_MAX_RETRIES", 12),
+		ESRetryBaseBackoff:        EnvDuration("ES_RETRY_BASE_BACKOFF", 2*time.Second),
+		ESRetryMaxBackoff:         EnvDuration("ES_RETRY_MAX_BACKOFF", 5*time.Minute),
+		ESRetryJitter:             EnvFloat("ES_RETRY_JITTER", 0.2),
 
 		// Sparse Vector (BM25)
 		SparseK1:    EnvFloat("SPARSE_K1", 1.2),
@@ -628,6 +635,12 @@ func (c Config) Validate() error {
 	}
 	if c.ESDeadLetterMax <= 0 {
 		return fmt.Errorf("ES_DEADLETTER_MAX must be > 0, got %d", c.ESDeadLetterMax)
+	}
+	// Zero is allowed and means "do not drain"; negative is a typo, and the
+	// difference matters because a negative interval would silently disable the
+	// drain the same way zero does, which is a hard thing to notice.
+	if c.ESDeadLetterDrainInterval < 0 {
+		return fmt.Errorf("ES_DEADLETTER_DRAIN_INTERVAL must be >= 0 (0 disables the drain), got %s", c.ESDeadLetterDrainInterval)
 	}
 	if c.ESRetryBaseBackoff <= 0 {
 		return fmt.Errorf("ES_RETRY_BASE_BACKOFF must be > 0, got %s", c.ESRetryBaseBackoff)

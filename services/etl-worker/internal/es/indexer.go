@@ -186,6 +186,79 @@ func (i *HTTPIndexer) IndexChunk(ctx context.Context, chunk model.Chunk) error {
 	return fmt.Errorf("es index failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
+// PresentChunkIDs reports which of the given chunk ids the full-text index
+// currently holds.
+//
+// It answers by document id, because a chunk is written with its own chunk_id
+// as the document id (IndexChunk above), so presence is an exact identity check
+// rather than a text search that could match a different block with similar
+// words. Callers that treat "absent" as a fact should note that a document
+// indexed since the last refresh is not visible here yet; the one caller, the
+// dead-letter drain, is deliberately built so that this direction of error
+// retains a record instead of discarding one.
+func (i *HTTPIndexer) PresentChunkIDs(ctx context.Context, chunkIDs []string) (map[string]bool, error) {
+	present := make(map[string]bool, len(chunkIDs))
+	ids := make([]string, 0, len(chunkIDs))
+	seen := make(map[string]struct{}, len(chunkIDs))
+	for _, id := range chunkIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return present, nil
+	}
+
+	body, err := json.Marshal(map[string]interface{}{
+		"size":    len(ids),
+		"_source": false,
+		"query":   map[string]interface{}{"ids": map[string]interface{}{"values": ids}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal es presence query: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/%s/_search", i.address, pathEscape(i.index))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create es presence request: %w", err)
+	}
+	i.setHeaders(req)
+
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("es presence request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("es presence query failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var page struct {
+		Hits struct {
+			Hits []struct {
+				ID string `json:"_id"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return nil, fmt.Errorf("decode es presence: %w", err)
+	}
+	for _, hit := range page.Hits.Hits {
+		if hit.ID != "" {
+			present[hit.ID] = true
+		}
+	}
+	return present, nil
+}
+
 func (i *HTTPIndexer) UpsertGeneration(ctx context.Context, identity indexmanifest.GenerationIdentity, chunk model.Chunk) error {
 	if identity.GenerationID == "" || identity.TenantID != chunk.TenantID || identity.DocumentID != chunk.DocID || identity.DocumentVersionID == "" {
 		return indexmanifest.ErrInvalidManifest

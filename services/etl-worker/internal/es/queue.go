@@ -53,6 +53,13 @@ type RetryQueue interface {
 	Pop(ctx context.Context, block time.Duration) (RetryMessage, bool, error)
 	EnqueueDeadLetter(ctx context.Context, msg RetryMessage) (DeadLetterStats, error)
 	DeadLetterDepth(ctx context.Context) (int64, error)
+	// DeadLetterEntries reads one page of retained dead-letter records, oldest
+	// first, so the drain can decide what the list is still holding.
+	DeadLetterEntries(ctx context.Context, offset, limit int64) ([]DeadLetterEntry, error)
+	// AckDeadLetterEntries removes exactly the records it is given. Removal is
+	// by value rather than by index, because the list is a Redis list of opaque
+	// strings and an index is only valid until the next write.
+	AckDeadLetterEntries(ctx context.Context, entries []DeadLetterEntry) (int64, error)
 	Close() error
 }
 
@@ -273,6 +280,58 @@ func (q *RedisRetryQueue) DeadLetterDepth(ctx context.Context) (int64, error) {
 	return depth, nil
 }
 
+// DeadLetterEntries reads a page of retained entries, oldest first.
+//
+// A record whose JSON no longer decodes is returned with an empty Message and
+// its raw value intact: the drain has to be able to remove it (nothing else
+// ever will) without pretending it understood it.
+func (q *RedisRetryQueue) DeadLetterEntries(ctx context.Context, offset, limit int64) ([]DeadLetterEntry, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	values, err := q.client.LRange(ctx, q.deadLetterKey, offset, offset+limit-1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis lrange es dead-letter: %w", err)
+	}
+	entries := make([]DeadLetterEntry, 0, len(values))
+	for _, value := range values {
+		entry := DeadLetterEntry{Value: value}
+		var msg RetryMessage
+		if err := json.Unmarshal([]byte(value), &msg); err == nil {
+			entry.Message = msg
+		} else {
+			entry.Undecodable = true
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// AckDeadLetterEntries removes the given records with one LREM each, in one
+// round trip. LREM count=1 removes a single occurrence, so N records that
+// happen to hold identical bytes still remove N entries.
+func (q *RedisRetryQueue) AckDeadLetterEntries(ctx context.Context, entries []DeadLetterEntry) (int64, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	pipe := q.client.Pipeline()
+	cmds := make([]*redis.IntCmd, 0, len(entries))
+	for _, entry := range entries {
+		cmds = append(cmds, pipe.LRem(ctx, q.deadLetterKey, 1, entry.Value))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, fmt.Errorf("redis lrem es dead-letter: %w", err)
+	}
+	var removed int64
+	for _, cmd := range cmds {
+		removed += cmd.Val()
+	}
+	return removed, nil
+}
+
 // Close closes Redis client.
 func (q *RedisRetryQueue) Close() error {
 	return q.client.Close()
@@ -416,6 +475,58 @@ func (q *MemoryRetryQueue) DeadLetterDepth(_ context.Context) (int64, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return int64(len(q.deadLetters)), nil
+}
+
+// DeadLetterEntries reads a page of retained entries, oldest first. The values
+// are the same JSON the Redis queue stores, so a test that drives the drain
+// exercises the real identity rule rather than a simplified copy of it.
+func (q *MemoryRetryQueue) DeadLetterEntries(_ context.Context, offset, limit int64) ([]DeadLetterEntry, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if limit <= 0 || offset >= int64(len(q.deadLetters)) {
+		return nil, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	end := offset + limit
+	if end > int64(len(q.deadLetters)) {
+		end = int64(len(q.deadLetters))
+	}
+	entries := make([]DeadLetterEntry, 0, end-offset)
+	for _, msg := range q.deadLetters[offset:end] {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return nil, fmt.Errorf("marshal es dead-letter message: %w", err)
+		}
+		entries = append(entries, DeadLetterEntry{Value: string(data), Message: msg})
+	}
+	return entries, nil
+}
+
+// AckDeadLetterEntries removes one occurrence of each given value.
+func (q *MemoryRetryQueue) AckDeadLetterEntries(_ context.Context, entries []DeadLetterEntry) (int64, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var removed int64
+	for _, entry := range entries {
+		for i, msg := range q.deadLetters {
+			data, err := json.Marshal(msg)
+			if err != nil {
+				continue
+			}
+			if string(data) != entry.Value {
+				continue
+			}
+			q.deadLetters = append(q.deadLetters[:i], q.deadLetters[i+1:]...)
+			removed++
+			break
+		}
+	}
+	return removed, nil
 }
 
 // DeadLetters returns a copy of dead-letter messages (test helper).

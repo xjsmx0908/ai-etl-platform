@@ -61,7 +61,12 @@ type Metrics struct {
 	// ESDeadLetterDropped counts dead-letter entries discarded to stay within
 	// the cap. Any increase is real loss of diagnostic records: it means the
 	// incident outgrew the buffer, so the oldest evidence is gone.
-	ESDeadLetterDropped      prometheus.Counter
+	ESDeadLetterDropped prometheus.Counter
+	// ESDeadLetterDrained counts what the drain decided, by outcome. The
+	// retained_* outcomes are the ones worth alerting on: a record that stays is
+	// one whose chunk the full-text index still does not hold, so it is a
+	// divergence that outlived the retry budget, not a bookkeeping leftover.
+	ESDeadLetterDrained      *prometheus.CounterVec
 	IngestionOutboxPending   prometheus.Gauge
 	IngestionOutboxRetried   prometheus.Gauge
 	IngestionOutboxOldestAge prometheus.Gauge
@@ -219,6 +224,15 @@ func New(namespace string) *Metrics {
 			Name:      "deadletter_dropped_total",
 			Help:      "Dead-letter entries discarded to stay within the retention cap",
 		}),
+		ESDeadLetterDrained: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: "es",
+				Name:      "deadletter_drained_total",
+				Help:      "Dead-letter entries the drain resolved, by outcome (drained removes the entry; retained_* leaves it)",
+			},
+			[]string{"outcome"},
+		),
 		IngestionOutboxPending: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace, Subsystem: "ingestion", Name: "outbox_pending",
 			Help: "Committed ingestion outbox events not yet published to Kafka",
@@ -467,6 +481,7 @@ func New(namespace string) *Metrics {
 		m.ESDeadLetter,
 		m.ESDeadLetterDepth,
 		m.ESDeadLetterDropped,
+		m.ESDeadLetterDrained,
 		m.IngestionOutboxPending,
 		m.IngestionOutboxRetried,
 		m.IngestionOutboxOldestAge,
@@ -564,6 +579,49 @@ func (m *Metrics) SetDeadLetterState(depth, dropped int64) {
 	}
 	if dropped > 0 {
 		m.ESDeadLetterDropped.Add(float64(dropped))
+	}
+}
+
+// deadLetterDrainOutcomes is the fixed label set of
+// ai_etl_es_deadletter_drained_total. It is a list rather than free-form labels
+// so the series cannot grow with the reason a record was retained.
+var deadLetterDrainOutcomes = []string{
+	"drained",
+	"retained_missing",
+	"retained_unavailable",
+	"retained_unsupported",
+	"error",
+}
+
+// ObserveDeadLetterDrain publishes one drain pass.
+//
+// Every outcome except "error" counts dead-letter records. "error" counts the
+// passes that failed outright - the list could not be read, or the removal
+// could not be written - and it is here because a drain that is silently
+// failing is otherwise indistinguishable from a drain with nothing to do.
+func (m *Metrics) ObserveDeadLetterDrain(drained, retainedMissing, retainedUnavailable, retainedUnsupported, failedPasses int) {
+	if m == nil {
+		return
+	}
+	m.ESDeadLetterDrained.WithLabelValues("drained").Add(float64(drained))
+	m.ESDeadLetterDrained.WithLabelValues("retained_missing").Add(float64(retainedMissing))
+	m.ESDeadLetterDrained.WithLabelValues("retained_unavailable").Add(float64(retainedUnavailable))
+	m.ESDeadLetterDrained.WithLabelValues("retained_unsupported").Add(float64(retainedUnsupported))
+	m.ESDeadLetterDrained.WithLabelValues("error").Add(float64(failedPasses))
+}
+
+// SeedDeadLetterDrainOutcomes creates every outcome series at zero.
+//
+// Without it the family is absent until the first pass that has something to
+// say, and an absent counter and a counter sitting at zero read the same on a
+// dashboard - so "the drain is not running at all" would look exactly like
+// "the drain is running and the list is clean".
+func (m *Metrics) SeedDeadLetterDrainOutcomes() {
+	if m == nil {
+		return
+	}
+	for _, outcome := range deadLetterDrainOutcomes {
+		m.ESDeadLetterDrained.WithLabelValues(outcome).Add(0)
 	}
 }
 
