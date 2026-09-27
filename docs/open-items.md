@@ -50,18 +50,6 @@
 - 实测: 第二次播种在第 1 篇文档失败（`status: duplicate`，`duplicate_of` 指向上一次运行租户里的文档）；
   `eval-user` / `eval-readonly` 在 `users` 表里只存在一行，`users_username_key` 是 `lower(username)` 上的唯一索引
 
-### OPEN-24 「可回收 19.98GB 卷」是按 apparent size 量的，真实可回收字节还没量过
-- owner: agent
-- 判据: 量出那 101 个未引用卷的**真实分配字节**（默认 `du` 口径，或逐卷 `--apparent-size` 与默认口径之差），
-  据此修正 §1.1.2 与 §8 里「可回收 19.98GB」这个数 —— 磁盘回收的预期要按真实数字写，不按表观大小写
-- 出处: `docs/optimization-plan.md` §1.1.2（`docker system df` 那段的口径注）与 §8（OPEN-22 那条的末段）
-- 锚: 不等于删掉能腾出 19.98GB
-- 实测（2026-09-27，已定因的部分）: 在一个卷里 `truncate -s 1GiB` 造**稀疏**文件，`docker system df` 的
-  Local Volumes SIZE **+1.08GB**，而 `df` 可用字节只动 **32KiB** —— 卷的 SIZE 是**文件表观大小**。
-  同一次删除的旁证：9 个卷报 1.95GB，删完 `df` 只多 0.2GB（60 秒空白对照排除并发写入）。
-- 为什么它算欠账: 磁盘回收的整个计划建立在「还有约 20GB 卷可回收」上；如果这个数是表观大小，
-  计划里的预期回收量就是虚的 —— 而它是我自己上一轮写进台账的
-
 ### OPEN-02 切块改动（缺陷 21 / 22）未走 P-CAP-2 检索评测轨
 - owner: agent
 - 判据: 跑一次 P-CAP-2（60 题 retrieval-only）并记录 Recall 数字；或明确论证它对本改动不适用
@@ -112,12 +100,16 @@
 
 ### OPEN-08 宿主机磁盘没有安全余量
 - owner: user
-- 判据: 用户决定是否动那约 34GB 未引用镜像（含别人刻意留的回滚点）与 19.98GB 未引用卷
+- 判据: 用户决定是否动那约 34GB 未引用镜像（含别人刻意留的回滚点）与未引用卷
+  —— 未引用卷**已实测 22.34 GB / 20.80 GiB**（101 个，2026-09-27 量，口径与逐卷归属见
+  `docs/optimization-plan.md` §8 的归属表）；但**其中只有约 4.3 GiB 属本项目**，其余是匿名卷与别人项目的，
+  删它们的收益归宿主整体、不属于本项目
 - 出处: `docs/optimization-plan.md` §8 磁盘条目
 - 锚: | 已知未修 | **跨层索引一致性的剩余项**
-- 现状: 95%（11GB 可用）vs flood_stage 97%；**一次重建约 5GB**；安全可回收的只剩构建缓存私有 1.5GB
+- 现状（2026-09-27 实测）: 96%（7.6GB 可用）vs flood_stage 97%；**一次重建约 5GB**；
+  本项目自己无引用的缓存卷约 4.3 GiB（Go/Python 构建缓存，删了下次构建变慢）
 - 为什么不是「agent 自己能做」: 能立刻腾出空间的对象**全是别人的**（`openclaw` 旧 tag、`golang:*` 等共享基镜像、
-  别的项目的 bot 栈卷），动它们要人点头
+  别的项目的 bot 栈卷 —— 匿名卷抽样看到的是 `dingtalk`/`qqbot`/`napcat`/`wecom`），动它们要人点头
 
 ### OPEN-09 `release_center_reviews` 的两处历史遗留
 - owner: user
