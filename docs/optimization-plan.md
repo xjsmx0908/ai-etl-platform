@@ -1834,10 +1834,11 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   **22,337,855,488 B = 22.34 GB = 20.80 GiB**，比 `docker` 报的 19.98 GB（apparent）**多 11.8%**。
   三条独立证据把口径钉死：① 同一卷上 `du --apparent-size` 与 `docker system df -v` 逐卷吻合
   （600.21/600.24、1150.01/1150.13、132.08/132.08 MiB）；② 块口径系统性大于 apparent
-  （这三卷分别 +3.6% / +12.8% / +25.6%），差距随小文件占比上升 —— 这是**块对齐与目录元数据**的开销，
-  而这 101 个卷里**没有** Kafka 那种预分配稀疏文件（唯一的 Kafka 卷 `ai-etl-pipeline_kafka_data`
-  只有 12.66 MiB），所以稀疏文件省下的量盖不过块开销；③ 归属用卷的 Labels
-  （`com.docker.compose.project`）分组，**不靠名字猜**。
+  （这三卷分别 +3.6% / +12.8% / +25.6%），差距随小文件占比上升 —— 这是**块对齐与目录元数据**的开销；
+  反向（docker 报的比真实**大**，即稀疏文件）的卷在这 101 个里**只有 1 个**：
+  `ai-etl-pipeline_qdrant_data`，docker 报 **64.62 MiB**、真实只占 **0.95 MiB**（差 63.67 MiB，
+  Qdrant 预分配的文件），**远小于小文件侧的 2.4 GB 差**，所以合计仍是块口径更大；
+  ③ 归属用卷的 Labels（`com.docker.compose.project`）分组，**不靠名字猜**。
 
   逐卷归属（du 块口径，合计 20.80 GiB）：
 
@@ -1849,6 +1850,10 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   | `compose:blog_topic_generator_v2` | 1 | 0.06 | 0.3% | 一个 sqlite 卷 |
   | `compose:ai-etl-pipeline`（旧命名空间） | 4 | 0.01 | 0.1% | kafka / qdrant / upload / redis 四个旧卷 |
   | `compose:ai-etl-platform` | 1 | 0.00 | 0.0% | 一个 0.01 MiB 的 `redis_data` |
+
+  逐卷明细（101 行：`du_bytes` / 卷名 / compose project / docker 报的字节 / 创建时间）与按 project 的
+  聚合在 `artifacts/volume-reclaim-audit-2026-09-27/`（`volumes-du-bytes.tsv`、`by-compose-project.tsv`），
+  这张表就是从它们算出来的。
 
   **所以「还剩下 20GB 可回收」要改成**：真实可回收 **22.34 GB**，但**其中本项目自己的只有约
   4.3 GiB**（9 个缓存卷 + 0.01 GiB 旧卷），其余约 16.5 GiB 是匿名卷与别人项目的。匿名卷**无法从

@@ -1,0 +1,9 @@
+# 101 个 dangling 卷按 compose project 聚合（du 块口径）
+compose_project	volumes	du_bytes	du_gib	docker_bytes	docker_gib
+<anonymous>	85	15958499328	14.863	13868799717	12.916
+<no-label>	9	4648861696	4.330	4428781000	4.125
+openclaw	1	1647955968	1.535	1534000000	1.429
+blog_topic_generator_v2	1	68239360	0.064	68020000	0.063
+ai-etl-pipeline	4	14290944	0.013	80210296	0.075
+ai-etl-platform	1	8192	0.000	88	0.000
+TOTAL	101	22337855488	20.804	19979811101	18.608
