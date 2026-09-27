@@ -106,6 +106,9 @@ $ df -h /            → /dev/vda2  197G  182G  7.3G  97%     （第一次清理
 $ docker system df   → Images 106.3GB(可回收 81.71GB) / Build Cache 58.18GB(默认口径只报 1.45GB 可回收)
                        Local Volumes 24.67GB(可回收 19.98GB)
 ```
+> **这两个「可回收」是 apparent size，不是可回收字节**（2026-09-27 对照实验定因，见 §8）：
+> 卷的 SIZE 按文件表观大小算，Kafka 之类**预分配成稀疏文件**的数据会被按 1GiB 计而实际几乎不占盘。
+> 所以 `Local Volumes 19.98GB` 只说明「有 101 个没人用的卷」，**不等于删掉能腾出 19.98GB**。
 
 **机制**：`docker-compose.yml` 原先把 ES 水位设为**绝对值** —— `low=8gb` / `high=6gb` /
 `flood_stage=4gb`。可用空间 7.3GB 时确实低于 `low`，但实测证明这**没有**导致 unassigned shard
@@ -180,7 +183,8 @@ $ docker system df   → Images 106.3GB → 49.13GB   Build Cache 58.18GB → 0B
 **两条磁盘告警在 Prometheus 与 Alertmanager 里都已消解** —— 告警的 fire 与 resolve
 两个方向都实测过，这比只看到它响一次更有说服力。
 
-**还剩下的（不需要动）**：`Images` 仍有 24.59GB 可回收、`Local Volumes` 19.98GB 可回收，
+**还剩下的（不需要动）**：`Images` 仍有 24.59GB 可回收、`Local Volumes` 19.98GB 可回收
+（**表观大小口径**，不等于可回收字节，见 §1.1.2 与 OPEN-24），
 大部分属于 `openclaw`/`umami`/`p_blog_2`；本项目自己无引用的缓存卷
 （`ai-etl-go-build-cache` 939MB、`ai-etl-go-mod-cache` 348MB）与旧命名空间的
 `ai-etl-pipeline_*`（合计约 14MB）也能清，但空间已不紧张，而 go 缓存卷是构建提速的承重结构，
@@ -1807,7 +1811,17 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   **复现现场**：宿主机上项目名 `ai-etl-probe` 的那套隔离栈就是这次复现留下的（`--keep-services` 的语义就是
   跑完把栈留着给人看）—— 第一遍把 47 篇 golden set 播进去（租户 `…-1790412891900-…`），第二遍
   （租户 `…-1790413046504-…`）在第 1 篇就撞 `duplicate`，`duplicate_of` 指向前一个租户的文档。
-  它的运行日志是 `/tmp/probe.log`（2026-09-26 16:58）。
+  它的运行日志已存进仓库：`artifacts/open-22-rerun-duplicate-2026-09-26/probe.log`（原 `/tmp/probe.log`）。
+  **这套栈已于 2026-09-27 拆掉**（`COMPOSE_PROJECT_NAME=ai-etl-probe docker compose -f docker-compose.yml
+  -f docker-compose.eval.yml down -v --remove-orphans`，并删掉 5 个 `ai-etl-probe-*` 镜像）——
+  复现它不需要这一套特定的栈，任何栈连跑两次都会走到同一处。
+  **顺带量到一个数具的口径（2026-09-27，对照实验定因）**：`docker system df -v` 报这 9 个卷合计约 1.95GB、
+  5 个镜像约 2.77GB，但删完之后 `df` 只多出约 0.2GB 可用空间（`df -B1` 前后对照；同机 60 秒空白对照只增长
+  216KB，排除了别的项目并发写入）。实验：在一个卷里 `truncate -s 1GiB` 造一个**稀疏**文件，`docker system df`
+  的 Local Volumes SIZE 从 24.86GB 涨到 25.94GB（**+1.08GB，按 apparent size 计**），而 `df` 的可用字节
+  只动了 **32KiB**（真实分配）。**结论：卷的 SIZE 是文件表观大小，不是可回收字节 —— 「能回收多少」
+  只能看删除前后 `df` 的差。** 这条同样适用于 §1.1.2 那个「Local Volumes 可回收 19.98GB」：
+  它只说明有 101 个没人用的卷，**不等于删掉能腾出 19.98GB**（**尚未量**，记成 OPEN-24）。
 - **跨层对账的 `citation_unverifiable` 还剩 5 条、`space_key_unset` 还剩 8 条「已归因的先决条件」，它们现在由基线抑制，而不是靠改判据**。脚本比的是「端点 vs 存储」—— 一份文档有健康的已发布身份时，不带代际身份的拷贝按设计就该被两端同时滤掉，所以这 13 条永远会出现在报告里（`space_key_unset` 那 8 条更直接：这些 chunk id 在存储里**只有**不带身份的旧拷贝）。改判据那条路（「先按发布策略过滤存储侧再比」）等于在 Python 里复刻 Go 的策略，还得再配一条防漂移的契约测试，代价大于收益；所以选的是**在退出码这一侧把「已知」和「新增」分开**：`scripts/index-consistency-baseline.json` 列出这 13 条，各带 `owner` 与 `expires`（2026-12-31），未过期就抑制、过期就重新报出来。于是脚本在演示环境上现在 `exit 0`，而不是永远 `exit 1`。**基线只描述长期运行的演示租户**；CI 那个 job 起的是全新栈，不传基线，任何不一致都算新增。**这份清单本身是债，不是豁免**：13 条要在到期前要么修掉、要么重新论证，`expires` 就是逼这件事发生的机制。
 - **ES 死信列表（`es:index:deadletter`）现在有界、可观测、也有消费者了（缺陷 28，`17d436f` 加界与观测；缺陷 30，`2a2fba9` 加消费者）**。
   它此前**只有写、没有读**：`internal/es/queue.go` 的 `EnqueueDeadLetter` 全仓没有第二个引用点，条目唯一的出口是到达上限时被 `LTRIM` 裁掉 —— 于是一个**已经解决的**故障永远挂在面板上、深度告警永远非零，而上限是在拿旧故障的证据换新故障的证据。这正是三周前那 90 条死信能静默躺着的原因之一。
@@ -1884,7 +1898,7 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   **顺便纠正一处旧记录**：它们不是只有仓库根那一份（734MB），而是**三份**
   （仓库根、`services/`、`services/etl-worker/`），合计约 **2.3GB**。全部保留。
 - **没有清理你其他项目的镜像/卷**。清理后 `Images` 仍有 24.59GB 可回收、`Local Volumes`
-  19.98GB 可回收，大部分不属于本项目 —— 这类操作我不会未经确认执行。
+  19.98GB 可回收（**表观大小口径**，见 §1.1.2 与 OPEN-24），大部分不属于本项目 —— 这类操作我不会未经确认执行。
   本轮的回收只做了 `docker builder prune -af`（58.18GB 构建缓存，只影响下次构建速度，
   不动镜像、不动容器、不动卷），其他项目的 11 个容器在清理后逐一确认仍在运行。
 - **没有删除任何本项目的数据卷**。`ai-etl-platform_*` 全部保留；无引用的

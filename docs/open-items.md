@@ -50,6 +50,18 @@
 - 实测: 第二次播种在第 1 篇文档失败（`status: duplicate`，`duplicate_of` 指向上一次运行租户里的文档）；
   `eval-user` / `eval-readonly` 在 `users` 表里只存在一行，`users_username_key` 是 `lower(username)` 上的唯一索引
 
+### OPEN-24 「可回收 19.98GB 卷」是按 apparent size 量的，真实可回收字节还没量过
+- owner: agent
+- 判据: 量出那 101 个未引用卷的**真实分配字节**（默认 `du` 口径，或逐卷 `--apparent-size` 与默认口径之差），
+  据此修正 §1.1.2 与 §8 里「可回收 19.98GB」这个数 —— 磁盘回收的预期要按真实数字写，不按表观大小写
+- 出处: `docs/optimization-plan.md` §1.1.2（`docker system df` 那段的口径注）与 §8（OPEN-22 那条的末段）
+- 锚: 不等于删掉能腾出 19.98GB
+- 实测（2026-09-27，已定因的部分）: 在一个卷里 `truncate -s 1GiB` 造**稀疏**文件，`docker system df` 的
+  Local Volumes SIZE **+1.08GB**，而 `df` 可用字节只动 **32KiB** —— 卷的 SIZE 是**文件表观大小**。
+  同一次删除的旁证：9 个卷报 1.95GB，删完 `df` 只多 0.2GB（60 秒空白对照排除并发写入）。
+- 为什么它算欠账: 磁盘回收的整个计划建立在「还有约 20GB 卷可回收」上；如果这个数是表观大小，
+  计划里的预期回收量就是虚的 —— 而它是我自己上一轮写进台账的
+
 ### OPEN-02 切块改动（缺陷 21 / 22）未走 P-CAP-2 检索评测轨
 - owner: agent
 - 判据: 跑一次 P-CAP-2（60 题 retrieval-only）并记录 Recall 数字；或明确论证它对本改动不适用

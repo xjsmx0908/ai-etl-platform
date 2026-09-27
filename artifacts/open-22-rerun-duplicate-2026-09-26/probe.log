@@ -1,0 +1,12 @@
+[eval] model mode: MOCK (integration-path validation, not a quality signal)
+[eval] starting mock model server on port 45699
+[eval] tenant_id: tenant-eval-1790413046504-2534910
+[eval] compose project: ai-etl-probe
+[eval] starting docker compose stack
+[eval] waiting query-api healthz
+[eval] ensuring kafka topic exists
+[eval] restarting etl-worker
+[eval] provisioning catalog-member test users
+[eval] stack descriptor: /home/ubuntu/ai-projects/ai-etl-platform/docs/evals/reports/stack-descriptor.json
+[eval] 1/47 upload case-001
+[eval] ERROR: upload failed for case-001, status=200, payload={'task_id': 'doc-1790412980490084388', 'doc_id': 'doc-1790412980490084388', 'status': 'duplicate', 'file': 'tenant-eval-1790412891900-2498683/doc-1790412980490084388/versions/0d25efe4-70ca-493c-b301-2156045b12e1-ba54db7218ef675688c1e896156ef92b9885b0a472d215b1e9dc63a50cebcd7e-8d3757ee9f7204d392bf210b9e39ab729dc82672c49e10015a361fa8e3af8089.txt', 'file_hash': 'ba54db7218ef675688c1e896156ef92b9885b0a472d215b1e9dc63a50cebcd7e', 'message': "file 'case-001.txt' has identical content to existing document 'doc-1790412980490084388'; not ingested again", 'timestamp': '2026-09-26T08:58:08Z', 'duplicate_of': 'doc-1790412980490084388'}
