@@ -1794,6 +1794,16 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   同一件事的两个读数。修法是 `next` → 16.3.6（非 major），`js-yaml` 4.3.1 → 4.3.2、`sharp` 0.35.3 → 0.35.4
   随之升上来；本机复验 `npm audit --audit-level=high` 输出 `found 0 vulnerabilities`，`npm run lint` 与
   `npm run build` 都通过（**后者是必须跑的**：升 minor 可能打断构建，而「audit 绿了」不是「构建还能过」）。
+  **这两条门禁是「会自己变红」的（2026-10-12 实测）**：`1e49ec3` 修绿之后 15 天，`e3ef970` 那次 push
+  （run `38229661015`）里 `Web Checks` 又死在 `Audit dependencies`、`Trivy Security Gate` 又死在
+  `Trivy vulnerability scan (CRITICAL)`，`Required Checks` 因聚合断言 `Enforce all required jobs passed`
+  一起红（整份 run 14 个 job：11 绿 / 3 红；`index-consistency` 绿、job 耗时 1179 秒）。**成因不是回归**：
+  本机在同一份 `web/package-lock.json` 上跑 `npm audit --audit-level=high` 报 13 个（2 moderate / 11 high），
+  含 `next` 的两条新 advisory（GHSA-mcj8-r9mp-w47p 缓存投毒、GHSA-cjq9-62q9-8jv4 SSRF，`npm audit fix --force`
+  要 `next@16.4.0`）—— 两次红之间隔了 15 天（`c9daa6b` 是 2026-09-27、本次是 2026-10-12），
+  而这两个 job 读的是**外部漏洞库**，diff 里没有任何 web 依赖或镜像改动。**判据**：这类门禁的正确用法是
+  「每次红都重新读一遍」，而不是「修过一次就当它永久绿」；它红的时候先看死在第几步 —— 死在前 30 秒的
+  依赖/扫描步骤，且 diff 不碰对应依赖树，就不该按回归处理。
   三条由 `scripts/tests/test_ci_chronic_red_gates.py` 钉住，它守的是**两条性质**而不是三个症状：
   **一条被 `skipUnless` 关起来的契约必须有东西把它的门打开**（否则它会永远跳过而套件报绿），
   以及**要读运行时密钥的检查必须拿到从配置推导出来的占位文件**。八条篡改逐个反向验证（拿掉
@@ -1808,6 +1818,19 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   不是一次修复**：候选是 RustFS（Apache 2.0、MinIO 形态、2026-09-16 GA）、Garage、SeaweedFS；换任何一个都要
   动 `docker-compose.yml` 的 minio 服务（启动形态不同，例如 RustFS 用 `RUSTFS_VOLUMES` 而不是 `server /data`）
   并跑一次真实的摄入/检索回归。在那之前这条依赖是「能跑但无人维护」，登记在 `open-items.md`。
+  **换镜像时数据卷的属主没跟着迁（2026-10-12 实测，一次 `up` 就把演示栈炸了）**：`chainguard/minio` 是
+  nonroot 镜像（`User=65532`），而 `ai-etl-platform_minio_data` 这个卷是旧 root 镜像创建的（`root:root`）——
+  旧镜像一直在跑，所以这条一直没暴露，直到本次 `docker compose up -d query-api` **连带检查依赖**时
+  才把 minio 拉起来：`ai-etl-platform-minio-1 exited (1)`，容器自己的日志是
+  `unable to rename (/data/.minio.sys/tmp -> /data/.minio.sys/tmp-old/…) file access denied`，
+  而 `query-api` 因此停在 `Created`，整个演示栈跟着不可用。修法是在宿主机上
+  `sudo chown -R 65532:65532 /var/lib/docker/volumes/ai-etl-platform_minio_data/_data`，再
+  `up -d minio query-api`；复验 minio healthy、14 个对象可读（含 `retryexp-a-…pdf`）、
+  19 个容器全部 Up（除刻意退出的 `kafka-init-1`）。**这是「升级路径」的缺陷，不是「新装」的缺陷**：
+  从零起一套栈不会遇到（卷由镜像按 `User` 创建），只有「卷已存在、且由 root 镜像创建过」时才会炸 ——
+  所以换基础镜像那次提交（`07da63c`）就埋下了，隔几天才被一次无关的 `up` 引爆，而 `docker-compose.yml`
+  里没有任何东西会提示这件事。**注意 `docker compose up -d <svc>` 会连带检查依赖**：目标服务本身没问题，
+  也可能因为一个被连带的依赖起不来而停在 `Created`。
 - **`run-evals.py --keep-services` 的「再跑一次」走不通**（2026-09-26 实测）。第二次在同一个栈上运行时，第 1 篇
   文档就失败：`upload failed ... status=200 ... 'status': 'duplicate'`，而 `duplicate_of` 指向**上一次运行那个
   租户**里的文档。根因不是「去重跨租户」—— `GetByHash` 带着 `tenantID`，这一点我先猜错、读代码后推翻 ——
@@ -2045,6 +2068,24 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   上游原文（符文边界截断 200 字）。所以这一条现在的状态是**已做**；只剩「结论与诊断挤在同一个字段里」
   这一半没做（见上面那条）。
 - **弃答现在分原因了，但「没有证据」这一支在这套语料上基本走不到**（`a64da10`）。线上实测：`RETRIEVAL_MIN_RELEVANCE=0`（`config.go:392` 的默认值，`.env` 与 compose 都没覆盖），所以相关度地板永不丢候选 —— 七个完全无关的问题（`如何用微波炉给手机充电？`、`What is the Kafka recovery procedure?`、`2019 年诺贝尔文学奖得主是谁` …）全部拿到 3–5 个候选、`max_relevance` 0.40–0.69，然后由**模型自己**拒答，落到 `insufficient_support`。这条**不是本轮引入的**：地板为 0 是刻意的（`config.go:128-133` 写明原始相似度分不开正负例，歧义带交给 grounding 校验器），但 grounding 只覆盖 `[0.45, 0.70)`，于是 `[0, 0.45)` 这一段唯一的守卫是模型自己。`no_evidence` 因此只在「检索真的什么都没返回」时出现，线上没复现到。**别把这个分布读成「系统经常找不到文档」。** **这一条已于 2026-10-12 按缺陷 31 修掉**（`88bd368`）：grounding 的模糊相关带下限默认从 `0.45` 改成 `0` —— 校验器负责「上限以下的整段」，`[0, 0.45)` 不再是一段无人守卫的缝，`max_relevance=0`（后端没给分，例如 Qdrant 没命中而 ES 命中）的候选也一并纳入；同时 `Validate()` 新增两条不变量（`MinRelevance >= LowBound`、`MinRelevance < HighBound`），把「两道防线之间留缝」这种组合变成启动即失败。**改的不是地板**：地板仍为 0（ADR 0006 已论证原始余弦分不开正负例），改的是校验器的覆盖范围 —— 所以上面那七个无关问题的归属会从「模型自己拒答」变成「校验器判定后拒答」，`no_evidence` 这一支要不要可达仍挂在 `open-items.md` OPEN-12（owner: user）。
+  **部署与取样（2026-10-12，`88bd368` 部署到演示栈之后）**：`docker compose config` 只读确认新解析值是
+  `LOW_BOUND: "0"`（`.env` 里这四个键一个都没有，所以走的是 compose 里的默认值），重建后容器内实测
+  `RETRIEVAL_GROUNDING_LOW_BOUND=0`。线上取样（脚本 `.workbuddy-ai/tmp/probe_band2.py` 与 `probe_band3.py`，
+  在部署栈宿主机的回环上跑）：8 个与语料完全无关的问题（`怎么把冰箱调到省电模式`、`北京到上海的高铁要坐多久`、
+  `如何养一盆多肉植物`、`猫为什么喜欢纸箱`、`咖啡豆应该怎么保存`、`下雨天为什么会有土腥味`、`为什么铁会生锈`、
+  `怎样判断鸡蛋新不新鲜`）拿到 `max_relevance` **0.2865–0.4894**（只有 0.4894 那一条 ≥ 0.45），
+  `grounding_checked` **全部缺失**、结论全部 `insufficient_support`；16 个语料相关词里 `年假`/`报销`/`差旅`
+  三例（0.6176 / 0.6263 / 0.5310）`grounding_checked=true`，`请假` 0.7117 ≥ 上限**直接信任**（不校验）。
+  **这一组读数证明「校验器在线上是活的」，但它证明不了「本次修复生效」** —— 因为 `service.go` 的 `ask()` 里
+  `if answer == NoEvidenceAnswer { return resp, nil }` 出现在 grounding 段**之前**，模型自己拒答的查询
+  根本走不到校验器；而落在 `[0, 0.45)` 的查询在这套语料上**全部**由模型自己拒答（16 个相关词里
+  `工牌` 0.3365 / `公积金` 0.4105 / `考勤` 0.4394 与上面 8 个无关问题里的七条都是这样）。所以
+  「校验器接管上限以下整段」这件事在线上**观察不到差异**，它唯一的直接证据是单测
+  `TestGroundingCheckCoversCandidatesBelowTheOldBandBottom`（候选 0.44、`LowBound: 0` → `verifierCalls == 1`
+  且响应里 `grounding_checked=true`）与反向验证（把下限还原成 0.45 → 该测试逐字报
+  `expected the verifier to run for a 0.44 candidate, got 0 calls`）。**别把「线上没变化」读成「修复没生效」**，
+  也别把上面那三条 `grounding_checked=true` 读成修复的证据 —— 那三条（0.53–0.63）落在**旧带**里，
+  改前也会被校验，它们只说明机制是活的。
 - **弃答「率」现在有信号了（缺陷 27，`128100a`）**，但**信号有没有人看，仍未被验证**。计数侧已闭环：`ai_etl_query_refusals_total{tenant_id,reason}` 部署后线上断言逐条相等。告警侧只做到「规则能加载」——`QueryRefusalRateNearTotal`（15 分钟内 >90% 的查询被拒，critical）与 `QueryFailuresNonZero`（任一阶段有失败，warning）经 `promtool check rules` 通过、Prometheus 加载后 `health=ok`、`state=inactive`。**阈值 0.9 是拍的，不是量出来的**：弃答本身是正确行为（问库外的问题就该拒答），低阈值会误报，而这条规则要抓的故障形状（校验器坏掉 → 几乎全拒）接近 100%，所以取 0.9 让它只在「不可能是判断，只能是坏了」时才响。**代价写在明处：慢速劣化它抓不到**，而那需要一条基于基线的规则，得先有一段时间的真实流量才能定 —— 所以没做。
 - **弃答路径仍然丢 `prompt_version`（空串）与 `token_usage`**：线上 SSE 的 `done` 事件里 `prompt_version` 是 `""`，而作答路径是 `autonomous-review-v2` 这类真实版本号。这是既有行为，本轮没动；要修得先定「弃答算不算一次生成」。
 - **`refusalMarkers` 仍是宽子串匹配**（`service.go:378`，含 `"无法回答"`、`"参考文档不足"` 这类词）：模型写出的**部分可答**内容只要含这些子串，就会被整段丢掉并换成拒答句。本轮**没有**收窄它 —— 那改的是行为契约（哪些模型输出算拒答），需要先定口径；已加注释说明这个列表是给**模型自己写的**拒答用的，**不能**用来识别本包发出的句子（那些由 `isRefusalAnswer` 精确匹配）。
