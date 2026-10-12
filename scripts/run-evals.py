@@ -381,7 +381,7 @@ def resolved_eval_configuration(
         "negative_max_wait_seconds": int(negative_max_wait_seconds),
         "retrieval_grounding_check": env_bool("RETRIEVAL_GROUNDING_CHECK", True),
         "retrieval_grounding_low_bound": str(
-            env.get("RETRIEVAL_GROUNDING_LOW_BOUND", "0.45")
+            env.get("RETRIEVAL_GROUNDING_LOW_BOUND", "0")
         ).strip(),
         "retrieval_grounding_high_bound": str(
             env.get("RETRIEVAL_GROUNDING_HIGH_BOUND", "0.70")

@@ -143,6 +143,10 @@ type Config struct {
 	// unrelated same-tenant chunks; without this gate the LLM answers from them.
 	// 0 disables the gate. Only Qdrant cosine scores are compared against it —
 	// BM25 is unbounded and corpus-dependent, so it shares no threshold.
+	// With the grounding check on, this floor must not sit below
+	// RetrievalGroundingLowBound: the region in between would be dropped by
+	// neither mechanism, so a weak candidate would reach the model unguarded.
+	// Validate refuses that combination.
 	RetrievalMinRelevance float64
 	// RetrievalGroundingCheck enables a post-generation faithfulness check that
 	// verifies the answer's claims are traceable to the retrieved sources.
@@ -152,8 +156,16 @@ type Config struct {
 	// ambiguous relevance band is decided by an explicit verifier call instead.
 	RetrievalGroundingCheck bool
 	// RetrievalGroundingLowBound is the bottom of the ambiguous relevance band.
-	// Candidates at or below this are handled by RetrievalMinRelevance (or no
-	// evidence); candidates above it are trusted without a verifier call.
+	// The relevance axis is split into three regions: below the band, the band
+	// itself, and high confidence. Only the band is verified, so whatever lies
+	// below it must be owned by something: either the relevance gate
+	// (RetrievalMinRelevance >= this bound), or — because the gate defaults to
+	// off — the verifier itself, which is what a bound of 0 does: the band
+	// becomes [0, HighBound) and covers every weak candidate, including the ones
+	// whose backend returned no score at all (maxSourceRelevance is 0 there, and
+	// 0 is below any positive bound, so a positive default would skip exactly
+	// the candidates with the least support). Validate rejects a positive bound
+	// sitting above an off-or-lower gate floor.
 	RetrievalGroundingLowBound float64
 	// RetrievalGroundingHighBound is the top of the ambiguous relevance band.
 	// Candidates above this are high-confidence hits and skip the verifier.
@@ -406,7 +418,7 @@ func Load() Config {
 		RetrievalExactSchemaFields:  EnvCSV("RETRIEVAL_EXACT_SCHEMA_FIELDS", DefaultRetrievalExactSchemaFields),
 		RetrievalMinRelevance:       EnvFloat("RETRIEVAL_MIN_RELEVANCE", 0),
 		RetrievalGroundingCheck:     EnvBool("RETRIEVAL_GROUNDING_CHECK", true),
-		RetrievalGroundingLowBound:  EnvFloat("RETRIEVAL_GROUNDING_LOW_BOUND", 0.45),
+		RetrievalGroundingLowBound:  EnvFloat("RETRIEVAL_GROUNDING_LOW_BOUND", 0),
 		RetrievalGroundingHighBound: EnvFloat("RETRIEVAL_GROUNDING_HIGH_BOUND", 0.70),
 		RerankEndpoint:              EnvStr("RERANK_ENDPOINT", ""),
 		RerankAPIKey:                EnvSecret("RERANK_API_KEY", ""),
@@ -683,6 +695,28 @@ func (c Config) Validate() error {
 	if c.RetrievalGroundingLowBound >= c.RetrievalGroundingHighBound {
 		return fmt.Errorf("RETRIEVAL_GROUNDING_LOW_BOUND (%v) must be < RETRIEVAL_GROUNDING_HIGH_BOUND (%v)",
 			c.RetrievalGroundingLowBound, c.RetrievalGroundingHighBound)
+	}
+	// Three mechanisms share the relevance axis: the gate drops everything below
+	// RetrievalMinRelevance, the verifier decides the [LowBound, HighBound) band,
+	// and anything at or above HighBound is trusted. Each knob used to be range
+	// checked on its own, so the pair could be individually in range and jointly
+	// incoherent: with the shipped floor of 0 and a band bottom of 0.45, a
+	// candidate scoring 0.44 was dropped by neither mechanism and verified by
+	// neither, reaching the model with no defense at all. Check the relation
+	// rather than only the members.
+	if c.RetrievalGroundingCheck && c.RetrievalMinRelevance < c.RetrievalGroundingLowBound {
+		return fmt.Errorf(
+			"RETRIEVAL_MIN_RELEVANCE (%v) is below RETRIEVAL_GROUNDING_LOW_BOUND (%v): candidates scoring in [%v, %v) are dropped by neither the relevance gate nor the grounding check, so they reach the model unverified; set RETRIEVAL_MIN_RELEVANCE to at least %v, or lower RETRIEVAL_GROUNDING_LOW_BOUND to 0 so the verifier owns the whole band",
+			c.RetrievalMinRelevance, c.RetrievalGroundingLowBound,
+			c.RetrievalMinRelevance, c.RetrievalGroundingLowBound, c.RetrievalGroundingLowBound)
+	}
+	// The mirror image: a floor at or above the band's top edge leaves the
+	// verifier with no candidate it could ever be handed, so
+	// RETRIEVAL_GROUNDING_CHECK=true would advertise a guarantee that never runs.
+	if c.RetrievalGroundingCheck && c.RetrievalMinRelevance >= c.RetrievalGroundingHighBound {
+		return fmt.Errorf(
+			"RETRIEVAL_MIN_RELEVANCE (%v) is at or above RETRIEVAL_GROUNDING_HIGH_BOUND (%v): the relevance gate would drop every candidate the grounding check could see, silently disabling it; set RETRIEVAL_MIN_RELEVANCE below %v or turn RETRIEVAL_GROUNDING_CHECK off",
+			c.RetrievalMinRelevance, c.RetrievalGroundingHighBound, c.RetrievalGroundingHighBound)
 	}
 	if c.RetrievalFinalTopK < 1 || c.RetrievalFinalTopK > 100 {
 		return fmt.Errorf("RETRIEVAL_FINAL_TOP_K must be between 1 and 100, got %d", c.RetrievalFinalTopK)

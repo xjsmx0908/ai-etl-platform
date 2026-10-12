@@ -867,6 +867,65 @@ func TestValidate_RetrievalConfig(t *testing.T) {
 	}
 }
 
+func TestValidate_RelevanceGateAndGroundingBandHaveNoGap(t *testing.T) {
+	// The shipped defaults must be coherent: the gate is off (0) and the
+	// verifier owns the whole region below the trust ceiling.
+	cfg := Load()
+	if cfg.RetrievalMinRelevance != 0 || cfg.RetrievalGroundingLowBound != 0 {
+		t.Fatalf("expected the default floor and band bottom to both be 0, got %v / %v",
+			cfg.RetrievalMinRelevance, cfg.RetrievalGroundingLowBound)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("shipped defaults must validate, got %v", err)
+	}
+
+	// A floor under the band's bottom edge leaves [floor, LowBound) dropped by
+	// the gate and unverified by the check -- the shape the defaults used to
+	// have (0 and 0.45), which let a 0.44-scoring candidate through unguarded.
+	cfg = Load()
+	cfg.RetrievalMinRelevance = 0.30
+	cfg.RetrievalGroundingLowBound = 0.45
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected a floor below the band bottom to be refused")
+	}
+	if !strings.Contains(err.Error(), "RETRIEVAL_GROUNDING_LOW_BOUND") {
+		t.Fatalf("expected the error to name the band bottom, got %v", err)
+	}
+
+	// A floor that reaches the band's bottom edge closes the gap.
+	cfg = Load()
+	cfg.RetrievalMinRelevance = 0.45
+	cfg.RetrievalGroundingLowBound = 0.45
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a floor equal to the band bottom must be accepted, got %v", err)
+	}
+
+	// The mirror image: a floor at or above the band's top edge leaves the
+	// verifier no candidate it could ever be handed, so grounding_check=true
+	// would advertise a defense that never runs.
+	cfg = Load()
+	cfg.RetrievalMinRelevance = 0.90
+	cfg.RetrievalGroundingLowBound = 0
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("expected a floor above the band top to be refused")
+	}
+	if !strings.Contains(err.Error(), "RETRIEVAL_GROUNDING_HIGH_BOUND") {
+		t.Fatalf("expected the error to name the band top, got %v", err)
+	}
+
+	// With the verifier off there is no band to be inconsistent with, so the
+	// same numbers are a deliberate single-mechanism configuration.
+	cfg = Load()
+	cfg.RetrievalGroundingCheck = false
+	cfg.RetrievalMinRelevance = 0.30
+	cfg.RetrievalGroundingLowBound = 0.45
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected the combination to be accepted with the verifier off, got %v", err)
+	}
+}
+
 func TestValidate_DoesNotRequireAgentPlannerForWorker(t *testing.T) {
 	cfg := Load()
 	cfg.Environment = "staging"

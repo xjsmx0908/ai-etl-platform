@@ -500,7 +500,7 @@ func TestHandleQueryStreamingReportsGroundingVerdict(t *testing.T) {
 		StoreEndpoint:               qdrantSrv.URL,
 		StoreCollection:             "docs",
 		RetrievalGroundingCheck:     true,
-		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingLowBound:  0,
 		RetrievalGroundingHighBound: 0.7,
 		SparseK1:                    1.2,
 		SparseB:                     0.75,
@@ -516,6 +516,68 @@ func TestHandleQueryStreamingReportsGroundingVerdict(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `"grounding_checked":true`) || !strings.Contains(body, `"grounding_passed":true`) {
 		t.Fatalf("expected SSE grounding verdict, got %s", body)
+	}
+}
+
+// The verifier's band used to start at 0.45 while the relevance gate's floor was
+// 0, so a candidate scoring in [0, 0.45) was dropped by neither mechanism and
+// reached the model with no defense at all. With the band bottom at its default
+// of 0 the verifier has to see those candidates too.
+func TestGroundingCheckCoversCandidatesBelowTheOldBandBottom(t *testing.T) {
+	embedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2]}]}`))
+	}))
+	defer embedSrv.Close()
+
+	qdrantSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"points":[{"score":0.44,"payload":{"chunk_id":"weak-1","doc_id":"unrelated","content":"办公用品通过 OA 申领。","tenant_id":"tenant-a"}}]}}`))
+	}))
+	defer qdrantSrv.Close()
+
+	var verifierCalls atomic.Int32
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "回答：") {
+			verifierCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"message": map[string]string{"content": `{"supported": true, "answers_question": true}`}}},
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"办公用品通过 OA 申领。来源: policy\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer llmSrv.Close()
+	t.Setenv("LLM_ENDPOINT", llmSrv.URL)
+
+	svc := NewService(config.Config{
+		EmbedEndpoint:               embedSrv.URL,
+		EmbedModel:                  "test-embed",
+		StoreEndpoint:               qdrantSrv.URL,
+		StoreCollection:             "docs",
+		RetrievalGroundingCheck:     true,
+		RetrievalGroundingLowBound:  0,
+		RetrievalGroundingHighBound: 0.7,
+		SparseK1:                    1.2,
+		SparseB:                     0.75,
+		SparseAvgDL:                 256,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/query", strings.NewReader(`{"question":"办公用品","top_k":5}`))
+	ctx := context.WithValue(req.Context(), auth.CtxTenantID, "tenant-a")
+	ctx = context.WithValue(ctx, auth.CtxPermission, "user")
+	w := httptest.NewRecorder()
+
+	svc.HandleQueryStreaming(w, req.WithContext(ctx))
+
+	if verifierCalls.Load() != 1 {
+		t.Fatalf("expected the verifier to run for a 0.44 candidate, got %d calls", verifierCalls.Load())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"grounding_checked":true`) {
+		t.Fatalf("expected the below-band candidate to be reported as checked, got %s", body)
 	}
 }
 
@@ -580,7 +642,7 @@ func TestHandleQueryStreamingEmitsTokensBeforeGrounding(t *testing.T) {
 		StoreEndpoint:               qdrantSrv.URL,
 		StoreCollection:             "docs",
 		RetrievalGroundingCheck:     true,
-		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingLowBound:  0,
 		RetrievalGroundingHighBound: 0.7,
 		SparseK1:                    1.2,
 		SparseB:                     0.75,
@@ -691,7 +753,7 @@ func TestHandleQueryStreamingReplacesAnswerWhenGroundingFails(t *testing.T) {
 		StoreEndpoint:               qdrantSrv.URL,
 		StoreCollection:             "docs",
 		RetrievalGroundingCheck:     true,
-		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingLowBound:  0,
 		RetrievalGroundingHighBound: 0.7,
 		SparseK1:                    1.2,
 		SparseB:                     0.75,
@@ -751,7 +813,7 @@ func TestHandleQueryRefusesGroundedAnswerThatDoesNotAnswerQuestion(t *testing.T)
 		StoreEndpoint:               qdrantSrv.URL,
 		StoreCollection:             "docs",
 		RetrievalGroundingCheck:     true,
-		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingLowBound:  0,
 		RetrievalGroundingHighBound: 0.7,
 		SparseK1:                    1.2,
 		SparseB:                     0.75,
@@ -1469,7 +1531,7 @@ func newQueryFixture(t *testing.T, opts queryFixtureOptions) *queryFixture {
 		StoreCollection:             "docs",
 		RetrievalMinRelevance:       opts.minRelevance,
 		RetrievalGroundingCheck:     opts.grounding,
-		RetrievalGroundingLowBound:  0.45,
+		RetrievalGroundingLowBound:  0,
 		RetrievalGroundingHighBound: 0.7,
 		SparseK1:                    1.2,
 		SparseB:                     0.75,

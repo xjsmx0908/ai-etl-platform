@@ -984,6 +984,14 @@ func (s *Service) ask(ctx context.Context, req Request, access AccessContext, st
 	emit("verifying", "正在校验回答与引用…", "running")
 	if s.cfg.RetrievalGroundingCheck && len(sources) > 0 {
 		maxRel := maxSourceRelevance(candidates)
+		// The verifier owns every candidate below the trust ceiling, so the band
+		// is [LowBound, HighBound) and LowBound defaults to 0. A positive
+		// LowBound is only coherent when the relevance gate covers the region
+		// under it; config.Validate enforces that relation, because a gap here
+		// would be a band of scores that neither mechanism looks at. Note that
+		// maxRel is 0 when no Qdrant candidate survives (an ES-only match, or a
+		// candidate the backend never scored) — that is the least-supported case
+		// of all, so it must fall inside the band rather than below it.
 		if maxRel >= s.cfg.RetrievalGroundingLowBound && maxRel < s.cfg.RetrievalGroundingHighBound {
 			ok, gerr := s.groundingCheck(ctx, req.Question, answer, sources)
 			if gerr != nil {
