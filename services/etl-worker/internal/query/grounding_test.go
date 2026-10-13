@@ -2,10 +2,14 @@ package query
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"ai-etl-pipeline/internal/config"
 )
@@ -144,4 +148,118 @@ func TestGroundingCheck(t *testing.T) {
 				groundingMaxTokens)
 		}
 	})
+}
+
+// capturingLLMStub records the request body the caller sent and answers with a
+// fixed verdict, so a test can assert on exactly what was put in front of the
+// verifier.
+func capturingLLMStub(verdict string, captured *string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		*captured = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` +
+			`"` + strings.ReplaceAll(verdict, `"`, `\"`) + `"},` +
+			`"finish_reason":"stop"}],` +
+			`"usage":{"prompt_tokens":10,"completion_tokens":8}}`))
+	}))
+}
+
+// userMessageOf returns the last user-role message of a chat-completions body.
+func userMessageOf(t *testing.T, body string) string {
+	t.Helper()
+	var reqBody struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &reqBody); err != nil {
+		t.Fatalf("decode chat-completions body: %v", err)
+	}
+	for i := len(reqBody.Messages) - 1; i >= 0; i-- {
+		if reqBody.Messages[i].Role == "user" {
+			return reqBody.Messages[i].Content
+		}
+	}
+	t.Fatalf("chat-completions body has no user message: %.200s", body)
+	return ""
+}
+
+// evidenceBlock extracts the rendered <document> section of a prompt so the
+// verifier's evidence and the answer prompt's evidence can be compared directly.
+func evidenceBlock(t *testing.T, prompt string) string {
+	t.Helper()
+	const head = "参考文档：\n"
+	start := strings.Index(prompt, head)
+	if start < 0 {
+		t.Fatalf("prompt has no 参考文档 section: %.120q", prompt)
+	}
+	rest := prompt[start+len(head):]
+	end := strings.Index(rest, "\n\n用户问题：")
+	if end < 0 {
+		t.Fatalf("prompt has no 用户问题 delimiter: %.120q", rest)
+	}
+	return rest[:end]
+}
+
+// The verifier must be given the same evidence the answer prompt was given.
+//
+// It used to concatenate every source and then slice the concatenation at a
+// fixed 8000 BYTES, which hid every source past the cut. That is not a
+// hypothetical: on the default tenant at top_k=8 the real context is
+// 10756-12852 bytes, so the verifier judged those answers against a prefix and
+// rejected ones whose support sat beyond it. A byte-slice cut can also split a
+// rune and leaves the last <document> unclosed.
+func TestGroundingVerifierSeesTheSameEvidenceAsTheAnswerPrompt(t *testing.T) {
+	// Five sources whose concatenation is past 8000 bytes but inside the
+	// generation budget, with a marker that exists only in the last one.
+	filler := strings.Repeat("这是用来撑满上下文的普通句子。", 50) // 750 runes / 2250 bytes
+	marker := "末段独有标记ZEBRA"
+	sources := make([]SourceContext, 0, 5)
+	for i := 1; i <= 4; i++ {
+		sources = append(sources, SourceContext{DocID: fmt.Sprintf("d%d", i), Content: filler})
+	}
+	sources = append(sources, SourceContext{DocID: "d5", Content: filler + marker})
+	question := "最后一个文档里写了什么？"
+
+	var captured string
+	srv := capturingLLMStub(`{"supported": true, "answers_question": true}`, &captured)
+	defer srv.Close()
+	t.Setenv("LLM_ENDPOINT", srv.URL)
+	t.Setenv("LLM_API_KEY", "test-key")
+	svc := NewService(config.Config{})
+
+	if _, err := svc.groundingCheck(context.Background(), question, "答案", sources); err != nil {
+		t.Fatalf("grounding check: %v", err)
+	}
+	verifierDocs := evidenceBlock(t, userMessageOf(t, captured))
+
+	promptBody, _, err := svc.buildPrompt(question, sources)
+	if err != nil {
+		t.Fatalf("build prompt: %v", err)
+	}
+	promptDocs := evidenceBlock(t, userMessageOf(t, string(promptBody)))
+
+	// Without this the test would pass on a corpus that never reached the cap.
+	if len(promptDocs) <= 8000 {
+		t.Fatalf("test data must exceed the old 8000-byte cap to be meaningful, got %d bytes", len(promptDocs))
+	}
+	if !strings.Contains(verifierDocs, marker) {
+		t.Errorf("verifier context dropped the last source (it stops at %d bytes); "+
+			"an answer supported there is rejected as ungrounded", len(verifierDocs))
+	}
+	if verifierDocs != promptDocs {
+		t.Errorf("verifier and answer prompt must see identical evidence: verifier %d bytes, prompt %d bytes",
+			len(verifierDocs), len(promptDocs))
+	}
+	if !utf8.ValidString(verifierDocs) {
+		t.Error("verifier context must be valid UTF-8; a byte-slice cut can split a rune")
+	}
+	opened := strings.Count(verifierDocs, "<document ")
+	closed := strings.Count(verifierDocs, "</document>")
+	if opened != len(sources) || closed != len(sources) {
+		t.Errorf("every source needs a closed envelope: opened=%d closed=%d want=%d",
+			opened, closed, len(sources))
+	}
 }

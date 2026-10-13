@@ -54,25 +54,15 @@ func builtinSystemPromptV1() string {
 }
 
 // buildPrompt assembles the chat-completions request body from the question and
-// retrieved sources, wrapping each source in a <document> envelope so the model
-// can distinguish document boundaries from the user's question. The envelope is
-// also the anti-injection boundary: the system prompt instructs the model to
-// treat everything inside <document> as data, not instructions.
+// retrieved sources. The retrieved text is rendered by documentContext, which
+// the verifier also uses, so both see the same evidence.
+//
+// Each source is wrapped in a <document> envelope so the model can distinguish
+// document boundaries from the user's question. The envelope is also the
+// anti-injection boundary: the system prompt instructs the model to treat
+// everything inside <document> as data, not instructions.
 func (s *Service) buildPrompt(question string, sources []SourceContext) (data []byte, contextChars int, err error) {
-	var contextBuilder bytes.Buffer
-	remaining := s.llmMaxContextChars
-	for _, src := range sources {
-		if remaining <= 0 {
-			break
-		}
-		contentRunes := []rune(promptContextExcerpt(src.Content, question, remaining))
-		if len(contentRunes) == 0 {
-			continue
-		}
-		fmt.Fprintf(&contextBuilder, "<document doc_id=%q>\n%s\n</document>\n\n", src.DocID, string(contentRunes))
-		remaining -= len(contentRunes)
-		contextChars += len(contentRunes)
-	}
+	context, contextChars := documentContext(question, sources, s.llmMaxContextChars)
 
 	// Rule 2 is the anti-hallucination gate: retrieval can return unrelated
 	// same-tenant chunks after permission filtering, and without an explicit
@@ -89,7 +79,7 @@ func (s *Service) buildPrompt(question string, sources []SourceContext) (data []
 
 	messages := []map[string]string{
 		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": fmt.Sprintf("参考文档：\n%s\n\n用户问题：%s", contextBuilder.String(), question)},
+		{"role": "user", "content": fmt.Sprintf("参考文档：\n%s\n\n用户问题：%s", context, question)},
 	}
 
 	reqBody := map[string]interface{}{
@@ -99,9 +89,39 @@ func (s *Service) buildPrompt(question string, sources []SourceContext) (data []
 	}
 	data, err = json.Marshal(reqBody)
 	if err != nil {
-		return nil, contextBuilder.Len(), fmt.Errorf("marshal prompt: %w", err)
+		return nil, contextChars, fmt.Errorf("marshal prompt: %w", err)
 	}
 	return data, contextChars, nil
+}
+
+// documentContext renders sources into the <document> envelope that both the
+// answer prompt and the verifier prompt are built from, and returns the rendered
+// text plus the number of content characters that survived the budget.
+//
+// Both callers MUST render the same evidence. The verifier's question is "is
+// this answer supported by what the model was shown", so handing it a narrower
+// view — for example, concatenating everything and cutting at a fixed byte
+// count — hides every source past the cut and makes the verifier reject correct
+// answers whose support lives there. Sharing this function is what keeps the two
+// views from drifting; the budget is passed in so the generation side can keep
+// its own (larger) allowance without the verifier silently seeing less.
+func documentContext(question string, sources []SourceContext, budget int) (string, int) {
+	var contextBuilder bytes.Buffer
+	remaining := budget
+	contextChars := 0
+	for _, src := range sources {
+		if remaining <= 0 {
+			break
+		}
+		contentRunes := []rune(promptContextExcerpt(src.Content, question, remaining))
+		if len(contentRunes) == 0 {
+			continue
+		}
+		fmt.Fprintf(&contextBuilder, "<document doc_id=%q>\n%s\n</document>\n\n", src.DocID, string(contentRunes))
+		remaining -= len(contentRunes)
+		contextChars += len(contentRunes)
+	}
+	return contextBuilder.String(), contextChars
 }
 
 func promptContextExcerpt(content, question string, limit int) string {

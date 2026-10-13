@@ -1,17 +1,12 @@
 package query
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 )
-
-// maxGroundingContextChars caps how much retrieved context is sent to the
-// verifier so a long context cannot inflate the second LLM call.
-const maxGroundingContextChars = 8000
 
 // groundingMaxTokens budgets the verifier's completion. The verdict itself is
 // ~10 tokens, but reasoning models spend their budget on internal reasoning
@@ -48,14 +43,16 @@ const groundingSystemPrompt = `你是严格的回答校验器。分别判断：
 // claims not traceable to the sources, and an error when the verifier itself
 // fails (callers decide how to handle a failed verification).
 func (s *Service) groundingCheck(ctx context.Context, question, answer string, sources []SourceContext) (bool, error) {
-	var contextBuilder bytes.Buffer
-	for _, src := range sources {
-		fmt.Fprintf(&contextBuilder, "<document doc_id=%q>\n%s\n</document>\n\n", src.DocID, src.Content)
-	}
-	docs := contextBuilder.String()
-	if len(docs) > maxGroundingContextChars {
-		docs = docs[:maxGroundingContextChars]
-	}
+	// Render the evidence exactly as the answer prompt did: same budget, same
+	// per-source windowing. The verifier is asked whether the answer is
+	// supported by what the model was shown, so a narrower view is not a
+	// cheaper check — it is a different question. The previous implementation
+	// concatenated every source and then cut the result at a fixed byte count,
+	// which hid every source past the cut (and could split a rune, leaving an
+	// unterminated <document>); the verifier then rejected correct answers
+	// whose support lived there. documentContext is the single renderer both
+	// sides use, so they cannot drift apart again.
+	docs, _ := documentContext(question, sources, s.llmMaxContextChars)
 
 	messages := []map[string]string{
 		{"role": "system", "content": groundingSystemPrompt},
@@ -64,6 +61,7 @@ func (s *Service) groundingCheck(ctx context.Context, question, answer string, s
 			docs, question, answer,
 		)},
 	}
+	//设置budget
 	reqBody := map[string]interface{}{
 		"model":       s.llmModel,
 		"messages":    messages,
