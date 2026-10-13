@@ -217,6 +217,36 @@
 - 出处: `issues/findings-register.md` UAT-023
 - 台账未提及: 台账里没有这一条 —— 它是 UAT-023 修法取舍的结论，登记在这里以免被当成「漏了」
 
+### OPEN-23 `/v1/query` 不拒绝未知字段
+- owner: declined
+- 理由: 行为属实（线上发带未知字段的请求体 → **200 静默忽略**），但仓库的通用解码器
+  （`cmd/api/respond.go:52` 的 `decodeJSONBody`）本来就是宽松的、全仓只有 4 处 auth 端点严格 ——
+  给 `/v1/query` 单独加严格解码是**改 wire 契约**（今天能过的请求明天 400），
+  收益只是「字段名拼错能早发现」，代价是所有现存客户端跟着改
+- 判据: 不改；要改得先定「未知字段算不算客户端错误」的口径
+- 出处: `docs/optimization-plan.md` §6（2026-10-13 审计核对）；`internal/query/sse.go:25`
+- 锚: 审计文档「待确认 1」：`/v1/query` 不拒绝未知字段
+- 锚: 给 `/v1/query` 单独加严格解码等于**改 wire 契约**
+
+### OPEN-24 校验器模糊相关带上限 `RETRIEVAL_GROUNDING_HIGH_BOUND=0.70`
+- owner: declined
+- 理由: **值是对的，审计文档给的理由是反的** —— 文档称 0.70 是「能分开正负例的界」，
+  实测**分不开**（正例最低 0.5412、负例最高 0.8196，两段区间重叠）。但 0.70 本身没有问题：
+  它只决定「多高算高可信、可以跳过校验器」，而校验器负责上限以下的整段（缺陷 31 之后下限为 0），
+  所以这个值取多少都不会放过无据答案，只影响校验器的调用量
+- 判据: 值不动；仓库里也没有那句「分得开」的说法（`config.go:170` 只说「高于上限＝高可信、跳过校验」）
+- 出处: `docs/optimization-plan.md` §6（2026-10-13 审计核对，线上取样：正例 min 0.5412 / 负例 max 0.8196）
+- 锚: 审计文档「待确认 2」：校验器模糊相关带上限 `RETRIEVAL_GROUNDING_HIGH_BOUND=0.70`
+
+### OPEN-25 `qdrant.go` 取 payload 键时漏判 `ok`
+- owner: declined
+- 理由: 读写两侧的键由**同一份** payload 解析产出（写 `retrieval/qdrant.go:200`、读 `:129`，
+  两侧都用 `generation` + NUL + `chunk_id` 拼键，而 `GenerationID` 同样来自 payload、缺失时同样是空串），
+  缺失时两侧都退化成 NUL + `chunk_id`，仍然自洽 —— 不存在「一侧带前缀、另一侧不带」的串版本风险
+- 判据: 不改；另：审计文档标的行号 `:199` 偏 1，真正的构造在 `:200`
+- 出处: `docs/optimization-plan.md` §6（2026-10-13 审计核对）；`internal/retrieval/qdrant.go:129` `:200`
+- 锚: 审计文档「待确认 3」：`qdrant.go` 取 payload 键时漏判 `ok`
+
 ---
 
 ## 含欠账词但已确认不是欠账
