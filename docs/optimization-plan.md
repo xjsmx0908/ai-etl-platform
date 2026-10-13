@@ -2125,7 +2125,7 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   它验不到生产里传的是不是同一个切片。生产侧：`sources` 只在 `service.go:884` 构造一次，生成侧
   （`:943` / `:950`）与校验器（`:1004`）传的是同一个切片，中间没有任何重新赋值或 append
   （唯一的 `sources = []SourceContext{}` 在 `:1075`，属「敏感内容」分支，在 `:1004` 之后）。
-- **本轮 CI 的读法（`808829b`，2026-10-13）：与本次改动有关的全绿，红的两条与它无关。** 绿的是
+- **本轮 CI 的读法（改前 `9ef2118` → 改后 `b4fabd9`，2026-10-13）：红的那组前后完全一样，与本次改动无关。** 绿的是
   `Go Checks (etl-worker)`、`Deterministic RAG Eval`、**`Cross-layer Index Consistency`（必过那条）**、
   `Compose Validation`、`Observability Config and Alert Tests`、两个 `Python Tests`、四个 `Build And Push Images`。
   红的是 `Web Checks` 与 `Trivy Security Gate`，**两条都是漏洞门禁**：`Web Checks` 挂在第 6 步
@@ -2135,11 +2135,11 @@ ES 磁盘越过 flood-stage 水位 → 写入全 429 → 重试 12 次耗尽 →
   `internal/query` 的 Go 文件）。`Trivy` 挂在 `Trivy vulnerability scan (CRITICAL)`，而在改代码之前的
   `9ef2118` 上它**已经是红的**。`Required Checks` 跟着红，因为聚合器的 `needs` 里同时列了 `web` 与 `trivy`。
   **别把这两条读成「本轮改坏了 CI」，也别读成「CI 全绿」** —— 这是台账里已记过的「两条门禁会自己变红」
-  在聚合器上的表现。另：`b303ac9` 自己的 CI 里 `Go Checks` 与 `Compose Validation` 是 **was cancelled**
-  （被随后一次 push 的并发组取消，不是失败），所以「Go 侧干净」在最终提交 `808829b` 上读，那里是绿的。
-  顺带一条反例性质的观察：`Python Tests (reranker-service)` 在 `9ef2118`/`b303ac9` 红、在 `808829b` 绿，
-  `Observability` 在 `9ef2118` 红、在 `808829b` 绿 —— 同一份代码上这两条自己会翻面，
-  **所以单次 CI 的某个 job 红/绿都不足以单独下结论，要看「与改动有关的那几条」**。
+  在聚合器上的表现。**改前基线是量出来的，不是推的**（`9ef2118`，用轮询器读）：红的是 `Web Checks`、`Trivy Security Gate`、
+  `Required Checks`（另有一个独立 workflow 的 `Isolated Query Performance Gate` 也红）；而改后 `b4fabd9` 红的
+  **是同一组** —— 所以「本轮改坏了 CI」与「CI 全绿」两种读法都不成立；`Cross-layer Index Consistency` 改前改后都绿，
+  `Go Checks (etl-worker)` 在最终提交 `b4fabd9` 上绿（`b303ac9` 自己那次读不到确定结论：轮询器 5 分钟内没收敛）。
+  **读法上的坑**：`commit/<sha>/checks` 页在有 job 仍在跑时按 list item 切会**配对错位** —— 我据此一度读出「`Trivy` 红但 `Required Checks` 绿」这种不可能的组合；定案要读 job 页的 `<check-step data-conclusion>`（那才是每步的权威结论）。
 - **弃答「率」现在有信号了（缺陷 27，`128100a`）**，但**信号有没有人看，仍未被验证**。计数侧已闭环：`ai_etl_query_refusals_total{tenant_id,reason}` 部署后线上断言逐条相等。告警侧只做到「规则能加载」——`QueryRefusalRateNearTotal`（15 分钟内 >90% 的查询被拒，critical）与 `QueryFailuresNonZero`（任一阶段有失败，warning）经 `promtool check rules` 通过、Prometheus 加载后 `health=ok`、`state=inactive`。**阈值 0.9 是拍的，不是量出来的**：弃答本身是正确行为（问库外的问题就该拒答），低阈值会误报，而这条规则要抓的故障形状（校验器坏掉 → 几乎全拒）接近 100%，所以取 0.9 让它只在「不可能是判断，只能是坏了」时才响。**代价写在明处：慢速劣化它抓不到**，而那需要一条基于基线的规则，得先有一段时间的真实流量才能定 —— 所以没做。
 - **弃答路径仍然丢 `prompt_version`（空串）与 `token_usage`**：线上 SSE 的 `done` 事件里 `prompt_version` 是 `""`，而作答路径是 `autonomous-review-v2` 这类真实版本号。这是既有行为，本轮没动；要修得先定「弃答算不算一次生成」。
 - **`refusalMarkers` 仍是宽子串匹配**（`service.go:378`，含 `"无法回答"`、`"参考文档不足"` 这类词）：模型写出的**部分可答**内容只要含这些子串，就会被整段丢掉并换成拒答句。本轮**没有**收窄它 —— 那改的是行为契约（哪些模型输出算拒答），需要先定口径；已加注释说明这个列表是给**模型自己写的**拒答用的，**不能**用来识别本包发出的句子（那些由 `isRefusalAnswer` 精确匹配）。
